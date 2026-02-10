@@ -20,6 +20,7 @@ pub mod boot;
 pub mod config;
 pub mod health;
 pub mod image;
+pub mod integration;
 pub mod metrics;
 pub mod shutdown;
 

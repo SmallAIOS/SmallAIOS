@@ -194,12 +194,15 @@ unsafe impl GlobalAlloc for KernelAllocator {
 }
 
 /// The global allocator instance.
-/// Only active in non-test builds — tests use the host system allocator.
-#[cfg(not(test))]
+/// Only active in non-test builds and when the crate is the root binary
+/// (i.e. not used as a library dependency). Dependent crates should enable
+/// the `no-global-alloc` feature so their test binaries use the host
+/// system allocator instead of the (uninitialized) kernel allocator.
+#[cfg(not(any(test, feature = "no-global-alloc")))]
 #[global_allocator]
 static ALLOCATOR: KernelAllocator = KernelAllocator::new();
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "no-global-alloc")))]
 /// Get a reference to the global allocator.
 pub fn global_allocator() -> &'static KernelAllocator {
     &ALLOCATOR
