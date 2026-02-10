@@ -1,0 +1,15 @@
+[package]
+name = "smallaios-security"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS security: capability-based access control, PQC cryptography"
+
+[features]
+default = ["pqc-hybrid"]
+pqc-hybrid = []     # X25519+ML-KEM-768, Ed25519+ML-DSA-65
+pqc-only = []       # ML-KEM-768, ML-DSA-65 (no classical)
+classical-only = [] # X25519, Ed25519 (no PQC — not recommended)
+
+[dependencies]
+smallaios-kernel = { path = "../kernel" }

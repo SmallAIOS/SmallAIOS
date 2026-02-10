@@ -1,0 +1,12 @@
+[package]
+name = "smallaios-arch-aarch64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS ARM64 HAL: boot, GICv3, paging, SVE, PSCI, UART"
+
+[features]
+default = []
+
+[dependencies]
+smallaios-kernel = { path = "../../kernel" }

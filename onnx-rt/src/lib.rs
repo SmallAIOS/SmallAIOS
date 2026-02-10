@@ -1,0 +1,17 @@
+// Copyright 2026 SmallAIOS Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+//! SmallAIOS ONNX Runtime
+//!
+//! Native ONNX model loading, optimization, and inference execution.
+//!
+//! Components:
+//! - Protobuf parser (minimal, ONNX-specific)
+//! - Model validation (opset, operators, shapes)
+//! - Execution graph builder (topological sort, DAG)
+//! - Graph optimizer (fusion, constant folding, memory planning)
+//! - CPU execution provider (x86-64 AVX/AVX-512, ARM64 NEON/SVE)
+//! - CUDA execution provider (NVIDIA PTX kernels)
+//! - Tensor type system and memory management
+
+#![no_std]

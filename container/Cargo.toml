@@ -1,0 +1,19 @@
+[package]
+name = "smallaios-container"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS container interface: entry point, config, health, metrics"
+
+[features]
+default = []
+nvidia_gpu = ["smallaios-arch-nvidia"]
+
+[dependencies]
+smallaios-kernel = { path = "../kernel" }
+smallaios-onnx-rt = { path = "../onnx-rt" }
+smallaios-ipc = { path = "../ipc" }
+smallaios-posix = { path = "../posix" }
+smallaios-security = { path = "../security" }
+smallaios-net = { path = "../net" }
+smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }
