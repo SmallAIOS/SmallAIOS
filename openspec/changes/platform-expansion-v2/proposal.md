@@ -15,6 +15,7 @@ SmallAIOS is positioned as a safety-critical inference platform spanning datacen
 - Add SoC FPGA platform support: AXI/AXI-Lite MMIO driver, AXI DMA, DTB-based peripheral discovery
 - **BREAKING**: Revise Phase 11 from "Container and Kubernetes Integration" to "Deployment and Provisioning" — separate container packaging from orchestration
 - Add Kubernetes integration via Virtual Kubelet provider (Go, Linux-side) with K3s edge and K8s datacenter support
+- Add QUIC transport in `smallaios-net` crate: RFC 9000 QUIC v1, 0-RTT resumption, connection migration, multiplexed streams, TLS 1.3 with ML-KEM post-quantum key exchange; available as Zenoh session transport and independently for HTTP/3, management API, and OTA model delivery
 - Add benchmark infrastructure: boot-to-inference timing, Linux baselines (bare metal, Docker, K8s), three models (MobileNetV2, DistilBERT, Whisper-tiny), four hardware targets (DGX Spark, Xeon, Jetson, Raspberry Pi), statistical methodology (N=1000+, p50/p99/p999, jitter)
 
 ## Capabilities
@@ -32,17 +33,19 @@ SmallAIOS is positioned as a safety-critical inference platform spanning datacen
 - `kubernetes-integration`: Kubernetes orchestration via Virtual Kubelet provider — SmallAIOS management API (model deploy, health, metrics, resource reporting), K3s support for edge (Jetson, RPi), K8s support for datacenter (Spark, Xeon), pod spec to model deployment translation
 - `benchmark-infrastructure`: Performance comparison framework — boot-to-inference cold start timing, warm inference latency (p50/p99/p999), throughput, jitter/determinism, memory footprint; Linux baselines on bare metal, Docker, K8s/K3s; three models: MobileNetV2 (vision), DistilBERT (text), Whisper-tiny (audio/signal); four hardware targets: DGX Spark, Xeon, Jetson, RPi
 - `dds`: OMG Data Distribution Service (DDS) implementation — DCPS (Data-Centric Publish-Subscribe) API with Topic/DataWriter/DataReader, RTPS (Real-Time Publish-Subscribe) wire protocol for interoperability with ROS 2 and AUTOSAR Adaptive, comprehensive QoS policies (reliability, durability, deadline, liveliness, ownership, history, resource limits), DDS-Security plugin for authentication and access control, Zenoh transport adapter mapping DDS domains/topics to key expressions
+- `quic-transport`: QUIC v1 (RFC 9000/9001) transport protocol — connection establishment with TLS 1.3 (ML-KEM-768 hybrid key exchange), 0-RTT session resumption for fast reconnect after power cycles, connection migration for vehicular/mobile platforms, multiplexed bidirectional streams (no head-of-line blocking), flow control (stream and connection level), congestion control, Zenoh session transport integration, standalone QUIC endpoint API for HTTP/3 management and OTA model delivery
 
 ### Modified Capabilities
 
 - `07-container-interface`: Revise deployment modes to separate container packaging (OCI image, VM image, bare metal provisioning) from Kubernetes orchestration (moved to `kubernetes-integration`). Add UEFI Secure Boot and image signing with ML-DSA-65.
 - `05-device-hal`: Extend HAL trait with bus peripheral abstractions (CAN controller, ARINC transceiver, SpaceWire link) and FPGA fabric interface (AXI register access, DMA). Add RISC-V HAL implementation.
 - `10-hardware-platforms`: Add RISC-V platforms (PolarFire SoC, SiFive HiFive, QEMU virt) to Tier 2. Add SoC FPGA platforms (Zynq UltraScale+, PolarFire SoC) to Tier 2.
-- `04-ipc-messaging`: Add CAN, ARINC 429, ARINC 664, MIL-STD-1553, SpaceWire, CCSDS SPP, and DDS as Zenoh transport types alongside existing TCP, shared memory, and intra-kernel transports.
+- `04-ipc-messaging`: Add CAN, ARINC 429, ARINC 664, MIL-STD-1553, SpaceWire, CCSDS SPP, DDS, and QUIC as Zenoh transport types alongside existing TCP, shared memory, and intra-kernel transports.
+- `03-networking`: Add QUIC v1 as transport protocol alongside existing TCP/UDP. Integrate TLS 1.3 with post-quantum ML-KEM-768 hybrid key exchange. Add HTTP/3 support for management API endpoints.
 
 ## Impact
 
-- **Rust workspace**: Add `arch/riscv64` crate, add `bus` crate (CAN, ARINC, 1553, SpaceWire, CCSDS, DDS protocol implementations), add `fpga` crate (AXI drivers, DMA)
+- **Rust workspace**: Add `arch/riscv64` crate, add `bus` crate (CAN, ARINC, 1553, SpaceWire, CCSDS, DDS protocol implementations), add `fpga` crate (AXI drivers, DMA), extend `net` crate with QUIC transport
 - **External tooling**: Virtual Kubelet provider is a separate Go project (outside Rust workspace, outside safety-critical certification boundary)
 - **Benchmark harness**: Separate `bench/` directory with scripts, Linux baseline configs, and result analysis tools
 - **Build targets**: Add `riscv64gc-unknown-none-elf` bare-metal target

@@ -131,3 +131,24 @@ Messages published on one transport SHALL be routable to subscribers on any othe
 - AND a bridge rule maps `dds/0/BrakeCommand` to `can/0/0x200`
 - THEN the Zenoh router MUST route the message to the CAN transport adapter
 - AND the CAN adapter MUST serialize the payload into CAN frame(s) and transmit on bus 0
+
+#### Scenario: Zenoh session established over QUIC transport
+
+- WHEN a Zenoh session is configured with locator `quic/192.168.1.1:7447`
+- THEN the Zenoh transport layer MUST establish a QUIC v1 connection to the specified address
+- AND Zenoh protocol messages MUST be carried over QUIC streams
+- AND pub/sub/queryable semantics MUST be identical to TCP-backed sessions
+
+#### Scenario: QUIC connection migration preserves Zenoh session
+
+- WHEN a Zenoh session is running over QUIC
+- AND the SmallAIOS node's IP address changes (e.g., vehicular platform switching networks)
+- THEN the QUIC connection MUST migrate to the new path via PATH_CHALLENGE/PATH_RESPONSE
+- AND the Zenoh session MUST remain active without re-establishment
+- AND no published samples MUST be lost during migration
+
+#### Scenario: QUIC multiplexed streams for Zenoh traffic
+
+- WHEN multiple Zenoh publishers and subscribers are active on a QUIC-backed session
+- THEN different Zenoh key expressions MAY use separate QUIC streams
+- AND packet loss or head-of-line blocking on one stream MUST NOT delay delivery on others

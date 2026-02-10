@@ -127,88 +127,119 @@
 - [ ] 21.24 Integration test: DDS pub/sub within SmallAIOS (loopback)
 - [ ] 21.25 Interoperability test: SmallAIOS DDS ↔ FastDDS (ROS 2 node) on same network
 
-## 22. RISC-V Architecture Support
+## 22. QUIC Transport
 
-- [ ] 22.1 Create `smallaios-arch-riscv64` crate with target riscv64gc-unknown-none-elf
-- [ ] 22.2 Create custom target JSON and linker script for RISC-V bare metal
-- [ ] 22.3 Implement assembly entry point (set stack, clear BSS, set stvec, call kernel_main)
-- [ ] 22.4 Implement SV48 4-level page table management (map, unmap, protect)
-- [ ] 22.5 Implement TLB flush via sfence.vma instruction
-- [ ] 22.6 Implement PLIC interrupt controller driver (priority, enable, claim, complete)
-- [ ] 22.7 Implement CLINT timer driver (mtime/mtimecmp for periodic tick)
-- [ ] 22.8 Implement SBI HSM extension calls for SMP boot (hart_start, hart_stop, hart_get_status)
-- [ ] 22.9 Implement SBI IPI extension for inter-hart interrupts
-- [ ] 22.10 Implement NS16550A UART driver (QEMU virt machine console output)
-- [ ] 22.11 Implement CPU feature detection (A, C, D, F extensions)
-- [ ] 22.12 Verify boot-to-serial-output in QEMU virt (riscv64)
-- [ ] 22.13 Add RISC-V to CI (build + QEMU smoke test)
-- [ ] 22.14 Add RISC-V HAL implementation to kernel HAL trait
+- [ ] 22.1 Define QUIC connection, stream, and endpoint types in `smallaios-net` crate
+- [ ] 22.2 Implement QUIC packet encoding/decoding: Initial, Handshake, 0-RTT, 1-RTT packet types
+- [ ] 22.3 Implement QUIC frame encoding/decoding: STREAM, ACK, CRYPTO, NEW_CONNECTION_ID, PATH_CHALLENGE/RESPONSE, MAX_DATA, MAX_STREAM_DATA, etc.
+- [ ] 22.4 Integrate TLS 1.3 handshake with ML-KEM-768 hybrid key exchange (client and server)
+- [ ] 22.5 Implement QUIC packet protection: AES-128-GCM and ChaCha20-Poly1305 AEAD, header protection
+- [ ] 22.6 Implement 1-RTT connection establishment (client and server roles)
+- [ ] 22.7 Implement 0-RTT session resumption with TLS session tickets and replay protection
+- [ ] 22.8 Implement bidirectional and unidirectional stream management (open, read, write, close, reset)
+- [ ] 22.9 Implement stream-level and connection-level flow control (MAX_DATA, MAX_STREAM_DATA)
+- [ ] 22.10 Implement loss detection and congestion control per RFC 9002 (NewReno)
+- [ ] 22.11 Implement connection migration with PATH_CHALLENGE/PATH_RESPONSE validation
+- [ ] 22.12 Implement connection ID management (NEW_CONNECTION_ID, RETIRE_CONNECTION_ID)
+- [ ] 22.13 Implement key update mechanism (RFC 9001 Section 6)
+- [ ] 22.14 Implement QUIC version negotiation
+- [ ] 22.15 Implement Zenoh session transport adapter (quic/ locator scheme)
+- [ ] 22.16 Implement standalone QUIC endpoint API (server and client)
+- [ ] 22.17 Implement minimal HTTP/3 framing (RFC 9114) for management API (GET/POST /health, /metrics, /deploy)
+- [ ] 22.18 Unit tests for packet encoding/decoding (RFC 9000 Appendix A test vectors)
+- [ ] 22.19 Unit tests for frame encoding/decoding (all frame types)
+- [ ] 22.20 Unit tests for flow control and congestion control state machines
+- [ ] 22.21 Unit tests for 0-RTT replay protection
+- [ ] 22.22 Integration test: QUIC connection establishment and data transfer (loopback)
+- [ ] 22.23 Integration test: Zenoh pub/sub over QUIC transport
+- [ ] 22.24 Integration test: connection migration (simulated IP address change)
+- [ ] 22.25 Interoperability test: SmallAIOS QUIC ↔ external QUIC implementation (e.g., quiche, quinn)
 
-## 23. SoC FPGA Platform Support
+## 23. RISC-V Architecture Support
 
-- [ ] 23.1 Create `smallaios-fpga` crate with feature flags (zynq, polarfire)
-- [ ] 23.2 Implement AXI4-Lite memory-mapped register read/write driver
-- [ ] 23.3 Implement AXI4 full burst transfer driver
-- [ ] 23.4 Implement AXI DMA controller driver (simple mode)
-- [ ] 23.5 Implement AXI DMA scatter-gather mode
-- [ ] 23.6 Implement DTB-based peripheral discovery for FPGA soft-IP blocks
-- [ ] 23.7 Implement interrupt routing from FPGA fabric to CPU interrupt controller
-- [ ] 23.8 Implement Zynq UltraScale+ platform support package (PS-PL interface, clocks, resets)
-- [ ] 23.9 Implement PolarFire SoC platform support package (RISC-V + FPGA fabric)
-- [ ] 23.10 Unit tests for AXI register access and DMA transfers (mock MMIO)
-- [ ] 23.11 Integration test on Zynq board: read/write FPGA registers from SmallAIOS
+- [ ] 23.1 Create `smallaios-arch-riscv64` crate with target riscv64gc-unknown-none-elf
+- [ ] 23.2 Create custom target JSON and linker script for RISC-V bare metal
+- [ ] 23.3 Implement assembly entry point (set stack, clear BSS, set stvec, call kernel_main)
+- [ ] 23.4 Implement SV48 4-level page table management (map, unmap, protect)
+- [ ] 23.5 Implement TLB flush via sfence.vma instruction
+- [ ] 23.6 Implement PLIC interrupt controller driver (priority, enable, claim, complete)
+- [ ] 23.7 Implement CLINT timer driver (mtime/mtimecmp for periodic tick)
+- [ ] 23.8 Implement SBI HSM extension calls for SMP boot (hart_start, hart_stop, hart_get_status)
+- [ ] 23.9 Implement SBI IPI extension for inter-hart interrupts
+- [ ] 23.10 Implement NS16550A UART driver (QEMU virt machine console output)
+- [ ] 23.11 Implement CPU feature detection (A, C, D, F extensions)
+- [ ] 23.12 Verify boot-to-serial-output in QEMU virt (riscv64)
+- [ ] 23.13 Add RISC-V to CI (build + QEMU smoke test)
+- [ ] 23.14 Add RISC-V HAL implementation to kernel HAL trait
 
-## 24. Deployment and Provisioning (Phase 11 Revision)
+## 24. SoC FPGA Platform Support
 
-- [ ] 24.1 Implement UEFI Secure Boot support with ML-DSA-65 signed kernel image
-- [ ] 24.2 Implement PXE/iPXE bare metal network boot provisioning
-- [ ] 24.3 Implement VM image generation (raw disk, qcow2, VMDK formats)
-- [ ] 24.4 Implement image signing with ML-DSA-65 post-quantum signatures
-- [ ] 24.5 Update OCI image build for multi-arch (amd64, arm64, riscv64)
-- [ ] 24.6 Verify image size target < 15 MB (kernel + runtime, no model)
+- [ ] 24.1 Create `smallaios-fpga` crate with feature flags (zynq, polarfire)
+- [ ] 24.2 Implement AXI4-Lite memory-mapped register read/write driver
+- [ ] 24.3 Implement AXI4 full burst transfer driver
+- [ ] 24.4 Implement AXI DMA controller driver (simple mode)
+- [ ] 24.5 Implement AXI DMA scatter-gather mode
+- [ ] 24.6 Implement DTB-based peripheral discovery for FPGA soft-IP blocks
+- [ ] 24.7 Implement interrupt routing from FPGA fabric to CPU interrupt controller
+- [ ] 24.8 Implement Zynq UltraScale+ platform support package (PS-PL interface, clocks, resets)
+- [ ] 24.9 Implement PolarFire SoC platform support package (RISC-V + FPGA fabric)
+- [ ] 24.10 Unit tests for AXI register access and DMA transfers (mock MMIO)
+- [ ] 24.11 Integration test on Zynq board: read/write FPGA registers from SmallAIOS
 
-## 25. IPC Transport Extensions
+## 25. Deployment and Provisioning (Phase 11 Revision)
 
-- [ ] 25.1 Extend ZenohRouter with bus transport registration interface
-- [ ] 25.2 Implement transport auto-discovery from DTB/ACPI peripheral enumeration
-- [ ] 25.3 Implement cross-transport routing (message on CAN routed to TCP subscriber, DDS to CAN, etc.)
-- [ ] 25.4 Unit tests for transport-agnostic pub/sub across mixed transports (including DDS)
-- [ ] 25.5 Integration test: inference result published over TCP, delivered over CAN
-- [ ] 25.6 Integration test: DDS topic bridged to ARINC 429 via Zenoh router
+- [ ] 25.1 Implement UEFI Secure Boot support with ML-DSA-65 signed kernel image
+- [ ] 25.2 Implement PXE/iPXE bare metal network boot provisioning
+- [ ] 25.3 Implement VM image generation (raw disk, qcow2, VMDK formats)
+- [ ] 25.4 Implement image signing with ML-DSA-65 post-quantum signatures
+- [ ] 25.5 Update OCI image build for multi-arch (amd64, arm64, riscv64)
+- [ ] 25.6 Verify image size target < 15 MB (kernel + runtime, no model)
 
-## 26. HAL Extensions
+## 26. IPC Transport Extensions
 
-- [ ] 26.1 Define BusPeripheral HAL trait (init, tx_frame, rx_frame, irq_handler)
-- [ ] 26.2 Define FpgaFabric HAL trait (axi_read, axi_write, dma_transfer)
-- [ ] 26.3 Implement RISC-V HAL (paging, PLIC, CLINT, SBI wrappers)
-- [ ] 26.4 Update hardware platform spec with RISC-V and SoC FPGA tier 2 targets
-- [ ] 26.5 Add riscv64gc-unknown-none-elf build target to Makefile and CI
+- [ ] 26.1 Extend ZenohRouter with bus transport registration interface
+- [ ] 26.2 Implement transport auto-discovery from DTB/ACPI peripheral enumeration
+- [ ] 26.3 Implement cross-transport routing (message on CAN routed to TCP subscriber, DDS to CAN, QUIC to ARINC, etc.)
+- [ ] 26.4 Unit tests for transport-agnostic pub/sub across mixed transports (including DDS and QUIC)
+- [ ] 26.5 Integration test: inference result published over TCP, delivered over CAN
+- [ ] 26.6 Integration test: DDS topic bridged to ARINC 429 via Zenoh router
+- [ ] 26.7 Integration test: Zenoh session over QUIC with connection migration
 
-## 27. Benchmark Infrastructure
+## 27. HAL Extensions
 
-- [ ] 27.1 Create bench/ directory structure (scripts, configs, models, results)
-- [ ] 27.2 Implement cold start measurement harness (power-on to first inference)
-- [ ] 27.3 Implement warm inference latency harness (N=1000+ runs, p50/p99/p999)
-- [ ] 27.4 Implement throughput benchmark (batch sizes 1, 4, 16, 64)
-- [ ] 27.5 Implement jitter measurement (stdev and max deviation)
-- [ ] 27.6 Implement memory footprint measurement (peak RSS)
-- [ ] 27.7 Download and prepare benchmark models: MobileNetV2 (vision), DistilBERT (text), Whisper-tiny (audio/signal)
-- [ ] 27.8 Create Linux bare metal baseline scripts (ONNX Runtime C++ binary)
-- [ ] 27.9 Create Docker baseline (Dockerfile + ONNX Runtime)
-- [ ] 27.10 Create K8s/K3s baseline (deployment manifests + ONNX Runtime pod)
-- [ ] 27.11 Create hardware-specific configs (DGX Spark, Xeon, Jetson, RPi)
-- [ ] 27.12 Document BIOS settings, CPU frequency pinning, thermal monitoring
-- [ ] 27.13 Implement report generation (markdown tables, CSV export)
-- [ ] 27.14 Run benchmark suite on all 4 hardware targets, generate comparison report
+- [ ] 27.1 Define BusPeripheral HAL trait (init, tx_frame, rx_frame, irq_handler)
+- [ ] 27.2 Define FpgaFabric HAL trait (axi_read, axi_write, dma_transfer)
+- [ ] 27.3 Implement RISC-V HAL (paging, PLIC, CLINT, SBI wrappers)
+- [ ] 27.4 Update hardware platform spec with RISC-V and SoC FPGA tier 2 targets
+- [ ] 27.5 Add riscv64gc-unknown-none-elf build target to Makefile and CI
 
-## 28. Formal Verification — Bus Protocols and DDS
+## 28. Benchmark Infrastructure
 
-- [ ] 28.1 Write TLA+ model for CAN bus arbitration (priority-based, no starvation)
-- [ ] 28.2 Write TLA+ model for ARINC 429 transmit scheduler (no label starvation)
-- [ ] 28.3 Write TLA+ model for AFDX Virtual Link BAG enforcement (no deadline miss)
-- [ ] 28.4 Write TLA+ model for MIL-STD-1553 command/response (no unanswered commands)
-- [ ] 28.5 Write TLA+ model for SpaceWire link state machine (correct transitions)
-- [ ] 28.6 Write TLA+ model for DDS RTPS reliable delivery (no sample loss, no reordering)
-- [ ] 28.7 Write TLA+ model for DDS SPDP/SEDP discovery (eventual consistency, no orphan endpoints)
-- [ ] 28.8 Create TLC configs for all bus protocol and DDS models
-- [ ] 28.9 Add bus protocol and DDS TLA+ verification to CI
+- [ ] 28.1 Create bench/ directory structure (scripts, configs, models, results)
+- [ ] 28.2 Implement cold start measurement harness (power-on to first inference)
+- [ ] 28.3 Implement warm inference latency harness (N=1000+ runs, p50/p99/p999)
+- [ ] 28.4 Implement throughput benchmark (batch sizes 1, 4, 16, 64)
+- [ ] 28.5 Implement jitter measurement (stdev and max deviation)
+- [ ] 28.6 Implement memory footprint measurement (peak RSS)
+- [ ] 28.7 Download and prepare benchmark models: MobileNetV2 (vision), DistilBERT (text), Whisper-tiny (audio/signal)
+- [ ] 28.8 Create Linux bare metal baseline scripts (ONNX Runtime C++ binary)
+- [ ] 28.9 Create Docker baseline (Dockerfile + ONNX Runtime)
+- [ ] 28.10 Create K8s/K3s baseline (deployment manifests + ONNX Runtime pod)
+- [ ] 28.11 Create hardware-specific configs (DGX Spark, Xeon, Jetson, RPi)
+- [ ] 28.12 Document BIOS settings, CPU frequency pinning, thermal monitoring
+- [ ] 28.13 Implement report generation (markdown tables, CSV export)
+- [ ] 28.14 Run benchmark suite on all 4 hardware targets, generate comparison report
+
+## 29. Formal Verification — Bus Protocols, DDS, and QUIC
+
+- [ ] 29.1 Write TLA+ model for CAN bus arbitration (priority-based, no starvation)
+- [ ] 29.2 Write TLA+ model for ARINC 429 transmit scheduler (no label starvation)
+- [ ] 29.3 Write TLA+ model for AFDX Virtual Link BAG enforcement (no deadline miss)
+- [ ] 29.4 Write TLA+ model for MIL-STD-1553 command/response (no unanswered commands)
+- [ ] 29.5 Write TLA+ model for SpaceWire link state machine (correct transitions)
+- [ ] 29.6 Write TLA+ model for DDS RTPS reliable delivery (no sample loss, no reordering)
+- [ ] 29.7 Write TLA+ model for DDS SPDP/SEDP discovery (eventual consistency, no orphan endpoints)
+- [ ] 29.8 Write TLA+ model for QUIC connection migration (no data loss during path switch)
+- [ ] 29.9 Write TLA+ model for QUIC flow control (no deadlock, no limit violation)
+- [ ] 29.10 Create TLC configs for all protocol models
+- [ ] 29.11 Add protocol TLA+ verification to CI

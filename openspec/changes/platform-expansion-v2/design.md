@@ -21,7 +21,9 @@ Key constraint: all protocol implementations must be clean-room from public spec
 - Full kubelet implementation inside SmallAIOS — complexity belongs on Linux side
 - Proprietary bus protocol extensions (CANopen, J1939, DeviceNet) — only base protocols
 - RISC-V vector extension (RVV) GEMM kernels — defer until ecosystem matures
-- Full HTTP server — keep minimal /health and /metrics only
+- Full HTTP server — keep minimal /health and /metrics only (HTTP/3 over QUIC for management endpoints)
+- Full HTTP/3 implementation — only minimal subset needed for /health, /metrics, /deploy
+- QUIC v2 (RFC 9369), QUIC Datagram extension (RFC 9221), WebTransport — future work
 
 ## Decisions
 
@@ -117,7 +119,33 @@ smallaios/v1/management/config    — runtime configuration
 - Docker container + ONNX Runtime
 - K8s/K3s pod + ONNX Runtime
 
-### 7. DDS Implementation: Core DCPS + RTPS, Zenoh Bridge
+### 7. QUIC Transport: First-Class Protocol in `smallaios-net`
+
+**Decision**: Implement QUIC v1 (RFC 9000/9001/9002) as a first-class transport in the `smallaios-net` crate, available both as a Zenoh session transport and as a standalone endpoint API. TLS 1.3 handshake uses ML-KEM-768 hybrid key exchange by default.
+
+**Rationale**: QUIC provides three capabilities critical for SmallAIOS's deployment scenarios that TCP cannot:
+
+1. **0-RTT session resumption** — After a power cycle or reconnect, SmallAIOS can resume sending inference results without a full handshake round trip. This matters for automotive ECUs and edge devices that restart frequently.
+2. **Connection migration** — Vehicular and mobile platforms change network attachment points. QUIC connections survive IP address changes without dropping the Zenoh session, avoiding re-subscription storms.
+3. **Multiplexed streams without head-of-line blocking** — A single QUIC connection can carry inference results, telemetry, management commands, and model delivery on independent streams. Packet loss on telemetry doesn't stall inference results (unlike TCP where a single lost segment blocks the entire connection).
+
+Zenoh already supports QUIC as a session transport, so our QUIC stack serves dual duty: it backs Zenoh sessions AND is exposed as a standalone API for HTTP/3 management endpoints, OTA model delivery, and cloud telemetry upload.
+
+**Alternatives considered**:
+- TCP-only (rely on Zenoh's existing TCP): rejected — no 0-RTT, no connection migration, head-of-line blocking across multiplexed traffic
+- QUIC only as Zenoh transport (no standalone API): rejected — need HTTP/3 for management endpoints, OTA delivery needs direct QUIC streams
+- External QUIC library (quinn, quiche): rejected — GPL/LGPL concerns, no_std incompatibility, can't integrate post-quantum crypto
+
+**Scope boundaries**:
+- IN: QUIC v1 (RFC 9000), QUIC-TLS (RFC 9001), QUIC Loss Detection and Congestion Control (RFC 9002), 0-RTT resumption, connection migration, stream multiplexing, flow control, Zenoh transport integration, standalone endpoint API, HTTP/3 framing (RFC 9114) for management API
+- OUT: QUIC v2 (RFC 9369), QUIC Datagram extension (RFC 9221), WebTransport, MASQUE proxying
+
+**Key expression mapping** (Zenoh transport):
+```
+QUIC: quic/{host}:{port}  → Zenoh session locator
+```
+
+### 8. DDS Implementation: Core DCPS + RTPS, Zenoh Bridge
 
 **Decision**: Implement core OMG DDS DCPS API and RTPS 2.3 wire protocol from public OMG specifications, bridged to Zenoh via a transport adapter. DDS-Security uses SmallAIOS's existing post-quantum crypto. DDS-XTypes and advanced extensible types are deferred.
 
@@ -158,6 +186,10 @@ ROS 2: dds/{domain_id}/rt/{ros_topic}  → Zenoh key expression (ROS 2 topic man
 
 **[Risk] DDS interoperability testing** → RTPS wire-level compatibility with FastDDS, CycloneDDS, RTI Connext requires careful testing. Mitigation: use ROS 2 as primary interop test target (most accessible), validate against OMG RTPS interoperability test suite (publicly available).
 
+**[Risk] QUIC implementation complexity** → QUIC is a complex protocol (~150 pages in RFC 9000 alone) with intricate loss detection, congestion control, and packet protection state machines. Mitigation: implement incrementally — 1-RTT first, then 0-RTT, then connection migration. Use RFC 9000 Appendix A test vectors for packet encoding validation. Target Zenoh transport use case first (less API surface), then standalone endpoint.
+
+**[Risk] Post-quantum key exchange in TLS 1.3** → ML-KEM-768 hybrid key exchange increases ClientHello size (~1200 bytes for ML-KEM public key), which may cause issues with middleboxes or MTU constraints. Mitigation: support both hybrid (ML-KEM + X25519) and classical-only (X25519) modes. Hybrid is default but configurable. QUIC's built-in path MTU discovery helps handle larger handshakes.
+
 **[Trade-off] Single `bus` crate vs. per-protocol crates** → Single crate is simpler but couples protocol release cycles. Acceptable because all protocols share the Zenoh transport trait and are versioned together with SmallAIOS.
 
 **[Trade-off] Virtual Kubelet vs. embedded kubelet** → Virtual Kubelet adds a separate Go component but keeps the safety boundary clean. An embedded kubelet would be more self-contained but would require HTTP/2 + protobuf + complex state management inside the unikernel.
@@ -177,3 +209,7 @@ ROS 2: dds/{domain_id}/rt/{ros_topic}  → Zenoh key expression (ROS 2 topic man
 6. **DDS conformance level**: Full OMG DDS compliance requires passing the DDS interoperability test suite. Define which conformance profile to target (Minimum, Content, Complete)?
 
 7. **DDS + ROS 2 topic name mangling**: ROS 2 prefixes topic names with `rt/`, `rq/`, `rr/` for topics, requests, replies. Support this convention natively or via configuration?
+
+8. **QUIC congestion controller**: NewReno (RFC 9002 default) vs. BBR vs. CUBIC? NewReno is simplest and specified in the RFC. BBR is better for high-bandwidth paths (datacenter). Start with NewReno, add BBR as optional?
+
+9. **HTTP/3 scope**: Full HTTP/3 (RFC 9114) or minimal subset? SmallAIOS only needs GET/POST for /health, /metrics, /deploy endpoints. Could implement a minimal HTTP/3 handler without full QPACK header compression.
