@@ -110,3 +110,24 @@ Messages published on one transport SHALL be routable to subscribers on any othe
 - AND a SpaceWire transport subscriber is registered for `smallaios/v1/telemetry/**`
 - THEN the Zenoh router MUST route the sample to the SpaceWire transport adapter
 - AND the adapter MUST encapsulate the payload in a SpaceWire packet and transmit it on the configured link
+
+#### Scenario: DDS topic received and delivered as Zenoh sample
+
+- WHEN a DDS DataWriter publishes a sample on Topic "SensorData" in domain 0
+- AND a subscriber is registered for key expression `dds/0/SensorData`
+- THEN the DDS transport adapter MUST deserialize the CDR-encoded sample and deliver it as a Zenoh sample
+- AND the sample payload MUST contain the deserialized data fields
+
+#### Scenario: DDS topic published via Zenoh
+
+- WHEN a Zenoh publisher puts a sample on key expression `dds/0/CommandData`
+- AND a DDS DataReader is subscribed to Topic "CommandData" on domain 0
+- THEN the DDS transport adapter MUST serialize the payload in CDR format and inject it into the DDS domain
+- AND the DataReader MUST receive the sample with correct QoS handling
+
+#### Scenario: DDS-to-CAN cross-transport routing
+
+- WHEN a DDS DataWriter publishes a sample on Topic "BrakeCommand" in domain 0
+- AND a bridge rule maps `dds/0/BrakeCommand` to `can/0/0x200`
+- THEN the Zenoh router MUST route the message to the CAN transport adapter
+- AND the CAN adapter MUST serialize the payload into CAN frame(s) and transmit on bus 0

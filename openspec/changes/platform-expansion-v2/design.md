@@ -117,6 +117,29 @@ smallaios/v1/management/config    — runtime configuration
 - Docker container + ONNX Runtime
 - K8s/K3s pod + ONNX Runtime
 
+### 7. DDS Implementation: Core DCPS + RTPS, Zenoh Bridge
+
+**Decision**: Implement core OMG DDS DCPS API and RTPS 2.3 wire protocol from public OMG specifications, bridged to Zenoh via a transport adapter. DDS-Security uses SmallAIOS's existing post-quantum crypto. DDS-XTypes and advanced extensible types are deferred.
+
+**Rationale**: DDS is the mandated middleware for ROS 2 (robotics), AUTOSAR Adaptive Platform (automotive), FACE/GVA/NGVA (defense), and many space/industrial programs. Wire-level RTPS interoperability is essential — SmallAIOS must communicate directly with FastDDS, CycloneDDS, and RTI Connext nodes without protocol translation gateways.
+
+The Zenoh bridge architecture is natural: DDS's data-centric pub/sub model maps directly to Zenoh's key-expression-based pub/sub. Domain/topic pairs become `dds/{domain_id}/{topic}` key expressions. This enables DDS topics to be routed to/from CAN, ARINC, SpaceWire, and other Zenoh transports transparently.
+
+**Alternatives considered**:
+- Full DDS stack replacing Zenoh: rejected — DDS is heavyweight (100K+ LOC in production implementations), SmallAIOS IPC is Zenoh-native, DDS is one transport among many
+- DDS gateway as external process: rejected — adds latency, another deployment artifact, breaks unikernel model
+- ROS 2 rmw_zenoh only (skip DDS): rejected — doesn't cover AUTOSAR, FACE, or non-ROS DDS deployments
+
+**Scope boundaries**:
+- IN: DCPS API (DomainParticipant, Topic, DataWriter, DataReader, Publisher, Subscriber), RTPS 2.3 (SPDP, SEDP, reliable/best-effort), CDR v2 serialization, core QoS policies (reliability, durability, deadline, liveliness, ownership, history, resource_limits), DDS-Security (authentication, access control)
+- OUT: DDS-XTypes (extensible types), content-filtered topics, multi-topic subscriptions, DDS-Security crypto plugin (SmallAIOS provides its own ML-KEM/ML-DSA), query conditions
+
+**Key expression mapping**:
+```
+DDS: dds/{domain_id}/{topic}  → Zenoh key expression
+ROS 2: dds/{domain_id}/rt/{ros_topic}  → Zenoh key expression (ROS 2 topic mangling)
+```
+
 ## Risks / Trade-offs
 
 **[Risk] Protocol specification access** → Some standards (ARINC 429, ARINC 664, MIL-STD-1553) are behind paywalls. Mitigation: clean-room implementation from publicly available technical descriptions, cross-reference with open-source implementations for correctness (but no code copying). CAN (ISO 11898) and CCSDS Blue Books are freely available.
@@ -129,7 +152,11 @@ smallaios/v1/management/config    — runtime configuration
 
 **[Risk] Bus protocol hardware availability for testing** → CAN controllers, ARINC transceivers, MIL-STD-1553 couplers are specialized hardware. Mitigation: implement protocol layers in software first, test with loopback and mock devices, QEMU virtio-can for CAN, validate on real hardware as available.
 
-**[Risk] Scope creep into higher-level protocols** → CAN → CANopen → J1939, ARINC 429 → ARINC 615A (data loading), etc. Mitigation: explicitly scope to base protocol layers only. Application-layer protocols are future work.
+**[Risk] Scope creep into higher-level protocols** → CAN → CANopen → J1939, ARINC 429 → ARINC 615A (data loading), DDS → DDS-XTypes, etc. Mitigation: explicitly scope to base protocol layers only. Application-layer protocols and advanced type systems are future work.
+
+**[Risk] DDS specification complexity** → Full OMG DDS is large (DCPS, RTPS, DDS-Security, DDS-XTypes, IDL). Mitigation: implement core DCPS API and RTPS 2.3 wire protocol only (enough for ROS 2 and AUTOSAR Adaptive interop). DDS-XTypes deferred. DDS-Security scoped to authentication and access control plugins — crypto plugin not needed since SmallAIOS already provides ML-KEM/ML-DSA at the transport layer.
+
+**[Risk] DDS interoperability testing** → RTPS wire-level compatibility with FastDDS, CycloneDDS, RTI Connext requires careful testing. Mitigation: use ROS 2 as primary interop test target (most accessible), validate against OMG RTPS interoperability test suite (publicly available).
 
 **[Trade-off] Single `bus` crate vs. per-protocol crates** → Single crate is simpler but couples protocol release cycles. Acceptable because all protocols share the Zenoh transport trait and are versioned together with SmallAIOS.
 
@@ -146,3 +173,7 @@ smallaios/v1/management/config    — runtime configuration
 4. **Benchmark model licensing**: MobileNetV2 (Apache 2.0), DistilBERT (Apache 2.0), Whisper (MIT). All compatible. Confirm model weights can be redistributed with benchmark suite.
 
 5. **PolarFire SoC availability**: Microchip Icicle Kit is the dev board. Confirm hardware access for RISC-V + FPGA testing.
+
+6. **DDS conformance level**: Full OMG DDS compliance requires passing the DDS interoperability test suite. Define which conformance profile to target (Minimum, Content, Complete)?
+
+7. **DDS + ROS 2 topic name mangling**: ROS 2 prefixes topic names with `rt/`, `rq/`, `rr/` for topics, requests, replies. Support this convention natively or via configuration?

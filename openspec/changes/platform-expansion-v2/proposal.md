@@ -10,6 +10,7 @@ SmallAIOS is positioned as a safety-critical inference platform spanning datacen
 - Add clean-room MIL-STD-1553 command/response protocol with bus controller and Zenoh transport adapter
 - Add clean-room SpaceWire packet codec, link interface, and Zenoh transport adapter
 - Add clean-room CCSDS Space Packet Protocol (SPP) codec, telemetry/telecommand framing, and Zenoh transport adapter
+- Add clean-room DDS (Data Distribution Service) DCPS API, RTPS wire protocol, QoS policies, DDS-Security, and Zenoh transport adapter
 - Add RISC-V (RV64GC) architecture support: boot, paging, interrupts (PLIC/CLINT), SMP (HSM)
 - Add SoC FPGA platform support: AXI/AXI-Lite MMIO driver, AXI DMA, DTB-based peripheral discovery
 - **BREAKING**: Revise Phase 11 from "Container and Kubernetes Integration" to "Deployment and Provisioning" — separate container packaging from orchestration
@@ -30,20 +31,21 @@ SmallAIOS is positioned as a safety-critical inference platform spanning datacen
 - `soc-fpga-platform`: SoC FPGA platform support — AXI/AXI-Lite memory-mapped register access, AXI DMA controller driver, DTB-based peripheral discovery for FPGA soft-IP, Zynq UltraScale+ and PolarFire SoC reference bring-up
 - `kubernetes-integration`: Kubernetes orchestration via Virtual Kubelet provider — SmallAIOS management API (model deploy, health, metrics, resource reporting), K3s support for edge (Jetson, RPi), K8s support for datacenter (Spark, Xeon), pod spec to model deployment translation
 - `benchmark-infrastructure`: Performance comparison framework — boot-to-inference cold start timing, warm inference latency (p50/p99/p999), throughput, jitter/determinism, memory footprint; Linux baselines on bare metal, Docker, K8s/K3s; three models: MobileNetV2 (vision), DistilBERT (text), Whisper-tiny (audio/signal); four hardware targets: DGX Spark, Xeon, Jetson, RPi
+- `dds`: OMG Data Distribution Service (DDS) implementation — DCPS (Data-Centric Publish-Subscribe) API with Topic/DataWriter/DataReader, RTPS (Real-Time Publish-Subscribe) wire protocol for interoperability with ROS 2 and AUTOSAR Adaptive, comprehensive QoS policies (reliability, durability, deadline, liveliness, ownership, history, resource limits), DDS-Security plugin for authentication and access control, Zenoh transport adapter mapping DDS domains/topics to key expressions
 
 ### Modified Capabilities
 
 - `07-container-interface`: Revise deployment modes to separate container packaging (OCI image, VM image, bare metal provisioning) from Kubernetes orchestration (moved to `kubernetes-integration`). Add UEFI Secure Boot and image signing with ML-DSA-65.
 - `05-device-hal`: Extend HAL trait with bus peripheral abstractions (CAN controller, ARINC transceiver, SpaceWire link) and FPGA fabric interface (AXI register access, DMA). Add RISC-V HAL implementation.
 - `10-hardware-platforms`: Add RISC-V platforms (PolarFire SoC, SiFive HiFive, QEMU virt) to Tier 2. Add SoC FPGA platforms (Zynq UltraScale+, PolarFire SoC) to Tier 2.
-- `04-ipc-messaging`: Add CAN, ARINC 429, ARINC 664, MIL-STD-1553, SpaceWire, and CCSDS SPP as Zenoh transport types alongside existing TCP, shared memory, and intra-kernel transports.
+- `04-ipc-messaging`: Add CAN, ARINC 429, ARINC 664, MIL-STD-1553, SpaceWire, CCSDS SPP, and DDS as Zenoh transport types alongside existing TCP, shared memory, and intra-kernel transports.
 
 ## Impact
 
-- **Rust workspace**: Add `arch/riscv64` crate, add `bus` crate (CAN, ARINC, 1553, SpaceWire, CCSDS protocol implementations), add `fpga` crate (AXI drivers, DMA)
+- **Rust workspace**: Add `arch/riscv64` crate, add `bus` crate (CAN, ARINC, 1553, SpaceWire, CCSDS, DDS protocol implementations), add `fpga` crate (AXI drivers, DMA)
 - **External tooling**: Virtual Kubelet provider is a separate Go project (outside Rust workspace, outside safety-critical certification boundary)
 - **Benchmark harness**: Separate `bench/` directory with scripts, Linux baseline configs, and result analysis tools
 - **Build targets**: Add `riscv64gc-unknown-none-elf` bare-metal target
 - **Hardware dependencies**: CAN transceiver (MCP2515 or integrated), ARINC 429 transceiver (HI-3593 or FPGA soft-IP), SpaceWire LVDS PHY, MIL-STD-1553 transceiver
-- **Formal verification**: New TLA+ models for CAN bus arbitration, ARINC 429 transmit scheduling, MIL-STD-1553 command/response protocol, SpaceWire link state machine
+- **Formal verification**: New TLA+ models for CAN bus arbitration, ARINC 429 transmit scheduling, MIL-STD-1553 command/response protocol, SpaceWire link state machine, DDS RTPS discovery and reliable delivery
 - **Safety certification**: Bus protocol implementations subject to DO-178C DAL A (aviation) and ISO 26262 ASIL D (automotive) coverage requirements
