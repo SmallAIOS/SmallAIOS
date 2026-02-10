@@ -1,0 +1,15 @@
+[package]
+name = "smallaios-onnx-rt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS ONNX runtime: model parser, graph optimizer, execution providers"
+
+[features]
+default = ["cpu"]
+cpu = []
+cuda = ["smallaios-arch-nvidia"]
+
+[dependencies]
+smallaios-kernel = { path = "../kernel" }
+smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }

@@ -1,0 +1,14 @@
+project:
+  name: SmallAIOS
+  description: "A minimal, secure, Rust-based OS kernel purpose-built for AI inference workloads"
+  version: "0.1.0"
+  license: Apache-2.0
+
+settings:
+  spec_dir: openspec
+  artifact_types:
+    - proposal
+    - specs
+    - design
+    - tasks
+  auto_index: true

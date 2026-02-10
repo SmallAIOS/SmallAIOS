@@ -1,0 +1,13 @@
+[package]
+name = "smallaios-ipc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS IPC: Zenoh-inspired pub/sub messaging with key-expression routing"
+
+[features]
+default = []
+
+[dependencies]
+smallaios-kernel = { path = "../kernel" }
+smallaios-security = { path = "../security" }

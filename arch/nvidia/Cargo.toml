@@ -1,0 +1,19 @@
+[package]
+name = "smallaios-arch-nvidia"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS NVIDIA GPU HAL: PCIe, GPU init, memory, compute, DMA"
+
+[features]
+default = []
+cc_53 = []    # Maxwell (Jetson Nano)
+cc_70 = []    # Volta (V100)
+cc_75 = []    # Turing (T4)
+cc_80 = []    # Ampere (A100)
+cc_87 = []    # Ampere (Jetson Orin)
+cc_90 = []    # Hopper (H100)
+cc_100 = []   # Blackwell (B200, DGX Spark)
+
+[dependencies]
+smallaios-kernel = { path = "../../kernel" }

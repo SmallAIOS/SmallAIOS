@@ -1,0 +1,13 @@
+[target.x86_64-unknown-none]
+runner = "scripts/run-qemu-x86.sh"
+rustflags = ["-C", "link-arg=-Tarch/x86_64/linker.ld"]
+
+[target.aarch64-unknown-none]
+runner = "scripts/run-qemu-arm.sh"
+rustflags = ["-C", "link-arg=-Tarch/aarch64/linker.ld"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+crt-static"]

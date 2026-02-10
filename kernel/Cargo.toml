@@ -1,0 +1,13 @@
+[package]
+name = "smallaios-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS kernel core: memory management, scheduler, syscall interface"
+
+[features]
+default = []
+verbose-boot = []
+
+[dependencies]
+smallaios-security = { path = "../security" }
