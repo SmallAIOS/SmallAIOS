@@ -13,6 +13,7 @@
 pub mod boot;
 pub mod interrupts;
 pub mod paging;
+pub mod syscall;
 pub mod uart;
 
 use core::panic::PanicInfo;

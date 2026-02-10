@@ -16,6 +16,7 @@ pub mod gdt;
 pub mod interrupts;
 pub mod paging;
 pub mod serial;
+pub mod syscall;
 
 use core::panic::PanicInfo;
 
