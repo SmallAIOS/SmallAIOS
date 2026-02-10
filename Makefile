@@ -86,6 +86,40 @@ fmt:
 fmt-check:
 	$(CARGO) fmt --all -- --check
 
+# === Bare Metal Deploy ===
+
+# Network boot: build + copy kernel to TFTP server
+# One-time setup: sudo ./scripts/deploy-netboot.sh setup --server-ip <ip>
+.PHONY: deploy-netboot
+deploy-netboot: build-kernel-arm
+	sudo cp target/aarch64-unknown-none/release/smallaios-aarch64 \
+		/srv/tftp/smallaios/smallaios-aarch64
+	@echo "Deployed to TFTP. Reboot the board."
+
+# RPi SD card: build + create full bootable SD card
+# Usage: make deploy-rpi-sdcard DEV=/dev/sdX
+.PHONY: deploy-rpi-sdcard
+deploy-rpi-sdcard: build-kernel-arm
+	sudo ./scripts/deploy-rpi-sdcard.sh full $(DEV) --skip-build
+
+# RPi SD card: update kernel only (faster)
+# Usage: make deploy-rpi-sdcard-update DEV=/dev/sdX
+.PHONY: deploy-rpi-sdcard-update
+deploy-rpi-sdcard-update: build-kernel-arm
+	sudo ./scripts/deploy-rpi-sdcard.sh update $(DEV) --skip-build
+
+# Jetson: flash via USB recovery mode
+# Usage: make deploy-jetson L4T=~/nvidia/Linux_for_Tegra
+.PHONY: deploy-jetson
+deploy-jetson: build-kernel-arm
+	sudo ./scripts/deploy-jetson-flash.sh flash $(L4T) --skip-build
+
+# Serial console: connect to dev board
+# Usage: make serial DEV=/dev/ttyUSB0  (or auto-detect if DEV omitted)
+.PHONY: serial
+serial:
+	./scripts/serial-console.sh $(DEV)
+
 # === Clean ===
 
 .PHONY: clean
