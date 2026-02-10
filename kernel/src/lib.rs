@@ -14,6 +14,7 @@
 extern crate alloc;
 
 pub mod mem;
+pub mod safety;
 pub mod sched;
 pub mod syscall;
 
