@@ -58,7 +58,6 @@ pub unsafe extern "C" fn _start() -> ! {
     naked_asm!(
         // Save Multiboot2 info pointer (RBX on x86-64 QEMU -kernel)
         "mov r12, rbx",
-
         // Clear BSS
         "lea rdi, [rip + __bss_start]",
         "lea rcx, [rip + __bss_end]",
@@ -66,19 +65,14 @@ pub unsafe extern "C" fn _start() -> ! {
         "shr rcx, 3", // count in qwords
         "xor rax, rax",
         "rep stosq",
-
         // Set up stack
         "lea rsp, [rip + __stack_top]",
-
         // Align stack to 16 bytes (ABI requirement)
         "and rsp, -16",
-
         // Pass Multiboot2 info pointer as first argument
         "mov rdi, r12",
-
         // Call Rust kernel_main
         "call kernel_main",
-
         // Should never return, but just in case
         "2:",
         "hlt",

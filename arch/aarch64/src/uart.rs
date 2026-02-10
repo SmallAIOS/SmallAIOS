@@ -13,16 +13,16 @@
 const UART_BASE: usize = 0x0900_0000;
 
 // PL011 register offsets
-const UARTDR: usize = 0x000;     // Data register
-const UARTFR: usize = 0x018;     // Flag register
-const UARTIBRD: usize = 0x024;   // Integer baud rate divisor
-const UARTFBRD: usize = 0x028;   // Fractional baud rate divisor
-const UARTLCR_H: usize = 0x02C;  // Line control register
-const UARTCR: usize = 0x030;     // Control register
-const UARTIMSC: usize = 0x038;   // Interrupt mask set/clear
+const UARTDR: usize = 0x000; // Data register
+const UARTFR: usize = 0x018; // Flag register
+const UARTIBRD: usize = 0x024; // Integer baud rate divisor
+const UARTFBRD: usize = 0x028; // Fractional baud rate divisor
+const UARTLCR_H: usize = 0x02C; // Line control register
+const UARTCR: usize = 0x030; // Control register
+const UARTIMSC: usize = 0x038; // Interrupt mask set/clear
 
 // Flag register bits
-const FR_TXFF: u32 = 1 << 5;  // Transmit FIFO full
+const FR_TXFF: u32 = 1 << 5; // Transmit FIFO full
 
 /// Write a 32-bit value to a UART register.
 #[inline(always)]

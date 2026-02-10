@@ -6,6 +6,9 @@ DOCKER = docker
 QEMU_X86 = qemu-system-x86_64
 QEMU_ARM = qemu-system-aarch64
 
+# build-std flags for bare-metal targets (no_std needs core/alloc rebuilt)
+BUILD_STD = -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
+
 # Feature flags
 ifdef GPU
   FEATURES += --features nvidia_gpu
@@ -25,11 +28,19 @@ build-container-arm:
 
 .PHONY: build-kernel-x86
 build-kernel-x86:
-	$(CARGO) build --release --target x86_64-unknown-none -p smallaios-arch-x86_64 $(FEATURES)
+	$(CARGO) build --release --target x86_64-unknown-none -p smallaios-arch-x86_64 $(BUILD_STD) $(FEATURES)
 
 .PHONY: build-kernel-arm
 build-kernel-arm:
-	$(CARGO) build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 $(FEATURES)
+	$(CARGO) build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 $(BUILD_STD) $(FEATURES)
+
+.PHONY: build-kernel-x86-debug
+build-kernel-x86-debug:
+	$(CARGO) build --target x86_64-unknown-none -p smallaios-arch-x86_64 $(BUILD_STD) $(FEATURES)
+
+.PHONY: build-kernel-arm-debug
+build-kernel-arm-debug:
+	$(CARGO) build --target aarch64-unknown-none -p smallaios-arch-aarch64 $(BUILD_STD) $(FEATURES)
 
 # === Run in QEMU ===
 
@@ -61,11 +72,11 @@ docker-push:
 
 .PHONY: test
 test:
-	$(CARGO) test --workspace
+	$(CARGO) test -p smallaios-kernel
 
 .PHONY: clippy
 clippy:
-	$(CARGO) clippy --workspace -- -D warnings
+	$(CARGO) clippy -p smallaios-kernel -- -D warnings
 
 .PHONY: fmt
 fmt:

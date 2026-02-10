@@ -11,6 +11,7 @@
 #![no_std]
 
 pub mod boot;
+pub mod paging;
 pub mod uart;
 
 use core::panic::PanicInfo;
@@ -38,6 +39,19 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
     uart::putc(b'\n');
 
     uart::puts("[SmallAIOS] BSS cleared, stack initialized\n");
+
+    // Parse physical memory map from DTB
+    uart::puts("[SmallAIOS] Parsing DTB memory map...\n");
+    let mut phys_map = smallaios_kernel::mem::phys::PhysMemoryMap::new();
+    unsafe {
+        smallaios_kernel::mem::phys::parse_dtb(dtb_addr as usize, &mut phys_map);
+    }
+    uart::puts("[SmallAIOS] Memory regions: ");
+    uart::put_dec(phys_map.count() as u64);
+    uart::puts(", usable: ");
+    uart::put_dec((phys_map.total_usable() / 1024 / 1024) as u64);
+    uart::puts(" MiB\n");
+
     uart::puts("[SmallAIOS] Boot complete. Halting.\n");
 
     halt_loop();

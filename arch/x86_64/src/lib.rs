@@ -13,6 +13,7 @@
 
 pub mod boot;
 pub mod gdt;
+pub mod paging;
 pub mod serial;
 
 use core::panic::PanicInfo;
@@ -41,6 +42,19 @@ pub extern "C" fn kernel_main(mb_info_addr: u64) -> ! {
     serial::putc(b'\n');
 
     serial::puts("[SmallAIOS] BSS cleared, stack initialized\n");
+
+    // Parse physical memory map from Multiboot2 info
+    serial::puts("[SmallAIOS] Parsing Multiboot2 memory map...\n");
+    let mut phys_map = smallaios_kernel::mem::phys::PhysMemoryMap::new();
+    unsafe {
+        smallaios_kernel::mem::phys::parse_multiboot2(mb_info_addr as usize, &mut phys_map);
+    }
+    serial::puts("[SmallAIOS] Memory regions: ");
+    serial::put_dec(phys_map.count() as u64);
+    serial::puts(", usable: ");
+    serial::put_dec((phys_map.total_usable() / 1024 / 1024) as u64);
+    serial::puts(" MiB\n");
+
     serial::puts("[SmallAIOS] Boot complete. Halting.\n");
 
     halt_loop();

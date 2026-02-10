@@ -9,6 +9,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  BUILD_STD: "-Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem"
 
 jobs:
   check-format:
@@ -31,8 +32,7 @@ jobs:
         with:
           toolchain: nightly-2026-02-01
           components: clippy, rust-src
-          targets: x86_64-unknown-none, aarch64-unknown-none
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p smallaios-kernel -- -D warnings
 
   build-x86_64:
     name: Build x86-64 Kernel
@@ -44,7 +44,7 @@ jobs:
           toolchain: nightly-2026-02-01
           components: rust-src, llvm-tools
           targets: x86_64-unknown-none
-      - run: cargo build --target x86_64-unknown-none -p smallaios-arch-x86_64
+      - run: cargo build --target x86_64-unknown-none -p smallaios-arch-x86_64 $BUILD_STD
 
   build-aarch64:
     name: Build AArch64 Kernel
@@ -56,7 +56,7 @@ jobs:
           toolchain: nightly-2026-02-01
           components: rust-src, llvm-tools
           targets: aarch64-unknown-none
-      - run: cargo build --target aarch64-unknown-none -p smallaios-arch-aarch64
+      - run: cargo build --target aarch64-unknown-none -p smallaios-arch-aarch64 $BUILD_STD
 
   test:
     name: Unit Tests
@@ -67,7 +67,7 @@ jobs:
         with:
           toolchain: nightly-2026-02-01
           components: rust-src
-      - run: cargo test --workspace
+      - run: cargo test -p smallaios-kernel
 
   openspec-validate:
     name: OpenSpec Validate

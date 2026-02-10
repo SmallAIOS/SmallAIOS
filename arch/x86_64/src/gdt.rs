@@ -40,7 +40,7 @@ impl GdtEntry {
             limit_low: 0xFFFF,
             base_low: 0,
             base_mid: 0,
-            access: 0x9A, // present | ring0 | code | readable
+            access: 0x9A,         // present | ring0 | code | readable
             flags_limit_hi: 0xAF, // long mode | limit[19:16]=0xF
             base_hi: 0,
         }
@@ -52,7 +52,7 @@ impl GdtEntry {
             limit_low: 0xFFFF,
             base_low: 0,
             base_mid: 0,
-            access: 0x92, // present | ring0 | data | writable
+            access: 0x92,         // present | ring0 | data | writable
             flags_limit_hi: 0xCF, // 4KiB granularity | 32-bit | limit[19:16]=0xF
             base_hi: 0,
         }

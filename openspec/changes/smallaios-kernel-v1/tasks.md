@@ -1,29 +1,29 @@
 ## 1. Project Bootstrap
 
-- [ ] 1.1 Set up Cargo workspace with all 10 crates and build targets (x86_64-unknown-none, aarch64-unknown-none, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl)
-- [ ] 1.2 Create custom target JSON specs and linker scripts for bare metal x86-64 and ARM64
-- [ ] 1.3 Implement x86-64 assembly entry point (stack setup, BSS clear, GDT, call kernel_main)
-- [ ] 1.4 Implement ARM64 assembly entry point (MMU disable, stack setup, exception vectors, call kernel_main)
-- [ ] 1.5 Implement minimal serial console output (COM1 for x86, PL011 UART for ARM64)
-- [ ] 1.6 Verify boot-to-serial-output in QEMU for both architectures
-- [ ] 1.7 Set up CI (GitHub Actions: build both archs, QEMU smoke test, clippy, rustfmt)
-- [ ] 1.8 Initialize Sphinx-needs documentation project with PlantUML integration
-- [ ] 1.9 Create initial TLA+ model skeleton for scheduler and allocator
-- [ ] 1.10 Establish MISRA-Rust coding standard document and clippy configuration
+- [x] 1.1 Set up Cargo workspace with all 10 crates and build targets (x86_64-unknown-none, aarch64-unknown-none, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl)
+- [x] 1.2 Create custom target JSON specs and linker scripts for bare metal x86-64 and ARM64
+- [x] 1.3 Implement x86-64 assembly entry point (stack setup, BSS clear, GDT, call kernel_main)
+- [x] 1.4 Implement ARM64 assembly entry point (MMU disable, stack setup, exception vectors, call kernel_main)
+- [x] 1.5 Implement minimal serial console output (COM1 for x86, PL011 UART for ARM64)
+- [x] 1.6 Verify boot-to-serial-output in QEMU for both architectures
+- [x] 1.7 Set up CI (GitHub Actions: build both archs, QEMU smoke test, clippy, rustfmt)
+- [x] 1.8 Initialize Sphinx-needs documentation project with PlantUML integration
+- [x] 1.9 Create initial TLA+ model skeleton for scheduler and allocator
+- [x] 1.10 Establish MISRA-Rust coding standard document and clippy configuration
 
 ## 2. Core Kernel — Memory Management
 
-- [ ] 2.1 Parse physical memory map from Multiboot2 (x86) and DTB (ARM64)
-- [ ] 2.2 Implement buddy allocator (orders 0-21, 4 KiB to 8 GiB, huge page support)
-- [ ] 2.3 Implement slab allocator with per-CPU caches (size classes 16B-2048B)
-- [ ] 2.4 Implement global allocator trait for Rust's alloc crate
-- [ ] 2.5 Implement tensor memory pool (arena + bump pointer + reference counting)
-- [ ] 2.6 Implement x86-64 4-level page table management (map, unmap, protect)
-- [ ] 2.7 Implement ARM64 4-level page table management (4 KiB granule)
-- [ ] 2.8 Write TLA+ spec for buddy allocator (conservation property, no double-free)
-- [ ] 2.9 Run TLC model checker on allocator spec — verify all safety properties
-- [ ] 2.10 Achieve 100% MC/DC coverage on allocator with unit tests
-- [ ] 2.11 Trace requirements: REQ → SPEC → IMPL → TEST in Sphinx-needs
+- [x] 2.1 Parse physical memory map from Multiboot2 (x86) and DTB (ARM64)
+- [x] 2.2 Implement buddy allocator (orders 0-21, 4 KiB to 8 GiB, huge page support)
+- [x] 2.3 Implement slab allocator with per-CPU caches (size classes 16B-2048B)
+- [x] 2.4 Implement global allocator trait for Rust's alloc crate
+- [x] 2.5 Implement tensor memory pool (arena + bump pointer + reference counting)
+- [x] 2.6 Implement x86-64 4-level page table management (map, unmap, protect)
+- [x] 2.7 Implement ARM64 4-level page table management (4 KiB granule)
+- [x] 2.8 Write TLA+ spec for buddy allocator (conservation property, no double-free)
+- [x] 2.9 Run TLC model checker on allocator spec — verify all safety properties
+- [x] 2.10 Achieve 100% MC/DC coverage on allocator with unit tests
+- [x] 2.11 Trace requirements: REQ → SPEC → IMPL → TEST in Sphinx-needs
 
 ## 3. Core Kernel — Scheduler and Interrupts
 

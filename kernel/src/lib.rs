@@ -11,6 +11,8 @@
 
 #![no_std]
 
+extern crate alloc;
+
 pub mod mem;
 pub mod sched;
 pub mod syscall;
