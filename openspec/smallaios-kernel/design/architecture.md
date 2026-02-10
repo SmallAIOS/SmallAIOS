@@ -139,6 +139,138 @@ SmallAIOS uses an **async/await** concurrency model built on Rust futures:
 - Natural fit: inference is a pipeline of async steps
 - Simpler to reason about than preemptive multitasking
 
+## Real-Time Scheduling Model
+
+### Classification: Soft Real-Time Unikernel
+
+SmallAIOS is **not** a traditional hard-RTOS. ONNX inference is inherently variable-time:
+model sizes range from 1 MB (MobileNet, ~2ms) to multi-GB (LLM, seconds or minutes).
+Individual operator execution times are data-dependent (sparse vs dense tensors), and
+GPU offload introduces non-deterministic latency (PCIe transfers, kernel launch overhead).
+
+Instead, SmallAIOS is a **soft real-time unikernel** with:
+- **Hard-RT class** for system-critical tasks (health checks, diagnostics, watchdog)
+- **Soft-RT class** for inference with per-operator time budgets and observability
+- **Priority preemption** of inference by system tasks at operator boundaries
+
+| Property | Hard RTOS | SmallAIOS | General OS |
+|---|---|---|---|
+| Deadline guarantees | Hard | Soft / best-effort | None |
+| Scheduling | Preemptive priority | Cooperative + priority preemption | Preemptive fair |
+| Memory model | Static allocation | Pool + bounded dynamic | Fully dynamic |
+| Task count | Fixed at compile time | Fixed at boot time | Unlimited |
+| WCET analysis | Required | Per-operator budgets | Not done |
+
+### Scheduling Classes
+
+Tasks are assigned to one of three scheduling classes, listed in descending priority:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Class 0: SYSTEM (Hard-RT)                                   │
+│  - Watchdog servicing                                        │
+│  - Health check / readiness probe responses                  │
+│  - Syslog flush                                              │
+│  - Timer interrupt bottom halves                             │
+│  Guarantee: Always preempts lower classes at yield points    │
+│  Budget: Must complete within 1 ms                           │
+├─────────────────────────────────────────────────────────────┤
+│  Class 1: IPC (Soft-RT, low latency)                         │
+│  - IPC message routing                                       │
+│  - Model reload requests                                     │
+│  - TCP connection management                                 │
+│  - Network packet processing                                 │
+│  Guarantee: Preempts inference at next operator boundary     │
+│  Budget: Target < 10 ms response                             │
+├─────────────────────────────────────────────────────────────┤
+│  Class 2: INFERENCE (Soft-RT, throughput)                     │
+│  - ONNX model execution                                     │
+│  - GPU command submission / completion                       │
+│  - Tensor allocation / deallocation                          │
+│  Guarantee: Best-effort, time-budgeted per operator          │
+│  Budget: Configurable per-model (default: no hard limit)     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Operator-Level Yield Points
+
+The ONNX runtime inserts mandatory yield points between every operator in the execution
+graph. At each yield point, the scheduler checks:
+
+1. **Pending SYSTEM tasks?** → Execute immediately (preempt inference)
+2. **Pending IPC tasks?** → Execute before resuming inference
+3. **Operator time budget exceeded?** → Log warning via syslog, continue
+4. **Watchdog deadline approaching?** → Service watchdog, then resume
+5. **No higher-priority work?** → Continue with next operator
+
+```
+Inference execution timeline:
+
+  ┌───────┐  yield  ┌──────┐  yield  ┌──────┐  yield  ┌────────┐
+  │ Conv  │───────→ │ BN   │───────→ │ Relu │───────→ │ MatMul │
+  └───────┘    │    └──────┘    │    └──────┘    │    └────────┘
+               │                │                │
+               ▼                ▼                ▼
+          [Check for       [IPC msg         [Watchdog
+           SYSTEM tasks]    arrives →        service →
+                            handle it]       resume]
+```
+
+### Per-Operator Time Budgets
+
+Each operator execution is timed. If an operator exceeds its configurable budget:
+
+- **Warning**: Log to syslog with operator name, actual time, budget
+- **Soft limit exceeded (2x budget)**: Emit metric, flag for profiling
+- **Hard limit exceeded (10x budget or configurable)**: Abort inference, return timeout error
+
+Default budgets (configurable per-model):
+
+| Operator Class | Default Budget | Rationale |
+|---|---|---|
+| Elementwise (Relu, Add, etc.) | 1 ms | Should be SIMD-fast |
+| Reduction (ReduceMean, Softmax) | 10 ms | Data-dependent |
+| GEMM (MatMul, Conv) | 100 ms | Dominant cost, size-dependent |
+| Attention (MultiHeadAttention) | 500 ms | Quadratic in sequence length |
+| GPU kernel | 1000 ms | Includes DMA + compute |
+
+These are soft budgets for observability, not hard deadlines.
+
+### Hardware Watchdog
+
+SmallAIOS supports a hardware watchdog timer (HPET/ACPI on x86-64, SP805/SBSA on ARM64,
+or virtualized watchdog via virtio). The watchdog:
+
+- Is initialized during boot with a configurable timeout (default: 30 seconds)
+- Must be serviced (pet/kicked) by the SYSTEM scheduling class
+- Triggers a system reset if not serviced (indicates hang/deadlock)
+- Watchdog servicing is the highest-priority task in the system
+
+```
+Boot → [Watchdog init: 30s timeout]
+         │
+         ├─── Every operator yield point:
+         │      if (time_since_last_pet > timeout/2):
+         │          pet_watchdog()
+         │
+         └─── SYSTEM class task runs every 5s:
+                pet_watchdog()
+                emit_health_metrics()
+```
+
+### WCET Analysis for Edge Targets
+
+For constrained hardware (Jetson Nano, Raspberry Pi), operators can be profiled
+during model load to establish per-operator worst-case execution time estimates:
+
+1. **Calibration run**: Execute each operator once with representative input
+2. **WCET estimate**: Measured time × safety factor (default: 3x)
+3. **Budget assignment**: Use WCET estimates as operator budgets
+4. **Runtime monitoring**: Track actual vs estimated, adjust factors
+
+This enables predictable inference latency on edge devices while remaining
+best-effort on high-performance hardware (DGX Spark, Xeon).
+
 ## Module Dependency Graph
 
 ```

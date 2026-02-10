@@ -37,18 +37,68 @@ The kernel SHALL provide a dedicated tensor memory pool with pre-allocated align
 - THEN the pool MUST use reference counting to track lifetime
 - AND the buffer MUST NOT be freed until all references are released
 
-### Requirement: Cooperative Async Scheduler
-The kernel SHALL implement a cooperative multitasking scheduler based on Rust async/await futures.
+### Requirement: Soft Real-Time Cooperative Scheduler
+The kernel SHALL implement a soft real-time cooperative scheduler with three priority classes (SYSTEM, IPC, INFERENCE) and mandatory yield points between ONNX operators.
 
 #### Scenario: Task yielding at operator boundaries
 - WHEN an inference task completes an ONNX operator execution
 - THEN the task MUST yield control to the scheduler
-- AND the scheduler MUST select the next runnable task by priority (GPU > System > Normal > Low)
+- AND the scheduler MUST check for pending SYSTEM and IPC tasks before resuming inference
+
+#### Scenario: SYSTEM class preempts INFERENCE
+- WHEN a SYSTEM class task (watchdog, health check) becomes runnable
+- AND an INFERENCE class task has just yielded at an operator boundary
+- THEN the scheduler MUST execute the SYSTEM task before resuming inference
+- AND the SYSTEM task MUST complete within 1 ms
+
+#### Scenario: IPC class preempts INFERENCE
+- WHEN an IPC class task (message routing, TCP handling) becomes runnable
+- AND an INFERENCE class task has just yielded at an operator boundary
+- THEN the scheduler MUST execute the IPC task before resuming inference
 
 #### Scenario: Idle core power management
 - WHEN a CPU core has no runnable tasks in its local queue and no tasks to steal
 - THEN the core MUST enter a low-power state (HLT on x86-64, WFI on ARM64)
 - AND the core MUST wake on the next interrupt
+
+### Requirement: Hardware Watchdog Timer
+The kernel SHALL initialize and service a hardware watchdog timer to detect and recover from system hangs.
+
+#### Scenario: Watchdog initialization
+- WHEN the kernel boots
+- THEN it MUST initialize the hardware watchdog with a configurable timeout (default: 30 seconds)
+- AND the watchdog MUST be serviced by a SYSTEM class task at regular intervals
+
+#### Scenario: Watchdog timeout triggers reset
+- WHEN the watchdog timer is not serviced within its timeout period
+- THEN the hardware MUST trigger a system reset
+- AND the reset indicates a hang or deadlock condition
+
+#### Scenario: Watchdog servicing at yield points
+- WHEN an inference task yields at an operator boundary
+- AND more than half the watchdog timeout has elapsed since the last service
+- THEN the scheduler MUST service the watchdog before resuming any task
+
+### Requirement: Per-Operator Time Budgets
+The scheduler SHALL track per-operator execution time and enforce configurable time budgets.
+
+#### Scenario: Operator within budget
+- WHEN an ONNX operator completes within its configured time budget
+- THEN the scheduler MUST continue execution normally with no diagnostic action
+
+#### Scenario: Operator exceeds soft budget
+- WHEN an ONNX operator execution time exceeds its soft budget (1x configured budget)
+- THEN the scheduler MUST log a warning to syslog with operator name, actual time, and budget
+- AND inference MUST continue normally
+
+#### Scenario: Operator exceeds hard limit
+- WHEN an ONNX operator execution time exceeds its hard limit (10x budget or configurable)
+- THEN the scheduler MUST abort the inference session with an OperatorTimeout error
+- AND MUST log the timeout event to syslog
+
+#### Scenario: Whole-inference timeout
+- WHEN the total wall-clock time for an onnx_run call exceeds the configured inference_timeout_ms
+- THEN the scheduler MUST abort the inference at the next yield point with a TimedOut error
 
 ### Requirement: Work-Stealing Executor
 The kernel SHALL implement a work-stealing executor with one worker per CPU core and lock-free per-core run queues.

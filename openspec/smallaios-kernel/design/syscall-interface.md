@@ -64,6 +64,7 @@ pub const MEM_NUMA_LOCAL: u32 = 0x10;  // Prefer local NUMA node
 | 0x14 | `task_current` | — | TaskId | Get current task ID |
 | 0x15 | `task_set_affinity` | id: TaskId, cpu_mask: u64 | result | Set CPU affinity |
 | 0x16 | `task_set_priority` | id: TaskId, priority: u32 | result | Set task priority |
+| 0x17 | `task_set_class` | id: TaskId, class: u32 | result | Set scheduling class (SYSTEM/IPC/INFERENCE) |
 
 ### IPC (0x20 - 0x2F)
 
@@ -114,6 +115,8 @@ pub const MEM_NUMA_LOCAL: u32 = 0x10;  // Prefer local NUMA node
 | 0x55 | `sys_random` | buf: *mut u8, len: u32 | result | Fill buffer with CSPRNG bytes |
 | 0x56 | `sys_config` | key: *const u8, key_len: u32, val: *mut u8, val_len: u32 | usize | Read config value |
 | 0x57 | `sys_metrics` | buf: *mut u8, buf_len: u32 | usize | Get system metrics |
+| 0x58 | `sys_watchdog_pet` | — | result | Service (pet) hardware watchdog |
+| 0x59 | `sys_watchdog_remaining` | — | u32 | Get remaining watchdog time (seconds) |
 
 ### Capability (0x60 - 0x6F)
 
@@ -125,7 +128,7 @@ pub const MEM_NUMA_LOCAL: u32 = 0x10;  // Prefer local NUMA node
 | 0x63 | `cap_check` | id: CapId, perm: u32 | bool | Check permission |
 | 0x64 | `cap_list` | buf: *mut CapInfo, max: u32 | u32 | List held capabilities |
 
-**Total: 46 syscalls**
+**Total: 49 syscalls**
 
 ## Error Codes
 
