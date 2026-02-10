@@ -147,6 +147,11 @@ impl HybridKemPublicKey {
     pub fn len(&self) -> usize {
         HYBRID_KEM_PK_LEN
     }
+
+    /// Returns whether the key is empty (always false for fixed-size keys).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl fmt::Debug for HybridKemPublicKey {
@@ -184,6 +189,11 @@ impl HybridKemSecretKey {
     /// Total combined key length.
     pub fn len(&self) -> usize {
         HYBRID_KEM_SK_LEN
+    }
+
+    /// Returns whether the key is empty (always false for fixed-size keys).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -225,6 +235,11 @@ impl HybridKemCiphertext {
     /// Total combined ciphertext length.
     pub fn len(&self) -> usize {
         HYBRID_KEM_CT_LEN
+    }
+
+    /// Returns whether the ciphertext is empty (always false for fixed-size types).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -306,6 +321,11 @@ impl HybridSigPublicKey {
     pub fn len(&self) -> usize {
         HYBRID_SIG_PK_LEN
     }
+
+    /// Returns whether the key is empty (always false for fixed-size keys).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl fmt::Debug for HybridSigPublicKey {
@@ -343,6 +363,11 @@ impl HybridSigSecretKey {
     /// Total combined key length.
     pub fn len(&self) -> usize {
         HYBRID_SIG_SK_LEN
+    }
+
+    /// Returns whether the key is empty (always false for fixed-size keys).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -387,6 +412,11 @@ impl HybridSignature {
     /// Total combined signature length.
     pub fn len(&self) -> usize {
         HYBRID_SIG_LEN
+    }
+
+    /// Returns whether the signature is empty (always false for fixed-size types).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -483,8 +513,8 @@ pub fn hybrid_verify(
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
     use super::*;
+    use alloc::format;
 
     #[test]
     fn hybrid_kem_constant_sizes() {
@@ -498,7 +528,7 @@ mod tests {
     fn hybrid_sig_constant_sizes() {
         assert_eq!(HYBRID_SIG_PK_LEN, 32 + 1952); // 1984
         assert_eq!(HYBRID_SIG_SK_LEN, 64 + 4032); // 4096
-        assert_eq!(HYBRID_SIG_LEN, 64 + 3309);    // 3373
+        assert_eq!(HYBRID_SIG_LEN, 64 + 3309); // 3373
     }
 
     #[test]
@@ -585,7 +615,10 @@ mod tests {
             [0; super::super::ml_kem::ML_KEM_768_PK_LEN],
         );
         let seed = [0u8; 64];
-        assert_eq!(hybrid_kem_encaps(&pk, &seed), Err(HybridError::NotImplemented));
+        assert_eq!(
+            hybrid_kem_encaps(&pk, &seed),
+            Err(HybridError::NotImplemented)
+        );
     }
 
     #[test]
@@ -598,7 +631,10 @@ mod tests {
             [0; X25519_PK_LEN],
             [0; super::super::ml_kem::ML_KEM_768_CT_LEN],
         );
-        assert_eq!(hybrid_kem_decaps(&sk, &ct), Err(HybridError::NotImplemented));
+        assert_eq!(
+            hybrid_kem_decaps(&sk, &ct),
+            Err(HybridError::NotImplemented)
+        );
     }
 
     #[test]
@@ -614,7 +650,10 @@ mod tests {
             [0; super::super::ml_dsa::ML_DSA_65_SK_LEN],
         );
         let seed = [0u8; 32];
-        assert_eq!(hybrid_sign(&sk, b"msg", &seed), Err(HybridError::NotImplemented));
+        assert_eq!(
+            hybrid_sign(&sk, b"msg", &seed),
+            Err(HybridError::NotImplemented)
+        );
     }
 
     #[test]
@@ -627,6 +666,9 @@ mod tests {
             [0; ED25519_SIG_LEN],
             [0; super::super::ml_dsa::ML_DSA_65_SIG_LEN],
         );
-        assert_eq!(hybrid_verify(&pk, b"msg", &sig), Err(HybridError::NotImplemented));
+        assert_eq!(
+            hybrid_verify(&pk, b"msg", &sig),
+            Err(HybridError::NotImplemented)
+        );
     }
 }

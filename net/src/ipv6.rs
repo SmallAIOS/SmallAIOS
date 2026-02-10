@@ -32,6 +32,7 @@ impl Ipv6Addr {
     };
 
     /// Create an address from eight 16-bit groups.
+    #[allow(clippy::too_many_arguments)]
     pub const fn new(a: u16, b: u16, c: u16, d: u16, e: u16, f: u16, g: u16, h: u16) -> Self {
         Self {
             octets: [
@@ -123,7 +124,19 @@ impl Ipv6Addr {
     pub const fn solicited_node_multicast(addr: &Ipv6Addr) -> Self {
         Self {
             octets: [
-                0xff, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01, 0xff,
+                0xff,
+                0x02,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0x01,
+                0xff,
                 addr.octets[13],
                 addr.octets[14],
                 addr.octets[15],

@@ -90,6 +90,12 @@ pub struct HealthChecker {
     check_count: u64,
 }
 
+impl Default for HealthChecker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HealthChecker {
     /// Create a new checker with no registered components.
     ///
@@ -331,10 +337,7 @@ mod tests {
     fn test_update_nonexistent_component_returns_error() {
         let mut hc = HealthChecker::new();
         let result = hc.update_component("ghost", HealthStatus::Healthy, "ok");
-        assert_eq!(
-            result,
-            Err(ContainerError::NotFound(String::from("ghost")))
-        );
+        assert_eq!(result, Err(ContainerError::NotFound(String::from("ghost"))));
     }
 
     // -- check_all ---------------------------------------------------------

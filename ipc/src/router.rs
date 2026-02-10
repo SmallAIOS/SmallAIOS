@@ -42,6 +42,12 @@ pub struct Router {
     next_id: u64,
 }
 
+impl Default for Router {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Router {
     /// Create a new, empty router.
     pub fn new() -> Self {
@@ -112,9 +118,7 @@ impl Router {
 
     /// Check whether a subscription with the given ID is currently active.
     pub fn is_subscribed(&self, id: SubscriptionId) -> bool {
-        self.subscriptions
-            .iter()
-            .any(|s| s.id == id && s.active)
+        self.subscriptions.iter().any(|s| s.id == id && s.active)
     }
 }
 

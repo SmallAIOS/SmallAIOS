@@ -153,8 +153,7 @@ impl Frame {
         let flags = data[5];
         let payload = data[6..total].to_vec();
 
-        let frame_type =
-            FrameType::from_u8(frame_type_byte).ok_or(IpcError::InvalidState)?;
+        let frame_type = FrameType::from_u8(frame_type_byte).ok_or(IpcError::InvalidState)?;
 
         Ok((
             Frame {

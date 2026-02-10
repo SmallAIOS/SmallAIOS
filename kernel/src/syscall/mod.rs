@@ -354,7 +354,7 @@ pub fn category_name(number: usize) -> &'static str {
 pub fn registered_count() -> usize {
     SYSCALL_TABLE
         .iter()
-        .filter(|h| **h as *const () as usize != sys_nosys as *const () as usize)
+        .filter(|h| !core::ptr::eq(**h as *const (), sys_nosys as *const ()))
         .count()
 }
 
@@ -565,7 +565,10 @@ mod tests {
     #[test]
     fn test_gap_slots_return_nosys() {
         // Verify gaps between categories return NoSys
-        for gap_nr in [0x08, 0x09, 0x0A, 0x0F, 0x17, 0x18, 0x1F, 0x28, 0x2F, 0x36, 0x3F, 0x45, 0x4F, 0x57, 0x5F, 0x65, 0x6F, 0x82, 0x8F] {
+        for gap_nr in [
+            0x08, 0x09, 0x0A, 0x0F, 0x17, 0x18, 0x1F, 0x28, 0x2F, 0x36, 0x3F, 0x45, 0x4F, 0x57,
+            0x5F, 0x65, 0x6F, 0x82, 0x8F,
+        ] {
             let args = SyscallArgs::zero(gap_nr);
             assert_eq!(
                 dispatch(&args),
@@ -608,23 +611,69 @@ mod tests {
         // All syscalls with maximum usize arguments — must not panic
         let max_args = [usize::MAX; 6];
         for nr in [
-            nr::MEM_ALLOC, nr::MEM_FREE, nr::MEM_MAP, nr::MEM_PROTECT,
-            nr::TENSOR_ALLOC, nr::TENSOR_FREE, nr::TENSOR_MAP_GPU, nr::TENSOR_UNMAP_GPU,
-            nr::TASK_SPAWN, nr::TASK_YIELD, nr::TASK_EXIT, nr::TASK_JOIN,
-            nr::TASK_SET_PRIORITY, nr::TASK_SET_CLASS, nr::TASK_CURRENT,
-            nr::IPC_PUBLISH, nr::IPC_SUBSCRIBE, nr::IPC_RECV, nr::IPC_QUERY,
-            nr::IPC_CHANNEL_CREATE, nr::IPC_CHANNEL_SEND, nr::IPC_CHANNEL_RECV, nr::IPC_CHANNEL_CLOSE,
-            nr::ONNX_LOAD, nr::ONNX_UNLOAD, nr::ONNX_CREATE_SESSION, nr::ONNX_RUN,
-            nr::ONNX_GET_METADATA, nr::ONNX_LIST_PROVIDERS,
-            nr::DEV_ENUMERATE, nr::DEV_OPEN, nr::DEV_CLOSE, nr::DEV_IOCTL, nr::DEV_DMA_ALLOC,
-            nr::SYS_INFO, nr::SYS_TIME, nr::SYS_SHUTDOWN, nr::SYS_LOG,
-            nr::SYS_RANDOM, nr::SYS_WATCHDOG_PET, nr::SYS_WATCHDOG_REMAINING,
-            nr::CAP_CREATE, nr::CAP_REVOKE, nr::CAP_DELEGATE, nr::CAP_CHECK, nr::CAP_LIST,
-            nr::POSIX_OPEN, nr::POSIX_CLOSE, nr::POSIX_READ, nr::POSIX_WRITE,
-            nr::POSIX_FSTAT, nr::POSIX_DUP, nr::POSIX_DUP2, nr::POSIX_LSEEK,
-            nr::POSIX_MMAP, nr::POSIX_MUNMAP, nr::POSIX_MPROTECT,
-            nr::POSIX_EPOLL_CREATE, nr::POSIX_EPOLL_CTL, nr::POSIX_EPOLL_WAIT,
-            nr::POSIX_CLOCK_GETTIME, nr::POSIX_NANOSLEEP, nr::POSIX_GETRANDOM,
+            nr::MEM_ALLOC,
+            nr::MEM_FREE,
+            nr::MEM_MAP,
+            nr::MEM_PROTECT,
+            nr::TENSOR_ALLOC,
+            nr::TENSOR_FREE,
+            nr::TENSOR_MAP_GPU,
+            nr::TENSOR_UNMAP_GPU,
+            nr::TASK_SPAWN,
+            nr::TASK_YIELD,
+            nr::TASK_EXIT,
+            nr::TASK_JOIN,
+            nr::TASK_SET_PRIORITY,
+            nr::TASK_SET_CLASS,
+            nr::TASK_CURRENT,
+            nr::IPC_PUBLISH,
+            nr::IPC_SUBSCRIBE,
+            nr::IPC_RECV,
+            nr::IPC_QUERY,
+            nr::IPC_CHANNEL_CREATE,
+            nr::IPC_CHANNEL_SEND,
+            nr::IPC_CHANNEL_RECV,
+            nr::IPC_CHANNEL_CLOSE,
+            nr::ONNX_LOAD,
+            nr::ONNX_UNLOAD,
+            nr::ONNX_CREATE_SESSION,
+            nr::ONNX_RUN,
+            nr::ONNX_GET_METADATA,
+            nr::ONNX_LIST_PROVIDERS,
+            nr::DEV_ENUMERATE,
+            nr::DEV_OPEN,
+            nr::DEV_CLOSE,
+            nr::DEV_IOCTL,
+            nr::DEV_DMA_ALLOC,
+            nr::SYS_INFO,
+            nr::SYS_TIME,
+            nr::SYS_SHUTDOWN,
+            nr::SYS_LOG,
+            nr::SYS_RANDOM,
+            nr::SYS_WATCHDOG_PET,
+            nr::SYS_WATCHDOG_REMAINING,
+            nr::CAP_CREATE,
+            nr::CAP_REVOKE,
+            nr::CAP_DELEGATE,
+            nr::CAP_CHECK,
+            nr::CAP_LIST,
+            nr::POSIX_OPEN,
+            nr::POSIX_CLOSE,
+            nr::POSIX_READ,
+            nr::POSIX_WRITE,
+            nr::POSIX_FSTAT,
+            nr::POSIX_DUP,
+            nr::POSIX_DUP2,
+            nr::POSIX_LSEEK,
+            nr::POSIX_MMAP,
+            nr::POSIX_MUNMAP,
+            nr::POSIX_MPROTECT,
+            nr::POSIX_EPOLL_CREATE,
+            nr::POSIX_EPOLL_CTL,
+            nr::POSIX_EPOLL_WAIT,
+            nr::POSIX_CLOCK_GETTIME,
+            nr::POSIX_NANOSLEEP,
+            nr::POSIX_GETRANDOM,
             nr::POSIX_SOCKET,
         ] {
             let args = SyscallArgs::new(nr, max_args);
@@ -638,23 +687,69 @@ mod tests {
     fn test_fuzz_zero_args_all_syscalls() {
         // All syscalls with zero arguments — exercises error path validation
         for nr in [
-            nr::MEM_ALLOC, nr::MEM_FREE, nr::MEM_MAP, nr::MEM_PROTECT,
-            nr::TENSOR_ALLOC, nr::TENSOR_FREE, nr::TENSOR_MAP_GPU, nr::TENSOR_UNMAP_GPU,
-            nr::TASK_SPAWN, nr::TASK_YIELD, nr::TASK_EXIT, nr::TASK_JOIN,
-            nr::TASK_SET_PRIORITY, nr::TASK_SET_CLASS, nr::TASK_CURRENT,
-            nr::IPC_PUBLISH, nr::IPC_SUBSCRIBE, nr::IPC_RECV, nr::IPC_QUERY,
-            nr::IPC_CHANNEL_CREATE, nr::IPC_CHANNEL_SEND, nr::IPC_CHANNEL_RECV, nr::IPC_CHANNEL_CLOSE,
-            nr::ONNX_LOAD, nr::ONNX_UNLOAD, nr::ONNX_CREATE_SESSION, nr::ONNX_RUN,
-            nr::ONNX_GET_METADATA, nr::ONNX_LIST_PROVIDERS,
-            nr::DEV_ENUMERATE, nr::DEV_OPEN, nr::DEV_CLOSE, nr::DEV_IOCTL, nr::DEV_DMA_ALLOC,
-            nr::SYS_INFO, nr::SYS_TIME, nr::SYS_SHUTDOWN, nr::SYS_LOG,
-            nr::SYS_RANDOM, nr::SYS_WATCHDOG_PET, nr::SYS_WATCHDOG_REMAINING,
-            nr::CAP_CREATE, nr::CAP_REVOKE, nr::CAP_DELEGATE, nr::CAP_CHECK, nr::CAP_LIST,
-            nr::POSIX_OPEN, nr::POSIX_CLOSE, nr::POSIX_READ, nr::POSIX_WRITE,
-            nr::POSIX_FSTAT, nr::POSIX_DUP, nr::POSIX_DUP2, nr::POSIX_LSEEK,
-            nr::POSIX_MMAP, nr::POSIX_MUNMAP, nr::POSIX_MPROTECT,
-            nr::POSIX_EPOLL_CREATE, nr::POSIX_EPOLL_CTL, nr::POSIX_EPOLL_WAIT,
-            nr::POSIX_CLOCK_GETTIME, nr::POSIX_NANOSLEEP, nr::POSIX_GETRANDOM,
+            nr::MEM_ALLOC,
+            nr::MEM_FREE,
+            nr::MEM_MAP,
+            nr::MEM_PROTECT,
+            nr::TENSOR_ALLOC,
+            nr::TENSOR_FREE,
+            nr::TENSOR_MAP_GPU,
+            nr::TENSOR_UNMAP_GPU,
+            nr::TASK_SPAWN,
+            nr::TASK_YIELD,
+            nr::TASK_EXIT,
+            nr::TASK_JOIN,
+            nr::TASK_SET_PRIORITY,
+            nr::TASK_SET_CLASS,
+            nr::TASK_CURRENT,
+            nr::IPC_PUBLISH,
+            nr::IPC_SUBSCRIBE,
+            nr::IPC_RECV,
+            nr::IPC_QUERY,
+            nr::IPC_CHANNEL_CREATE,
+            nr::IPC_CHANNEL_SEND,
+            nr::IPC_CHANNEL_RECV,
+            nr::IPC_CHANNEL_CLOSE,
+            nr::ONNX_LOAD,
+            nr::ONNX_UNLOAD,
+            nr::ONNX_CREATE_SESSION,
+            nr::ONNX_RUN,
+            nr::ONNX_GET_METADATA,
+            nr::ONNX_LIST_PROVIDERS,
+            nr::DEV_ENUMERATE,
+            nr::DEV_OPEN,
+            nr::DEV_CLOSE,
+            nr::DEV_IOCTL,
+            nr::DEV_DMA_ALLOC,
+            nr::SYS_INFO,
+            nr::SYS_TIME,
+            nr::SYS_SHUTDOWN,
+            nr::SYS_LOG,
+            nr::SYS_RANDOM,
+            nr::SYS_WATCHDOG_PET,
+            nr::SYS_WATCHDOG_REMAINING,
+            nr::CAP_CREATE,
+            nr::CAP_REVOKE,
+            nr::CAP_DELEGATE,
+            nr::CAP_CHECK,
+            nr::CAP_LIST,
+            nr::POSIX_OPEN,
+            nr::POSIX_CLOSE,
+            nr::POSIX_READ,
+            nr::POSIX_WRITE,
+            nr::POSIX_FSTAT,
+            nr::POSIX_DUP,
+            nr::POSIX_DUP2,
+            nr::POSIX_LSEEK,
+            nr::POSIX_MMAP,
+            nr::POSIX_MUNMAP,
+            nr::POSIX_MPROTECT,
+            nr::POSIX_EPOLL_CREATE,
+            nr::POSIX_EPOLL_CTL,
+            nr::POSIX_EPOLL_WAIT,
+            nr::POSIX_CLOCK_GETTIME,
+            nr::POSIX_NANOSLEEP,
+            nr::POSIX_GETRANDOM,
             nr::POSIX_SOCKET,
         ] {
             let args = SyscallArgs::zero(nr);
@@ -714,78 +809,228 @@ mod tests {
     fn test_each_syscall_returns_expected_for_zero_args() {
         // Verify specific expected results for zero-arg dispatches
         // (exercises both valid-path and error-path for each handler)
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::MEM_ALLOC)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::MEM_FREE)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::MEM_MAP)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::MEM_PROTECT)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TENSOR_ALLOC)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TENSOR_FREE)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TENSOR_MAP_GPU)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TENSOR_UNMAP_GPU)), SyscallError::InvalidHandle.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::MEM_ALLOC)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::MEM_FREE)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::MEM_MAP)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::MEM_PROTECT)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TENSOR_ALLOC)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TENSOR_FREE)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TENSOR_MAP_GPU)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TENSOR_UNMAP_GPU)),
+            SyscallError::InvalidHandle.as_i64()
+        );
 
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TASK_SPAWN)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TASK_YIELD)), SyscallError::Success.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TASK_EXIT)), SyscallError::Success.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TASK_JOIN)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TASK_SET_PRIORITY)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TASK_SET_CLASS)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::TASK_CURRENT)), SyscallError::Success.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TASK_SPAWN)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TASK_YIELD)),
+            SyscallError::Success.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TASK_EXIT)),
+            SyscallError::Success.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TASK_JOIN)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TASK_SET_PRIORITY)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TASK_SET_CLASS)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::TASK_CURRENT)),
+            SyscallError::Success.as_i64()
+        );
 
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::IPC_PUBLISH)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::IPC_SUBSCRIBE)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::IPC_RECV)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::IPC_QUERY)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::IPC_CHANNEL_CREATE)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::IPC_CHANNEL_SEND)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::IPC_CHANNEL_RECV)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::IPC_CHANNEL_CLOSE)), SyscallError::InvalidHandle.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::IPC_PUBLISH)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::IPC_SUBSCRIBE)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::IPC_RECV)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::IPC_QUERY)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::IPC_CHANNEL_CREATE)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::IPC_CHANNEL_SEND)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::IPC_CHANNEL_RECV)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::IPC_CHANNEL_CLOSE)),
+            SyscallError::InvalidHandle.as_i64()
+        );
 
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::ONNX_LOAD)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::ONNX_UNLOAD)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::ONNX_CREATE_SESSION)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::ONNX_RUN)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::ONNX_GET_METADATA)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::ONNX_LIST_PROVIDERS)), SyscallError::NotSupported.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::ONNX_LOAD)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::ONNX_UNLOAD)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::ONNX_CREATE_SESSION)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::ONNX_RUN)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::ONNX_GET_METADATA)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::ONNX_LIST_PROVIDERS)),
+            SyscallError::NotSupported.as_i64()
+        );
 
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::DEV_ENUMERATE)), SyscallError::NotSupported.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::DEV_OPEN)), SyscallError::NotSupported.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::DEV_CLOSE)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::DEV_IOCTL)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::DEV_DMA_ALLOC)), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::DEV_ENUMERATE)),
+            SyscallError::NotSupported.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::DEV_OPEN)),
+            SyscallError::NotSupported.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::DEV_CLOSE)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::DEV_IOCTL)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::DEV_DMA_ALLOC)),
+            SyscallError::InvalidArgument.as_i64()
+        );
 
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::SYS_INFO)), SyscallError::Success.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::SYS_TIME)), SyscallError::Success.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::SYS_SHUTDOWN)), SyscallError::Success.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::SYS_LOG)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::SYS_RANDOM)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::SYS_WATCHDOG_PET)), SyscallError::Success.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::SYS_INFO)),
+            SyscallError::Success.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::SYS_TIME)),
+            SyscallError::Success.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::SYS_SHUTDOWN)),
+            SyscallError::Success.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::SYS_LOG)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::SYS_RANDOM)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::SYS_WATCHDOG_PET)),
+            SyscallError::Success.as_i64()
+        );
         assert!(dispatch(&SyscallArgs::zero(nr::SYS_WATCHDOG_REMAINING)) > 0);
 
         // Capability: zero args means resource_type=0, instance=0, perms=0 → InvalidArgument
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_CREATE)), SyscallError::InvalidArgument.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_REVOKE)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_DELEGATE)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_CHECK)), SyscallError::InvalidHandle.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_LIST)), SyscallError::Success.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::CAP_CREATE)),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::CAP_REVOKE)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::CAP_DELEGATE)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::CAP_CHECK)),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::CAP_LIST)),
+            SyscallError::Success.as_i64()
+        );
 
         // POSIX: all zero-arg dispatches should return an error (not panic)
         let posix_enosys = -38i64;
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_OPEN)), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::POSIX_OPEN)),
+            SyscallError::InvalidArgument.as_i64()
+        );
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_CLOSE)), posix_enosys);
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_READ)), posix_enosys); // fd=0,buf=0,count=0 → stub
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_WRITE)), posix_enosys); // fd=0,buf=0,count=0 → stub
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_FSTAT)), SyscallError::BadAddress.as_i64()); // stat_ptr=0
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::POSIX_FSTAT)),
+            SyscallError::BadAddress.as_i64()
+        ); // stat_ptr=0
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_DUP)), posix_enosys); // fd=0 is valid
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_DUP2)), posix_enosys); // both fd=0
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_LSEEK)), posix_enosys); // fd=0, SEEK_SET
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_MMAP)), -22); // zero length → EINVAL
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_MUNMAP)), -22); // zero length → EINVAL
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_MPROTECT)), -22); // zero length → EINVAL
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_EPOLL_CREATE)), posix_enosys); // flags=0 ok
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::POSIX_EPOLL_CREATE)),
+            posix_enosys
+        ); // flags=0 ok
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_EPOLL_CTL)), -22); // op=0 invalid → EINVAL
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_EPOLL_WAIT)), -22); // max_events=0 → EINVAL
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_CLOCK_GETTIME)), SyscallError::BadAddress.as_i64());
-        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_NANOSLEEP)), SyscallError::BadAddress.as_i64());
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::POSIX_CLOCK_GETTIME)),
+            SyscallError::BadAddress.as_i64()
+        );
+        assert_eq!(
+            dispatch(&SyscallArgs::zero(nr::POSIX_NANOSLEEP)),
+            SyscallError::BadAddress.as_i64()
+        );
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_GETRANDOM)), 0); // zero-length → 0
         assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_SOCKET)), -22); // family=0 invalid
     }
@@ -793,11 +1038,23 @@ mod tests {
     #[test]
     fn test_all_posix_syscalls_dispatched() {
         for nr in [
-            nr::POSIX_OPEN, nr::POSIX_CLOSE, nr::POSIX_READ, nr::POSIX_WRITE,
-            nr::POSIX_FSTAT, nr::POSIX_DUP, nr::POSIX_DUP2, nr::POSIX_LSEEK,
-            nr::POSIX_MMAP, nr::POSIX_MUNMAP, nr::POSIX_MPROTECT,
-            nr::POSIX_EPOLL_CREATE, nr::POSIX_EPOLL_CTL, nr::POSIX_EPOLL_WAIT,
-            nr::POSIX_CLOCK_GETTIME, nr::POSIX_NANOSLEEP, nr::POSIX_GETRANDOM,
+            nr::POSIX_OPEN,
+            nr::POSIX_CLOSE,
+            nr::POSIX_READ,
+            nr::POSIX_WRITE,
+            nr::POSIX_FSTAT,
+            nr::POSIX_DUP,
+            nr::POSIX_DUP2,
+            nr::POSIX_LSEEK,
+            nr::POSIX_MMAP,
+            nr::POSIX_MUNMAP,
+            nr::POSIX_MPROTECT,
+            nr::POSIX_EPOLL_CREATE,
+            nr::POSIX_EPOLL_CTL,
+            nr::POSIX_EPOLL_WAIT,
+            nr::POSIX_CLOCK_GETTIME,
+            nr::POSIX_NANOSLEEP,
+            nr::POSIX_GETRANDOM,
             nr::POSIX_SOCKET,
         ] {
             let args = SyscallArgs::zero(nr);

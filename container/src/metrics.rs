@@ -70,6 +70,12 @@ pub struct MetricsRegistry {
     next_id: u64,
 }
 
+impl Default for MetricsRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MetricsRegistry {
     /// Create a new, empty metrics registry.
     pub fn new() -> Self {
@@ -227,7 +233,10 @@ impl MetricsRegistry {
                 entry.metric_type.as_prometheus_str()
             );
             // Format value: use integer representation if it is a whole number.
-            if entry.value == (entry.value as i64) as f64 && !entry.value.is_nan() && !entry.value.is_infinite() {
+            if entry.value == (entry.value as i64) as f64
+                && !entry.value.is_nan()
+                && !entry.value.is_infinite()
+            {
                 let _ = writeln!(output, "{} {}", entry.name, entry.value as i64);
             } else {
                 let _ = writeln!(output, "{} {}", entry.name, entry.value);
@@ -327,8 +336,12 @@ mod tests {
     #[test]
     fn prometheus_format_counter() {
         let mut reg = MetricsRegistry::new();
-        reg.register("http_requests_total", "Total HTTP requests", MetricType::Counter)
-            .unwrap();
+        reg.register(
+            "http_requests_total",
+            "Total HTTP requests",
+            MetricType::Counter,
+        )
+        .unwrap();
         reg.increment("http_requests_total", 42.0).unwrap();
         let output = reg.to_prometheus_format();
         assert!(output.contains("# HELP http_requests_total Total HTTP requests"));

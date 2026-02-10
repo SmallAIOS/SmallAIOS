@@ -77,13 +77,25 @@ impl fmt::Display for MlKemError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPublicKeyLength => {
-                write!(f, "invalid public key length (expected {} bytes)", ML_KEM_768_PK_LEN)
+                write!(
+                    f,
+                    "invalid public key length (expected {} bytes)",
+                    ML_KEM_768_PK_LEN
+                )
             }
             Self::InvalidSecretKeyLength => {
-                write!(f, "invalid secret key length (expected {} bytes)", ML_KEM_768_SK_LEN)
+                write!(
+                    f,
+                    "invalid secret key length (expected {} bytes)",
+                    ML_KEM_768_SK_LEN
+                )
             }
             Self::InvalidCiphertextLength => {
-                write!(f, "invalid ciphertext length (expected {} bytes)", ML_KEM_768_CT_LEN)
+                write!(
+                    f,
+                    "invalid ciphertext length (expected {} bytes)",
+                    ML_KEM_768_CT_LEN
+                )
             }
             Self::DecapsulationFailure => write!(f, "ML-KEM decapsulation failure"),
             Self::RngFailure => write!(f, "random number generation failure"),
@@ -125,6 +137,11 @@ impl MlKemPublicKey {
     pub fn len(&self) -> usize {
         ML_KEM_768_PK_LEN
     }
+
+    /// Returns whether the key is empty (always false for fixed-size keys).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl fmt::Debug for MlKemPublicKey {
@@ -164,6 +181,11 @@ impl MlKemSecretKey {
     pub fn len(&self) -> usize {
         ML_KEM_768_SK_LEN
     }
+
+    /// Returns whether the key is empty (always false for fixed-size keys).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl fmt::Debug for MlKemSecretKey {
@@ -202,6 +224,11 @@ impl MlKemCiphertext {
     /// Return the ciphertext length.
     pub fn len(&self) -> usize {
         ML_KEM_768_CT_LEN
+    }
+
+    /// Returns whether the ciphertext is empty (always false for fixed-size types).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -291,8 +318,8 @@ pub fn ml_kem_768_decaps(
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
     use super::*;
+    use alloc::format;
 
     #[test]
     fn ml_kem_constant_sizes() {
@@ -316,7 +343,10 @@ mod tests {
     #[test]
     fn ml_kem_public_key_from_slice_invalid() {
         let bytes = [0u8; 100];
-        assert_eq!(MlKemPublicKey::from_slice(&bytes), Err(MlKemError::InvalidPublicKeyLength));
+        assert_eq!(
+            MlKemPublicKey::from_slice(&bytes),
+            Err(MlKemError::InvalidPublicKeyLength)
+        );
     }
 
     #[test]
@@ -329,7 +359,10 @@ mod tests {
     #[test]
     fn ml_kem_secret_key_from_slice_invalid() {
         let bytes = [0u8; 100];
-        assert_eq!(MlKemSecretKey::from_slice(&bytes), Err(MlKemError::InvalidSecretKeyLength));
+        assert_eq!(
+            MlKemSecretKey::from_slice(&bytes),
+            Err(MlKemError::InvalidSecretKeyLength)
+        );
     }
 
     #[test]
@@ -342,7 +375,10 @@ mod tests {
     #[test]
     fn ml_kem_ciphertext_from_slice_invalid() {
         let bytes = [0u8; 100];
-        assert_eq!(MlKemCiphertext::from_slice(&bytes), Err(MlKemError::InvalidCiphertextLength));
+        assert_eq!(
+            MlKemCiphertext::from_slice(&bytes),
+            Err(MlKemError::InvalidCiphertextLength)
+        );
     }
 
     #[test]
@@ -362,7 +398,10 @@ mod tests {
     fn ml_kem_encaps_stub() {
         let pk = MlKemPublicKey::from_bytes([0u8; ML_KEM_768_PK_LEN]);
         let seed = [0u8; 32];
-        assert_eq!(ml_kem_768_encaps(&pk, &seed), Err(MlKemError::NotImplemented));
+        assert_eq!(
+            ml_kem_768_encaps(&pk, &seed),
+            Err(MlKemError::NotImplemented)
+        );
     }
 
     #[test]

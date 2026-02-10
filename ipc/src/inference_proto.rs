@@ -149,12 +149,7 @@ impl TensorData {
         }
         let mut shape = Vec::with_capacity(num_dims);
         for _ in 0..num_dims {
-            let dim = u32::from_be_bytes([
-                data[pos],
-                data[pos + 1],
-                data[pos + 2],
-                data[pos + 3],
-            ]);
+            let dim = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]);
             shape.push(dim);
             pos += 4;
         }
@@ -163,12 +158,8 @@ impl TensorData {
         if pos + 4 > data.len() {
             return Err(IpcError::PacketTooShort);
         }
-        let data_len = u32::from_be_bytes([
-            data[pos],
-            data[pos + 1],
-            data[pos + 2],
-            data[pos + 3],
-        ]) as usize;
+        let data_len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += 4;
 
         // data

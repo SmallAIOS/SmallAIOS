@@ -239,9 +239,7 @@ mod tests {
     #[test]
     fn test_start_pending() {
         let mut eng = DmaEngine::new();
-        let id = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         assert_eq!(eng.status(id), Ok(&DmaStatus::Pending));
         eng.start(id).unwrap();
         assert_eq!(eng.status(id), Ok(&DmaStatus::InProgress));
@@ -251,9 +249,7 @@ mod tests {
     #[test]
     fn test_complete_in_progress() {
         let mut eng = DmaEngine::new();
-        let id = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         eng.start(id).unwrap();
         eng.complete(id).unwrap();
         assert_eq!(eng.status(id), Ok(&DmaStatus::Completed));
@@ -263,9 +259,7 @@ mod tests {
     #[test]
     fn test_fail_in_progress() {
         let mut eng = DmaEngine::new();
-        let id = eng
-            .submit(DmaDirection::DeviceToHost, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::DeviceToHost, 0, 0, 4096).unwrap();
         eng.start(id).unwrap();
         eng.fail(id).unwrap();
         assert_eq!(eng.status(id), Ok(&DmaStatus::Failed));
@@ -275,9 +269,7 @@ mod tests {
     #[test]
     fn test_cancel_pending() {
         let mut eng = DmaEngine::new();
-        let id = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         eng.cancel(id).unwrap();
         // After cancel the transfer is removed entirely.
         assert_eq!(eng.status(id), Err(GpuError::NotFound));
@@ -287,9 +279,7 @@ mod tests {
     #[test]
     fn test_cannot_start_completed() {
         let mut eng = DmaEngine::new();
-        let id = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         eng.start(id).unwrap();
         eng.complete(id).unwrap();
         assert_eq!(eng.start(id), Err(GpuError::InvalidState));
@@ -299,9 +289,7 @@ mod tests {
     #[test]
     fn test_cannot_complete_pending() {
         let mut eng = DmaEngine::new();
-        let id = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         assert_eq!(eng.complete(id), Err(GpuError::InvalidState));
     }
 
@@ -329,15 +317,11 @@ mod tests {
     #[test]
     fn test_bytes_transferred() {
         let mut eng = DmaEngine::new();
-        let id1 = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 1000)
-            .unwrap();
+        let id1 = eng.submit(DmaDirection::HostToDevice, 0, 0, 1000).unwrap();
         eng.start(id1).unwrap();
         eng.complete(id1).unwrap();
 
-        let id2 = eng
-            .submit(DmaDirection::DeviceToHost, 0, 0, 2000)
-            .unwrap();
+        let id2 = eng.submit(DmaDirection::DeviceToHost, 0, 0, 2000).unwrap();
         eng.start(id2).unwrap();
         eng.complete(id2).unwrap();
 
@@ -348,12 +332,8 @@ mod tests {
     #[test]
     fn test_pending_active_counts() {
         let mut eng = DmaEngine::new();
-        let id1 = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
-        let _id2 = eng
-            .submit(DmaDirection::DeviceToHost, 0, 0, 4096)
-            .unwrap();
+        let id1 = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
+        let _id2 = eng.submit(DmaDirection::DeviceToHost, 0, 0, 4096).unwrap();
         assert_eq!(eng.pending_count(), 2);
         assert_eq!(eng.active_count(), 0);
 
@@ -367,9 +347,7 @@ mod tests {
     fn test_status_lookup() {
         let mut eng = DmaEngine::new();
         assert_eq!(eng.status(TransferId(999)), Err(GpuError::NotFound));
-        let id = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         assert_eq!(eng.status(id), Ok(&DmaStatus::Pending));
     }
 
@@ -377,12 +355,8 @@ mod tests {
     #[test]
     fn test_direction_types() {
         let mut eng = DmaEngine::new();
-        let id_h2d = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
-        let id_d2h = eng
-            .submit(DmaDirection::DeviceToHost, 0, 0, 4096)
-            .unwrap();
+        let id_h2d = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
+        let id_d2h = eng.submit(DmaDirection::DeviceToHost, 0, 0, 4096).unwrap();
         let id_d2d = eng
             .submit(DmaDirection::DeviceToDevice, 0, 0, 4096)
             .unwrap();
@@ -413,9 +387,7 @@ mod tests {
     #[test]
     fn test_cannot_cancel_in_progress() {
         let mut eng = DmaEngine::new();
-        let id = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         eng.start(id).unwrap();
         assert_eq!(eng.cancel(id), Err(GpuError::InvalidState));
     }
@@ -425,8 +397,7 @@ mod tests {
     fn test_queue_full() {
         let mut eng = DmaEngine::new();
         for _ in 0..MAX_TRANSFERS {
-            eng.submit(DmaDirection::HostToDevice, 0, 0, 4096)
-                .unwrap();
+            eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         }
         assert_eq!(
             eng.submit(DmaDirection::HostToDevice, 0, 0, 4096),
@@ -438,9 +409,7 @@ mod tests {
     #[test]
     fn test_failed_no_bytes() {
         let mut eng = DmaEngine::new();
-        let id = eng
-            .submit(DmaDirection::HostToDevice, 0, 0, 4096)
-            .unwrap();
+        let id = eng.submit(DmaDirection::HostToDevice, 0, 0, 4096).unwrap();
         eng.start(id).unwrap();
         eng.fail(id).unwrap();
         assert_eq!(eng.total_bytes_transferred(), 0);

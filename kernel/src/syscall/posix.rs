@@ -140,7 +140,7 @@ pub fn sys_posix_mmap(args: &SyscallArgs) -> SyscallResult {
 pub fn sys_posix_munmap(args: &SyscallArgs) -> SyscallResult {
     let addr = args.args[0];
     let length = args.args[1];
-    if length == 0 || addr % 4096 != 0 {
+    if length == 0 || !addr.is_multiple_of(4096) {
         return POSIX_EINVAL;
     }
     // Stub: will delegate to posix::mmap
@@ -152,7 +152,7 @@ pub fn sys_posix_mprotect(args: &SyscallArgs) -> SyscallResult {
     let addr = args.args[0];
     let length = args.args[1];
     let _prot = args.args[2] as u32;
-    if length == 0 || addr % 4096 != 0 {
+    if length == 0 || !addr.is_multiple_of(4096) {
         return POSIX_EINVAL;
     }
     // Stub: will delegate to posix::mmap
@@ -181,7 +181,7 @@ pub fn sys_posix_epoll_ctl(args: &SyscallArgs) -> SyscallResult {
         return POSIX_EBADF;
     }
     // op must be 1 (ADD), 2 (MOD), or 3 (DEL)
-    if op < 1 || op > 3 {
+    if !(1..=3).contains(&op) {
         return POSIX_EINVAL;
     }
     // Stub: will delegate to posix::epoll
@@ -274,13 +274,16 @@ pub fn sys_posix_nosys(_args: &SyscallArgs) -> SyscallResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::SyscallArgs;
+    use super::*;
 
     #[test]
     fn posix_open_null_path() {
         let args = SyscallArgs::new(0, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(sys_posix_open(&args), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(
+            sys_posix_open(&args),
+            SyscallError::InvalidArgument.as_i64()
+        );
     }
 
     #[test]
@@ -430,7 +433,10 @@ mod tests {
     #[test]
     fn posix_clock_gettime_null_ptr() {
         let args = SyscallArgs::new(0, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(sys_posix_clock_gettime(&args), SyscallError::BadAddress.as_i64());
+        assert_eq!(
+            sys_posix_clock_gettime(&args),
+            SyscallError::BadAddress.as_i64()
+        );
     }
 
     #[test]
@@ -448,7 +454,10 @@ mod tests {
     #[test]
     fn posix_nanosleep_null_ptr() {
         let args = SyscallArgs::new(0, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(sys_posix_nanosleep(&args), SyscallError::BadAddress.as_i64());
+        assert_eq!(
+            sys_posix_nanosleep(&args),
+            SyscallError::BadAddress.as_i64()
+        );
     }
 
     #[test]
@@ -460,7 +469,10 @@ mod tests {
     #[test]
     fn posix_getrandom_null_buf() {
         let args = SyscallArgs::new(0, [0, 32, 0, 0, 0, 0]);
-        assert_eq!(sys_posix_getrandom(&args), SyscallError::BadAddress.as_i64());
+        assert_eq!(
+            sys_posix_getrandom(&args),
+            SyscallError::BadAddress.as_i64()
+        );
     }
 
     #[test]

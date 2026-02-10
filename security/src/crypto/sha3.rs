@@ -127,7 +127,7 @@ impl KeccakState {
     fn permute(&mut self) {
         let a = &mut self.lanes;
 
-        for round in 0..KECCAK_ROUNDS {
+        for rc in &RC {
             // θ (theta) step
             let mut c = [0u64; 5];
             for x in 0..5 {
@@ -155,12 +155,13 @@ impl KeccakState {
             // χ (chi) step
             for x in 0..5 {
                 for y in 0..5 {
-                    a[x + 5 * y] = b[x + 5 * y] ^ ((!b[(x + 1) % 5 + 5 * y]) & b[(x + 2) % 5 + 5 * y]);
+                    a[x + 5 * y] =
+                        b[x + 5 * y] ^ ((!b[(x + 1) % 5 + 5 * y]) & b[(x + 2) % 5 + 5 * y]);
                 }
             }
 
             // ι (iota) step
-            a[0] ^= RC[round];
+            a[0] ^= *rc;
         }
     }
 
@@ -286,8 +287,7 @@ impl Sha3_256 {
                 return Ok(());
             }
             // Fill the buffer and process it
-            self.buffer[self.buf_len..SHA3_256_RATE]
-                .copy_from_slice(&data[offset..offset + space]);
+            self.buffer[self.buf_len..SHA3_256_RATE].copy_from_slice(&data[offset..offset + space]);
             self.state.xor_block(&self.buffer, SHA3_256_RATE);
             self.state.permute();
             offset += space;
@@ -297,7 +297,8 @@ impl Sha3_256 {
 
         // Process full blocks directly from input
         while remaining >= SHA3_256_RATE {
-            self.state.xor_block(&data[offset..offset + SHA3_256_RATE], SHA3_256_RATE);
+            self.state
+                .xor_block(&data[offset..offset + SHA3_256_RATE], SHA3_256_RATE);
             self.state.permute();
             offset += SHA3_256_RATE;
             remaining -= SHA3_256_RATE;
@@ -333,7 +334,8 @@ impl Sha3_256 {
         self.buffer[SHA3_256_RATE - 1] |= 0x80;
 
         // Absorb the final padded block
-        self.state.xor_block(&self.buffer[..SHA3_256_RATE], SHA3_256_RATE);
+        self.state
+            .xor_block(&self.buffer[..SHA3_256_RATE], SHA3_256_RATE);
         self.state.permute();
 
         // Squeeze out 32 bytes
@@ -344,12 +346,22 @@ impl Sha3_256 {
     }
 }
 
+impl Default for Sha3_256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One-shot SHA-3-256 hash of the input data.
 pub fn sha3_256(data: &[u8]) -> Sha3_256Digest {
     let mut hasher = Sha3_256::new();
     // update and finalize cannot fail on a fresh hasher
-    hasher.update(data).expect("fresh hasher update cannot fail");
-    hasher.finalize().expect("fresh hasher finalize cannot fail")
+    hasher
+        .update(data)
+        .expect("fresh hasher update cannot fail");
+    hasher
+        .finalize()
+        .expect("fresh hasher finalize cannot fail")
 }
 
 // ─── SHAKE256 ────────────────────────────────────────────────────────────────
@@ -409,8 +421,7 @@ impl Shake256 {
                 self.buf_len += remaining;
                 return Ok(());
             }
-            self.buffer[self.buf_len..SHAKE256_RATE]
-                .copy_from_slice(&data[offset..offset + space]);
+            self.buffer[self.buf_len..SHAKE256_RATE].copy_from_slice(&data[offset..offset + space]);
             self.state.xor_block(&self.buffer, SHAKE256_RATE);
             self.state.permute();
             offset += space;
@@ -420,7 +431,8 @@ impl Shake256 {
 
         // Full blocks
         while remaining >= SHAKE256_RATE {
-            self.state.xor_block(&data[offset..offset + SHAKE256_RATE], SHAKE256_RATE);
+            self.state
+                .xor_block(&data[offset..offset + SHAKE256_RATE], SHAKE256_RATE);
             self.state.permute();
             offset += SHAKE256_RATE;
             remaining -= SHAKE256_RATE;
@@ -444,7 +456,8 @@ impl Shake256 {
         }
         self.buffer[SHAKE256_RATE - 1] |= 0x80;
 
-        self.state.xor_block(&self.buffer[..SHAKE256_RATE], SHAKE256_RATE);
+        self.state
+            .xor_block(&self.buffer[..SHAKE256_RATE], SHAKE256_RATE);
         self.state.permute();
 
         self.phase = ShakePhase::Squeezing;
@@ -468,8 +481,9 @@ impl Shake256 {
         while remaining > 0 {
             let available = SHAKE256_RATE - self.squeeze_offset;
             if remaining <= available {
-                out[offset..offset + remaining]
-                    .copy_from_slice(&self.buffer[self.squeeze_offset..self.squeeze_offset + remaining]);
+                out[offset..offset + remaining].copy_from_slice(
+                    &self.buffer[self.squeeze_offset..self.squeeze_offset + remaining],
+                );
                 self.squeeze_offset += remaining;
                 return Ok(());
             }
@@ -489,6 +503,12 @@ impl Shake256 {
     }
 }
 
+impl Default for Shake256 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One-shot SHAKE256: absorb `data` and squeeze `output_len` bytes.
 pub fn shake256(data: &[u8], output: &mut [u8]) {
     let mut xof = Shake256::new();
@@ -500,8 +520,8 @@ pub fn shake256(data: &[u8], output: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
     use super::*;
+    use alloc::format;
 
     /// NIST test vector: SHA-3-256 of empty string.
     /// Expected: a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
@@ -509,12 +529,15 @@ mod tests {
     fn sha3_256_empty() {
         let digest = sha3_256(b"");
         let expected: [u8; 32] = [
-            0xa7, 0xff, 0xc6, 0xf8, 0xbf, 0x1e, 0xd7, 0x66,
-            0x51, 0xc1, 0x47, 0x56, 0xa0, 0x61, 0xd6, 0x62,
-            0xf5, 0x80, 0xff, 0x4d, 0xe4, 0x3b, 0x49, 0xfa,
-            0x82, 0xd8, 0x0a, 0x4b, 0x80, 0xf8, 0x43, 0x4a,
+            0xa7, 0xff, 0xc6, 0xf8, 0xbf, 0x1e, 0xd7, 0x66, 0x51, 0xc1, 0x47, 0x56, 0xa0, 0x61,
+            0xd6, 0x62, 0xf5, 0x80, 0xff, 0x4d, 0xe4, 0x3b, 0x49, 0xfa, 0x82, 0xd8, 0x0a, 0x4b,
+            0x80, 0xf8, 0x43, 0x4a,
         ];
-        assert_eq!(digest.as_bytes(), &expected, "SHA-3-256 of empty string mismatch");
+        assert_eq!(
+            digest.as_bytes(),
+            &expected,
+            "SHA-3-256 of empty string mismatch"
+        );
     }
 
     /// NIST test vector: SHA-3-256 of "abc".
@@ -523,10 +546,9 @@ mod tests {
     fn sha3_256_abc() {
         let digest = sha3_256(b"abc");
         let expected: [u8; 32] = [
-            0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2,
-            0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3, 0x90, 0xbd,
-            0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b,
-            0x46, 0xbf, 0xe2, 0x45, 0x11, 0x43, 0x15, 0x32,
+            0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2, 0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3,
+            0x90, 0xbd, 0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b, 0x46, 0xbf, 0xe2, 0x45,
+            0x11, 0x43, 0x15, 0x32,
         ];
         assert_eq!(digest.as_bytes(), &expected, "SHA-3-256 of 'abc' mismatch");
     }
@@ -541,7 +563,10 @@ mod tests {
         hasher.update(b"world").unwrap();
         let incremental = hasher.finalize().unwrap();
 
-        assert_eq!(one_shot, incremental, "incremental hash should match one-shot");
+        assert_eq!(
+            one_shot, incremental,
+            "incremental hash should match one-shot"
+        );
     }
 
     /// Test that finalizing twice returns an error.
@@ -596,7 +621,10 @@ mod tests {
         let mut out2 = [0u8; 32];
         shake256(b"input a", &mut out1);
         shake256(b"input b", &mut out2);
-        assert_ne!(out1, out2, "different inputs should yield different outputs");
+        assert_ne!(
+            out1, out2,
+            "different inputs should yield different outputs"
+        );
     }
 
     /// Test SHAKE256 incremental squeeze.
@@ -633,7 +661,10 @@ mod tests {
         let mut out = [0u8; 512]; // > 136 * 3 = 408
         shake256(b"seed", &mut out);
         // Verify not all zeros
-        assert!(out.iter().any(|&b| b != 0), "SHAKE256 output should not be all zeros");
+        assert!(
+            out.iter().any(|&b| b != 0),
+            "SHAKE256 output should not be all zeros"
+        );
     }
 
     /// Verify Keccak round constants count.

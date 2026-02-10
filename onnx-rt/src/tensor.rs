@@ -453,9 +453,21 @@ mod tests {
     #[test]
     fn test_tensor_error_display() {
         use alloc::format;
-        assert_eq!(format!("{}", TensorError::ShapeMismatch), "tensor shape mismatch");
-        assert_eq!(format!("{}", TensorError::InvalidDataType), "invalid data type");
-        assert_eq!(format!("{}", TensorError::DataSizeMismatch), "data size mismatch");
-        assert_eq!(format!("{}", TensorError::DimensionOverflow), "dimension overflow");
+        assert_eq!(
+            format!("{}", TensorError::ShapeMismatch),
+            "tensor shape mismatch"
+        );
+        assert_eq!(
+            format!("{}", TensorError::InvalidDataType),
+            "invalid data type"
+        );
+        assert_eq!(
+            format!("{}", TensorError::DataSizeMismatch),
+            "data size mismatch"
+        );
+        assert_eq!(
+            format!("{}", TensorError::DimensionOverflow),
+            "dimension overflow"
+        );
     }
 }

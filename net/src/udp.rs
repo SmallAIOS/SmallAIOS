@@ -139,12 +139,7 @@ impl UdpSocket {
     ///
     /// Returns [`NetError::InvalidProtocol`] if the socket is not yet bound.
     /// The actual send path is not yet implemented.
-    pub fn send_to(
-        &self,
-        _data: &[u8],
-        _addr: [u8; 4],
-        _port: u16,
-    ) -> Result<usize, NetError> {
+    pub fn send_to(&self, _data: &[u8], _addr: [u8; 4], _port: u16) -> Result<usize, NetError> {
         if !self.bound {
             return Err(NetError::InvalidProtocol);
         }

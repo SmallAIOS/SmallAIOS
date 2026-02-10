@@ -255,11 +255,12 @@ impl CapRegistry {
             return Err(CapError::DelegationExceedsPermissions);
         }
         // If parent expires, delegated must expire no later
-        let effective_expires = if parent.expires != 0 && (new_expires == 0 || new_expires > parent.expires) {
-            parent.expires
-        } else {
-            new_expires
-        };
+        let effective_expires =
+            if parent.expires != 0 && (new_expires == 0 || new_expires > parent.expires) {
+                parent.expires
+            } else {
+                new_expires
+            };
 
         let resource = parent.resource;
         self.insert(to_task, resource, new_perms, effective_expires, cap_id)
@@ -289,16 +290,14 @@ impl CapRegistry {
         // We need to collect children first to avoid borrow issues
         let mut children = [0u64; 64];
         let mut child_count = 0;
-        for slot in self.caps.iter() {
-            if let Some(cap) = slot {
-                if cap.parent == cap_id && child_count < 64 {
-                    children[child_count] = cap.id;
-                    child_count += 1;
-                }
+        for cap in self.caps.iter().flatten() {
+            if cap.parent == cap_id && child_count < 64 {
+                children[child_count] = cap.id;
+                child_count += 1;
             }
         }
-        for i in 0..child_count {
-            let _ = self.revoke(children[i]);
+        for child in children.iter().take(child_count) {
+            let _ = self.revoke(*child);
         }
 
         Ok(())
@@ -324,14 +323,12 @@ impl CapRegistry {
         required: Permissions,
         now: u64,
     ) -> Result<CapId, CapError> {
-        for slot in self.caps.iter() {
-            if let Some(cap) = slot {
-                if cap.owner == task_id
-                    && !self.is_revoked(cap.id)
-                    && cap.check(resource, required, now).is_ok()
-                {
-                    return Ok(cap.id);
-                }
+        for cap in self.caps.iter().flatten() {
+            if cap.owner == task_id
+                && !self.is_revoked(cap.id)
+                && cap.check(resource, required, now).is_ok()
+            {
+                return Ok(cap.id);
             }
         }
         Err(CapError::InsufficientPermissions)
@@ -340,12 +337,10 @@ impl CapRegistry {
     /// List all capabilities held by a task.
     pub fn list_for_task(&self, task_id: TaskId, buf: &mut [CapId]) -> usize {
         let mut count = 0;
-        for slot in self.caps.iter() {
-            if let Some(cap) = slot {
-                if cap.owner == task_id && !self.is_revoked(cap.id) && count < buf.len() {
-                    buf[count] = cap.id;
-                    count += 1;
-                }
+        for cap in self.caps.iter().flatten() {
+            if cap.owner == task_id && !self.is_revoked(cap.id) && count < buf.len() {
+                buf[count] = cap.id;
+                count += 1;
             }
         }
         count
@@ -424,6 +419,12 @@ impl CapRegistry {
         let word = idx / 64;
         let bit = idx % 64;
         self.revoked[word] |= 1u64 << bit;
+    }
+}
+
+impl Default for CapRegistry {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -539,7 +540,10 @@ mod tests {
             owner: 1,
             parent: 0,
         };
-        assert_eq!(cap.check(&res2, Permissions::READ, 0), Err(CapError::WrongResource));
+        assert_eq!(
+            cap.check(&res2, Permissions::READ, 0),
+            Err(CapError::WrongResource)
+        );
     }
 
     #[test]
@@ -570,14 +574,19 @@ mod tests {
             owner: 1,
             parent: 0,
         };
-        assert_eq!(cap.check(&res, Permissions::READ, 100), Err(CapError::Expired));
+        assert_eq!(
+            cap.check(&res, Permissions::READ, 100),
+            Err(CapError::Expired)
+        );
     }
 
     #[test]
     fn test_registry_create_and_lookup() {
         let mut reg = CapRegistry::new();
         let res = make_resource(ResourceType::OnnxModel, 1);
-        let id = reg.create(1, res, Permissions::READ.union(Permissions::EXECUTE), 0).unwrap();
+        let id = reg
+            .create(1, res, Permissions::READ.union(Permissions::EXECUTE), 0)
+            .unwrap();
         assert!(id > 0);
 
         let cap = reg.lookup(id, 0).unwrap();
@@ -622,9 +631,7 @@ mod tests {
         let res = make_resource(ResourceType::IpcEndpoint, 42);
         let parent_id = reg.create(1, res, Permissions::ALL, 0).unwrap();
 
-        let child_id = reg
-            .delegate(parent_id, 2, Permissions::READ, 0, 0)
-            .unwrap();
+        let child_id = reg.delegate(parent_id, 2, Permissions::READ, 0, 0).unwrap();
 
         let child = reg.lookup(child_id, 0).unwrap();
         assert_eq!(child.owner, 2);
@@ -641,7 +648,15 @@ mod tests {
         let parent_id = reg.create(1, res, Permissions::ALL, 0).unwrap();
 
         // Delegate only READ to task 2
-        let child_id = reg.delegate(parent_id, 2, Permissions::READ.union(Permissions::GRANT), 0, 0).unwrap();
+        let child_id = reg
+            .delegate(
+                parent_id,
+                2,
+                Permissions::READ.union(Permissions::GRANT),
+                0,
+                0,
+            )
+            .unwrap();
 
         // Task 2 tries to delegate WRITE (which it doesn't have)
         let result = reg.delegate(child_id, 3, Permissions::WRITE, 0, 0);
@@ -685,7 +700,8 @@ mod tests {
     fn test_registry_check() {
         let mut reg = CapRegistry::new();
         let res = make_resource(ResourceType::OnnxModel, 5);
-        reg.create(1, res, Permissions::READ.union(Permissions::EXECUTE), 0).unwrap();
+        reg.create(1, res, Permissions::READ.union(Permissions::EXECUTE), 0)
+            .unwrap();
 
         assert!(reg.check(1, &res, Permissions::READ, 0).is_ok());
         assert!(reg.check(1, &res, Permissions::EXECUTE, 0).is_ok());

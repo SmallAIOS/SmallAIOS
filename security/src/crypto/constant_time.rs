@@ -211,7 +211,12 @@ pub fn ct_select_byte(condition: CtBool, a: u8, b: u8) -> u8 {
 ///
 /// `Ok(())` on success, `Err(LengthMismatch)` if lengths differ.
 #[inline(never)]
-pub fn ct_select(condition: CtBool, a: &[u8], b: &[u8], out: &mut [u8]) -> Result<(), ConstantTimeError> {
+pub fn ct_select(
+    condition: CtBool,
+    a: &[u8],
+    b: &[u8],
+    out: &mut [u8],
+) -> Result<(), ConstantTimeError> {
     if a.len() != b.len() || a.len() != out.len() {
         return Err(ConstantTimeError::LengthMismatch);
     }
@@ -246,8 +251,8 @@ pub fn ct_swap(condition: CtBool, a: &mut [u8], b: &mut [u8]) -> Result<(), Cons
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
     use super::*;
+    use alloc::format;
 
     #[test]
     fn ct_bool_true_false() {
@@ -288,7 +293,12 @@ mod tests {
     #[test]
     fn ct_eq_byte_equal() {
         for b in 0..=255u8 {
-            assert!(ct_eq_byte(b, b).to_bool(), "ct_eq_byte({}, {}) should be true", b, b);
+            assert!(
+                ct_eq_byte(b, b).to_bool(),
+                "ct_eq_byte({}, {}) should be true",
+                b,
+                b
+            );
         }
     }
 
@@ -381,7 +391,10 @@ mod tests {
         let a = [1u8, 2];
         let b = [4u8, 5, 6];
         let mut out = [0u8; 3];
-        assert_eq!(ct_select(CtBool::TRUE, &a, &b, &mut out), Err(ConstantTimeError::LengthMismatch));
+        assert_eq!(
+            ct_select(CtBool::TRUE, &a, &b, &mut out),
+            Err(ConstantTimeError::LengthMismatch)
+        );
     }
 
     #[test]
@@ -406,7 +419,10 @@ mod tests {
     fn ct_swap_length_mismatch() {
         let mut a = [1u8, 2];
         let mut b = [4u8, 5, 6];
-        assert_eq!(ct_swap(CtBool::TRUE, &mut a, &mut b), Err(ConstantTimeError::LengthMismatch));
+        assert_eq!(
+            ct_swap(CtBool::TRUE, &mut a, &mut b),
+            Err(ConstantTimeError::LengthMismatch)
+        );
     }
 
     #[test]

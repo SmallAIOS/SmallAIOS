@@ -213,8 +213,7 @@ impl Ipv4Header {
         let total_length = u16::from_be_bytes([data[2], data[3]]);
         let identification = u16::from_be_bytes([data[4], data[5]]);
         let flags = data[6] >> 5;
-        let fragment_offset =
-            u16::from_be_bytes([data[6] & 0x1F, data[7]]);
+        let fragment_offset = u16::from_be_bytes([data[6] & 0x1F, data[7]]);
         let ttl = data[8];
         let protocol = data[9];
         let hdr_checksum = u16::from_be_bytes([data[10], data[11]]);

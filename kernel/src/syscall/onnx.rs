@@ -154,37 +154,25 @@ mod tests {
     #[test]
     fn test_onnx_load_null_data() {
         let args = SyscallArgs::new(0x30, [0, 1024, 0, 0, 0, 0]);
-        assert_eq!(
-            sys_onnx_load(&args),
-            SyscallError::InvalidArgument.as_i64()
-        );
+        assert_eq!(sys_onnx_load(&args), SyscallError::InvalidArgument.as_i64());
     }
 
     #[test]
     fn test_onnx_load_zero_len() {
         let args = SyscallArgs::new(0x30, [0x1000, 0, 0, 0, 0, 0]);
-        assert_eq!(
-            sys_onnx_load(&args),
-            SyscallError::InvalidArgument.as_i64()
-        );
+        assert_eq!(sys_onnx_load(&args), SyscallError::InvalidArgument.as_i64());
     }
 
     #[test]
     fn test_onnx_load_too_large() {
         let args = SyscallArgs::new(0x30, [0x1000, MAX_MODEL_SIZE + 1, 0, 0, 0, 0]);
-        assert_eq!(
-            sys_onnx_load(&args),
-            SyscallError::InvalidArgument.as_i64()
-        );
+        assert_eq!(sys_onnx_load(&args), SyscallError::InvalidArgument.as_i64());
     }
 
     #[test]
     fn test_onnx_unload_zero_handle() {
         let args = SyscallArgs::new(0x31, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(
-            sys_onnx_unload(&args),
-            SyscallError::InvalidHandle.as_i64()
-        );
+        assert_eq!(sys_onnx_unload(&args), SyscallError::InvalidHandle.as_i64());
     }
 
     #[test]
@@ -205,28 +193,19 @@ mod tests {
     #[test]
     fn test_onnx_run_zero_inputs() {
         let args = SyscallArgs::new(0x33, [1, 0, 0, 0x2000, 1, 0]);
-        assert_eq!(
-            sys_onnx_run(&args),
-            SyscallError::InvalidArgument.as_i64()
-        );
+        assert_eq!(sys_onnx_run(&args), SyscallError::InvalidArgument.as_i64());
     }
 
     #[test]
     fn test_onnx_run_zero_outputs() {
         let args = SyscallArgs::new(0x33, [1, 0x1000, 1, 0, 0, 0]);
-        assert_eq!(
-            sys_onnx_run(&args),
-            SyscallError::InvalidArgument.as_i64()
-        );
+        assert_eq!(sys_onnx_run(&args), SyscallError::InvalidArgument.as_i64());
     }
 
     #[test]
     fn test_onnx_run_too_many_inputs() {
         let args = SyscallArgs::new(0x33, [1, 0x1000, MAX_IO_TENSORS + 1, 0x2000, 1, 0]);
-        assert_eq!(
-            sys_onnx_run(&args),
-            SyscallError::InvalidArgument.as_i64()
-        );
+        assert_eq!(sys_onnx_run(&args), SyscallError::InvalidArgument.as_i64());
     }
 
     #[test]

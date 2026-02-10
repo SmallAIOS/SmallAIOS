@@ -102,6 +102,12 @@ pub struct ShutdownManager {
     shutdown_initiated: bool,
 }
 
+impl Default for ShutdownManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShutdownManager {
     /// Create a new shutdown manager in the [`Running`](ShutdownPhase::Running) state.
     pub fn new() -> Self {
@@ -224,7 +230,7 @@ impl ShutdownManager {
     /// already been executed are skipped.
     pub fn execute_hooks(&mut self) -> Vec<&str> {
         // Sort by priority descending (highest first).
-        self.hooks.sort_by(|a, b| b.priority.cmp(&a.priority));
+        self.hooks.sort_by_key(|b| core::cmp::Reverse(b.priority));
 
         let mut executed_names = Vec::new();
         for hook in self.hooks.iter_mut() {
@@ -362,7 +368,7 @@ mod tests {
         assert!(!mgr.can_terminate());
 
         mgr.advance().unwrap(); // -> CloseConnections
-        // CloseConnections, 0 active: can terminate.
+                                // CloseConnections, 0 active: can terminate.
         assert!(mgr.can_terminate());
 
         mgr.set_active_requests(3);
@@ -390,7 +396,10 @@ mod tests {
         mgr.register_hook("medium_priority", 50).unwrap();
 
         let executed = mgr.execute_hooks();
-        assert_eq!(executed, vec!["high_priority", "medium_priority", "low_priority"]);
+        assert_eq!(
+            executed,
+            vec!["high_priority", "medium_priority", "low_priority"]
+        );
 
         // Executing again should return empty (all already executed).
         let executed_again = mgr.execute_hooks();
@@ -429,10 +438,7 @@ mod tests {
             error_reason,
             ShutdownReason::Error(String::from("disk full"))
         );
-        assert_ne!(
-            error_reason,
-            ShutdownReason::Error(String::from("oom")),
-        );
+        assert_ne!(error_reason, ShutdownReason::Error(String::from("oom")),);
     }
 
     #[test]

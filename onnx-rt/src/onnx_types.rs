@@ -108,7 +108,7 @@ impl Default for AttributeProto {
 ///
 /// Mirrors `onnx.TensorProto`. Data can be stored in `raw_data`
 /// (preferred, compact binary) or in the typed data fields.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct TensorProto {
     /// Tensor dimensions.
     pub dims: Vec<i64>,
@@ -128,26 +128,11 @@ pub struct TensorProto {
     pub double_data: Vec<f64>,
 }
 
-impl Default for TensorProto {
-    fn default() -> Self {
-        Self {
-            dims: Vec::new(),
-            data_type: 0,
-            name: String::new(),
-            raw_data: Vec::new(),
-            float_data: Vec::new(),
-            int32_data: Vec::new(),
-            int64_data: Vec::new(),
-            double_data: Vec::new(),
-        }
-    }
-}
-
 /// Type and shape information for a graph value (input/output).
 ///
 /// Simplified representation of `onnx.ValueInfoProto` combined with
 /// its nested `TypeProto.Tensor` fields.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ValueInfoProto {
     /// Value name (matches corresponding tensor names).
     pub name: String,
@@ -157,21 +142,11 @@ pub struct ValueInfoProto {
     pub shape: Vec<i64>,
 }
 
-impl Default for ValueInfoProto {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            elem_type: 0,
-            shape: Vec::new(),
-        }
-    }
-}
-
 /// A single computation node in the ONNX graph.
 ///
 /// Mirrors `onnx.NodeProto`. Each node represents one operator
 /// invocation with named inputs, outputs, and operator-specific attributes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct NodeProto {
     /// Input tensor names.
     pub input: Vec<String>,
@@ -187,24 +162,11 @@ pub struct NodeProto {
     pub attribute: Vec<AttributeProto>,
 }
 
-impl Default for NodeProto {
-    fn default() -> Self {
-        Self {
-            input: Vec::new(),
-            output: Vec::new(),
-            name: String::new(),
-            op_type: String::new(),
-            domain: String::new(),
-            attribute: Vec::new(),
-        }
-    }
-}
-
 /// The computation graph of an ONNX model.
 ///
 /// Mirrors `onnx.GraphProto`. Contains the topologically ordered
 /// list of nodes, graph inputs/outputs, and pre-trained weight tensors.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct GraphProto {
     /// Computation nodes in topological order.
     pub node: Vec<NodeProto>,
@@ -218,23 +180,11 @@ pub struct GraphProto {
     pub initializer: Vec<TensorProto>,
 }
 
-impl Default for GraphProto {
-    fn default() -> Self {
-        Self {
-            node: Vec::new(),
-            name: String::new(),
-            input: Vec::new(),
-            output: Vec::new(),
-            initializer: Vec::new(),
-        }
-    }
-}
-
 /// An operator set version binding.
 ///
 /// Mirrors `onnx.OperatorSetIdProto`. Specifies which version of
 /// an operator set domain is used by the model.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct OperatorSetIdProto {
     /// Operator set domain (empty string = default ONNX domain).
     pub domain: String,
@@ -242,20 +192,11 @@ pub struct OperatorSetIdProto {
     pub version: i64,
 }
 
-impl Default for OperatorSetIdProto {
-    fn default() -> Self {
-        Self {
-            domain: String::new(),
-            version: 0,
-        }
-    }
-}
-
 /// Top-level ONNX model container.
 ///
 /// Mirrors `onnx.ModelProto`. Contains model metadata, operator set
 /// imports, and the computation graph.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ModelProto {
     /// ONNX IR version used to encode this model.
     pub ir_version: i64,
@@ -273,21 +214,6 @@ pub struct ModelProto {
     pub doc_string: String,
     /// The computation graph.
     pub graph: Option<GraphProto>,
-}
-
-impl Default for ModelProto {
-    fn default() -> Self {
-        Self {
-            ir_version: 0,
-            opset_import: Vec::new(),
-            producer_name: String::new(),
-            producer_version: String::new(),
-            domain: String::new(),
-            model_version: 0,
-            doc_string: String::new(),
-            graph: None,
-        }
-    }
 }
 
 #[cfg(test)]

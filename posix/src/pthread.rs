@@ -101,6 +101,12 @@ pub struct Mutex {
     pub lock_count: u32,
 }
 
+impl Default for Mutex {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Mutex {
     /// Create a new unlocked mutex with `Normal` semantics.
     pub const fn new() -> Self {
@@ -122,6 +128,12 @@ pub struct Condvar {
     pub waiters_count: u32,
 }
 
+impl Default for Condvar {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Condvar {
     /// Create a new condition variable with zero waiters.
     pub const fn new() -> Self {
@@ -138,6 +150,12 @@ pub struct RwLock {
     pub readers: u32,
     /// The thread holding the write lock, if any.
     pub writer: Option<ThreadId>,
+}
+
+impl Default for RwLock {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl RwLock {

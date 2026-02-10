@@ -10,7 +10,7 @@
 #![allow(dead_code)]
 
 use crate::gpu_id::GpuInfo;
-use crate::pcie::{BaseAddressRegister, BarType};
+use crate::pcie::{BarType, BaseAddressRegister};
 use crate::GpuError;
 
 // ---------------------------------------------------------------------------
@@ -323,14 +323,12 @@ mod tests {
     #[test]
     fn map_bars_no_memory_bars_returns_error() {
         let mut ctx = GpuContext::new(test_gpu_info());
-        let io_bars = alloc::vec![
-            BaseAddressRegister {
-                bar_type: BarType::Io,
-                address: 0x1000,
-                size: 256,
-                prefetchable: false,
-            },
-        ];
+        let io_bars = alloc::vec![BaseAddressRegister {
+            bar_type: BarType::Io,
+            address: 0x1000,
+            size: 256,
+            prefetchable: false,
+        },];
         assert_eq!(ctx.map_bars(&io_bars), Err(GpuError::BarNotFound));
         assert_eq!(*ctx.state(), GpuState::Uninitialized);
     }
@@ -338,14 +336,12 @@ mod tests {
     #[test]
     fn map_bars_only_one_memory_bar_returns_error() {
         let mut ctx = GpuContext::new(test_gpu_info());
-        let single = alloc::vec![
-            BaseAddressRegister {
-                bar_type: BarType::Memory32,
-                address: 0xF000_0000,
-                size: 1024,
-                prefetchable: false,
-            },
-        ];
+        let single = alloc::vec![BaseAddressRegister {
+            bar_type: BarType::Memory32,
+            address: 0xF000_0000,
+            size: 1024,
+            prefetchable: false,
+        },];
         assert_eq!(ctx.map_bars(&single), Err(GpuError::BarNotFound));
     }
 

@@ -65,8 +65,12 @@ pub enum AesGcmError {
 impl fmt::Display for AesGcmError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidKeyLength => write!(f, "invalid key length (expected {} bytes)", AES256_KEY_LEN),
-            Self::InvalidNonceLength => write!(f, "invalid nonce length (expected {} bytes)", GCM_NONCE_LEN),
+            Self::InvalidKeyLength => {
+                write!(f, "invalid key length (expected {} bytes)", AES256_KEY_LEN)
+            }
+            Self::InvalidNonceLength => {
+                write!(f, "invalid nonce length (expected {} bytes)", GCM_NONCE_LEN)
+            }
             Self::PlaintextTooLong => write!(f, "plaintext exceeds maximum length"),
             Self::BufferTooSmall => write!(f, "output buffer too small"),
             Self::AuthenticationFailed => write!(f, "GCM authentication tag mismatch"),
@@ -255,8 +259,8 @@ impl fmt::Debug for Aes256Gcm {
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
     use super::*;
+    use alloc::format;
 
     #[test]
     fn aes_key_from_bytes() {
@@ -275,7 +279,10 @@ mod tests {
     #[test]
     fn aes_key_from_slice_invalid_length() {
         let bytes = [0u8; 16]; // Too short
-        assert_eq!(AesKey::from_slice(&bytes), Err(AesGcmError::InvalidKeyLength));
+        assert_eq!(
+            AesKey::from_slice(&bytes),
+            Err(AesGcmError::InvalidKeyLength)
+        );
     }
 
     #[test]
@@ -283,7 +290,10 @@ mod tests {
         let key = AesKey::from_bytes([0xFF; AES256_KEY_LEN]);
         let debug = format!("{:?}", key);
         assert_eq!(debug, "AesKey([REDACTED])");
-        assert!(!debug.contains("ff"), "key material must not appear in debug output");
+        assert!(
+            !debug.contains("ff"),
+            "key material must not appear in debug output"
+        );
     }
 
     #[test]
@@ -294,7 +304,10 @@ mod tests {
 
     #[test]
     fn gcm_nonce_from_slice_invalid() {
-        assert_eq!(GcmNonce::from_slice(&[0u8; 8]), Err(AesGcmError::InvalidNonceLength));
+        assert_eq!(
+            GcmNonce::from_slice(&[0u8; 8]),
+            Err(AesGcmError::InvalidNonceLength)
+        );
     }
 
     #[test]

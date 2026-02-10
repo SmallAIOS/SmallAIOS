@@ -12,11 +12,11 @@
 //! - Hybrid modes (classical + PQC)
 //! - Constant-time utilities
 
-pub mod sha3;
 pub mod aes_gcm;
-pub mod csprng;
-pub mod ml_kem;
-pub mod ml_dsa;
-pub mod hybrid;
 pub mod constant_time;
+pub mod csprng;
+pub mod hybrid;
+pub mod ml_dsa;
+pub mod ml_kem;
+pub mod sha3;
 pub mod verify;

@@ -172,6 +172,12 @@ pub struct FdTable {
     count: usize,
 }
 
+impl Default for FdTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FdTable {
     /// Create a new file descriptor table with stdin/stdout/stderr.
     pub fn new() -> Self {

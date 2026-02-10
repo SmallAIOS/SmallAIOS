@@ -103,9 +103,7 @@ impl GpuInfo {
         let cores_per_sm = match self.architecture {
             GpuArchitecture::Maxwell | GpuArchitecture::Pascal => 128,
             GpuArchitecture::Volta | GpuArchitecture::Turing => 64,
-            GpuArchitecture::Ampere
-            | GpuArchitecture::Hopper
-            | GpuArchitecture::Blackwell => 128,
+            GpuArchitecture::Ampere | GpuArchitecture::Hopper | GpuArchitecture::Blackwell => 128,
             GpuArchitecture::Unknown => 0,
         };
         self.sm_count * cores_per_sm
@@ -457,7 +455,11 @@ mod tests {
     fn warp_size_always_32() {
         for &dev_id in &[0x1340, 0x1B80, 0x1DB1, 0x20B0, 0x2330, 0x2900] {
             let info = identify_gpu(dev_id).unwrap();
-            assert_eq!(info.warp_size, 32, "warp size must be 32 for device 0x{:04X}", dev_id);
+            assert_eq!(
+                info.warp_size, 32,
+                "warp size must be 32 for device 0x{:04X}",
+                dev_id
+            );
         }
     }
 

@@ -168,7 +168,10 @@ mod tests {
         let mac = MacAddress::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF);
         let dev = VirtioNetDevice::new(mac);
         assert_eq!(dev.mac_address(), mac);
-        assert_eq!(dev.mac_address().as_bytes(), &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        assert_eq!(
+            dev.mac_address().as_bytes(),
+            &[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]
+        );
     }
 
     #[test]

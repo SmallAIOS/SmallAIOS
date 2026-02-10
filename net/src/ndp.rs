@@ -115,6 +115,12 @@ pub struct NeighborTable {
     entries: Vec<NeighborEntry>,
 }
 
+impl Default for NeighborTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NeighborTable {
     /// Maximum number of entries the table will hold.
     pub const MAX_ENTRIES: usize = 256;
@@ -128,10 +134,7 @@ impl NeighborTable {
 
     /// Look up the MAC address for a given IPv6 address.
     pub fn lookup(&self, ip: &Ipv6Addr) -> Option<&MacAddress> {
-        self.entries
-            .iter()
-            .find(|e| e.ip == *ip)
-            .map(|e| &e.mac)
+        self.entries.iter().find(|e| e.ip == *ip).map(|e| &e.mac)
     }
 
     /// Insert or update a neighbor entry.
@@ -345,15 +348,13 @@ mod tests {
 
     #[test]
     fn test_create_neighbor_solicitation_stub() {
-        let result =
-            create_neighbor_solicitation(&ip(1), &ip(2), &mac(0xaa));
+        let result = create_neighbor_solicitation(&ip(1), &ip(2), &mac(0xaa));
         assert!(result.is_err());
     }
 
     #[test]
     fn test_create_neighbor_advertisement_stub() {
-        let result =
-            create_neighbor_advertisement(&ip(1), &ip(2), &mac(0xaa), true);
+        let result = create_neighbor_advertisement(&ip(1), &ip(2), &mac(0xaa), true);
         assert!(result.is_err());
     }
 }

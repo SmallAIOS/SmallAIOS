@@ -202,12 +202,7 @@ mod tests {
 
         // Simulate a reply.
         let target_mac = MacAddress::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02);
-        let reply = create_reply(
-            target_mac.clone(),
-            target_ip,
-            sender_mac.clone(),
-            sender_ip,
-        );
+        let reply = create_reply(target_mac.clone(), target_ip, sender_mac.clone(), sender_ip);
         assert_eq!(reply.operation, ArpOperation::Reply);
 
         // Insert into ARP table.
@@ -289,7 +284,7 @@ mod tests {
     fn test_graph_build_and_optimize() {
         use smallaios_onnx_rt::graph::build_execution_graph;
         use smallaios_onnx_rt::onnx_types::{GraphProto, NodeProto, ValueInfoProto};
-        use smallaios_onnx_rt::optimizer::{optimize, OptimizerConfig, OptimizationLevel};
+        use smallaios_onnx_rt::optimizer::{optimize, OptimizationLevel, OptimizerConfig};
 
         // Build a simple graph: input -> Relu -> output.
         let mut graph_proto = GraphProto::default();
@@ -340,9 +335,24 @@ mod tests {
 
         // Verify critical operators are present.
         let critical_ops = [
-            "Add", "Sub", "Mul", "Div", "MatMul", "Relu", "Sigmoid", "Tanh",
-            "Softmax", "Conv", "MaxPool", "Reshape", "Transpose", "Concat",
-            "Gemm", "BatchNormalization", "LayerNormalization", "Flatten",
+            "Add",
+            "Sub",
+            "Mul",
+            "Div",
+            "MatMul",
+            "Relu",
+            "Sigmoid",
+            "Tanh",
+            "Softmax",
+            "Conv",
+            "MaxPool",
+            "Reshape",
+            "Transpose",
+            "Concat",
+            "Gemm",
+            "BatchNormalization",
+            "LayerNormalization",
+            "Flatten",
         ];
         for op_name in &critical_ops {
             assert!(
@@ -357,7 +367,7 @@ mod tests {
         assert!(!registry.is_supported(""));
 
         // Verify OpKind round-trip.
-        let relu = OpKind::from_str("Relu").unwrap();
+        let relu = OpKind::parse_str("Relu").unwrap();
         assert_eq!(relu.name(), "Relu");
     }
 
@@ -497,9 +507,7 @@ mod tests {
     #[test]
     fn test_capability_create_and_check() {
         use alloc::boxed::Box;
-        use smallaios_security::capability::{
-            CapRegistry, Permissions, ResourceRef, ResourceType,
-        };
+        use smallaios_security::capability::{CapRegistry, Permissions, ResourceRef, ResourceType};
 
         // CapRegistry contains a [Option<Capability>; 4096] array (~230 KB).
         // Box it to avoid blowing the stack.
@@ -561,7 +569,8 @@ mod tests {
         let empty_digest = sha3_256(b"");
         let expected_first_byte = 0xa7u8;
         assert_eq!(
-            empty_digest.as_bytes()[0], expected_first_byte,
+            empty_digest.as_bytes()[0],
+            expected_first_byte,
             "SHA-3-256 of empty string should start with 0xa7"
         );
     }
@@ -701,9 +710,7 @@ mod tests {
     /// Verify epoll instance creation and event registration.
     #[test]
     fn test_epoll_instance_operations() {
-        use smallaios_posix::epoll::{
-            epoll_create1, epoll_ctl, EpollEvent, EpollFlags, EpollOp,
-        };
+        use smallaios_posix::epoll::{epoll_create1, epoll_ctl, EpollEvent, EpollFlags, EpollOp};
 
         // Create an epoll instance.
         let mut inst = epoll_create1(0).unwrap();
@@ -784,11 +791,7 @@ mod tests {
         assert!(gemm.is_some(), "Should find F32 GEMM kernel for Ampere");
 
         // Find a Softmax kernel with F16 precision.
-        let softmax = registry.find_kernel(
-            PtxKernelType::Softmax,
-            DataPrecision::F16,
-            &cc_ampere,
-        );
+        let softmax = registry.find_kernel(PtxKernelType::Softmax, DataPrecision::F16, &cc_ampere);
         assert!(
             softmax.is_some(),
             "Should find F16 Softmax kernel for Ampere"
@@ -825,22 +828,42 @@ mod tests {
 
         // Add a requirement.
         matrix
-            .add_artifact("REQ-001", ArtifactType::Requirement, "Buddy allocator shall manage memory", DalLevel::A)
+            .add_artifact(
+                "REQ-001",
+                ArtifactType::Requirement,
+                "Buddy allocator shall manage memory",
+                DalLevel::A,
+            )
             .unwrap();
 
         // Add a specification.
         matrix
-            .add_artifact("SPEC-001", ArtifactType::Specification, "Buddy allocator design", DalLevel::A)
+            .add_artifact(
+                "SPEC-001",
+                ArtifactType::Specification,
+                "Buddy allocator design",
+                DalLevel::A,
+            )
             .unwrap();
 
         // Add an implementation.
         matrix
-            .add_artifact("IMPL-001", ArtifactType::Implementation, "buddy_alloc.rs", DalLevel::A)
+            .add_artifact(
+                "IMPL-001",
+                ArtifactType::Implementation,
+                "buddy_alloc.rs",
+                DalLevel::A,
+            )
             .unwrap();
 
         // Add a test.
         matrix
-            .add_artifact("TEST-001", ArtifactType::Test, "test_buddy_alloc", DalLevel::A)
+            .add_artifact(
+                "TEST-001",
+                ArtifactType::Test,
+                "test_buddy_alloc",
+                DalLevel::A,
+            )
             .unwrap();
 
         assert_eq!(matrix.artifact_count(), 4);

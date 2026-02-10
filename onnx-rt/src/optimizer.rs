@@ -91,9 +91,9 @@ pub struct OptimizerConfig {
     pub enable_dce: bool,
 }
 
-impl OptimizerConfig {
+impl Default for OptimizerConfig {
     /// Creates a default configuration with `Extended` optimization.
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             level: OptimizationLevel::Extended,
             max_passes: 10,
@@ -102,7 +102,9 @@ impl OptimizerConfig {
             enable_dce: true,
         }
     }
+}
 
+impl OptimizerConfig {
     /// Creates a configuration that disables all optimization.
     pub fn none() -> Self {
         Self {
@@ -123,10 +125,7 @@ impl OptimizerConfig {
 /// - `Extended`: dead code elimination, constant folding, and operator fusion.
 ///
 /// Returns an `OptimizationResult` summarizing the transformations applied.
-pub fn optimize(
-    graph: &mut ExecutionGraph,
-    config: &OptimizerConfig,
-) -> OptimizationResult {
+pub fn optimize(graph: &mut ExecutionGraph, config: &OptimizerConfig) -> OptimizationResult {
     let mut result = OptimizationResult::empty();
 
     match config.level {
@@ -137,19 +136,25 @@ pub fn optimize(
             if config.enable_dce {
                 let removed = dead_code_elimination(graph);
                 result.nodes_removed += removed;
-                result.passes_applied.push(OptimizationPass::DeadCodeElimination);
+                result
+                    .passes_applied
+                    .push(OptimizationPass::DeadCodeElimination);
             }
         }
         OptimizationLevel::Extended => {
             if config.enable_dce {
                 let removed = dead_code_elimination(graph);
                 result.nodes_removed += removed;
-                result.passes_applied.push(OptimizationPass::DeadCodeElimination);
+                result
+                    .passes_applied
+                    .push(OptimizationPass::DeadCodeElimination);
             }
             if config.enable_constant_folding {
                 let folded = constant_folding(graph);
                 result.nodes_removed += folded;
-                result.passes_applied.push(OptimizationPass::ConstantFolding);
+                result
+                    .passes_applied
+                    .push(OptimizationPass::ConstantFolding);
             }
             if config.enable_fusion {
                 let fused = operator_fusion(graph);
@@ -303,14 +308,8 @@ mod tests {
             result.passes_applied[0],
             OptimizationPass::DeadCodeElimination
         );
-        assert_eq!(
-            result.passes_applied[1],
-            OptimizationPass::ConstantFolding
-        );
-        assert_eq!(
-            result.passes_applied[2],
-            OptimizationPass::OperatorFusion
-        );
+        assert_eq!(result.passes_applied[1], OptimizationPass::ConstantFolding);
+        assert_eq!(result.passes_applied[2], OptimizationPass::OperatorFusion);
         // Stubs return 0.
         assert_eq!(result.nodes_removed, 0);
         assert_eq!(result.nodes_fused, 0);

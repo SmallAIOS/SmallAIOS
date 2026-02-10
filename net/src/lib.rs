@@ -80,7 +80,10 @@ mod tests {
     #[test]
     fn test_net_error_display() {
         assert_eq!(format!("{}", NetError::PacketTooShort), "packet too short");
-        assert_eq!(format!("{}", NetError::ChecksumMismatch), "checksum mismatch");
+        assert_eq!(
+            format!("{}", NetError::ChecksumMismatch),
+            "checksum mismatch"
+        );
         assert_eq!(format!("{}", NetError::TableFull), "table full");
         assert_eq!(format!("{}", NetError::Timeout), "timeout");
     }

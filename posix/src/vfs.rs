@@ -138,6 +138,12 @@ pub struct VfsTree {
     count: usize,
 }
 
+impl Default for VfsTree {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VfsTree {
     /// Create an empty VFS tree.
     pub fn new() -> Self {
@@ -335,10 +341,16 @@ pub fn build_default_vfs() -> VfsTree {
     tree.nodes[dev_idx].as_mut().unwrap().add_child(urandom_idx);
 
     // proc -> self
-    tree.nodes[proc_idx].as_mut().unwrap().add_child(proc_self_idx);
+    tree.nodes[proc_idx]
+        .as_mut()
+        .unwrap()
+        .add_child(proc_self_idx);
 
     // proc/self -> maps
-    tree.nodes[proc_self_idx].as_mut().unwrap().add_child(maps_idx);
+    tree.nodes[proc_self_idx]
+        .as_mut()
+        .unwrap()
+        .add_child(maps_idx);
 
     tree
 }

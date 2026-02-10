@@ -151,7 +151,7 @@ impl EpollInstance {
 ///
 /// # Arguments
 /// * `flags` — Must be `0` or `O_CLOEXEC` (0o2000000). Any other value
-///             returns `EINVAL`.
+///   returns `EINVAL`.
 ///
 /// # Errors
 /// * `Errno::EINVAL` — Invalid flags.

@@ -51,7 +51,11 @@ pub enum CsprngError {
 impl fmt::Display for CsprngError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidSeedLength => write!(f, "invalid seed length (expected {} bytes)", CSPRNG_SEED_LEN),
+            Self::InvalidSeedLength => write!(
+                f,
+                "invalid seed length (expected {} bytes)",
+                CSPRNG_SEED_LEN
+            ),
             Self::ReseedRequired => write!(f, "reseed required: generation limit reached"),
             Self::ZeroLength => write!(f, "requested output length is zero"),
             Self::NotSeeded => write!(f, "CSPRNG not seeded"),
@@ -193,6 +197,12 @@ impl Csprng {
     }
 }
 
+impl Default for Csprng {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl fmt::Debug for Csprng {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Csprng")
@@ -207,8 +217,8 @@ impl fmt::Debug for Csprng {
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
     use super::*;
+    use alloc::format;
 
     #[test]
     fn csprng_seed_from_bytes() {
@@ -226,7 +236,10 @@ mod tests {
 
     #[test]
     fn csprng_seed_from_slice_invalid() {
-        assert_eq!(CsprngSeed::from_slice(&[0u8; 16]), Err(CsprngError::InvalidSeedLength));
+        assert_eq!(
+            CsprngSeed::from_slice(&[0u8; 16]),
+            Err(CsprngError::InvalidSeedLength)
+        );
     }
 
     #[test]

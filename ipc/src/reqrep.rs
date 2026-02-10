@@ -129,6 +129,12 @@ pub struct QueryRouter {
     next_queryable_id: u64,
 }
 
+impl Default for QueryRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QueryRouter {
     /// Create a new, empty query router.
     pub fn new() -> Self {
@@ -317,10 +323,7 @@ mod tests {
     #[test]
     fn router_unregister_not_found() {
         let mut router = QueryRouter::new();
-        assert_eq!(
-            router.unregister(QueryableId(999)),
-            Err(IpcError::NotFound)
-        );
+        assert_eq!(router.unregister(QueryableId(999)), Err(IpcError::NotFound));
     }
 
     #[test]

@@ -152,9 +152,7 @@ impl PtxRegistry {
         cc: &ComputeCapability,
     ) -> Option<&PtxKernel> {
         self.kernels.iter().find(|k| {
-            k.kernel_type == kernel_type
-                && k.precision == precision
-                && k.is_compatible(cc)
+            k.kernel_type == kernel_type && k.precision == precision && k.is_compatible(cc)
         })
     }
 
@@ -286,7 +284,10 @@ impl PtxRegistry {
     /// Return references to all kernels compatible with the given compute
     /// capability.
     pub fn compatible_kernels(&self, cc: &ComputeCapability) -> Vec<&PtxKernel> {
-        self.kernels.iter().filter(|k| k.is_compatible(cc)).collect()
+        self.kernels
+            .iter()
+            .filter(|k| k.is_compatible(cc))
+            .collect()
     }
 }
 
@@ -345,10 +346,20 @@ mod tests {
     #[test]
     fn test_find_kernel_by_type_and_precision() {
         let mut reg = PtxRegistry::new();
-        reg.register(make_kernel("gemm_f32", PtxKernelType::Gemm, DataPrecision::F32, 53))
-            .unwrap();
-        reg.register(make_kernel("gemm_f16", PtxKernelType::Gemm, DataPrecision::F16, 53))
-            .unwrap();
+        reg.register(make_kernel(
+            "gemm_f32",
+            PtxKernelType::Gemm,
+            DataPrecision::F32,
+            53,
+        ))
+        .unwrap();
+        reg.register(make_kernel(
+            "gemm_f16",
+            PtxKernelType::Gemm,
+            DataPrecision::F16,
+            53,
+        ))
+        .unwrap();
 
         let cc = test_cc_turing();
         let found = reg.find_kernel(PtxKernelType::Gemm, DataPrecision::F16, &cc);
@@ -409,11 +420,21 @@ mod tests {
     fn test_kernel_count() {
         let mut reg = PtxRegistry::new();
         assert_eq!(reg.kernel_count(), 0);
-        reg.register(make_kernel("a", PtxKernelType::Pool, DataPrecision::F32, 53))
-            .unwrap();
+        reg.register(make_kernel(
+            "a",
+            PtxKernelType::Pool,
+            DataPrecision::F32,
+            53,
+        ))
+        .unwrap();
         assert_eq!(reg.kernel_count(), 1);
-        reg.register(make_kernel("b", PtxKernelType::Pool, DataPrecision::F16, 53))
-            .unwrap();
+        reg.register(make_kernel(
+            "b",
+            PtxKernelType::Pool,
+            DataPrecision::F16,
+            53,
+        ))
+        .unwrap();
         assert_eq!(reg.kernel_count(), 2);
     }
 
@@ -448,8 +469,13 @@ mod tests {
         let mut reg = PtxRegistry::new();
         for i in 0..MAX_KERNELS {
             let name = alloc::format!("k{}", i);
-            reg.register(make_kernel(&name, PtxKernelType::Gemm, DataPrecision::F32, 53))
-                .unwrap();
+            reg.register(make_kernel(
+                &name,
+                PtxKernelType::Gemm,
+                DataPrecision::F32,
+                53,
+            ))
+            .unwrap();
         }
         assert_eq!(reg.kernel_count(), MAX_KERNELS);
         let result = reg.register(make_kernel(
@@ -483,11 +509,7 @@ mod tests {
         ];
         for kt in &types {
             let found = reg.find_kernel(kt.clone(), DataPrecision::F32, &cc);
-            assert!(
-                found.is_some(),
-                "Expected default F32 kernel for {:?}",
-                kt
-            );
+            assert!(found.is_some(), "Expected default F32 kernel for {:?}", kt);
         }
     }
 
@@ -504,14 +526,13 @@ mod tests {
             DataPrecision::F16,
             &test_cc_maxwell(),
         );
-        assert!(found.is_none(), "conv2d_f16 should not be compatible with Maxwell");
+        assert!(
+            found.is_none(),
+            "conv2d_f16 should not be compatible with Maxwell"
+        );
 
         // But Turing (sm_75) should succeed.
-        let found = reg.find_kernel(
-            PtxKernelType::Conv2d,
-            DataPrecision::F16,
-            &test_cc_turing(),
-        );
+        let found = reg.find_kernel(PtxKernelType::Conv2d, DataPrecision::F16, &test_cc_turing());
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "conv2d_f16");
     }
@@ -648,13 +669,28 @@ mod tests {
     fn test_register_ids_increase() {
         let mut reg = PtxRegistry::new();
         let id1 = reg
-            .register(make_kernel("k1", PtxKernelType::Pool, DataPrecision::F32, 53))
+            .register(make_kernel(
+                "k1",
+                PtxKernelType::Pool,
+                DataPrecision::F32,
+                53,
+            ))
             .unwrap();
         let id2 = reg
-            .register(make_kernel("k2", PtxKernelType::Pool, DataPrecision::F16, 53))
+            .register(make_kernel(
+                "k2",
+                PtxKernelType::Pool,
+                DataPrecision::F16,
+                53,
+            ))
             .unwrap();
         let id3 = reg
-            .register(make_kernel("k3", PtxKernelType::Pool, DataPrecision::Int8, 53))
+            .register(make_kernel(
+                "k3",
+                PtxKernelType::Pool,
+                DataPrecision::Int8,
+                53,
+            ))
             .unwrap();
         assert_eq!(id1, 1);
         assert_eq!(id2, 2);
@@ -668,11 +704,7 @@ mod tests {
         let mut reg = PtxRegistry::new();
         reg.register_defaults().unwrap();
         // gemm_f16 has min_sm=53, Maxwell is sm_53 => exactly compatible.
-        let found = reg.find_kernel(
-            PtxKernelType::Gemm,
-            DataPrecision::F16,
-            &test_cc_maxwell(),
-        );
+        let found = reg.find_kernel(PtxKernelType::Gemm, DataPrecision::F16, &test_cc_maxwell());
         assert!(found.is_some());
         assert_eq!(found.unwrap().name, "gemm_f16");
     }

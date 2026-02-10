@@ -105,8 +105,8 @@ impl KeyExpr {
         }
 
         // No leading slash (we already handled "/")
-        let to_validate = if expr.starts_with('/') {
-            &expr[1..]
+        let to_validate = if let Some(stripped) = expr.strip_prefix('/') {
+            stripped
         } else {
             expr
         };
@@ -188,17 +188,11 @@ fn segments_match(a: &[&str], b: &[&str]) -> bool {
         // One side exhausted, other is not `**`: no match.
         (None, Some(_)) | (Some(_), None) => false,
         // `**` on left: try matching zero segments (skip `**`) or one+ (skip one from b).
-        (Some(&"**"), Some(_)) => {
-            segments_match(&a[1..], b) || segments_match(a, &b[1..])
-        }
+        (Some(&"**"), Some(_)) => segments_match(&a[1..], b) || segments_match(a, &b[1..]),
         // `**` on right: symmetric.
-        (Some(_), Some(&"**")) => {
-            segments_match(a, &b[1..]) || segments_match(&a[1..], b)
-        }
+        (Some(_), Some(&"**")) => segments_match(a, &b[1..]) || segments_match(&a[1..], b),
         // `*` matches any single segment.
-        (Some(&"*"), Some(_)) | (Some(_), Some(&"*")) => {
-            segments_match(&a[1..], &b[1..])
-        }
+        (Some(&"*"), Some(_)) | (Some(_), Some(&"*")) => segments_match(&a[1..], &b[1..]),
         // Literal comparison.
         (Some(sa), Some(sb)) => {
             if sa == sb {
@@ -288,18 +282,12 @@ mod tests {
 
     #[test]
     fn invalid_space_in_segment() {
-        assert_eq!(
-            KeyExpr::new("a/b c/d"),
-            Err(IpcError::InvalidKeyExpression)
-        );
+        assert_eq!(KeyExpr::new("a/b c/d"), Err(IpcError::InvalidKeyExpression));
     }
 
     #[test]
     fn invalid_special_characters() {
-        assert_eq!(
-            KeyExpr::new("a/b@c/d"),
-            Err(IpcError::InvalidKeyExpression)
-        );
+        assert_eq!(KeyExpr::new("a/b@c/d"), Err(IpcError::InvalidKeyExpression));
     }
 
     // === Segments parsing ===

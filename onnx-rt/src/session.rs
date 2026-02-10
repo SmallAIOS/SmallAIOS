@@ -240,10 +240,7 @@ impl Session {
     /// Input tensors are validated against the model's expected input
     /// names and shapes. Currently returns `NotImplemented` after
     /// validation checks pass.
-    pub fn run(
-        &self,
-        inputs: &[InferenceInput],
-    ) -> Result<Vec<InferenceOutput>, SessionError> {
+    pub fn run(&self, inputs: &[InferenceInput]) -> Result<Vec<InferenceOutput>, SessionError> {
         if !self.is_initialized {
             return Err(SessionError::ExecutionFailed(String::from(
                 "session not initialized",
@@ -258,7 +255,7 @@ impl Session {
 
         // Validate that each input name matches a known model input.
         for input in inputs {
-            if !self.input_names.iter().any(|n| *n == input.name) {
+            if !self.input_names.contains(&input.name) {
                 return Err(SessionError::InvalidInput(input.name.clone()));
             }
         }
@@ -290,11 +287,11 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tensor::DataType;
+    use crate::tensor::TensorShape;
     use alloc::format;
     use alloc::string::String;
     use alloc::vec;
-    use crate::tensor::DataType;
-    use crate::tensor::TensorShape;
 
     // ---- Session creation tests ----
 
@@ -431,7 +428,10 @@ mod tests {
     #[test]
     fn test_session_error_display() {
         assert_eq!(
-            format!("{}", SessionError::ModelLoadFailed(String::from("bad data"))),
+            format!(
+                "{}",
+                SessionError::ModelLoadFailed(String::from("bad data"))
+            ),
             "model load failed: bad data"
         );
         assert_eq!(

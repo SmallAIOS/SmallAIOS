@@ -186,7 +186,10 @@ mod tests {
     #[test]
     fn test_mac_address_from_bytes_invalid() {
         let short = [0x01, 0x02, 0x03];
-        assert_eq!(MacAddress::from_bytes(&short), Err(NetError::InvalidAddress));
+        assert_eq!(
+            MacAddress::from_bytes(&short),
+            Err(NetError::InvalidAddress)
+        );
     }
 
     #[test]
@@ -223,10 +226,7 @@ mod tests {
     #[test]
     fn test_mac_address_debug() {
         let mac = MacAddress::new(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
-        assert_eq!(
-            format!("{:?}", mac),
-            "MacAddress(00:11:22:33:44:55)"
-        );
+        assert_eq!(format!("{:?}", mac), "MacAddress(00:11:22:33:44:55)");
     }
 
     #[test]
@@ -264,10 +264,7 @@ mod tests {
     #[test]
     fn test_parse_too_short() {
         let data = [0u8; 13]; // Less than HEADER_LEN
-        assert_eq!(
-            EthernetFrame::parse(&data),
-            Err(NetError::PacketTooShort)
-        );
+        assert_eq!(EthernetFrame::parse(&data), Err(NetError::PacketTooShort));
     }
 
     #[test]

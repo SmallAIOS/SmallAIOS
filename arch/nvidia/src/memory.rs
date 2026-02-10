@@ -124,9 +124,7 @@ impl VramAllocator {
 
         let (base, region_size, used) = match region {
             MemoryRegion::Static => (self.static_base, self.static_size, &mut self.static_used),
-            MemoryRegion::Dynamic => {
-                (self.dynamic_base, self.dynamic_size, &mut self.dynamic_used)
-            }
+            MemoryRegion::Dynamic => (self.dynamic_base, self.dynamic_size, &mut self.dynamic_used),
         };
 
         if *used + aligned > region_size {

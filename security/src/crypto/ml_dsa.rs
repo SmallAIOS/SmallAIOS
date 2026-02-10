@@ -102,16 +102,30 @@ impl fmt::Display for MlDsaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidPublicKeyLength => {
-                write!(f, "invalid public key length (expected {} bytes)", ML_DSA_65_PK_LEN)
+                write!(
+                    f,
+                    "invalid public key length (expected {} bytes)",
+                    ML_DSA_65_PK_LEN
+                )
             }
             Self::InvalidSecretKeyLength => {
-                write!(f, "invalid secret key length (expected {} bytes)", ML_DSA_65_SK_LEN)
+                write!(
+                    f,
+                    "invalid secret key length (expected {} bytes)",
+                    ML_DSA_65_SK_LEN
+                )
             }
             Self::InvalidSignatureLength => {
-                write!(f, "invalid signature length (expected {} bytes)", ML_DSA_65_SIG_LEN)
+                write!(
+                    f,
+                    "invalid signature length (expected {} bytes)",
+                    ML_DSA_65_SIG_LEN
+                )
             }
             Self::VerificationFailed => write!(f, "ML-DSA signature verification failed"),
-            Self::SigningFailed => write!(f, "ML-DSA signing failed (rejection sampling exhausted)"),
+            Self::SigningFailed => {
+                write!(f, "ML-DSA signing failed (rejection sampling exhausted)")
+            }
             Self::RngFailure => write!(f, "random number generation failure"),
             Self::MessageTooLarge => write!(f, "message too large for signing"),
             Self::NotImplemented => write!(f, "ML-DSA-65 not yet implemented"),
@@ -152,6 +166,11 @@ impl MlDsaPublicKey {
     pub fn len(&self) -> usize {
         ML_DSA_65_PK_LEN
     }
+
+    /// Returns whether the key is empty (always false for fixed-size keys).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl fmt::Debug for MlDsaPublicKey {
@@ -191,6 +210,11 @@ impl MlDsaSecretKey {
     pub fn len(&self) -> usize {
         ML_DSA_65_SK_LEN
     }
+
+    /// Returns whether the key is empty (always false for fixed-size keys).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl fmt::Debug for MlDsaSecretKey {
@@ -229,6 +253,11 @@ impl MlDsaSignature {
     /// Return the signature length.
     pub fn len(&self) -> usize {
         ML_DSA_65_SIG_LEN
+    }
+
+    /// Returns whether the signature is empty (always false for fixed-size types).
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -309,8 +338,8 @@ pub fn ml_dsa_65_verify(
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
     use super::*;
+    use alloc::format;
 
     #[test]
     fn ml_dsa_constant_sizes() {
@@ -343,7 +372,10 @@ mod tests {
     #[test]
     fn ml_dsa_public_key_from_slice_invalid() {
         let bytes = [0u8; 100];
-        assert_eq!(MlDsaPublicKey::from_slice(&bytes), Err(MlDsaError::InvalidPublicKeyLength));
+        assert_eq!(
+            MlDsaPublicKey::from_slice(&bytes),
+            Err(MlDsaError::InvalidPublicKeyLength)
+        );
     }
 
     #[test]
@@ -356,7 +388,10 @@ mod tests {
     #[test]
     fn ml_dsa_secret_key_from_slice_invalid() {
         let bytes = [0u8; 100];
-        assert_eq!(MlDsaSecretKey::from_slice(&bytes), Err(MlDsaError::InvalidSecretKeyLength));
+        assert_eq!(
+            MlDsaSecretKey::from_slice(&bytes),
+            Err(MlDsaError::InvalidSecretKeyLength)
+        );
     }
 
     #[test]
@@ -369,7 +404,10 @@ mod tests {
     #[test]
     fn ml_dsa_signature_from_slice_invalid() {
         let bytes = [0u8; 100];
-        assert_eq!(MlDsaSignature::from_slice(&bytes), Err(MlDsaError::InvalidSignatureLength));
+        assert_eq!(
+            MlDsaSignature::from_slice(&bytes),
+            Err(MlDsaError::InvalidSignatureLength)
+        );
     }
 
     #[test]
@@ -382,14 +420,20 @@ mod tests {
     fn ml_dsa_sign_stub() {
         let sk = MlDsaSecretKey::from_bytes([0u8; ML_DSA_65_SK_LEN]);
         let seed = [0u8; 32];
-        assert_eq!(ml_dsa_65_sign(&sk, b"message", &seed), Err(MlDsaError::NotImplemented));
+        assert_eq!(
+            ml_dsa_65_sign(&sk, b"message", &seed),
+            Err(MlDsaError::NotImplemented)
+        );
     }
 
     #[test]
     fn ml_dsa_verify_stub() {
         let pk = MlDsaPublicKey::from_bytes([0u8; ML_DSA_65_PK_LEN]);
         let sig = MlDsaSignature::from_bytes([0u8; ML_DSA_65_SIG_LEN]);
-        assert_eq!(ml_dsa_65_verify(&pk, b"message", &sig), Err(MlDsaError::NotImplemented));
+        assert_eq!(
+            ml_dsa_65_verify(&pk, b"message", &sig),
+            Err(MlDsaError::NotImplemented)
+        );
     }
 
     #[test]

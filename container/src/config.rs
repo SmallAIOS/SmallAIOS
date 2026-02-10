@@ -32,16 +32,12 @@ impl LogLevel {
     /// Parse a log level from a string (case-insensitive).
     ///
     /// Returns `None` if the string does not match any known level.
-    pub fn from_str(s: &str) -> Option<LogLevel> {
+    pub fn parse(s: &str) -> Option<LogLevel> {
         // Manual ASCII-lowercase comparison to avoid pulling in Unicode tables.
         let mut buf = [0u8; 8];
         let len = s.len().min(buf.len());
         for (i, &b) in s.as_bytes()[..len].iter().enumerate() {
-            buf[i] = if b.is_ascii_uppercase() {
-                b | 0x20
-            } else {
-                b
-            };
+            buf[i] = if b.is_ascii_uppercase() { b | 0x20 } else { b };
         }
         let lower = core::str::from_utf8(&buf[..len]).ok()?;
         match lower {
@@ -127,9 +123,8 @@ pub struct ContainerConfig {
     pub num_workers: u32,
 }
 
-impl ContainerConfig {
-    /// Return a configuration with sensible defaults suitable for development.
-    pub fn default() -> Self {
+impl Default for ContainerConfig {
+    fn default() -> Self {
         ContainerConfig {
             name: String::from("smallaios"),
             version: "0.1.0",
@@ -154,7 +149,9 @@ impl ContainerConfig {
             num_workers: 4,
         }
     }
+}
 
+impl ContainerConfig {
     /// Enable GPU acceleration.
     pub fn with_gpu(&mut self) -> &mut Self {
         self.inference.enable_gpu = true;
@@ -171,24 +168,24 @@ impl ContainerConfig {
     /// invalid field found.
     pub fn validate(&self) -> Result<(), ContainerError> {
         if self.network.listen_port == 0 {
-            return Err(ContainerError::InvalidConfig(
-                String::from("listen_port must be > 0"),
-            ));
+            return Err(ContainerError::InvalidConfig(String::from(
+                "listen_port must be > 0",
+            )));
         }
         if self.inference.max_models == 0 {
-            return Err(ContainerError::InvalidConfig(
-                String::from("max_models must be > 0"),
-            ));
+            return Err(ContainerError::InvalidConfig(String::from(
+                "max_models must be > 0",
+            )));
         }
         if self.num_workers == 0 {
-            return Err(ContainerError::InvalidConfig(
-                String::from("num_workers must be > 0"),
-            ));
+            return Err(ContainerError::InvalidConfig(String::from(
+                "num_workers must be > 0",
+            )));
         }
         if self.max_memory_mb == 0 {
-            return Err(ContainerError::InvalidConfig(
-                String::from("max_memory_mb must be > 0"),
-            ));
+            return Err(ContainerError::InvalidConfig(String::from(
+                "max_memory_mb must be > 0",
+            )));
         }
         Ok(())
     }
@@ -213,7 +210,7 @@ pub fn parse_env_override(config: &mut ContainerConfig, key: &str, value: &str) 
             }
         }
         "SMALLAIOS_LOG_LEVEL" => {
-            if let Some(level) = LogLevel::from_str(value) {
+            if let Some(level) = LogLevel::parse(value) {
                 config.log_level = level;
             }
         }
@@ -446,27 +443,27 @@ mod tests {
 
     #[test]
     fn test_log_level_from_str_all_variants() {
-        assert_eq!(LogLevel::from_str("error"), Some(LogLevel::Error));
-        assert_eq!(LogLevel::from_str("warn"), Some(LogLevel::Warn));
-        assert_eq!(LogLevel::from_str("info"), Some(LogLevel::Info));
-        assert_eq!(LogLevel::from_str("debug"), Some(LogLevel::Debug));
-        assert_eq!(LogLevel::from_str("trace"), Some(LogLevel::Trace));
+        assert_eq!(LogLevel::parse("error"), Some(LogLevel::Error));
+        assert_eq!(LogLevel::parse("warn"), Some(LogLevel::Warn));
+        assert_eq!(LogLevel::parse("info"), Some(LogLevel::Info));
+        assert_eq!(LogLevel::parse("debug"), Some(LogLevel::Debug));
+        assert_eq!(LogLevel::parse("trace"), Some(LogLevel::Trace));
     }
 
     #[test]
     fn test_log_level_from_str_case_insensitive() {
-        assert_eq!(LogLevel::from_str("ERROR"), Some(LogLevel::Error));
-        assert_eq!(LogLevel::from_str("Warn"), Some(LogLevel::Warn));
-        assert_eq!(LogLevel::from_str("INFO"), Some(LogLevel::Info));
-        assert_eq!(LogLevel::from_str("Debug"), Some(LogLevel::Debug));
-        assert_eq!(LogLevel::from_str("TRACE"), Some(LogLevel::Trace));
+        assert_eq!(LogLevel::parse("ERROR"), Some(LogLevel::Error));
+        assert_eq!(LogLevel::parse("Warn"), Some(LogLevel::Warn));
+        assert_eq!(LogLevel::parse("INFO"), Some(LogLevel::Info));
+        assert_eq!(LogLevel::parse("Debug"), Some(LogLevel::Debug));
+        assert_eq!(LogLevel::parse("TRACE"), Some(LogLevel::Trace));
     }
 
     #[test]
     fn test_log_level_from_str_invalid() {
-        assert_eq!(LogLevel::from_str("verbose"), None);
-        assert_eq!(LogLevel::from_str(""), None);
-        assert_eq!(LogLevel::from_str("123"), None);
+        assert_eq!(LogLevel::parse("verbose"), None);
+        assert_eq!(LogLevel::parse(""), None);
+        assert_eq!(LogLevel::parse("123"), None);
     }
 
     // -- Sub-config defaults -----------------------------------------------

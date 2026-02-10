@@ -250,10 +250,7 @@ mod tests {
     #[test]
     fn test_recv_null_buffer() {
         let args = SyscallArgs::new(0x22, [1, 0, 256, 0, 0, 0]);
-        assert_eq!(
-            sys_ipc_recv(&args),
-            SyscallError::InvalidArgument.as_i64()
-        );
+        assert_eq!(sys_ipc_recv(&args), SyscallError::InvalidArgument.as_i64());
     }
 
     #[test]

@@ -140,6 +140,12 @@ pub struct SocketTable {
     count: usize,
 }
 
+impl Default for SocketTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SocketTable {
     /// Create an empty socket table.
     pub fn new() -> Self {
@@ -475,10 +481,7 @@ mod tests {
     fn set_nonblocking_on_closed_fails() {
         let mut sock = socket_create(AddressFamily::Inet, SocketType::Stream).unwrap();
         socket_close(&mut sock).unwrap();
-        assert_eq!(
-            socket_set_nonblocking(&mut sock, true),
-            Err(Errno::EBADF)
-        );
+        assert_eq!(socket_set_nonblocking(&mut sock, true), Err(Errno::EBADF));
     }
 
     #[test]

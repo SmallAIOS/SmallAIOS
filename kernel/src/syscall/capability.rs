@@ -174,20 +174,29 @@ mod tests {
     #[test]
     fn test_cap_create_invalid_resource_type() {
         let args = SyscallArgs::new(0x60, [99, 1, 0b0001, 0, 0, 0]);
-        assert_eq!(sys_cap_create(&args), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(
+            sys_cap_create(&args),
+            SyscallError::InvalidArgument.as_i64()
+        );
     }
 
     #[test]
     fn test_cap_create_invalid_permissions() {
         // Permissions with high bits set
         let args = SyscallArgs::new(0x60, [0, 1, 0xFF, 0, 0, 0]);
-        assert_eq!(sys_cap_create(&args), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(
+            sys_cap_create(&args),
+            SyscallError::InvalidArgument.as_i64()
+        );
     }
 
     #[test]
     fn test_cap_create_zero_permissions() {
         let args = SyscallArgs::new(0x60, [0, 1, 0, 0, 0, 0]);
-        assert_eq!(sys_cap_create(&args), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(
+            sys_cap_create(&args),
+            SyscallError::InvalidArgument.as_i64()
+        );
     }
 
     #[test]
@@ -213,19 +222,28 @@ mod tests {
     #[test]
     fn test_cap_delegate_zero_cap() {
         let args = SyscallArgs::new(0x62, [0, 2, 0b0001, 0, 0, 0]);
-        assert_eq!(sys_cap_delegate(&args), SyscallError::InvalidHandle.as_i64());
+        assert_eq!(
+            sys_cap_delegate(&args),
+            SyscallError::InvalidHandle.as_i64()
+        );
     }
 
     #[test]
     fn test_cap_delegate_zero_task() {
         let args = SyscallArgs::new(0x62, [1, 0, 0b0001, 0, 0, 0]);
-        assert_eq!(sys_cap_delegate(&args), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(
+            sys_cap_delegate(&args),
+            SyscallError::InvalidArgument.as_i64()
+        );
     }
 
     #[test]
     fn test_cap_delegate_zero_perms() {
         let args = SyscallArgs::new(0x62, [1, 2, 0, 0, 0, 0]);
-        assert_eq!(sys_cap_delegate(&args), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(
+            sys_cap_delegate(&args),
+            SyscallError::InvalidArgument.as_i64()
+        );
     }
 
     #[test]

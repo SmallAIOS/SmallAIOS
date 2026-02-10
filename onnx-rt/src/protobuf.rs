@@ -198,8 +198,7 @@ impl<'a> ProtoDecoder<'a> {
         let tag = self.read_varint()?;
 
         let wire_type_raw = (tag & 0x07) as u8;
-        let wire_type =
-            WireType::from_u8(wire_type_raw).ok_or(ProtoError::InvalidWireType)?;
+        let wire_type = WireType::from_u8(wire_type_raw).ok_or(ProtoError::InvalidWireType)?;
 
         let field_number = (tag >> 3) as u32;
         if field_number == 0 {

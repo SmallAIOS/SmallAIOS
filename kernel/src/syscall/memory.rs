@@ -332,10 +332,7 @@ mod tests {
     #[test]
     fn test_tensor_free_zero_handle() {
         let args = SyscallArgs::new(0x05, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(
-            sys_tensor_free(&args),
-            SyscallError::InvalidHandle.as_i64()
-        );
+        assert_eq!(sys_tensor_free(&args), SyscallError::InvalidHandle.as_i64());
     }
 
     #[test]

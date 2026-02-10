@@ -37,12 +37,11 @@
 
 use core::fmt;
 
-use super::sha3::{Sha3_256Digest, SHA3_256_DIGEST_LEN};
-use super::ml_dsa::{MlDsaPublicKey, MlDsaSignature, ML_DSA_65_PK_LEN, ML_DSA_65_SIG_LEN};
 use super::hybrid::{
-    HybridSigPublicKey, HybridSignature,
-    ED25519_PK_LEN, HYBRID_SIG_PK_LEN, HYBRID_SIG_LEN,
+    HybridSigPublicKey, HybridSignature, ED25519_PK_LEN, HYBRID_SIG_LEN, HYBRID_SIG_PK_LEN,
 };
+use super::ml_dsa::{MlDsaPublicKey, MlDsaSignature, ML_DSA_65_PK_LEN, ML_DSA_65_SIG_LEN};
+use super::sha3::{Sha3_256Digest, SHA3_256_DIGEST_LEN};
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -90,7 +89,9 @@ pub enum VerifyError {
 impl fmt::Display for VerifyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ModelTooLarge => write!(f, "model exceeds maximum size ({} bytes)", MAX_MODEL_SIZE),
+            Self::ModelTooLarge => {
+                write!(f, "model exceeds maximum size ({} bytes)", MAX_MODEL_SIZE)
+            }
             Self::NameTooLong => write!(f, "model name exceeds {} bytes", MAX_MODEL_NAME_LEN),
             Self::InvalidSignatureFormat => write!(f, "invalid model signature format"),
             Self::UnsupportedVersion => write!(f, "unsupported signature format version"),
@@ -206,8 +207,7 @@ impl ModelMetadata {
         let mut offset = 0;
 
         // Model hash (32 bytes)
-        out[offset..offset + SHA3_256_DIGEST_LEN]
-            .copy_from_slice(self.model_hash.as_bytes());
+        out[offset..offset + SHA3_256_DIGEST_LEN].copy_from_slice(self.model_hash.as_bytes());
         offset += SHA3_256_DIGEST_LEN;
 
         // Version (4 bytes, little-endian)
@@ -244,10 +244,7 @@ pub struct ModelSignature {
 
 impl ModelSignature {
     /// Create a model signature with ML-DSA-65.
-    pub fn new_ml_dsa(
-        metadata: ModelMetadata,
-        signature: &MlDsaSignature,
-    ) -> Self {
+    pub fn new_ml_dsa(metadata: ModelMetadata, signature: &MlDsaSignature) -> Self {
         let mut sig_bytes = [0u8; super::hybrid::HYBRID_SIG_LEN];
         sig_bytes[..ML_DSA_65_SIG_LEN].copy_from_slice(signature.as_bytes());
         Self {
@@ -258,10 +255,7 @@ impl ModelSignature {
     }
 
     /// Create a model signature with hybrid Ed25519 + ML-DSA-65.
-    pub fn new_hybrid(
-        metadata: ModelMetadata,
-        signature: &HybridSignature,
-    ) -> Self {
+    pub fn new_hybrid(metadata: ModelMetadata, signature: &HybridSignature) -> Self {
         let mut sig_bytes = [0u8; super::hybrid::HYBRID_SIG_LEN];
         let ed_sig = signature.ed25519_sig();
         let ml_sig = signature.ml_dsa_sig();
@@ -312,7 +306,10 @@ impl TrustedKeyStore {
     }
 
     /// Add a trusted ML-DSA-65 public key (by its SHA-3-256 hash).
-    pub fn add_ml_dsa_key(&mut self, key_hash: [u8; SHA3_256_DIGEST_LEN]) -> Result<(), VerifyError> {
+    pub fn add_ml_dsa_key(
+        &mut self,
+        key_hash: [u8; SHA3_256_DIGEST_LEN],
+    ) -> Result<(), VerifyError> {
         if self.ml_dsa_count >= MAX_TRUSTED_KEYS {
             return Err(VerifyError::UntrustedKey);
         }
@@ -322,7 +319,10 @@ impl TrustedKeyStore {
     }
 
     /// Add a trusted hybrid public key (by its SHA-3-256 hash).
-    pub fn add_hybrid_key(&mut self, key_hash: [u8; SHA3_256_DIGEST_LEN]) -> Result<(), VerifyError> {
+    pub fn add_hybrid_key(
+        &mut self,
+        key_hash: [u8; SHA3_256_DIGEST_LEN],
+    ) -> Result<(), VerifyError> {
         if self.hybrid_count >= MAX_TRUSTED_KEYS {
             return Err(VerifyError::UntrustedKey);
         }
@@ -364,6 +364,12 @@ impl TrustedKeyStore {
     /// Return the number of trusted hybrid keys.
     pub fn hybrid_key_count(&self) -> usize {
         self.hybrid_count
+    }
+}
+
+impl Default for TrustedKeyStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -437,8 +443,8 @@ pub fn hash_model(model_bytes: &[u8]) -> Result<Sha3_256Digest, VerifyError> {
 
 #[cfg(test)]
 mod tests {
-    use alloc::format;
     use super::*;
+    use alloc::format;
 
     #[test]
     fn verify_constants() {
@@ -451,8 +457,14 @@ mod tests {
 
     #[test]
     fn signature_scheme_from_byte() {
-        assert_eq!(SignatureScheme::from_byte(1), Some(SignatureScheme::MlDsa65));
-        assert_eq!(SignatureScheme::from_byte(2), Some(SignatureScheme::HybridEdMlDsa));
+        assert_eq!(
+            SignatureScheme::from_byte(1),
+            Some(SignatureScheme::MlDsa65)
+        );
+        assert_eq!(
+            SignatureScheme::from_byte(2),
+            Some(SignatureScheme::HybridEdMlDsa)
+        );
         assert_eq!(SignatureScheme::from_byte(0), None);
         assert_eq!(SignatureScheme::from_byte(3), None);
     }
@@ -479,27 +491,15 @@ mod tests {
     fn model_metadata_name_too_long() {
         let hash = Sha3_256Digest::from_bytes([0; SHA3_256_DIGEST_LEN]);
         let long_name = [b'A'; MAX_MODEL_NAME_LEN + 1];
-        let result = ModelMetadata::new(
-            &long_name,
-            1,
-            0,
-            hash,
-            SignatureScheme::MlDsa65,
-        );
+        let result = ModelMetadata::new(&long_name, 1, 0, hash, SignatureScheme::MlDsa65);
         assert_eq!(result.err(), Some(VerifyError::NameTooLong));
     }
 
     #[test]
     fn model_metadata_serialize() {
         let hash = Sha3_256Digest::from_bytes([0x42; SHA3_256_DIGEST_LEN]);
-        let meta = ModelMetadata::new(
-            b"mymodel",
-            1,
-            12345,
-            hash,
-            SignatureScheme::MlDsa65,
-        )
-        .unwrap();
+        let meta =
+            ModelMetadata::new(b"mymodel", 1, 12345, hash, SignatureScheme::MlDsa65).unwrap();
 
         let mut buf = [0u8; 512];
         let len = meta.serialize(&mut buf).unwrap();
@@ -583,14 +583,7 @@ mod tests {
     fn verify_model_ml_dsa_stub() {
         let model = b"model data";
         let hash = hash_model(model).unwrap();
-        let meta = ModelMetadata::new(
-            b"test",
-            1,
-            0,
-            hash,
-            SignatureScheme::MlDsa65,
-        )
-        .unwrap();
+        let meta = ModelMetadata::new(b"test", 1, 0, hash, SignatureScheme::MlDsa65).unwrap();
         let sig_bytes = MlDsaSignature::from_bytes([0u8; ML_DSA_65_SIG_LEN]);
         let model_sig = ModelSignature::new_ml_dsa(meta, &sig_bytes);
         let pk = MlDsaPublicKey::from_bytes([0u8; ML_DSA_65_PK_LEN]);
@@ -606,14 +599,7 @@ mod tests {
     fn verify_model_hybrid_stub() {
         let model = b"model data";
         let hash = hash_model(model).unwrap();
-        let meta = ModelMetadata::new(
-            b"test",
-            1,
-            0,
-            hash,
-            SignatureScheme::HybridEdMlDsa,
-        )
-        .unwrap();
+        let meta = ModelMetadata::new(b"test", 1, 0, hash, SignatureScheme::HybridEdMlDsa).unwrap();
         let hybrid_sig = HybridSignature::from_components(
             [0u8; super::super::hybrid::ED25519_SIG_LEN],
             [0u8; super::super::ml_dsa::ML_DSA_65_SIG_LEN],

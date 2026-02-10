@@ -97,11 +97,11 @@ pub struct PlannerConfig {
     pub alignment: usize,
 }
 
-impl PlannerConfig {
+impl Default for PlannerConfig {
     /// Creates the default planner configuration.
     ///
     /// Buffer reuse is enabled and alignment is 64 bytes.
-    pub fn default() -> Self {
+    fn default() -> Self {
         Self {
             enable_buffer_reuse: true,
             alignment: 64,

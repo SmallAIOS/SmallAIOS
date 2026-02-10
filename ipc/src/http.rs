@@ -31,7 +31,7 @@ impl HttpMethod {
     /// Parse an HTTP method from its string representation.
     ///
     /// Returns `None` if the method string is not recognized.
-    pub fn from_str(s: &str) -> Option<HttpMethod> {
+    pub fn parse_str(s: &str) -> Option<HttpMethod> {
         match s {
             "GET" => Some(HttpMethod::Get),
             "POST" => Some(HttpMethod::Post),
@@ -130,7 +130,7 @@ impl HttpRequest {
         let mut parts = request_line.splitn(3, ' ');
 
         let method_str = parts.next().ok_or(IpcError::InvalidHeader)?;
-        let method = HttpMethod::from_str(method_str).ok_or(IpcError::InvalidHeader)?;
+        let method = HttpMethod::parse_str(method_str).ok_or(IpcError::InvalidHeader)?;
 
         let path = parts.next().ok_or(IpcError::InvalidHeader)?;
         if path.is_empty() {
@@ -288,20 +288,20 @@ mod tests {
     // === HttpMethod ===
 
     #[test]
-    fn method_from_str_all() {
-        assert_eq!(HttpMethod::from_str("GET"), Some(HttpMethod::Get));
-        assert_eq!(HttpMethod::from_str("POST"), Some(HttpMethod::Post));
-        assert_eq!(HttpMethod::from_str("PUT"), Some(HttpMethod::Put));
-        assert_eq!(HttpMethod::from_str("DELETE"), Some(HttpMethod::Delete));
-        assert_eq!(HttpMethod::from_str("HEAD"), Some(HttpMethod::Head));
-        assert_eq!(HttpMethod::from_str("OPTIONS"), Some(HttpMethod::Options));
+    fn method_parse_str_all() {
+        assert_eq!(HttpMethod::parse_str("GET"), Some(HttpMethod::Get));
+        assert_eq!(HttpMethod::parse_str("POST"), Some(HttpMethod::Post));
+        assert_eq!(HttpMethod::parse_str("PUT"), Some(HttpMethod::Put));
+        assert_eq!(HttpMethod::parse_str("DELETE"), Some(HttpMethod::Delete));
+        assert_eq!(HttpMethod::parse_str("HEAD"), Some(HttpMethod::Head));
+        assert_eq!(HttpMethod::parse_str("OPTIONS"), Some(HttpMethod::Options));
     }
 
     #[test]
-    fn method_from_str_unknown() {
-        assert_eq!(HttpMethod::from_str("PATCH"), None);
-        assert_eq!(HttpMethod::from_str("get"), None);
-        assert_eq!(HttpMethod::from_str(""), None);
+    fn method_parse_str_unknown() {
+        assert_eq!(HttpMethod::parse_str("PATCH"), None);
+        assert_eq!(HttpMethod::parse_str("get"), None);
+        assert_eq!(HttpMethod::parse_str(""), None);
     }
 
     // === HttpStatus ===
@@ -522,10 +522,16 @@ mod tests {
         let body = Vec::from(b"test body data" as &[u8]);
         let resp = HttpResponse::with_body(HttpStatus::Ok, "text/plain", body.clone());
         assert_eq!(resp.headers.len(), 2);
-        assert_eq!(resp.headers[0], (String::from("Content-Type"), String::from("text/plain")));
+        assert_eq!(
+            resp.headers[0],
+            (String::from("Content-Type"), String::from("text/plain"))
+        );
         assert_eq!(
             resp.headers[1],
-            (String::from("Content-Length"), alloc::format!("{}", body.len()))
+            (
+                String::from("Content-Length"),
+                alloc::format!("{}", body.len())
+            )
         );
     }
 

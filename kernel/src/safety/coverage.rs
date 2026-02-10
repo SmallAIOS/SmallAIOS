@@ -78,6 +78,12 @@ pub struct CoverageTracker {
     next_id: u64,
 }
 
+impl Default for CoverageTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CoverageTracker {
     /// Creates a new empty coverage tracker.
     pub fn new() -> Self {
@@ -323,9 +329,7 @@ mod tests {
     #[test]
     fn test_mcdc_coverage_all_conditions_met() {
         let mut tracker = CoverageTracker::new();
-        let idx = tracker
-            .register("a.rs", 1, CoverageType::MCDC, 3)
-            .unwrap();
+        let idx = tracker.register("a.rs", 1, CoverageType::MCDC, 3).unwrap();
         tracker.record_hit(idx).unwrap();
         tracker.record_condition(idx, 3).unwrap();
         let cov = tracker.mcdc_coverage();
@@ -337,12 +341,8 @@ mod tests {
     #[test]
     fn test_mcdc_coverage_partial() {
         let mut tracker = CoverageTracker::new();
-        let i0 = tracker
-            .register("a.rs", 1, CoverageType::MCDC, 3)
-            .unwrap();
-        let i1 = tracker
-            .register("a.rs", 2, CoverageType::MCDC, 4)
-            .unwrap();
+        let i0 = tracker.register("a.rs", 1, CoverageType::MCDC, 3).unwrap();
+        let i1 = tracker.register("a.rs", 2, CoverageType::MCDC, 4).unwrap();
         tracker.record_hit(i0).unwrap();
         tracker.record_condition(i0, 3).unwrap(); // Fully covered.
         tracker.record_hit(i1).unwrap();

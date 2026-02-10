@@ -275,10 +275,7 @@ mod tests {
     #[test]
     fn default_pq_config_key_exchange() {
         let config = TlsConfig::default_pq();
-        assert_eq!(
-            config.key_exchange,
-            KeyExchangeMode::HybridX25519MlKem768
-        );
+        assert_eq!(config.key_exchange, KeyExchangeMode::HybridX25519MlKem768);
     }
 
     #[test]
@@ -371,20 +368,14 @@ mod tests {
         session.process_handshake(&[]).unwrap();
         session.process_handshake(&[]).unwrap();
         assert!(session.is_established());
-        assert_eq!(
-            session.process_handshake(&[]),
-            Err(IpcError::InvalidState)
-        );
+        assert_eq!(session.process_handshake(&[]), Err(IpcError::InvalidState));
     }
 
     #[test]
     fn process_handshake_in_closed_fails() {
         let mut session = TlsSession::new(TlsConfig::default_pq(), 1);
         session.close();
-        assert_eq!(
-            session.process_handshake(&[]),
-            Err(IpcError::InvalidState)
-        );
+        assert_eq!(session.process_handshake(&[]), Err(IpcError::InvalidState));
     }
 
     #[test]

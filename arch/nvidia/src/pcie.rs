@@ -65,7 +65,7 @@ impl PciAddress {
             | ((self.bus as u32) << 16)
             | (((self.device & 0x1F) as u32) << 11)
             | (((self.function & 0x07) as u32) << 8)
-            | (((reg & 0xFC) as u32))
+            | ((reg & 0xFC) as u32)
     }
 }
 
@@ -187,7 +187,11 @@ impl PciScanner {
     fn scan_mock(&mut self) -> Result<(), GpuError> {
         // Tesla T4 (Turing)
         self.push_device(PciDevice {
-            address: PciAddress { bus: 0, device: 3, function: 0 },
+            address: PciAddress {
+                bus: 0,
+                device: 3,
+                function: 0,
+            },
             vendor_id: NVIDIA_VENDOR_ID,
             device_id: 0x1B80,
             class_code: 0x03,
@@ -212,7 +216,11 @@ impl PciScanner {
 
         // A100 (Ampere)
         self.push_device(PciDevice {
-            address: PciAddress { bus: 0, device: 4, function: 0 },
+            address: PciAddress {
+                bus: 0,
+                device: 4,
+                function: 0,
+            },
             vendor_id: NVIDIA_VENDOR_ID,
             device_id: 0x20B0,
             class_code: 0x03,
@@ -237,20 +245,22 @@ impl PciScanner {
 
         // Non-NVIDIA device (Intel integrated, for filter testing)
         self.push_device(PciDevice {
-            address: PciAddress { bus: 0, device: 2, function: 0 },
+            address: PciAddress {
+                bus: 0,
+                device: 2,
+                function: 0,
+            },
             vendor_id: 0x8086,
             device_id: 0x5917,
             class_code: 0x03,
             subclass: 0x00,
             revision: 0x04,
-            bars: alloc::vec![
-                BaseAddressRegister {
-                    bar_type: BarType::Memory64,
-                    address: 0xDE00_0000,
-                    size: 16 * 1024 * 1024,
-                    prefetchable: false,
-                },
-            ],
+            bars: alloc::vec![BaseAddressRegister {
+                bar_type: BarType::Memory64,
+                address: 0xDE00_0000,
+                size: 16 * 1024 * 1024,
+                prefetchable: false,
+            },],
             irq_line: 10,
         });
 
@@ -292,14 +302,22 @@ mod tests {
 
     #[test]
     fn config_address_enable_bit_set() {
-        let addr = PciAddress { bus: 0, device: 0, function: 0 };
+        let addr = PciAddress {
+            bus: 0,
+            device: 0,
+            function: 0,
+        };
         let cfg = addr.config_address(0);
         assert!(cfg & (1 << 31) != 0, "enable bit must be set");
     }
 
     #[test]
     fn config_address_bus_encoding() {
-        let addr = PciAddress { bus: 5, device: 0, function: 0 };
+        let addr = PciAddress {
+            bus: 5,
+            device: 0,
+            function: 0,
+        };
         let cfg = addr.config_address(0);
         let bus_field = (cfg >> 16) & 0xFF;
         assert_eq!(bus_field, 5);
@@ -307,7 +325,11 @@ mod tests {
 
     #[test]
     fn config_address_device_encoding() {
-        let addr = PciAddress { bus: 0, device: 18, function: 0 };
+        let addr = PciAddress {
+            bus: 0,
+            device: 18,
+            function: 0,
+        };
         let cfg = addr.config_address(0);
         let dev_field = (cfg >> 11) & 0x1F;
         assert_eq!(dev_field, 18);
@@ -315,7 +337,11 @@ mod tests {
 
     #[test]
     fn config_address_function_encoding() {
-        let addr = PciAddress { bus: 0, device: 0, function: 7 };
+        let addr = PciAddress {
+            bus: 0,
+            device: 0,
+            function: 7,
+        };
         let cfg = addr.config_address(0);
         let fn_field = (cfg >> 8) & 0x07;
         assert_eq!(fn_field, 7);
@@ -323,7 +349,11 @@ mod tests {
 
     #[test]
     fn config_address_register_encoding() {
-        let addr = PciAddress { bus: 0, device: 0, function: 0 };
+        let addr = PciAddress {
+            bus: 0,
+            device: 0,
+            function: 0,
+        };
         let cfg = addr.config_address(0x3C);
         let reg_field = cfg & 0xFC;
         assert_eq!(reg_field, 0x3C);
@@ -332,13 +362,13 @@ mod tests {
     #[test]
     fn config_address_full_encoding() {
         // bus=1, device=3, function=2, register=0x10
-        let addr = PciAddress { bus: 1, device: 3, function: 2 };
+        let addr = PciAddress {
+            bus: 1,
+            device: 3,
+            function: 2,
+        };
         let cfg = addr.config_address(0x10);
-        let expected = (1u32 << 31)
-            | (1u32 << 16)
-            | (3u32 << 11)
-            | (2u32 << 8)
-            | 0x10u32;
+        let expected = (1u32 << 31) | (1u32 << 16) | (3u32 << 11) | (2u32 << 8) | 0x10u32;
         assert_eq!(cfg, expected);
     }
 
@@ -384,7 +414,11 @@ mod tests {
     #[test]
     fn device_is_nvidia() {
         let dev = PciDevice {
-            address: PciAddress { bus: 0, device: 0, function: 0 },
+            address: PciAddress {
+                bus: 0,
+                device: 0,
+                function: 0,
+            },
             vendor_id: NVIDIA_VENDOR_ID,
             device_id: 0x1B80,
             class_code: 0x03,
@@ -399,7 +433,11 @@ mod tests {
     #[test]
     fn device_is_not_nvidia() {
         let dev = PciDevice {
-            address: PciAddress { bus: 0, device: 0, function: 0 },
+            address: PciAddress {
+                bus: 0,
+                device: 0,
+                function: 0,
+            },
             vendor_id: 0x8086,
             device_id: 0x5917,
             class_code: 0x03,
@@ -414,7 +452,11 @@ mod tests {
     #[test]
     fn device_is_display_controller() {
         let dev = PciDevice {
-            address: PciAddress { bus: 0, device: 0, function: 0 },
+            address: PciAddress {
+                bus: 0,
+                device: 0,
+                function: 0,
+            },
             vendor_id: NVIDIA_VENDOR_ID,
             device_id: 0x1B80,
             class_code: 0x03,
@@ -429,7 +471,11 @@ mod tests {
     #[test]
     fn device_is_3d_controller() {
         let dev = PciDevice {
-            address: PciAddress { bus: 0, device: 0, function: 0 },
+            address: PciAddress {
+                bus: 0,
+                device: 0,
+                function: 0,
+            },
             vendor_id: NVIDIA_VENDOR_ID,
             device_id: 0x20B0,
             class_code: 0x03,
@@ -444,7 +490,11 @@ mod tests {
     #[test]
     fn device_not_3d_if_wrong_subclass() {
         let dev = PciDevice {
-            address: PciAddress { bus: 0, device: 0, function: 0 },
+            address: PciAddress {
+                bus: 0,
+                device: 0,
+                function: 0,
+            },
             vendor_id: NVIDIA_VENDOR_ID,
             device_id: 0x20B0,
             class_code: 0x03,
@@ -486,7 +536,11 @@ mod tests {
     fn scanner_non_nvidia_present() {
         let mut scanner = PciScanner::new();
         scanner.scan().unwrap();
-        let non_nvidia: Vec<_> = scanner.devices().iter().filter(|d| !d.is_nvidia()).collect();
+        let non_nvidia: Vec<_> = scanner
+            .devices()
+            .iter()
+            .filter(|d| !d.is_nvidia())
+            .collect();
         assert_eq!(non_nvidia.len(), 1, "mock scan has 1 non-NVIDIA device");
         assert_eq!(non_nvidia[0].vendor_id, 0x8086);
     }
@@ -506,7 +560,11 @@ mod tests {
         let mut scanner = PciScanner::new();
         for i in 0..MAX_PCI_DEVICES + 10 {
             scanner.push_device(PciDevice {
-                address: PciAddress { bus: 0, device: (i % 32) as u8, function: 0 },
+                address: PciAddress {
+                    bus: 0,
+                    device: (i % 32) as u8,
+                    function: 0,
+                },
                 vendor_id: NVIDIA_VENDOR_ID,
                 device_id: 0x1B80,
                 class_code: 0x03,
@@ -522,7 +580,11 @@ mod tests {
     #[test]
     fn pci_address_ranges_valid() {
         // Verify that device and function fields are masked properly.
-        let addr = PciAddress { bus: 255, device: 31, function: 7 };
+        let addr = PciAddress {
+            bus: 255,
+            device: 31,
+            function: 7,
+        };
         let cfg = addr.config_address(0xFC);
         assert_eq!((cfg >> 16) & 0xFF, 255);
         assert_eq!((cfg >> 11) & 0x1F, 31);

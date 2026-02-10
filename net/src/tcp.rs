@@ -330,8 +330,7 @@ impl TcpConnection {
             // SynSent + SYN-ACK → Established (send ACK)
             // -----------------------------------------------------------
             TcpState::SynSent => {
-                if header.flags & (TcpFlags::SYN | TcpFlags::ACK)
-                    == (TcpFlags::SYN | TcpFlags::ACK)
+                if header.flags & (TcpFlags::SYN | TcpFlags::ACK) == (TcpFlags::SYN | TcpFlags::ACK)
                 {
                     self.recv_next = header.seq_num.wrapping_add(1);
                     self.send_una = header.ack_num;

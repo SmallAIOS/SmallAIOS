@@ -130,13 +130,9 @@ impl ArpPacket {
 /// Create an ARP request packet.
 ///
 /// The target hardware address is set to all zeros (unknown).
-pub fn create_request(
-    sender_mac: MacAddress,
-    sender_ip: [u8; 4],
-    target_ip: [u8; 4],
-) -> ArpPacket {
+pub fn create_request(sender_mac: MacAddress, sender_ip: [u8; 4], target_ip: [u8; 4]) -> ArpPacket {
     ArpPacket {
-        hardware_type: 1, // Ethernet
+        hardware_type: 1,      // Ethernet
         protocol_type: 0x0800, // IPv4
         hw_len: 6,
         proto_len: 4,
@@ -156,7 +152,7 @@ pub fn create_reply(
     target_ip: [u8; 4],
 ) -> ArpPacket {
     ArpPacket {
-        hardware_type: 1, // Ethernet
+        hardware_type: 1,      // Ethernet
         protocol_type: 0x0800, // IPv4
         hw_len: 6,
         proto_len: 4,
@@ -189,6 +185,12 @@ pub struct ArpTable {
     entries: Vec<ArpEntry>,
 }
 
+impl Default for ArpTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ArpTable {
     /// Maximum number of entries in the ARP table.
     pub const MAX_ENTRIES: usize = 256;
@@ -202,21 +204,13 @@ impl ArpTable {
 
     /// Look up a MAC address by IPv4 address.
     pub fn lookup(&self, ip: &[u8; 4]) -> Option<&MacAddress> {
-        self.entries
-            .iter()
-            .find(|e| &e.ip == ip)
-            .map(|e| &e.mac)
+        self.entries.iter().find(|e| &e.ip == ip).map(|e| &e.mac)
     }
 
     /// Insert or update an entry. If the IP already exists its MAC and
     /// timestamp are updated. Returns [`NetError::TableFull`] if the table is
     /// at capacity and the IP is not already present.
-    pub fn insert(
-        &mut self,
-        ip: [u8; 4],
-        mac: MacAddress,
-        timestamp: u64,
-    ) -> Result<(), NetError> {
+    pub fn insert(&mut self, ip: [u8; 4], mac: MacAddress, timestamp: u64) -> Result<(), NetError> {
         // Update existing entry if present.
         for entry in self.entries.iter_mut() {
             if entry.ip == ip {
@@ -245,6 +239,11 @@ impl ArpTable {
     /// Return the number of entries in the table.
     pub fn len(&self) -> usize {
         self.entries.len()
+    }
+
+    /// Returns `true` if the table contains no entries.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
     }
 
     /// Returns `true` if the table has reached [`Self::MAX_ENTRIES`].
@@ -407,12 +406,7 @@ mod tests {
     fn test_table_full() {
         let mut table = ArpTable::new();
         for i in 0..ArpTable::MAX_ENTRIES {
-            let ip = [
-                ((i >> 8) & 0xFF) as u8,
-                (i & 0xFF) as u8,
-                0,
-                1,
-            ];
+            let ip = [((i >> 8) & 0xFF) as u8, (i & 0xFF) as u8, 0, 1];
             let mac = MacAddress::new(0, 0, 0, 0, (i >> 8) as u8, (i & 0xFF) as u8);
             table.insert(ip, mac, i as u64).unwrap();
         }

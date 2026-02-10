@@ -138,10 +138,7 @@ mod tests {
     #[test]
     fn test_task_spawn_valid() {
         let args = SyscallArgs::new(0x10, [0x1000, 42, 0, 0, 0, 0]);
-        assert_eq!(
-            sys_task_spawn(&args),
-            SyscallError::NotSupported.as_i64()
-        );
+        assert_eq!(sys_task_spawn(&args), SyscallError::NotSupported.as_i64());
     }
 
     #[test]
@@ -159,10 +156,7 @@ mod tests {
     #[test]
     fn test_task_join_zero_id() {
         let args = SyscallArgs::new(0x13, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(
-            sys_task_join(&args),
-            SyscallError::InvalidArgument.as_i64()
-        );
+        assert_eq!(sys_task_join(&args), SyscallError::InvalidArgument.as_i64());
     }
 
     #[test]

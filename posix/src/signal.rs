@@ -83,6 +83,12 @@ pub enum SigAction {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalMask(u64);
 
+impl Default for SignalMask {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SignalMask {
     /// Create an empty signal mask (no signals set).
     pub const fn new() -> Self {
@@ -146,6 +152,12 @@ pub struct SignalState {
     pub mask: SignalMask,
     /// Per-signal disposition table (indexed 0..31; index 0 unused).
     pub actions: [SigAction; 32],
+}
+
+impl Default for SignalState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl SignalState {
@@ -365,18 +377,11 @@ mod tests {
             Err(Errno::EINVAL)
         );
         assert_eq!(
-            sigaction_set(
-                &mut state,
-                Signal::SIGKILL,
-                SigAction::Handler(0x1234)
-            ),
+            sigaction_set(&mut state, Signal::SIGKILL, SigAction::Handler(0x1234)),
             Err(Errno::EINVAL)
         );
         // Disposition should remain Default.
-        assert_eq!(
-            state.actions[Signal::SIGKILL.number()],
-            SigAction::Default
-        );
+        assert_eq!(state.actions[Signal::SIGKILL.number()], SigAction::Default);
     }
 
     // ── sigprocmask_set ──────────────────────────────────────────────────

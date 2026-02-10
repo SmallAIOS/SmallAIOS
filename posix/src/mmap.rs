@@ -95,6 +95,12 @@ pub struct MmapTable {
     count: usize,
 }
 
+impl Default for MmapTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MmapTable {
     /// Create an empty mmap table.
     pub fn new() -> Self {
@@ -162,12 +168,12 @@ impl MmapTable {
         }
 
         // Address hint must be page-aligned (if non-zero)
-        if addr != 0 && addr % PAGE_SIZE != 0 {
+        if addr != 0 && !addr.is_multiple_of(PAGE_SIZE) {
             return Err(Errno::EINVAL);
         }
 
         // File offset must be page-aligned
-        if offset % PAGE_SIZE as u64 != 0 {
+        if !offset.is_multiple_of(PAGE_SIZE as u64) {
             return Err(Errno::EINVAL);
         }
 
@@ -224,7 +230,7 @@ impl MmapTable {
         }
 
         // Address must be page-aligned
-        if addr % PAGE_SIZE != 0 {
+        if !addr.is_multiple_of(PAGE_SIZE) {
             return Err(Errno::EINVAL);
         }
 
@@ -256,7 +262,7 @@ impl MmapTable {
         }
 
         // Address must be page-aligned
-        if addr % PAGE_SIZE != 0 {
+        if !addr.is_multiple_of(PAGE_SIZE) {
             return Err(Errno::EINVAL);
         }
 
@@ -298,7 +304,7 @@ pub const fn page_align_up(len: usize) -> usize {
 
 /// Check whether an address is page-aligned.
 pub const fn is_page_aligned(addr: usize) -> bool {
-    addr % PAGE_SIZE == 0
+    addr.is_multiple_of(PAGE_SIZE)
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -449,10 +455,7 @@ mod tests {
     #[test]
     fn mprotect_unaligned_returns_einval() {
         let mut table = MmapTable::new();
-        assert_eq!(
-            table.mprotect(1, PAGE_SIZE, PROT_READ),
-            Err(Errno::EINVAL)
-        );
+        assert_eq!(table.mprotect(1, PAGE_SIZE, PROT_READ), Err(Errno::EINVAL));
     }
 
     #[test]

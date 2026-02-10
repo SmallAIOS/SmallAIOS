@@ -13,11 +13,11 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::compute::{ComputeEngine, LaunchConfig, Dim3};
-use crate::dma::{DmaEngine, DmaDirection};
+use crate::compute::{ComputeEngine, Dim3, LaunchConfig};
+use crate::dma::{DmaDirection, DmaEngine};
 use crate::gpu_id::GpuInfo;
-use crate::memory::{VramAllocator, MemoryRegion};
-use crate::ptx::{PtxRegistry, PtxKernelType, DataPrecision};
+use crate::memory::{MemoryRegion, VramAllocator};
+use crate::ptx::{DataPrecision, PtxKernelType, PtxRegistry};
 use crate::GpuError;
 
 // ---------------------------------------------------------------------------
@@ -166,26 +166,20 @@ impl CudaProvider {
     /// Submit a host-to-device DMA transfer.
     ///
     /// Returns the DMA transfer id.
-    pub fn transfer_to_device(
-        &mut self,
-        src: u64,
-        dst: u64,
-        size: u64,
-    ) -> Result<u64, GpuError> {
-        let tid = self.dma.submit(DmaDirection::HostToDevice, src, dst, size)?;
+    pub fn transfer_to_device(&mut self, src: u64, dst: u64, size: u64) -> Result<u64, GpuError> {
+        let tid = self
+            .dma
+            .submit(DmaDirection::HostToDevice, src, dst, size)?;
         Ok(tid.0)
     }
 
     /// Submit a device-to-host DMA transfer.
     ///
     /// Returns the DMA transfer id.
-    pub fn transfer_from_device(
-        &mut self,
-        src: u64,
-        dst: u64,
-        size: u64,
-    ) -> Result<u64, GpuError> {
-        let tid = self.dma.submit(DmaDirection::DeviceToHost, src, dst, size)?;
+    pub fn transfer_from_device(&mut self, src: u64, dst: u64, size: u64) -> Result<u64, GpuError> {
+        let tid = self
+            .dma
+            .submit(DmaDirection::DeviceToHost, src, dst, size)?;
         Ok(tid.0)
     }
 
@@ -222,11 +216,7 @@ impl CudaProvider {
     /// Looks up the operator mapping, finds the matching PTX kernel, builds a
     /// launch configuration with block size 256, and dispatches to the compute
     /// engine.  Returns the kernel launch id.
-    pub fn launch_kernel(
-        &mut self,
-        op_name: &str,
-        elements: u32,
-    ) -> Result<u64, GpuError> {
+    pub fn launch_kernel(&mut self, op_name: &str, elements: u32) -> Result<u64, GpuError> {
         // 1. Map ONNX op to kernel type.
         let mapping = Self::map_operator(op_name).ok_or(GpuError::NotFound)?;
 
@@ -400,7 +390,11 @@ mod tests {
             assert!(mapping.is_some(), "Expected mapping for {}", op);
             let m = mapping.unwrap();
             assert_eq!(m.kernel_type, *expected_type, "Wrong type for {}", op);
-            assert_eq!(m.precision, DataPrecision::F32, "Default precision should be F32");
+            assert_eq!(
+                m.precision,
+                DataPrecision::F32,
+                "Default precision should be F32"
+            );
             assert_eq!(m.op_name, *op);
         }
     }
@@ -450,16 +444,10 @@ mod tests {
         let kid_raw = prov.launch_kernel("Add", 256).unwrap();
         // Before sync, the kernel is Running.
         let kid = crate::compute::KernelId(kid_raw);
-        assert_eq!(
-            prov.compute.status(kid),
-            Ok(&KernelStatus::Running)
-        );
+        assert_eq!(prov.compute.status(kid), Ok(&KernelStatus::Running));
         prov.synchronize();
         // After sync, it should be Completed.
-        assert_eq!(
-            prov.compute.status(kid),
-            Ok(&KernelStatus::Completed)
-        );
+        assert_eq!(prov.compute.status(kid), Ok(&KernelStatus::Completed));
     }
 
     // -- 13. VRAM tracking --------------------------------------------------
@@ -503,24 +491,14 @@ mod tests {
         // 1000 elements => grid should be 4.
         let kid_raw = prov.launch_kernel("MatMul", 1000).unwrap();
         let kid = crate::compute::KernelId(kid_raw);
-        let kernel = prov
-            .compute
-            .kernels
-            .iter()
-            .find(|k| k.id == kid)
-            .unwrap();
+        let kernel = prov.compute.kernels.iter().find(|k| k.id == kid).unwrap();
         assert_eq!(kernel.config.grid.x, 4);
         assert_eq!(kernel.config.block.x, 256);
 
         // 256 elements => grid should be 1.
         let kid_raw2 = prov.launch_kernel("Relu", 256).unwrap();
         let kid2 = crate::compute::KernelId(kid_raw2);
-        let kernel2 = prov
-            .compute
-            .kernels
-            .iter()
-            .find(|k| k.id == kid2)
-            .unwrap();
+        let kernel2 = prov.compute.kernels.iter().find(|k| k.id == kid2).unwrap();
         assert_eq!(kernel2.config.grid.x, 1);
         assert_eq!(kernel2.config.block.x, 256);
     }
@@ -608,10 +586,7 @@ mod tests {
         // All should be completed after sync.
         for kid_raw in [id1, id2, id3] {
             let kid = crate::compute::KernelId(kid_raw);
-            assert_eq!(
-                prov.compute.status(kid),
-                Ok(&KernelStatus::Completed)
-            );
+            assert_eq!(prov.compute.status(kid), Ok(&KernelStatus::Completed));
         }
     }
 
@@ -623,23 +598,13 @@ mod tests {
         // Launch a GEMM kernel — should use gemm_f32 with 49152 bytes shared.
         let kid_raw = prov.launch_kernel("MatMul", 256).unwrap();
         let kid = crate::compute::KernelId(kid_raw);
-        let kernel = prov
-            .compute
-            .kernels
-            .iter()
-            .find(|k| k.id == kid)
-            .unwrap();
+        let kernel = prov.compute.kernels.iter().find(|k| k.id == kid).unwrap();
         assert_eq!(kernel.config.shared_memory, 49152);
 
         // Launch an Elementwise — should use 0 bytes shared.
         let kid_raw2 = prov.launch_kernel("Relu", 256).unwrap();
         let kid2 = crate::compute::KernelId(kid_raw2);
-        let kernel2 = prov
-            .compute
-            .kernels
-            .iter()
-            .find(|k| k.id == kid2)
-            .unwrap();
+        let kernel2 = prov.compute.kernels.iter().find(|k| k.id == kid2).unwrap();
         assert_eq!(kernel2.config.shared_memory, 0);
     }
 }

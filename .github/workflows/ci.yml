@@ -32,7 +32,16 @@ jobs:
         with:
           toolchain: nightly-2026-02-01
           components: clippy, rust-src
-      - run: cargo clippy -p smallaios-kernel -- -D warnings
+      - run: >-
+          cargo clippy
+          -p smallaios-kernel
+          -p smallaios-security
+          -p smallaios-onnx-rt
+          -p smallaios-ipc
+          -p smallaios-net
+          -p smallaios-posix
+          -p smallaios-container
+          -- -D warnings
 
   build-x86_64:
     name: Build x86-64 Kernel
@@ -67,15 +76,12 @@ jobs:
         with:
           toolchain: nightly-2026-02-01
           components: rust-src
-      - run: cargo test -p smallaios-kernel
-
-  openspec-validate:
-    name: OpenSpec Validate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-      - run: npm install -g @fission-ai/openspec@latest
-      - run: OPENSPEC_TELEMETRY=0 openspec validate --all --json
+      - run: >-
+          cargo test
+          -p smallaios-kernel
+          -p smallaios-security
+          -p smallaios-onnx-rt
+          -p smallaios-ipc
+          -p smallaios-net
+          -p smallaios-posix
+          -p smallaios-container

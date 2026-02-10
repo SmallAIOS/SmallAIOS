@@ -50,6 +50,12 @@ pub struct MessageQueue {
     messages: Vec<Message>,
 }
 
+impl Default for MessageQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MessageQueue {
     /// Create a new, empty message queue.
     pub fn new() -> Self {

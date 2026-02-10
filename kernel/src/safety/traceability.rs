@@ -124,6 +124,12 @@ pub struct TraceMatrix {
     next_id: u64,
 }
 
+impl Default for TraceMatrix {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TraceMatrix {
     /// Creates a new empty traceability matrix.
     pub fn new() -> Self {
@@ -187,7 +193,11 @@ impl TraceMatrix {
             to_type,
         };
         if let Some(artifact) = self.artifacts.iter_mut().find(|a| a.id == from_id) {
-            if !artifact.links.iter().any(|l| l.to_id == to_id && l.from_id == from_id) {
+            if !artifact
+                .links
+                .iter()
+                .any(|l| l.to_id == to_id && l.from_id == from_id)
+            {
                 artifact.links.push(forward);
             }
         }
@@ -200,7 +210,11 @@ impl TraceMatrix {
             to_type: from_type,
         };
         if let Some(artifact) = self.artifacts.iter_mut().find(|a| a.id == to_id) {
-            if !artifact.links.iter().any(|l| l.to_id == from_id && l.from_id == to_id) {
+            if !artifact
+                .links
+                .iter()
+                .any(|l| l.to_id == from_id && l.from_id == to_id)
+            {
                 artifact.links.push(reverse);
             }
         }
@@ -309,11 +323,7 @@ impl TraceMatrix {
             .filter(|t| self.trace_status(&t.id) == TraceStatus::Orphan)
             .count();
 
-        let coverage_pct = if total_reqs > 0 {
-            ((traced * 100) / total_reqs) as u8
-        } else {
-            0
-        };
+        let coverage_pct = (traced * 100).checked_div(total_reqs).unwrap_or(0) as u8;
 
         TraceCoverageReport {
             total_reqs,
@@ -342,7 +352,12 @@ mod tests {
     #[test]
     fn test_add_artifact() {
         let mut m = make_matrix();
-        let result = m.add_artifact("REQ-001", ArtifactType::Requirement, "Memory safety", DalLevel::A);
+        let result = m.add_artifact(
+            "REQ-001",
+            ArtifactType::Requirement,
+            "Memory safety",
+            DalLevel::A,
+        );
         assert!(result.is_ok());
         assert_eq!(m.artifact_count(), 1);
     }
@@ -352,7 +367,12 @@ mod tests {
         let mut m = make_matrix();
         m.add_artifact("REQ-001", ArtifactType::Requirement, "Req 1", DalLevel::A)
             .unwrap();
-        let result = m.add_artifact("REQ-001", ArtifactType::Requirement, "Req 1 dup", DalLevel::A);
+        let result = m.add_artifact(
+            "REQ-001",
+            ArtifactType::Requirement,
+            "Req 1 dup",
+            DalLevel::A,
+        );
         assert_eq!(result, Err(TraceError::DuplicateId));
     }
 
@@ -383,8 +403,13 @@ mod tests {
     #[test]
     fn test_get_artifact_by_id() {
         let mut m = make_matrix();
-        m.add_artifact("REQ-001", ArtifactType::Requirement, "Memory safety", DalLevel::A)
-            .unwrap();
+        m.add_artifact(
+            "REQ-001",
+            ArtifactType::Requirement,
+            "Memory safety",
+            DalLevel::A,
+        )
+        .unwrap();
         let a = m.get_artifact("REQ-001");
         assert!(a.is_some());
         let a = a.unwrap();
@@ -422,8 +447,13 @@ mod tests {
             .unwrap();
         m.add_artifact("SPEC-001", ArtifactType::Specification, "Spec", DalLevel::A)
             .unwrap();
-        m.add_artifact("IMPL-001", ArtifactType::Implementation, "Impl", DalLevel::A)
-            .unwrap();
+        m.add_artifact(
+            "IMPL-001",
+            ArtifactType::Implementation,
+            "Impl",
+            DalLevel::A,
+        )
+        .unwrap();
         m.add_artifact("TEST-001", ArtifactType::Test, "Test", DalLevel::A)
             .unwrap();
         m.add_link("REQ-001", "SPEC-001").unwrap();
@@ -477,10 +507,20 @@ mod tests {
         // Fully traced requirement.
         m.add_artifact("REQ-001", ArtifactType::Requirement, "Req 1", DalLevel::A)
             .unwrap();
-        m.add_artifact("SPEC-001", ArtifactType::Specification, "Spec 1", DalLevel::A)
-            .unwrap();
-        m.add_artifact("IMPL-001", ArtifactType::Implementation, "Impl 1", DalLevel::A)
-            .unwrap();
+        m.add_artifact(
+            "SPEC-001",
+            ArtifactType::Specification,
+            "Spec 1",
+            DalLevel::A,
+        )
+        .unwrap();
+        m.add_artifact(
+            "IMPL-001",
+            ArtifactType::Implementation,
+            "Impl 1",
+            DalLevel::A,
+        )
+        .unwrap();
         m.add_artifact("TEST-001", ArtifactType::Test, "Test 1", DalLevel::A)
             .unwrap();
         m.add_link("REQ-001", "SPEC-001").unwrap();
@@ -534,11 +574,16 @@ mod tests {
     #[test]
     fn test_dal_levels() {
         let mut m = make_matrix();
-        m.add_artifact("A", ArtifactType::Requirement, "a", DalLevel::A).unwrap();
-        m.add_artifact("B", ArtifactType::Requirement, "b", DalLevel::B).unwrap();
-        m.add_artifact("C", ArtifactType::Requirement, "c", DalLevel::C).unwrap();
-        m.add_artifact("D", ArtifactType::Requirement, "d", DalLevel::D).unwrap();
-        m.add_artifact("E", ArtifactType::Requirement, "e", DalLevel::E).unwrap();
+        m.add_artifact("A", ArtifactType::Requirement, "a", DalLevel::A)
+            .unwrap();
+        m.add_artifact("B", ArtifactType::Requirement, "b", DalLevel::B)
+            .unwrap();
+        m.add_artifact("C", ArtifactType::Requirement, "c", DalLevel::C)
+            .unwrap();
+        m.add_artifact("D", ArtifactType::Requirement, "d", DalLevel::D)
+            .unwrap();
+        m.add_artifact("E", ArtifactType::Requirement, "e", DalLevel::E)
+            .unwrap();
 
         assert_eq!(m.get_artifact("A").unwrap().dal_level, DalLevel::A);
         assert_eq!(m.get_artifact("B").unwrap().dal_level, DalLevel::B);
@@ -550,11 +595,16 @@ mod tests {
     #[test]
     fn test_multiple_artifact_types() {
         let mut m = make_matrix();
-        m.add_artifact("REQ-1", ArtifactType::Requirement, "r", DalLevel::A).unwrap();
-        m.add_artifact("SPEC-1", ArtifactType::Specification, "s", DalLevel::A).unwrap();
-        m.add_artifact("IMPL-1", ArtifactType::Implementation, "i", DalLevel::A).unwrap();
-        m.add_artifact("TEST-1", ArtifactType::Test, "t", DalLevel::A).unwrap();
-        m.add_artifact("VER-1", ArtifactType::Verification, "v", DalLevel::A).unwrap();
+        m.add_artifact("REQ-1", ArtifactType::Requirement, "r", DalLevel::A)
+            .unwrap();
+        m.add_artifact("SPEC-1", ArtifactType::Specification, "s", DalLevel::A)
+            .unwrap();
+        m.add_artifact("IMPL-1", ArtifactType::Implementation, "i", DalLevel::A)
+            .unwrap();
+        m.add_artifact("TEST-1", ArtifactType::Test, "t", DalLevel::A)
+            .unwrap();
+        m.add_artifact("VER-1", ArtifactType::Verification, "v", DalLevel::A)
+            .unwrap();
 
         assert_eq!(m.find_by_type(ArtifactType::Requirement).len(), 1);
         assert_eq!(m.find_by_type(ArtifactType::Specification).len(), 1);
@@ -595,7 +645,8 @@ mod tests {
     #[test]
     fn test_link_nonexistent_from() {
         let mut m = make_matrix();
-        m.add_artifact("A", ArtifactType::Requirement, "a", DalLevel::A).unwrap();
+        m.add_artifact("A", ArtifactType::Requirement, "a", DalLevel::A)
+            .unwrap();
         let result = m.add_link("NONEXISTENT", "A");
         assert_eq!(result, Err(TraceError::NotFound));
     }

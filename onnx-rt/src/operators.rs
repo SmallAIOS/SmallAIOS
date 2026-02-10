@@ -131,7 +131,7 @@ impl OpKind {
     /// Converts an ONNX operator type string to an `OpKind`.
     ///
     /// Returns `None` if the operator name is not recognized.
-    pub fn from_str(name: &str) -> Option<Self> {
+    pub fn parse_str(name: &str) -> Option<Self> {
         match name {
             "Add" => Some(OpKind::Add),
             "Sub" => Some(OpKind::Sub),
@@ -248,6 +248,12 @@ pub struct OperatorRegistry {
     ops: Vec<OpKind>,
 }
 
+impl Default for OperatorRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OperatorRegistry {
     /// Creates a new registry pre-populated with all built-in operators.
     pub fn new() -> Self {
@@ -258,8 +264,8 @@ impl OperatorRegistry {
 
     /// Returns `true` if the given ONNX operator type name is supported.
     pub fn is_supported(&self, op_type: &str) -> bool {
-        if let Some(kind) = OpKind::from_str(op_type) {
-            self.ops.iter().any(|op| *op == kind)
+        if let Some(kind) = OpKind::parse_str(op_type) {
+            self.ops.contains(&kind)
         } else {
             false
         }
@@ -327,11 +333,7 @@ pub fn op_reshape(input: &Tensor, shape: &[i64]) -> Result<Tensor, OpError> {
 /// padding, and dilations will be passed via operator attributes
 /// when fully implemented.
 /// Currently returns `NotImplemented`.
-pub fn op_conv(
-    input: &Tensor,
-    weight: &Tensor,
-    bias: Option<&Tensor>,
-) -> Result<Tensor, OpError> {
+pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result<Tensor, OpError> {
     let _ = (input, weight, bias);
     Err(OpError::NotImplemented)
 }
@@ -345,10 +347,7 @@ pub fn op_conv(
 /// Applies ONNX broadcasting rules: dimensions are compared from the
 /// trailing end; a dimension of 1 is broadcastable to any size.
 /// Currently returns `NotImplemented`.
-pub fn infer_binary_shape(
-    a: &TensorShape,
-    b: &TensorShape,
-) -> Result<TensorShape, OpError> {
+pub fn infer_binary_shape(a: &TensorShape, b: &TensorShape) -> Result<TensorShape, OpError> {
     let _ = (a, b);
     Err(OpError::NotImplemented)
 }
@@ -358,10 +357,7 @@ pub fn infer_binary_shape(
 /// For 2D inputs with shapes `[M, K]` and `[K, N]`, validates that
 /// the inner dimensions match and returns shape `[M, N]`.
 /// Returns `ShapeMismatch` if the inner dimensions do not agree.
-pub fn infer_matmul_shape(
-    a: &TensorShape,
-    b: &TensorShape,
-) -> Result<TensorShape, OpError> {
+pub fn infer_matmul_shape(a: &TensorShape, b: &TensorShape) -> Result<TensorShape, OpError> {
     // Require exactly 2D inputs for basic matmul shape inference.
     if a.ndim() != 2 || b.ndim() != 2 {
         return Err(OpError::ShapeMismatch(String::from(
@@ -391,8 +387,8 @@ pub fn infer_matmul_shape(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::format;
     use crate::tensor::DataType;
+    use alloc::format;
     use alloc::string::String;
     use alloc::vec;
 
@@ -400,53 +396,75 @@ mod tests {
 
     #[test]
     fn test_opkind_from_str_arithmetic() {
-        assert_eq!(OpKind::from_str("Add"), Some(OpKind::Add));
-        assert_eq!(OpKind::from_str("Sub"), Some(OpKind::Sub));
-        assert_eq!(OpKind::from_str("Mul"), Some(OpKind::Mul));
-        assert_eq!(OpKind::from_str("Div"), Some(OpKind::Div));
-        assert_eq!(OpKind::from_str("MatMul"), Some(OpKind::MatMul));
+        assert_eq!(OpKind::parse_str("Add"), Some(OpKind::Add));
+        assert_eq!(OpKind::parse_str("Sub"), Some(OpKind::Sub));
+        assert_eq!(OpKind::parse_str("Mul"), Some(OpKind::Mul));
+        assert_eq!(OpKind::parse_str("Div"), Some(OpKind::Div));
+        assert_eq!(OpKind::parse_str("MatMul"), Some(OpKind::MatMul));
     }
 
     #[test]
     fn test_opkind_from_str_activations() {
-        assert_eq!(OpKind::from_str("Relu"), Some(OpKind::Relu));
-        assert_eq!(OpKind::from_str("Sigmoid"), Some(OpKind::Sigmoid));
-        assert_eq!(OpKind::from_str("Tanh"), Some(OpKind::Tanh));
-        assert_eq!(OpKind::from_str("Softmax"), Some(OpKind::Softmax));
+        assert_eq!(OpKind::parse_str("Relu"), Some(OpKind::Relu));
+        assert_eq!(OpKind::parse_str("Sigmoid"), Some(OpKind::Sigmoid));
+        assert_eq!(OpKind::parse_str("Tanh"), Some(OpKind::Tanh));
+        assert_eq!(OpKind::parse_str("Softmax"), Some(OpKind::Softmax));
     }
 
     #[test]
     fn test_opkind_from_str_shape_ops() {
-        assert_eq!(OpKind::from_str("Reshape"), Some(OpKind::Reshape));
-        assert_eq!(OpKind::from_str("Transpose"), Some(OpKind::Transpose));
-        assert_eq!(OpKind::from_str("Flatten"), Some(OpKind::Flatten));
-        assert_eq!(OpKind::from_str("Squeeze"), Some(OpKind::Squeeze));
-        assert_eq!(OpKind::from_str("Unsqueeze"), Some(OpKind::Unsqueeze));
+        assert_eq!(OpKind::parse_str("Reshape"), Some(OpKind::Reshape));
+        assert_eq!(OpKind::parse_str("Transpose"), Some(OpKind::Transpose));
+        assert_eq!(OpKind::parse_str("Flatten"), Some(OpKind::Flatten));
+        assert_eq!(OpKind::parse_str("Squeeze"), Some(OpKind::Squeeze));
+        assert_eq!(OpKind::parse_str("Unsqueeze"), Some(OpKind::Unsqueeze));
     }
 
     #[test]
     fn test_opkind_from_str_invalid() {
-        assert_eq!(OpKind::from_str("NonExistent"), None);
-        assert_eq!(OpKind::from_str("add"), None); // case-sensitive
-        assert_eq!(OpKind::from_str("RELU"), None);
-        assert_eq!(OpKind::from_str(""), None);
+        assert_eq!(OpKind::parse_str("NonExistent"), None);
+        assert_eq!(OpKind::parse_str("add"), None); // case-sensitive
+        assert_eq!(OpKind::parse_str("RELU"), None);
+        assert_eq!(OpKind::parse_str(""), None);
     }
 
     #[test]
     fn test_opkind_name_roundtrip() {
         // Every variant should round-trip through name() and from_str().
         let ops = [
-            OpKind::Add, OpKind::Sub, OpKind::Mul, OpKind::Div, OpKind::MatMul,
-            OpKind::Relu, OpKind::Sigmoid, OpKind::Tanh, OpKind::Softmax,
-            OpKind::Conv, OpKind::MaxPool, OpKind::AveragePool, OpKind::BatchNormalization,
-            OpKind::Reshape, OpKind::Transpose, OpKind::Flatten, OpKind::Squeeze,
-            OpKind::Unsqueeze, OpKind::Concat, OpKind::Gather, OpKind::Slice, OpKind::Pad,
-            OpKind::Gemm, OpKind::GlobalAveragePool, OpKind::LayerNormalization,
-            OpKind::Cast, OpKind::Clip, OpKind::ReduceMean, OpKind::ReduceSum,
+            OpKind::Add,
+            OpKind::Sub,
+            OpKind::Mul,
+            OpKind::Div,
+            OpKind::MatMul,
+            OpKind::Relu,
+            OpKind::Sigmoid,
+            OpKind::Tanh,
+            OpKind::Softmax,
+            OpKind::Conv,
+            OpKind::MaxPool,
+            OpKind::AveragePool,
+            OpKind::BatchNormalization,
+            OpKind::Reshape,
+            OpKind::Transpose,
+            OpKind::Flatten,
+            OpKind::Squeeze,
+            OpKind::Unsqueeze,
+            OpKind::Concat,
+            OpKind::Gather,
+            OpKind::Slice,
+            OpKind::Pad,
+            OpKind::Gemm,
+            OpKind::GlobalAveragePool,
+            OpKind::LayerNormalization,
+            OpKind::Cast,
+            OpKind::Clip,
+            OpKind::ReduceMean,
+            OpKind::ReduceSum,
         ];
         for op in ops.iter() {
             let name = op.name();
-            let parsed = OpKind::from_str(name);
+            let parsed = OpKind::parse_str(name);
             assert_eq!(parsed, Some(*op), "round-trip failed for {:?}", op);
         }
     }
@@ -482,44 +500,76 @@ mod tests {
 
     #[test]
     fn test_op_add_not_implemented() {
-        let t = Tensor::new(DataType::Float, TensorShape::new(vec![2, 3]), String::from("a"));
+        let t = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![2, 3]),
+            String::from("a"),
+        );
         let result = op_add(&[&t, &t]);
         assert_eq!(result, Err(OpError::NotImplemented));
     }
 
     #[test]
     fn test_op_relu_not_implemented() {
-        let t = Tensor::new(DataType::Float, TensorShape::new(vec![4]), String::from("x"));
+        let t = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![4]),
+            String::from("x"),
+        );
         let result = op_relu(&t);
         assert_eq!(result, Err(OpError::NotImplemented));
     }
 
     #[test]
     fn test_op_matmul_not_implemented() {
-        let a = Tensor::new(DataType::Float, TensorShape::new(vec![2, 3]), String::from("a"));
-        let b = Tensor::new(DataType::Float, TensorShape::new(vec![3, 4]), String::from("b"));
+        let a = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![2, 3]),
+            String::from("a"),
+        );
+        let b = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![3, 4]),
+            String::from("b"),
+        );
         let result = op_matmul(&a, &b);
         assert_eq!(result, Err(OpError::NotImplemented));
     }
 
     #[test]
     fn test_op_softmax_not_implemented() {
-        let t = Tensor::new(DataType::Float, TensorShape::new(vec![1, 10]), String::from("logits"));
+        let t = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![1, 10]),
+            String::from("logits"),
+        );
         let result = op_softmax(&t, -1);
         assert_eq!(result, Err(OpError::NotImplemented));
     }
 
     #[test]
     fn test_op_reshape_not_implemented() {
-        let t = Tensor::new(DataType::Float, TensorShape::new(vec![2, 3]), String::from("in"));
+        let t = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![2, 3]),
+            String::from("in"),
+        );
         let result = op_reshape(&t, &[6]);
         assert_eq!(result, Err(OpError::NotImplemented));
     }
 
     #[test]
     fn test_op_conv_not_implemented() {
-        let input = Tensor::new(DataType::Float, TensorShape::new(vec![1, 3, 224, 224]), String::from("input"));
-        let weight = Tensor::new(DataType::Float, TensorShape::new(vec![64, 3, 7, 7]), String::from("weight"));
+        let input = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![1, 3, 224, 224]),
+            String::from("input"),
+        );
+        let weight = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![64, 3, 7, 7]),
+            String::from("weight"),
+        );
         let result = op_conv(&input, &weight, None);
         assert_eq!(result, Err(OpError::NotImplemented));
     }

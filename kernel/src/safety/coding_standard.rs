@@ -93,6 +93,12 @@ pub struct CodingStandard {
     max_violations: usize,
 }
 
+impl Default for CodingStandard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CodingStandard {
     /// Creates a new empty coding standard with default limits.
     pub fn new() -> Self {
@@ -285,7 +291,12 @@ mod tests {
     #[test]
     fn test_add_rule() {
         let mut cs = CodingStandard::new();
-        let result = cs.add_rule("R-1", RuleCategory::Required, RuleScope::Module, "Test rule");
+        let result = cs.add_rule(
+            "R-1",
+            RuleCategory::Required,
+            RuleScope::Module,
+            "Test rule",
+        );
         assert!(result.is_ok());
         assert_eq!(cs.rule_count(), 1);
     }

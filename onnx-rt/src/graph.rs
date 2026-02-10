@@ -118,6 +118,12 @@ pub struct ExecutionGraph {
     pub output_names: Vec<String>,
 }
 
+impl Default for ExecutionGraph {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ExecutionGraph {
     /// Creates a new, empty execution graph.
     pub fn new() -> Self {
@@ -185,7 +191,7 @@ pub fn build_execution_graph(graph: &GraphProto) -> Result<ExecutionGraph, Graph
         dependencies_per_node.push(Vec::new());
     }
 
-    for node_idx in 0..num_nodes {
+    for (node_idx, deps) in dependencies_per_node.iter_mut().enumerate() {
         let inputs = exec_graph.nodes[node_idx].inputs.clone();
         for input_name in &inputs {
             // Check if this input is a graph-level input (external).
@@ -195,18 +201,13 @@ pub fn build_execution_graph(graph: &GraphProto) -> Result<ExecutionGraph, Graph
             }
 
             // Find the producing node.
-            let producer = output_producers
-                .iter()
-                .find(|(name, _)| name == input_name);
+            let producer = output_producers.iter().find(|(name, _)| name == input_name);
 
             match producer {
                 Some((_, prod_idx)) => {
                     // Avoid duplicate dependencies.
-                    if !dependencies_per_node[node_idx]
-                        .iter()
-                        .any(|d| d.index() == prod_idx.index())
-                    {
-                        dependencies_per_node[node_idx].push(*prod_idx);
+                    if !deps.iter().any(|d| d.index() == prod_idx.index()) {
+                        deps.push(*prod_idx);
                     }
                 }
                 None => {
@@ -242,10 +243,7 @@ pub fn topological_sort(nodes: &[ExecutionNode]) -> Result<Vec<NodeIndex>, Graph
     }
 
     // Compute in-degree for each node.
-    let mut in_degree: Vec<usize> = Vec::with_capacity(num_nodes);
-    for _ in 0..num_nodes {
-        in_degree.push(0);
-    }
+    let mut in_degree: Vec<usize> = alloc::vec![0; num_nodes];
 
     for node in nodes {
         in_degree[node.node_index.index()] = node.dependencies.len();
@@ -299,12 +297,7 @@ mod tests {
     use alloc::vec;
 
     /// Helper: creates a `NodeProto` with the given op, name, inputs, outputs.
-    fn make_node(
-        op_type: &str,
-        name: &str,
-        inputs: &[&str],
-        outputs: &[&str],
-    ) -> NodeProto {
+    fn make_node(op_type: &str, name: &str, inputs: &[&str], outputs: &[&str]) -> NodeProto {
         NodeProto {
             op_type: op_type.to_string(),
             name: name.to_string(),
@@ -549,7 +542,10 @@ mod tests {
             "invalid node: bad"
         );
         assert_eq!(
-            format!("{}", GraphError::UnsupportedOperator("CustomOp".to_string())),
+            format!(
+                "{}",
+                GraphError::UnsupportedOperator("CustomOp".to_string())
+            ),
             "unsupported operator: CustomOp"
         );
         assert_eq!(

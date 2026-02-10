@@ -96,6 +96,12 @@ pub struct VerificationRegistry {
     targets: Vec<VerificationTarget>,
 }
 
+impl Default for VerificationRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl VerificationRegistry {
     /// Creates a new empty verification registry.
     pub fn new() -> Self {
@@ -348,13 +354,8 @@ mod tests {
 
         reg.update_status("a", VerificationStatus::Passed, 5, 5)
             .unwrap();
-        reg.update_status(
-            "b",
-            VerificationStatus::Failed(String::from("error")),
-            3,
-            1,
-        )
-        .unwrap();
+        reg.update_status("b", VerificationStatus::Failed(String::from("error")), 3, 1)
+            .unwrap();
         reg.update_status("c", VerificationStatus::InProgress, 0, 0)
             .unwrap();
         // "d" stays NotStarted.
@@ -386,11 +387,8 @@ mod tests {
     fn test_table_full() {
         let mut reg = VerificationRegistry::new();
         for i in 0..MAX_TARGETS {
-            reg.add_target(
-                &alloc::format!("target-{}", i),
-                VerificationTool::TlaPlus,
-            )
-            .unwrap();
+            reg.add_target(&alloc::format!("target-{}", i), VerificationTool::TlaPlus)
+                .unwrap();
         }
         let result = reg.add_target("overflow", VerificationTool::Spin);
         assert_eq!(result, Err(VerificationError::TableFull));
@@ -406,7 +404,10 @@ mod tests {
         reg.add_target("t5", VerificationTool::StaticAnalysis)
             .unwrap();
 
-        assert_eq!(reg.get_target("t1").unwrap().tool, VerificationTool::TlaPlus);
+        assert_eq!(
+            reg.get_target("t1").unwrap().tool,
+            VerificationTool::TlaPlus
+        );
         assert_eq!(reg.get_target("t2").unwrap().tool, VerificationTool::Spin);
         assert_eq!(reg.get_target("t3").unwrap().tool, VerificationTool::Lean4);
         assert_eq!(reg.get_target("t4").unwrap().tool, VerificationTool::Fuzz);

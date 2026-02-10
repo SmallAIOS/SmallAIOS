@@ -371,9 +371,7 @@ mod tests {
         assert!(json.contains("\"os\":\"smallaios\""));
         assert!(json.contains("\"digest\":\"sha256:abc123\""));
         assert!(json.contains("\"size\":4096"));
-        assert!(json.contains(
-            "\"mediaType\":\"application/vnd.oci.image.layer.v1.tar+gzip\""
-        ));
+        assert!(json.contains("\"mediaType\":\"application/vnd.oci.image.layer.v1.tar+gzip\""));
         assert!(json.contains("\"annotations\":{"));
         assert!(json.contains("\"version\":\"1.0\""));
         assert!(json.contains("\"totalSize\":4096"));

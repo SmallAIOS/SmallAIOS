@@ -140,6 +140,12 @@ pub struct EndpointRegistry {
     next_id: u64,
 }
 
+impl Default for EndpointRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EndpointRegistry {
     /// Create a new empty endpoint registry.
     pub fn new() -> Self {
@@ -338,10 +344,7 @@ mod tests {
         let ep = registry
             .find_by_kind(&EndpointKind::Custom(String::from("my-service")))
             .unwrap();
-        assert_eq!(
-            ep.kind,
-            EndpointKind::Custom(String::from("my-service"))
-        );
+        assert_eq!(ep.kind, EndpointKind::Custom(String::from("my-service")));
     }
 
     // === Table full ===
@@ -354,10 +357,7 @@ mod tests {
             registry.register(EndpointKind::Health, key).unwrap();
         }
         assert_eq!(registry.len(), MAX_ENDPOINTS);
-        let result = registry.register(
-            EndpointKind::Health,
-            KeyExpr::new("sai/overflow").unwrap(),
-        );
+        let result = registry.register(EndpointKind::Health, KeyExpr::new("sai/overflow").unwrap());
         assert_eq!(result, Err(IpcError::TableFull));
     }
 

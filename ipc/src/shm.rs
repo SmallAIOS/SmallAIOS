@@ -83,6 +83,12 @@ pub struct ShmRingBuffer {
 unsafe impl Send for ShmRingBuffer {}
 unsafe impl Sync for ShmRingBuffer {}
 
+impl Default for ShmRingBuffer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShmRingBuffer {
     /// Create a new, empty ring buffer.
     ///

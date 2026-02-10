@@ -267,7 +267,10 @@ mod tests {
     #[test]
     fn test_icmpv6_type_from_u8() {
         assert_eq!(Icmpv6Type::from_u8(128), Some(Icmpv6Type::EchoRequest));
-        assert_eq!(Icmpv6Type::from_u8(136), Some(Icmpv6Type::NeighborAdvertisement));
+        assert_eq!(
+            Icmpv6Type::from_u8(136),
+            Some(Icmpv6Type::NeighborAdvertisement)
+        );
         assert_eq!(Icmpv6Type::from_u8(200), None);
     }
 
