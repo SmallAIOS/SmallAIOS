@@ -1,0 +1,81 @@
+name: SmallAIOS CI
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check-format:
+    name: Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: clippy, rust-src
+          targets: x86_64-unknown-none, aarch64-unknown-none
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  build-x86_64:
+    name: Build x86-64 Kernel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools
+          targets: x86_64-unknown-none
+      - run: cargo build --target x86_64-unknown-none -p smallaios-arch-x86_64
+
+  build-aarch64:
+    name: Build AArch64 Kernel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools
+          targets: aarch64-unknown-none
+      - run: cargo build --target aarch64-unknown-none -p smallaios-arch-aarch64
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - run: cargo test --workspace
+
+  openspec-validate:
+    name: OpenSpec Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm install -g @fission-ai/openspec@latest
+      - run: OPENSPEC_TELEMETRY=0 openspec validate --all --json

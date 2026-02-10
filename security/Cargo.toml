@@ -12,4 +12,3 @@ pqc-only = []       # ML-KEM-768, ML-DSA-65 (no classical)
 classical-only = [] # X25519, Ed25519 (no PQC — not recommended)
 
 [dependencies]
-smallaios-kernel = { path = "../kernel" }

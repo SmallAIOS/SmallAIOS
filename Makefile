@@ -25,24 +25,24 @@ build-container-arm:
 
 .PHONY: build-kernel-x86
 build-kernel-x86:
-	$(CARGO) build --release --target x86_64-unknown-none $(FEATURES)
+	$(CARGO) build --release --target x86_64-unknown-none -p smallaios-arch-x86_64 $(FEATURES)
 
 .PHONY: build-kernel-arm
 build-kernel-arm:
-	$(CARGO) build --release --target aarch64-unknown-none $(FEATURES)
+	$(CARGO) build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 $(FEATURES)
 
 # === Run in QEMU ===
 
 .PHONY: run-x86
 run-x86: build-kernel-x86
 	$(QEMU_X86) -machine q35 -cpu max -m 512M -nographic \
-		-kernel target/x86_64-unknown-none/release/smallaios \
+		-kernel target/x86_64-unknown-none/release/smallaios-x86_64 \
 		-serial stdio
 
 .PHONY: run-arm
 run-arm: build-kernel-arm
 	$(QEMU_ARM) -machine virt -cpu cortex-a72 -m 512M -nographic \
-		-kernel target/aarch64-unknown-none/release/smallaios \
+		-kernel target/aarch64-unknown-none/release/smallaios-aarch64 \
 		-serial stdio
 
 # === Docker ===

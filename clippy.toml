@@ -1,0 +1,18 @@
+# SmallAIOS Clippy Configuration
+# MISRA-Rust inspired linting for safety-critical code
+# SPDX-License-Identifier: Apache-2.0
+
+# Maximum cognitive complexity per function (MISRA: keep functions simple)
+cognitive-complexity-threshold = 25
+
+# Maximum number of lines per function
+too-many-lines-threshold = 100
+
+# Maximum number of function parameters
+too-many-arguments-threshold = 7
+
+# Maximum nesting depth for control flow
+max-struct-bools = 3
+
+# Disallow wildcard dependencies
+warn-on-all-wildcard-imports = true

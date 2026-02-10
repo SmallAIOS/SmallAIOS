@@ -3,7 +3,15 @@ name = "smallaios-arch-aarch64"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS ARM64 HAL: boot, GICv3, paging, SVE, PSCI, UART"
+description = "SmallAIOS ARM64 HAL: boot, PL011 UART, entry point"
+
+[lib]
+name = "smallaios_arch_aarch64"
+path = "src/lib.rs"
+
+[[bin]]
+name = "smallaios-aarch64"
+path = "src/main.rs"
 
 [features]
 default = []
