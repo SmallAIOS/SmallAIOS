@@ -3,18 +3,20 @@
 
 //! Syscall dispatch interface.
 //!
-//! ~41 syscalls organized into categories:
+//! ~46 syscalls organized into categories:
 //! - Memory (0x00-0x0F): allocation, tensor buffers, GPU mapping
 //! - Task (0x10-0x1F): spawn, yield, join, affinity, priority
 //! - IPC (0x20-0x2F): pub/sub, request/reply, channels
 //! - ONNX (0x30-0x3F): model load, session, inference
 //! - Device (0x40-0x4F): enumerate, open, ioctl, DMA
 //! - System (0x50-0x5F): info, time, shutdown, random, watchdog
+//! - Capability (0x60-0x6F): create, revoke, delegate, check, list
 //!
 //! In unikernel mode these are direct function calls (no ring transition).
 //! In VM mode they use `syscall`/`svc` instructions dispatched through
 //! architecture-specific entry points.
 
+pub mod capability;
 pub mod device;
 pub mod ipc;
 pub mod memory;
@@ -22,8 +24,8 @@ pub mod onnx;
 pub mod system;
 pub mod task;
 
-/// Maximum syscall number (exclusive). Covers 0x00..0x60.
-pub const SYSCALL_TABLE_SIZE: usize = 0x60;
+/// Maximum syscall number (exclusive). Covers 0x00..0x70.
+pub const SYSCALL_TABLE_SIZE: usize = 0x70;
 
 /// Syscall numbers — Memory category (0x00-0x0F).
 pub mod nr {
@@ -79,6 +81,13 @@ pub mod nr {
     pub const SYS_RANDOM: usize = 0x54;
     pub const SYS_WATCHDOG_PET: usize = 0x55;
     pub const SYS_WATCHDOG_REMAINING: usize = 0x56;
+
+    // Capability syscalls (0x60-0x6F)
+    pub const CAP_CREATE: usize = 0x60;
+    pub const CAP_REVOKE: usize = 0x61;
+    pub const CAP_DELEGATE: usize = 0x62;
+    pub const CAP_CHECK: usize = 0x63;
+    pub const CAP_LIST: usize = 0x64;
 }
 
 /// Syscall error codes.
@@ -257,6 +266,13 @@ const fn build_syscall_table() -> [SyscallHandler; SYSCALL_TABLE_SIZE] {
     table[nr::SYS_WATCHDOG_PET] = system::sys_watchdog_pet as SyscallHandler;
     table[nr::SYS_WATCHDOG_REMAINING] = system::sys_watchdog_remaining as SyscallHandler;
 
+    // Capability syscalls
+    table[nr::CAP_CREATE] = capability::sys_cap_create as SyscallHandler;
+    table[nr::CAP_REVOKE] = capability::sys_cap_revoke as SyscallHandler;
+    table[nr::CAP_DELEGATE] = capability::sys_cap_delegate as SyscallHandler;
+    table[nr::CAP_CHECK] = capability::sys_cap_check as SyscallHandler;
+    table[nr::CAP_LIST] = capability::sys_cap_list as SyscallHandler;
+
     table
 }
 
@@ -286,6 +302,7 @@ pub fn category_name(number: usize) -> &'static str {
         0x3 => "onnx",
         0x4 => "device",
         0x5 => "system",
+        0x6 => "capability",
         _ => "unknown",
     }
 }
@@ -309,8 +326,8 @@ mod tests {
 
     #[test]
     fn test_registered_count() {
-        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system = 41
-        assert_eq!(registered_count(), 41);
+        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5 capability = 46
+        assert_eq!(registered_count(), 46);
     }
 
     #[test]
@@ -502,7 +519,7 @@ mod tests {
     #[test]
     fn test_gap_slots_return_nosys() {
         // Verify gaps between categories return NoSys
-        for gap_nr in [0x08, 0x09, 0x0A, 0x0F, 0x17, 0x18, 0x1F, 0x28, 0x2F, 0x36, 0x3F, 0x45, 0x4F, 0x57, 0x5F] {
+        for gap_nr in [0x08, 0x09, 0x0A, 0x0F, 0x17, 0x18, 0x1F, 0x28, 0x2F, 0x36, 0x3F, 0x45, 0x4F, 0x57, 0x5F, 0x65, 0x6F] {
             let args = SyscallArgs::zero(gap_nr);
             assert_eq!(
                 dispatch(&args),
@@ -556,6 +573,7 @@ mod tests {
             nr::DEV_ENUMERATE, nr::DEV_OPEN, nr::DEV_CLOSE, nr::DEV_IOCTL, nr::DEV_DMA_ALLOC,
             nr::SYS_INFO, nr::SYS_TIME, nr::SYS_SHUTDOWN, nr::SYS_LOG,
             nr::SYS_RANDOM, nr::SYS_WATCHDOG_PET, nr::SYS_WATCHDOG_REMAINING,
+            nr::CAP_CREATE, nr::CAP_REVOKE, nr::CAP_DELEGATE, nr::CAP_CHECK, nr::CAP_LIST,
         ] {
             let args = SyscallArgs::new(nr, max_args);
             let result = dispatch(&args);
@@ -579,6 +597,7 @@ mod tests {
             nr::DEV_ENUMERATE, nr::DEV_OPEN, nr::DEV_CLOSE, nr::DEV_IOCTL, nr::DEV_DMA_ALLOC,
             nr::SYS_INFO, nr::SYS_TIME, nr::SYS_SHUTDOWN, nr::SYS_LOG,
             nr::SYS_RANDOM, nr::SYS_WATCHDOG_PET, nr::SYS_WATCHDOG_REMAINING,
+            nr::CAP_CREATE, nr::CAP_REVOKE, nr::CAP_DELEGATE, nr::CAP_CHECK, nr::CAP_LIST,
         ] {
             let args = SyscallArgs::zero(nr);
             let _ = dispatch(&args); // Must not panic
@@ -625,7 +644,9 @@ mod tests {
         assert_eq!(category_name(0x4F), "device");
         assert_eq!(category_name(0x50), "system");
         assert_eq!(category_name(0x5F), "system");
-        assert_eq!(category_name(0x60), "unknown");
+        assert_eq!(category_name(nr::CAP_CREATE), "capability");
+        assert_eq!(category_name(nr::CAP_LIST), "capability");
+        assert_eq!(category_name(0x70), "unknown");
     }
 
     #[test]
@@ -678,5 +699,27 @@ mod tests {
         assert_eq!(dispatch(&SyscallArgs::zero(nr::SYS_RANDOM)), SyscallError::InvalidArgument.as_i64());
         assert_eq!(dispatch(&SyscallArgs::zero(nr::SYS_WATCHDOG_PET)), SyscallError::Success.as_i64());
         assert!(dispatch(&SyscallArgs::zero(nr::SYS_WATCHDOG_REMAINING)) > 0);
+
+        // Capability: zero args means resource_type=0, instance=0, perms=0 → InvalidArgument
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_CREATE)), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_REVOKE)), SyscallError::InvalidHandle.as_i64());
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_DELEGATE)), SyscallError::InvalidHandle.as_i64());
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_CHECK)), SyscallError::InvalidHandle.as_i64());
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_LIST)), SyscallError::Success.as_i64());
+    }
+
+    #[test]
+    fn test_all_capability_syscalls_dispatched() {
+        for nr in [
+            nr::CAP_CREATE,
+            nr::CAP_REVOKE,
+            nr::CAP_DELEGATE,
+            nr::CAP_CHECK,
+            nr::CAP_LIST,
+        ] {
+            let args = SyscallArgs::zero(nr);
+            let result = dispatch(&args);
+            assert_ne!(SyscallError::from_i64(result), Some(SyscallError::NoSys));
+        }
     }
 }
