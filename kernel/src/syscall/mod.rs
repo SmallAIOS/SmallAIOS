@@ -3,7 +3,7 @@
 
 //! Syscall dispatch interface.
 //!
-//! ~46 syscalls organized into categories:
+//! ~64 syscalls organized into categories:
 //! - Memory (0x00-0x0F): allocation, tensor buffers, GPU mapping
 //! - Task (0x10-0x1F): spawn, yield, join, affinity, priority
 //! - IPC (0x20-0x2F): pub/sub, request/reply, channels
@@ -11,6 +11,7 @@
 //! - Device (0x40-0x4F): enumerate, open, ioctl, DMA
 //! - System (0x50-0x5F): info, time, shutdown, random, watchdog
 //! - Capability (0x60-0x6F): create, revoke, delegate, check, list
+//! - POSIX (0x70-0x8F): open/close/read/write, mmap, epoll, socket, time
 //!
 //! In unikernel mode these are direct function calls (no ring transition).
 //! In VM mode they use `syscall`/`svc` instructions dispatched through
@@ -21,11 +22,12 @@ pub mod device;
 pub mod ipc;
 pub mod memory;
 pub mod onnx;
+pub mod posix;
 pub mod system;
 pub mod task;
 
-/// Maximum syscall number (exclusive). Covers 0x00..0x70.
-pub const SYSCALL_TABLE_SIZE: usize = 0x70;
+/// Maximum syscall number (exclusive). Covers 0x00..0x90.
+pub const SYSCALL_TABLE_SIZE: usize = 0x90;
 
 /// Syscall numbers — Memory category (0x00-0x0F).
 pub mod nr {
@@ -88,6 +90,26 @@ pub mod nr {
     pub const CAP_DELEGATE: usize = 0x62;
     pub const CAP_CHECK: usize = 0x63;
     pub const CAP_LIST: usize = 0x64;
+
+    // POSIX compatibility syscalls (0x70-0x8F)
+    pub const POSIX_OPEN: usize = 0x70;
+    pub const POSIX_CLOSE: usize = 0x71;
+    pub const POSIX_READ: usize = 0x72;
+    pub const POSIX_WRITE: usize = 0x73;
+    pub const POSIX_FSTAT: usize = 0x74;
+    pub const POSIX_DUP: usize = 0x75;
+    pub const POSIX_DUP2: usize = 0x76;
+    pub const POSIX_LSEEK: usize = 0x77;
+    pub const POSIX_MMAP: usize = 0x78;
+    pub const POSIX_MUNMAP: usize = 0x79;
+    pub const POSIX_MPROTECT: usize = 0x7A;
+    pub const POSIX_EPOLL_CREATE: usize = 0x7B;
+    pub const POSIX_EPOLL_CTL: usize = 0x7C;
+    pub const POSIX_EPOLL_WAIT: usize = 0x7D;
+    pub const POSIX_CLOCK_GETTIME: usize = 0x7E;
+    pub const POSIX_NANOSLEEP: usize = 0x7F;
+    pub const POSIX_GETRANDOM: usize = 0x80;
+    pub const POSIX_SOCKET: usize = 0x81;
 }
 
 /// Syscall error codes.
@@ -273,6 +295,26 @@ const fn build_syscall_table() -> [SyscallHandler; SYSCALL_TABLE_SIZE] {
     table[nr::CAP_CHECK] = capability::sys_cap_check as SyscallHandler;
     table[nr::CAP_LIST] = capability::sys_cap_list as SyscallHandler;
 
+    // POSIX compatibility syscalls
+    table[nr::POSIX_OPEN] = posix::sys_posix_open as SyscallHandler;
+    table[nr::POSIX_CLOSE] = posix::sys_posix_close as SyscallHandler;
+    table[nr::POSIX_READ] = posix::sys_posix_read as SyscallHandler;
+    table[nr::POSIX_WRITE] = posix::sys_posix_write as SyscallHandler;
+    table[nr::POSIX_FSTAT] = posix::sys_posix_fstat as SyscallHandler;
+    table[nr::POSIX_DUP] = posix::sys_posix_dup as SyscallHandler;
+    table[nr::POSIX_DUP2] = posix::sys_posix_dup2 as SyscallHandler;
+    table[nr::POSIX_LSEEK] = posix::sys_posix_lseek as SyscallHandler;
+    table[nr::POSIX_MMAP] = posix::sys_posix_mmap as SyscallHandler;
+    table[nr::POSIX_MUNMAP] = posix::sys_posix_munmap as SyscallHandler;
+    table[nr::POSIX_MPROTECT] = posix::sys_posix_mprotect as SyscallHandler;
+    table[nr::POSIX_EPOLL_CREATE] = posix::sys_posix_epoll_create as SyscallHandler;
+    table[nr::POSIX_EPOLL_CTL] = posix::sys_posix_epoll_ctl as SyscallHandler;
+    table[nr::POSIX_EPOLL_WAIT] = posix::sys_posix_epoll_wait as SyscallHandler;
+    table[nr::POSIX_CLOCK_GETTIME] = posix::sys_posix_clock_gettime as SyscallHandler;
+    table[nr::POSIX_NANOSLEEP] = posix::sys_posix_nanosleep as SyscallHandler;
+    table[nr::POSIX_GETRANDOM] = posix::sys_posix_getrandom as SyscallHandler;
+    table[nr::POSIX_SOCKET] = posix::sys_posix_socket as SyscallHandler;
+
     table
 }
 
@@ -303,6 +345,7 @@ pub fn category_name(number: usize) -> &'static str {
         0x4 => "device",
         0x5 => "system",
         0x6 => "capability",
+        0x7 | 0x8 => "posix",
         _ => "unknown",
     }
 }
@@ -326,8 +369,8 @@ mod tests {
 
     #[test]
     fn test_registered_count() {
-        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5 capability = 46
-        assert_eq!(registered_count(), 46);
+        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5 capability + 18 posix = 64
+        assert_eq!(registered_count(), 64);
     }
 
     #[test]
@@ -399,6 +442,9 @@ mod tests {
         assert_eq!(category_name(nr::DEV_DMA_ALLOC), "device");
         assert_eq!(category_name(nr::SYS_INFO), "system");
         assert_eq!(category_name(nr::SYS_WATCHDOG_REMAINING), "system");
+        assert_eq!(category_name(nr::POSIX_OPEN), "posix");
+        assert_eq!(category_name(nr::POSIX_SOCKET), "posix");
+        assert_eq!(category_name(0x8F), "posix");
         assert_eq!(category_name(0xF0), "unknown");
     }
 
@@ -519,7 +565,7 @@ mod tests {
     #[test]
     fn test_gap_slots_return_nosys() {
         // Verify gaps between categories return NoSys
-        for gap_nr in [0x08, 0x09, 0x0A, 0x0F, 0x17, 0x18, 0x1F, 0x28, 0x2F, 0x36, 0x3F, 0x45, 0x4F, 0x57, 0x5F, 0x65, 0x6F] {
+        for gap_nr in [0x08, 0x09, 0x0A, 0x0F, 0x17, 0x18, 0x1F, 0x28, 0x2F, 0x36, 0x3F, 0x45, 0x4F, 0x57, 0x5F, 0x65, 0x6F, 0x82, 0x8F] {
             let args = SyscallArgs::zero(gap_nr);
             assert_eq!(
                 dispatch(&args),
@@ -574,6 +620,12 @@ mod tests {
             nr::SYS_INFO, nr::SYS_TIME, nr::SYS_SHUTDOWN, nr::SYS_LOG,
             nr::SYS_RANDOM, nr::SYS_WATCHDOG_PET, nr::SYS_WATCHDOG_REMAINING,
             nr::CAP_CREATE, nr::CAP_REVOKE, nr::CAP_DELEGATE, nr::CAP_CHECK, nr::CAP_LIST,
+            nr::POSIX_OPEN, nr::POSIX_CLOSE, nr::POSIX_READ, nr::POSIX_WRITE,
+            nr::POSIX_FSTAT, nr::POSIX_DUP, nr::POSIX_DUP2, nr::POSIX_LSEEK,
+            nr::POSIX_MMAP, nr::POSIX_MUNMAP, nr::POSIX_MPROTECT,
+            nr::POSIX_EPOLL_CREATE, nr::POSIX_EPOLL_CTL, nr::POSIX_EPOLL_WAIT,
+            nr::POSIX_CLOCK_GETTIME, nr::POSIX_NANOSLEEP, nr::POSIX_GETRANDOM,
+            nr::POSIX_SOCKET,
         ] {
             let args = SyscallArgs::new(nr, max_args);
             let result = dispatch(&args);
@@ -598,6 +650,12 @@ mod tests {
             nr::SYS_INFO, nr::SYS_TIME, nr::SYS_SHUTDOWN, nr::SYS_LOG,
             nr::SYS_RANDOM, nr::SYS_WATCHDOG_PET, nr::SYS_WATCHDOG_REMAINING,
             nr::CAP_CREATE, nr::CAP_REVOKE, nr::CAP_DELEGATE, nr::CAP_CHECK, nr::CAP_LIST,
+            nr::POSIX_OPEN, nr::POSIX_CLOSE, nr::POSIX_READ, nr::POSIX_WRITE,
+            nr::POSIX_FSTAT, nr::POSIX_DUP, nr::POSIX_DUP2, nr::POSIX_LSEEK,
+            nr::POSIX_MMAP, nr::POSIX_MUNMAP, nr::POSIX_MPROTECT,
+            nr::POSIX_EPOLL_CREATE, nr::POSIX_EPOLL_CTL, nr::POSIX_EPOLL_WAIT,
+            nr::POSIX_CLOCK_GETTIME, nr::POSIX_NANOSLEEP, nr::POSIX_GETRANDOM,
+            nr::POSIX_SOCKET,
         ] {
             let args = SyscallArgs::zero(nr);
             let _ = dispatch(&args); // Must not panic
@@ -646,7 +704,10 @@ mod tests {
         assert_eq!(category_name(0x5F), "system");
         assert_eq!(category_name(nr::CAP_CREATE), "capability");
         assert_eq!(category_name(nr::CAP_LIST), "capability");
-        assert_eq!(category_name(0x70), "unknown");
+        assert_eq!(category_name(0x70), "posix");
+        assert_eq!(category_name(0x7F), "posix");
+        assert_eq!(category_name(0x80), "posix");
+        assert_eq!(category_name(0x90), "unknown");
     }
 
     #[test]
@@ -706,6 +767,43 @@ mod tests {
         assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_DELEGATE)), SyscallError::InvalidHandle.as_i64());
         assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_CHECK)), SyscallError::InvalidHandle.as_i64());
         assert_eq!(dispatch(&SyscallArgs::zero(nr::CAP_LIST)), SyscallError::Success.as_i64());
+
+        // POSIX: all zero-arg dispatches should return an error (not panic)
+        let posix_enosys = -38i64;
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_OPEN)), SyscallError::InvalidArgument.as_i64());
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_CLOSE)), posix_enosys);
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_READ)), posix_enosys); // fd=0,buf=0,count=0 → stub
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_WRITE)), posix_enosys); // fd=0,buf=0,count=0 → stub
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_FSTAT)), SyscallError::BadAddress.as_i64()); // stat_ptr=0
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_DUP)), posix_enosys); // fd=0 is valid
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_DUP2)), posix_enosys); // both fd=0
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_LSEEK)), posix_enosys); // fd=0, SEEK_SET
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_MMAP)), -22); // zero length → EINVAL
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_MUNMAP)), -22); // zero length → EINVAL
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_MPROTECT)), -22); // zero length → EINVAL
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_EPOLL_CREATE)), posix_enosys); // flags=0 ok
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_EPOLL_CTL)), -22); // op=0 invalid → EINVAL
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_EPOLL_WAIT)), -22); // max_events=0 → EINVAL
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_CLOCK_GETTIME)), SyscallError::BadAddress.as_i64());
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_NANOSLEEP)), SyscallError::BadAddress.as_i64());
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_GETRANDOM)), 0); // zero-length → 0
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::POSIX_SOCKET)), -22); // family=0 invalid
+    }
+
+    #[test]
+    fn test_all_posix_syscalls_dispatched() {
+        for nr in [
+            nr::POSIX_OPEN, nr::POSIX_CLOSE, nr::POSIX_READ, nr::POSIX_WRITE,
+            nr::POSIX_FSTAT, nr::POSIX_DUP, nr::POSIX_DUP2, nr::POSIX_LSEEK,
+            nr::POSIX_MMAP, nr::POSIX_MUNMAP, nr::POSIX_MPROTECT,
+            nr::POSIX_EPOLL_CREATE, nr::POSIX_EPOLL_CTL, nr::POSIX_EPOLL_WAIT,
+            nr::POSIX_CLOCK_GETTIME, nr::POSIX_NANOSLEEP, nr::POSIX_GETRANDOM,
+            nr::POSIX_SOCKET,
+        ] {
+            let args = SyscallArgs::zero(nr);
+            let result = dispatch(&args);
+            assert_ne!(SyscallError::from_i64(result), Some(SyscallError::NoSys));
+        }
     }
 
     #[test]
