@@ -1,98 +1,100 @@
-# Delta for Documentation System
+# Delta for Documentation
 
 ## ADDED Requirements
 
 ### Requirement: Sphinx-needs Requirements Engineering
-The project SHALL use Sphinx-needs to manage requirements, specifications, implementations, tests, and verification results with full bidirectional traceability.
+The project SHALL use Sphinx-needs for requirements engineering with defined need types: REQ, SPEC, IMPL, TEST, and VERIFY.
 
-#### Scenario: Define requirement with traceability
-- **WHEN** a requirement is documented in the Sphinx-needs system
-- **THEN** it MUST use one of the defined need types: REQ (requirement), SPEC (specification), IMPL (implementation), TEST (test case), VERIFY (verification result)
-- **AND** each need MUST have a unique ID, title, description, and status
-- **AND** each need MUST link to its upstream and downstream needs via `links` and `links_back`
+#### Scenario: Define requirement need types
+- WHEN the Sphinx-needs configuration is loaded
+- THEN the system MUST support need types REQ (high-level requirement), SPEC (low-level specification), IMPL (implementation reference), TEST (test case), and VERIFY (verification result)
+- AND each need MUST have a unique identifier, title, status, and linkage fields
 
-#### Scenario: Traceability matrix is complete
-- **WHEN** the Sphinx documentation is built
-- **THEN** the generated traceability matrix MUST show all REQ → SPEC → IMPL → TEST → VERIFY chains
-- **AND** orphan needs (needs with no upstream or downstream links) MUST be flagged as warnings
-- **AND** the matrix MUST be exportable as HTML and CSV
-
-#### Scenario: Need status tracking
-- **WHEN** a need's implementation status changes
-- **THEN** the need status MUST be updated to one of: open, in_progress, implemented, verified, rejected
-- **AND** the documentation build MUST show a summary dashboard with counts per status
+#### Scenario: Create a traceable requirement chain
+- WHEN a REQ need is created in the documentation
+- THEN it MUST be linkable to one or more SPEC needs via the "specifies" relationship
+- AND each SPEC MUST be linkable to IMPL needs via the "implements" relationship
+- AND each IMPL MUST be linkable to TEST needs via the "tests" relationship
+- AND each TEST MUST be linkable to VERIFY needs via the "verifies" relationship
 
 ### Requirement: PlantUML Architecture Diagrams
-The project SHALL include PlantUML diagrams for all major architectural views, generated from version-controlled text sources.
+The project SHALL use PlantUML for generating architecture diagrams including component, sequence, state machine, and deployment diagrams.
 
-#### Scenario: Component diagram shows system decomposition
-- **WHEN** the component diagram is generated
-- **THEN** it MUST show all 10 Rust crates and their dependency relationships
-- **AND** it MUST show the HAL boundary separating platform-specific from platform-independent code
-- **AND** the diagram source MUST be stored as `.puml` files in the `docs/` directory
+#### Scenario: Generate component diagram
+- WHEN the documentation build processes a PlantUML component diagram source
+- THEN it MUST render the kernel component architecture showing kernel-core, onnx-runtime, ipc-messaging, networking, pqc-crypto, and device-hal
+- AND all inter-component dependencies MUST be visually represented
 
-#### Scenario: Sequence diagram for inference request flow
-- **WHEN** the inference sequence diagram is generated
-- **THEN** it MUST show the complete message flow from external TCP client through IPC router, inference dispatcher, ONNX session, execution provider, and back
-- **AND** the diagram MUST show parallel paths for CPU and GPU execution
+#### Scenario: Generate sequence diagrams for inference flow
+- WHEN the documentation build processes a PlantUML sequence diagram source
+- THEN it MUST render the inference request lifecycle from IPC receipt through ONNX execution to response delivery
 
-#### Scenario: State machine diagram for task lifecycle
-- **WHEN** the task state machine diagram is generated
-- **THEN** it MUST show all task states (Created, Ready, Running, Waiting, Completed) and valid transitions
-- **AND** it MUST match the actual state machine in the scheduler implementation
+#### Scenario: Generate TCP state machine diagram
+- WHEN the documentation build processes a PlantUML state machine diagram source
+- THEN it MUST render the TCP connection state machine with all transitions per RFC 9293
 
-#### Scenario: Deployment diagram for container and bare metal
-- **WHEN** the deployment diagram is generated
-- **THEN** it MUST show both container mode (SmallAIOS as process in Docker/K8s) and VM/bare metal mode
-- **AND** it MUST show GPU passthrough architecture in both modes
+#### Scenario: Generate deployment diagram
+- WHEN the documentation build processes a PlantUML deployment diagram source
+- THEN it MUST render container mode and VM mode deployment topologies including host, kernel, ONNX runtime, and GPU components
+
+### Requirement: Bidirectional Traceability
+The documentation system SHALL enforce bidirectional traceability between requirements, code, tests, and verification results.
+
+#### Scenario: Forward traceability from requirement to test
+- WHEN a REQ need exists in the documentation
+- THEN the traceability report MUST show the chain REQ to SPEC to IMPL to TEST to VERIFY
+- AND any break in the chain MUST be flagged as a traceability gap
+
+#### Scenario: Reverse traceability from test to requirement
+- WHEN a TEST need exists in the documentation
+- THEN the traceability report MUST show which IMPL, SPEC, and REQ needs it ultimately traces back to
+- AND orphan tests (not linked to any requirement) MUST be flagged
+
+#### Scenario: Traceability matrix generation
+- WHEN the documentation build is executed
+- THEN a traceability matrix MUST be auto-generated showing all REQ-to-VERIFY chains
+- AND the matrix MUST highlight gaps, orphans, and incomplete chains
+
+### Requirement: Auto-generated Documentation from Rust Doc Comments
+The documentation system SHALL auto-generate API documentation from Rust doc comments and integrate it with the Sphinx documentation.
+
+#### Scenario: Generate API docs from doc comments
+- WHEN cargo doc is executed on the workspace
+- THEN HTML documentation MUST be generated for all public types, functions, and modules
+- AND the generated docs MUST be linked from the Sphinx documentation site
+
+#### Scenario: Doc comment coverage enforcement
+- WHEN CI runs the documentation build
+- THEN all public API items MUST have doc comments
+- AND the build MUST warn on missing documentation via the deny(missing_docs) lint
 
 ### Requirement: DO-178C Document Artifacts
-The project SHALL produce all DO-178C required document artifacts for DAL A certification.
+The documentation system SHALL produce all DO-178C required document artifacts for DAL A certification.
 
-#### Scenario: Plan for Software Aspects of Certification (PSAC)
-- **WHEN** the PSAC document is generated
-- **THEN** it MUST describe the system overview, software overview, certification considerations, software lifecycle, schedule, and additional considerations
-- **AND** it MUST reference all subordinate plans (SDP, SVP, SCMP, SQAP)
+#### Scenario: Generate Plan for Software Aspects of Certification (PSAC)
+- WHEN the documentation build is executed
+- THEN the PSAC document MUST be generated from Sphinx sources
+- AND it MUST reference the SDP, SVP, SRS, SDD, SCS, SCI, and SVCP
 
-#### Scenario: Software Requirements Standards (SRS)
-- **WHEN** the SRS document is generated
-- **THEN** it MUST define the methods, rules, and tools for developing high-level software requirements
-- **AND** it MUST reference the Sphinx-needs REQ need type as the requirements management mechanism
+#### Scenario: Generate Software Development Plan (SDP)
+- WHEN the documentation build is executed
+- THEN the SDP MUST define the software lifecycle model, development environment, coding standards, and review procedures
 
-#### Scenario: Software Design Standards (SDD)
-- **WHEN** the SDD document is generated
-- **THEN** it MUST define the architecture, low-level requirements, and data flow for each software component
-- **AND** it MUST reference the Sphinx-needs SPEC and IMPL need types
+#### Scenario: Generate Software Verification Plan (SVP)
+- WHEN the documentation build is executed
+- THEN the SVP MUST define verification methods (review, analysis, test), coverage criteria (MC/DC), and tool qualification requirements
 
-#### Scenario: Software Verification Results document
-- **WHEN** the verification results document is generated
-- **THEN** it MUST include test results, code review records, MC/DC coverage reports, static analysis results, and formal verification results
-- **AND** all results MUST be traceable to their corresponding VERIFY needs in Sphinx-needs
+#### Scenario: Generate Software Requirements Specification (SRS)
+- WHEN the documentation build is executed
+- THEN the SRS MUST be auto-populated from Sphinx-needs REQ and SPEC entries
+- AND all requirements MUST have unique identifiers and traceability links
 
-### Requirement: Auto-generated API Documentation
-The project SHALL generate API documentation from Rust doc comments integrated with the Sphinx-needs traceability system.
+#### Scenario: Generate Software Design Description (SDD)
+- WHEN the documentation build is executed
+- THEN the SDD MUST include PlantUML architecture diagrams and module-level design descriptions
+- AND it MUST trace design elements to SRS requirements
 
-#### Scenario: Rust docs generated with cargo doc
-- **WHEN** `cargo doc` is run on the workspace
-- **THEN** it MUST generate HTML documentation for all public APIs in all crates
-- **AND** each public function, struct, and trait MUST have a doc comment
-
-#### Scenario: Cross-reference between Sphinx-needs and Rust docs
-- **WHEN** an IMPL need references a Rust module or function
-- **THEN** the Sphinx documentation MUST include a hyperlink to the corresponding cargo doc page
-- **AND** the cargo doc page MUST include a reference back to the IMPL need ID
-
-### Requirement: Documentation CI Pipeline
-Documentation SHALL be built and validated automatically in CI.
-
-#### Scenario: Sphinx build succeeds with zero warnings
-- **WHEN** CI builds the Sphinx documentation
-- **THEN** the build MUST succeed with zero warnings
-- **AND** all PlantUML diagrams MUST render successfully
-- **AND** all Sphinx-needs cross-references MUST resolve
-
-#### Scenario: Traceability gap detection
-- **WHEN** CI analyzes the Sphinx-needs traceability matrix
-- **THEN** it MUST fail the build if any REQ has no linked SPEC
-- **AND** MUST fail if any SPEC has no linked IMPL
-- **AND** MUST fail if any IMPL has no linked TEST
+#### Scenario: Generate remaining DO-178C artifacts
+- WHEN the documentation build is executed
+- THEN the system MUST produce SCS (Software Configuration Standards), SCI (Software Configuration Index), and SVCP (Software Verification Cases and Procedures)
+- AND each document MUST follow DO-178C content requirements for DAL A
