@@ -1,91 +1,120 @@
-# Delta for Native IPv4/IPv6 Networking
+# Delta for Networking
 
 ## ADDED Requirements
 
-### Requirement: IPv4 Network Stack
-The system SHALL implement IPv4 with static addressing, ARP, and single-gateway routing.
+### Requirement: IPv4 Networking
+The network stack SHALL implement IPv4 with static addressing, ARP, single-gateway routing, and ICMP echo.
 
 #### Scenario: Send and receive IPv4 packets
-- **WHEN** the network stack is configured with a static IPv4 address and default gateway
-- **THEN** it MUST send and receive IPv4 packets with correct headers and checksums
-- **AND** it MUST resolve the gateway MAC address via ARP before sending
+- WHEN the network interface is configured with a static IPv4 address and subnet mask
+- THEN the stack MUST construct valid IPv4 headers with correct checksum and TTL (default 64)
+- AND MUST set the DF (Don't Fragment) bit on all outgoing packets
 
-#### Scenario: Respond to ICMP echo requests
-- **WHEN** the system receives an ICMPv4 echo request (ping)
-- **THEN** it MUST respond with an ICMPv4 echo reply containing the same payload
+#### Scenario: ARP resolution
+- WHEN the stack needs to send a packet to an IP address on the local subnet
+- AND the destination MAC address is not in the ARP table
+- THEN the stack MUST send an ARP request and cache the reply (timeout 300 seconds)
+- AND the ARP table MUST be limited to 256 entries to prevent exhaustion
 
-### Requirement: IPv6 Network Stack
-The system SHALL implement IPv6 with link-local addressing, NDP, and SLAAC.
+#### Scenario: Default gateway routing
+- WHEN the stack needs to send a packet to an IP address outside the local subnet
+- THEN the stack MUST forward the packet to the configured default gateway via ARP resolution
 
-#### Scenario: Auto-configure link-local address
-- **WHEN** the network interface is initialized
-- **THEN** the system MUST generate a link-local IPv6 address (fe80::/10)
-- **AND** MUST perform Duplicate Address Detection (DAD) via NDP
+#### Scenario: ICMP echo reply
+- WHEN the stack receives an ICMP Echo Request (ping)
+- THEN the stack MUST reply with an ICMP Echo Reply containing the same identifier, sequence, and data
 
-#### Scenario: SLAAC global address configuration
-- **WHEN** the system receives a Router Advertisement with a prefix
-- **THEN** it MUST auto-configure a global IPv6 address using SLAAC
-- **AND** MUST respect the advertised prefix lifetime
+### Requirement: IPv6 Networking
+The network stack SHALL implement IPv6 with link-local addressing, NDP, SLAAC, and ICMP echo.
 
-#### Scenario: Neighbor Discovery
-- **WHEN** the system needs to send to an IPv6 address on the local link
-- **THEN** it MUST resolve the link-layer address via Neighbor Solicitation
-- **AND** MUST cache the result in the neighbor table with reachability tracking
+#### Scenario: Auto-generate link-local address
+- WHEN the network interface is initialized
+- THEN the stack MUST generate a link-local IPv6 address (fe80::/10)
+- AND MUST perform Duplicate Address Detection before using the address
 
-### Requirement: TCP Implementation
-The system SHALL implement TCP with reliable delivery, CUBIC congestion control, and SACK.
+#### Scenario: Neighbor Discovery Protocol
+- WHEN the stack needs to resolve an IPv6 address to a MAC address
+- THEN the stack MUST send a Neighbor Solicitation and process the Neighbor Advertisement
+- AND MUST maintain a neighbor cache with reachability tracking
 
-#### Scenario: Three-way handshake
-- **WHEN** a client connects to the system's listening TCP socket
-- **THEN** the system MUST complete the SYN, SYN-ACK, ACK three-way handshake
-- **AND** transition to ESTABLISHED state
+#### Scenario: SLAAC address configuration
+- WHEN the stack receives a Router Advertisement with a prefix
+- THEN the stack MUST generate a global IPv6 address from the prefix and interface identifier
+- AND MUST respect the valid and preferred lifetimes from the advertisement
 
-#### Scenario: Data transfer with flow control
-- **WHEN** data is sent over an established TCP connection
-- **THEN** the system MUST use sliding window flow control with the receiver's advertised window
-- **AND** MUST support window scaling (RFC 7323) for windows larger than 64 KB
+#### Scenario: ICMPv6 echo reply
+- WHEN the stack receives an ICMPv6 Echo Request
+- THEN the stack MUST reply with an ICMPv6 Echo Reply
+
+### Requirement: TCP Transport
+The network stack SHALL implement TCP with 3-way handshake, reliable data transfer, CUBIC congestion control, SACK, and keepalive.
+
+#### Scenario: TCP three-way handshake
+- WHEN a client initiates a TCP connection
+- THEN the stack MUST complete the SYN, SYN-ACK, ACK handshake
+- AND MUST transition to the ESTABLISHED state upon receiving the final ACK
+
+#### Scenario: TCP passive open (server)
+- WHEN the IPC system binds a TCP listener on port 7447
+- THEN the stack MUST accept incoming SYN packets and create connection state
+- AND MUST support SYN cookies to protect against SYN flood attacks
+
+#### Scenario: Reliable data transfer with SACK
+- WHEN TCP segments are lost during transmission
+- THEN the stack MUST detect loss via 3 duplicate ACKs and perform fast retransmit
+- AND MUST use Selective Acknowledgment (SACK) for efficient loss recovery
 
 #### Scenario: CUBIC congestion control
-- **WHEN** packet loss is detected (3 duplicate ACKs or RTO timeout)
-- **THEN** the system MUST reduce the congestion window per CUBIC algorithm
-- **AND** MUST perform fast retransmit on 3 duplicate ACKs
-- **AND** MUST use SACK for efficient selective retransmission
+- WHEN a TCP connection experiences congestion
+- THEN the stack MUST implement CUBIC congestion control with slow start, congestion avoidance, and fast recovery
+- AND MUST support ECN (Explicit Congestion Notification)
 
-#### Scenario: Connection close
-- **WHEN** either end initiates connection close
-- **THEN** the system MUST perform the four-way FIN handshake
-- **AND** MUST enter TIME_WAIT state for 2*MSL (60 seconds default)
+#### Scenario: TCP keepalive
+- WHEN a TCP connection is idle for the configured keepalive time (default 60 seconds)
+- THEN the stack MUST send keepalive probes at the configured interval (default 10 seconds)
+- AND MUST close the connection after the configured number of unanswered probes (default 5)
 
-#### Scenario: SYN cookie protection
-- **WHEN** the system is under SYN flood attack (SYN backlog exceeded)
-- **THEN** it MUST use SYN cookies to respond without allocating state
-- **AND** MUST reconstruct connection state from the cookie on ACK receipt
-
-### Requirement: UDP Implementation
-The system SHALL implement UDP for DNS resolution and NTP time synchronization.
+### Requirement: UDP Transport
+The network stack SHALL implement minimal UDP for DNS resolution and NTP synchronization.
 
 #### Scenario: Send and receive UDP datagrams
-- **WHEN** a UDP datagram is sent to a destination address and port
-- **THEN** it MUST be encapsulated in an IPv4 or IPv6 packet with correct UDP checksum
-- **AND** incoming UDP datagrams MUST be delivered to the correct listening socket
+- WHEN the DNS resolver or NTP client sends a UDP datagram
+- THEN the stack MUST construct a valid UDP header with correct checksum
+- AND MUST deliver received datagrams to the correct port handler
+
+#### Scenario: DNS stub resolution
+- WHEN the stack needs to resolve a hostname
+- THEN the DNS stub resolver MUST send a UDP query for A and AAAA records
+- AND MUST parse the DNS response and return the resolved addresses
 
 ### Requirement: Built-in Packet Filter
-The system SHALL include a configurable packet filter with default-deny ingress policy.
+The network stack SHALL include a built-in packet filter (firewall) with configurable allow/deny rules.
 
-#### Scenario: Default deny ingress
-- **WHEN** no firewall rules are configured
-- **THEN** all incoming packets MUST be dropped except: responses to outgoing connections, ICMPv6 NDP
-- **AND** a log entry MUST be generated for dropped packets (rate-limited)
+#### Scenario: Default deny policy
+- WHEN the firewall is configured with default_input = "drop"
+- AND no allow rule matches an incoming packet
+- THEN the stack MUST silently drop the packet
+- AND MUST NOT send any response
 
-#### Scenario: Allow IPC port
-- **WHEN** the firewall is configured to allow TCP on the IPC port (default 7447)
-- **THEN** incoming TCP connections to port 7447 MUST be accepted
-- **AND** all other incoming TCP connections MUST be dropped
+#### Scenario: Allow IPC port traffic
+- WHEN an allow rule permits TCP traffic on port 7447
+- AND an incoming TCP SYN arrives on port 7447
+- THEN the firewall MUST allow the packet through to the TCP stack
 
-### Requirement: Network Device Driver — virtio-net
-The system SHALL include a virtio-net driver for VM and container network connectivity.
+#### Scenario: Allow ICMPv6 for NDP
+- WHEN an allow rule permits ICMPv6 traffic
+- THEN the firewall MUST allow Neighbor Solicitation and Router Solicitation messages
+- AND MUST allow Router Advertisement messages required for SLAAC
 
-#### Scenario: Initialize virtio-net device
-- **WHEN** a virtio-net device is detected during boot (MMIO transport)
-- **THEN** the driver MUST negotiate features, set up TX and RX virtqueues
-- **AND** the device MUST be ready to send and receive Ethernet frames
+### Requirement: Network Device Drivers
+The network stack SHALL support virtio-net for VM deployments and Broadcom GENET for Raspberry Pi bare metal.
+
+#### Scenario: virtio-net driver initialization
+- WHEN SmallAIOS boots in a virtual machine with a virtio-net device
+- THEN the driver MUST negotiate virtio features, set up TX and RX queues, and configure the MAC address
+- AND the network interface MUST be ready to send and receive Ethernet frames
+
+#### Scenario: Broadcom GENET driver for Raspberry Pi
+- WHEN SmallAIOS boots on a Raspberry Pi 4 or 5 with a Broadcom GENET NIC
+- THEN the driver MUST initialize the hardware, configure DMA rings, and register the network interface
+- AND the interface MUST support standard Ethernet frame send and receive
