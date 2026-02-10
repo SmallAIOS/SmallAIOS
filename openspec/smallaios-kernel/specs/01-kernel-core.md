@@ -56,28 +56,99 @@ Dedicated region for tensor allocations with:
 
 ## Task Scheduler
 
-### Model
+### Model: Soft Real-Time Cooperative Scheduling
 
-SmallAIOS uses **cooperative multitasking** with async/await (Rust futures).
-There is no preemptive scheduling — inference tasks yield at operator boundaries.
+SmallAIOS is a **soft real-time unikernel**. It uses cooperative multitasking with
+async/await (Rust futures) combined with **priority-based preemption at operator
+boundaries**. ONNX inference is inherently variable-time (model sizes range from
+1 MB edge models to multi-GB transformers), so SmallAIOS provides soft deadlines
+with observability rather than hard real-time guarantees.
 
-Rationale: AI inference is a pipeline of operators. Preemption in the middle of a
-matrix multiplication wastes cache state and adds latency. Cooperative yielding
-between operators provides natural scheduling points.
+Tasks yield at ONNX operator boundaries. At each yield point, the scheduler checks
+for higher-priority pending work (system health, IPC) and preempts inference if needed.
+
+### Scheduling Classes
+
+| Class | Name | Priority | Preempts | Budget |
+|---|---|---|---|---|
+| 0 | `SYSTEM` | Highest | All others | < 1 ms |
+| 1 | `IPC` | Medium | INFERENCE | < 10 ms target |
+| 2 | `INFERENCE` | Normal | — | Per-operator budgets |
+
+**SYSTEM class** (hard-RT): Watchdog servicing, health check responses, syslog flush,
+timer interrupt bottom halves. Must always complete within 1 ms.
+
+**IPC class** (soft-RT, low latency): IPC message routing, model reload requests,
+TCP connection management, network packet processing. Preempts inference at the
+next operator boundary.
+
+**INFERENCE class** (soft-RT, throughput): ONNX model execution, GPU command
+submission/completion, tensor allocation. Best-effort with per-operator time budgets.
 
 ### Task Types
 
-| Type | Description | Priority |
+| Type | Scheduling Class | Description |
 |---|---|---|
-| `InferenceTask` | ONNX model execution | Normal |
-| `IOTask` | Model loading, IPC | Low |
-| `GPUTask` | GPU command submission/completion | High |
-| `TimerTask` | Timeout and deadline management | System |
+| `WatchdogTask` | SYSTEM | Service hardware watchdog timer |
+| `HealthTask` | SYSTEM | Respond to health/readiness probes |
+| `SyslogTask` | SYSTEM | Flush diagnostic log buffer |
+| `TimerTask` | SYSTEM | Timeout and deadline management |
+| `IpcRouterTask` | IPC | Route pub/sub messages |
+| `TcpTask` | IPC | TCP connection handling |
+| `ModelReloadTask` | IPC | Hot-reload ONNX model |
+| `InferenceTask` | INFERENCE | ONNX model execution |
+| `GPUTask` | INFERENCE | GPU command submission/completion |
+
+### Operator Yield Points
+
+The ONNX runtime inserts a mandatory scheduler yield between every operator.
+At each yield point:
+
+1. Check for pending SYSTEM tasks → execute immediately
+2. Check for pending IPC tasks → execute before resuming inference
+3. Check operator time budget → log warning if exceeded
+4. Service watchdog if deadline approaching
+5. No higher-priority work → continue with next operator
+
+### Per-Operator Time Budgets
+
+Each operator execution is timed against a configurable budget:
+
+| Operator Class | Default Budget | Rationale |
+|---|---|---|
+| Elementwise (Relu, Add) | 1 ms | SIMD-fast |
+| Reduction (Softmax, ReduceMean) | 10 ms | Data-dependent |
+| GEMM (MatMul, Conv) | 100 ms | Size-dependent dominant cost |
+| Attention (MultiHeadAttention) | 500 ms | Quadratic in sequence length |
+| GPU kernel | 1000 ms | Includes DMA + compute |
+
+Budget behavior:
+- **Warning** (1x): Log operator name, actual time, budget to syslog
+- **Soft limit** (2x): Emit metric, flag for profiling
+- **Hard limit** (10x or configurable): Abort inference with timeout error
+
+### Hardware Watchdog
+
+SmallAIOS initializes a hardware watchdog timer during boot:
+- Default timeout: 30 seconds (configurable)
+- Serviced by SYSTEM class task at highest priority
+- Triggers system reset if not serviced (indicates hang/deadlock)
+- Watchdog service also occurs at operator yield points if deadline approaches
+
+### WCET Calibration (Edge Targets)
+
+For constrained hardware (Jetson Nano, Raspberry Pi), the runtime performs a
+calibration run during model load:
+1. Execute each operator once with representative input
+2. Estimate WCET: measured time × safety factor (default: 3x)
+3. Assign WCET as operator budget
+4. Monitor actual vs estimated at runtime, adjust factors
 
 ### Executor
 
 - Work-stealing executor with one worker per CPU core.
 - Per-core run queues with lock-free stealing.
+- Priority queues: SYSTEM and IPC tasks always dequeued before INFERENCE.
 - GPU tasks pinned to cores with NVIDIA GPU affinity.
 - Idle cores enter low-power state (HLT on x86, WFI on ARM64).
 
@@ -117,12 +188,13 @@ See [Spec 08: Security Model](08-security-model.md) for capability requirements.
 - `tensor_map_gpu(handle, device) -> GpuPtr`
 - `tensor_unmap_gpu(handle, device)`
 
-**Task** (~6 syscalls):
+**Task** (~7 syscalls):
 - `task_spawn(entry, arg) -> TaskId`
 - `task_yield()`
 - `task_exit(code)`
 - `task_join(id) -> ExitCode`
 - `task_set_priority(id, priority)`
+- `task_set_class(id, class)` — set scheduling class (SYSTEM/IPC/INFERENCE)
 - `task_current() -> TaskId`
 
 **IPC** (~8 syscalls):
@@ -150,14 +222,16 @@ See [Spec 08: Security Model](08-security-model.md) for capability requirements.
 - `dev_ioctl(handle, cmd, arg) -> isize`
 - `dev_dma_alloc(size, align) -> DmaBuffer`
 
-**System** (~5 syscalls):
+**System** (~7 syscalls):
 - `sys_info() -> SystemInfo`
 - `sys_time() -> u64` (nanoseconds since boot)
 - `sys_shutdown(code)`
 - `sys_log(level, msg, len)`
 - `sys_random(buf, len)` — CSPRNG
+- `sys_watchdog_pet()` — service hardware watchdog
+- `sys_watchdog_remaining() -> u32` — query remaining watchdog time
 
-**Total: ~38 syscalls** (vs. Linux ~450)
+**Total: ~41 syscalls** (vs. Linux ~450)
 
 ## Boot Sequence
 
@@ -165,8 +239,9 @@ See [Spec 08: Security Model](08-security-model.md) for capability requirements.
 2. **Early init**: Set up stack, BSS, page tables, GDT/IDT (x86) or exception vectors (ARM64)
 3. **HAL init**: Detect CPU features, initialize interrupt controller
 4. **Memory init**: Build physical memory map, initialize allocators
-5. **Scheduler init**: Create idle task, initialize per-core run queues
-6. **Device init**: Enumerate PCIe devices, initialize GPU if present
+5. **Watchdog init**: Initialize hardware watchdog timer (default: 30s timeout)
+6. **Scheduler init**: Create idle task, initialize per-core priority queues, start SYSTEM tasks
+7. **Device init**: Enumerate PCIe devices, initialize GPU if present
 7. **ONNX init**: Initialize runtime, register execution providers
 8. **IPC init**: Start pub/sub message router
 9. **Model load**: Load ONNX model(s) from container image or virtio-blk
@@ -196,11 +271,25 @@ heap_size = "256M"
 tensor_pool_size = "1G"
 
 [scheduler]
-worker_threads = 0  # 0 = auto-detect from CPU count
+worker_threads = 0              # 0 = auto-detect from CPU count
+watchdog_timeout_secs = 30      # Hardware watchdog timeout
+system_task_budget_ms = 1       # Max time for SYSTEM class tasks
+ipc_response_target_ms = 10     # Target IPC response time
+
+[scheduler.budgets]
+elementwise_ms = 1              # Relu, Add, Mul, Sigmoid
+reduction_ms = 10               # Softmax, ReduceMean, LayerNorm
+gemm_ms = 100                   # MatMul, Conv, Gemm
+attention_ms = 500              # MultiHeadAttention
+gpu_kernel_ms = 1000            # Any GPU-dispatched operator
 
 [onnx]
 models = ["model.onnx"]
-execution_providers = ["cpu"]  # or ["cuda", "cpu"]
+execution_providers = ["cpu"]   # or ["cuda", "cpu"]
+operator_budget_scale = 1.0     # Budget multiplier (0 = disable enforcement)
+inference_timeout_ms = 0        # 0 = no whole-inference timeout
+calibrate_wcet = false          # Enable WCET calibration for edge targets
+wcet_safety_factor = 3.0        # WCET multiplier
 
 [ipc]
 listen = "tcp://0.0.0.0:7447"
@@ -222,9 +311,11 @@ kernel/
     │   └── page.rs     # Page table abstractions
     ├── sched/
     │   ├── mod.rs
-    │   ├── task.rs      # Task struct and lifecycle
-    │   ├── executor.rs  # Async executor
-    │   └── queue.rs     # Lock-free work-stealing queue
+    │   ├── task.rs      # Task struct with scheduling class
+    │   ├── executor.rs  # Async executor with priority dequeue
+    │   ├── queue.rs     # Lock-free work-stealing queue (priority-aware)
+    │   ├── watchdog.rs  # Hardware watchdog abstraction
+    │   └── budget.rs    # Per-operator time budget tracking
     ├── interrupt/
     │   ├── mod.rs
     │   └── handler.rs

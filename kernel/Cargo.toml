@@ -8,6 +8,7 @@ description = "SmallAIOS kernel core: memory management, scheduler, syscall inte
 [features]
 default = []
 verbose-boot = []
+no-global-alloc = []
 
 [dependencies]
 smallaios-security = { path = "../security" }

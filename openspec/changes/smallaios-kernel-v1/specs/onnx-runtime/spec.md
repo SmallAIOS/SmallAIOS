@@ -90,6 +90,41 @@ The runtime SHALL support GPU inference via a CUDA execution provider that launc
 - THEN the runtime MUST transfer inputs to GPU via async DMA
 - AND MUST overlap DMA transfers with computation where possible
 
+### Requirement: Operator-Level Scheduler Integration
+The runtime SHALL insert mandatory scheduler yield points between every operator in the execution graph and support per-operator time budgets.
+
+#### Scenario: Yield between operators
+- WHEN the runtime executes an inference graph
+- THEN it MUST yield to the scheduler after each operator completes
+- AND the yield MUST allow higher-priority tasks (SYSTEM, IPC) to execute before inference resumes
+
+#### Scenario: Per-operator timing
+- WHEN an operator executes during inference
+- THEN the runtime MUST measure its wall-clock execution time
+- AND MUST compare the measured time against the operator's configured budget
+
+#### Scenario: Operator budget exceeded
+- WHEN an operator's execution time exceeds its soft budget
+- THEN the runtime MUST log a warning with operator name, actual time, and budget to syslog
+- AND MUST continue inference normally
+
+#### Scenario: Operator hard timeout
+- WHEN an operator's execution time exceeds its hard limit (default: 10x budget)
+- THEN the runtime MUST abort the inference and return OnnxError::OperatorTimeout
+
+### Requirement: WCET Calibration
+The runtime SHALL support optional worst-case execution time calibration during session creation for edge deployment targets.
+
+#### Scenario: Calibration run during session creation
+- WHEN a session is created with calibrate_wcet enabled
+- THEN the runtime MUST execute each operator once with representative input data
+- AND MUST compute WCET estimates as measured_time × wcet_safety_factor
+- AND MUST assign calibrated estimates as operator budgets for the session
+
+#### Scenario: Calibration on constrained hardware
+- WHEN calibration runs on a constrained target (Jetson Nano, RPi)
+- THEN the recommended wcet_safety_factor MUST be >= 3.0 to account for thermal throttling and clock variability
+
 ### Requirement: Session API
 The runtime SHALL expose a Session API with load, create_session, run, and metadata operations.
 

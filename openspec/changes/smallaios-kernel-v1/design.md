@@ -87,6 +87,23 @@ Target hardware ranges from Raspberry Pi (edge testing) to NVIDIA DGX Spark (pro
 
 **Rationale**: Sphinx-needs provides bidirectional traceability (REQ ↔ SPEC ↔ IMPL ↔ TEST ↔ VERIFY) required by DO-178C. PlantUML generates consistent diagrams from text (version-controllable, diff-able). Both integrate with Sphinx for a single documentation build.
 
+### Decision 9: Soft real-time scheduling with operator-level preemption
+
+**Choice**: Three-class priority scheduler (SYSTEM > IPC > INFERENCE) with mandatory yield points between every ONNX operator and per-operator time budgets.
+
+**Rationale**: ONNX inference is inherently variable-time — model sizes range from 1 MB (MobileNet, ~2ms) to multi-GB (LLM, seconds). A traditional hard-RTOS model doesn't fit because operator execution times are data-dependent and GPU offload introduces non-deterministic latency. Instead, SmallAIOS provides:
+- **Hard-RT for system health**: Watchdog, health probes, and syslog always preempt inference
+- **Soft-RT for IPC**: External communication preempts at operator boundaries (< 10ms target)
+- **Observability for inference**: Per-operator time budgets with logging, not hard deadlines
+- **Edge WCET calibration**: For constrained hardware (Jetson, RPi), runtime calibration provides per-operator worst-case estimates
+
+**Alternatives considered**:
+- Hard RTOS with fixed time slots: Doesn't work — operator times vary by orders of magnitude
+- Fully preemptive scheduling: Wastes cache state mid-operator (GEMM kernels are cache-blocked)
+- No priority classes: Health checks could be starved by long inference chains
+
+**Risk**: A buggy operator that never returns will block its core → Mitigated with hardware watchdog (30s default) that triggers system reset, plus per-operator hard timeout (configurable, default 10x budget).
+
 ## Risks / Trade-offs
 
 - [NVIDIA GPU driver complexity] → Start with container mode (host driver), add bare metal driver incrementally. Reference open-gpu-kernel-modules MIT portions.

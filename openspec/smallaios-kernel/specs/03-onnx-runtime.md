@@ -92,6 +92,71 @@ Remaining ONNX ops added based on model requirements.
 └─────────────────────────────────────────────┘
 ```
 
+## Operator-Level Scheduling Integration
+
+The ONNX runtime is tightly integrated with the kernel's soft real-time scheduler.
+Between every operator in the execution graph, the runtime inserts a **mandatory
+scheduler yield point**. This enables:
+
+- **Priority preemption**: SYSTEM/IPC tasks preempt inference at operator boundaries
+- **Time budgets**: Each operator is timed; overruns are logged and optionally aborted
+- **Watchdog servicing**: Long inference chains don't starve the hardware watchdog
+- **Observability**: Per-operator timing metrics for profiling and capacity planning
+
+### Execution Loop (Pseudocode)
+
+```rust
+for operator in execution_plan.operators() {
+    let start = sys_time();
+
+    // Execute the operator
+    operator.execute(&mut tensors)?;
+
+    let elapsed = sys_time() - start;
+
+    // Check time budget
+    if elapsed > operator.budget() {
+        sys_log(WARN, &format!("{}: {}ms > {}ms budget",
+            operator.name(), elapsed.as_millis(), operator.budget().as_millis()));
+    }
+    if elapsed > operator.hard_limit() {
+        return Err(OnnxError::OperatorTimeout(operator.name()));
+    }
+
+    // Mandatory yield — scheduler checks for higher-priority work
+    task_yield().await;
+}
+```
+
+### WCET Calibration
+
+For edge targets (Jetson Nano, Raspberry Pi), the runtime supports a calibration
+phase during model load:
+
+1. Execute each operator once with representative input tensors
+2. Compute WCET estimate: measured time × configurable safety factor (default: 3x)
+3. Assign WCET estimates as operator budgets for the session
+4. Track actual vs estimated at runtime; auto-adjust safety factors
+
+### Session Options (Extended)
+
+```rust
+pub struct SessionOptions {
+    pub execution_providers: Vec<ExecutionProvider>,
+    pub optimization_level: OptLevel,
+    pub num_threads: usize,
+    pub enable_profiling: bool,
+    /// Per-operator time budget multiplier (1.0 = use defaults)
+    pub operator_budget_scale: f32,
+    /// Hard timeout for entire inference call (0 = no limit)
+    pub inference_timeout_ms: u64,
+    /// Enable WCET calibration run during session creation
+    pub calibrate_wcet: bool,
+    /// WCET safety factor (default: 3.0)
+    pub wcet_safety_factor: f32,
+}
+```
+
 ## Model Loading Pipeline
 
 ```
@@ -107,7 +172,9 @@ Remaining ONNX ops added based on model requirements.
 5. Plan memory (tensor lifetimes, in-place operations, buffer reuse)
 6. Assign operators to execution providers
 7. Compile/optimize per-EP operator implementations
-8. Return ready-to-execute Session
+8. Insert scheduler yield points between operators
+9. (Optional) Run WCET calibration and assign operator budgets
+10. Return ready-to-execute Session
 ```
 
 ## Graph Optimizations

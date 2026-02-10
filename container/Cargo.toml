@@ -10,7 +10,7 @@ default = []
 nvidia_gpu = ["smallaios-arch-nvidia"]
 
 [dependencies]
-smallaios-kernel = { path = "../kernel" }
+smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
 smallaios-onnx-rt = { path = "../onnx-rt" }
 smallaios-ipc = { path = "../ipc" }
 smallaios-posix = { path = "../posix" }

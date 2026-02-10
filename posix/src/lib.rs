@@ -16,3 +16,15 @@
 //! Unsupported calls return ENOSYS (-38).
 
 #![no_std]
+
+extern crate alloc;
+
+pub mod epoll;
+pub mod errno;
+pub mod fd;
+pub mod mmap;
+pub mod pthread;
+pub mod signal;
+pub mod socket;
+pub mod time;
+pub mod vfs;

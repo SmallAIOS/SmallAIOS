@@ -19,3 +19,8 @@
 //! - Security audit logging
 
 #![no_std]
+
+extern crate alloc;
+
+pub mod capability;
+pub mod crypto;
