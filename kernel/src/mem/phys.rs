@@ -41,6 +41,12 @@ pub struct PhysMemoryMap {
     count: usize,
 }
 
+impl Default for PhysMemoryMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PhysMemoryMap {
     /// Create an empty memory map.
     pub const fn new() -> Self {
@@ -156,7 +162,7 @@ const MB2_TAG_MEMORY_MAP: u32 = 6;
 
 /// Multiboot2 memory map entry types.
 const MB2_MEM_AVAILABLE: u32 = 1;
-const MB2_MEM_RESERVED: u32 = 2;
+const _MB2_MEM_RESERVED: u32 = 2;
 const MB2_MEM_ACPI_RECLAIMABLE: u32 = 3;
 
 /// Parse a Multiboot2 boot information structure to extract the memory map.
@@ -209,7 +215,7 @@ unsafe fn parse_mb2_mmap_tag(tag_addr: usize, tag_size: usize, map: &mut PhysMem
         let kind = match mem_type {
             MB2_MEM_AVAILABLE => RegionKind::Usable,
             MB2_MEM_ACPI_RECLAIMABLE => RegionKind::AcpiReclaimable,
-            MB2_MEM_RESERVED | _ => RegionKind::Reserved,
+            _ => RegionKind::Reserved,
         };
 
         if length > 0 {
@@ -258,8 +264,8 @@ unsafe fn read_be64(ptr: *const u8) -> u64 {
 /// `ptr` must point to a valid null-terminated string.
 unsafe fn cstr_eq(ptr: *const u8, s: &str) -> bool {
     let bytes = s.as_bytes();
-    for i in 0..bytes.len() {
-        if *ptr.add(i) != bytes[i] {
+    for (i, &byte) in bytes.iter().enumerate() {
+        if *ptr.add(i) != byte {
             return false;
         }
     }
@@ -320,17 +326,18 @@ pub unsafe fn parse_dtb(dtb_addr: usize, map: &mut PhysMemoryMap) {
                 let name_len = cstr_len(name_ptr);
 
                 // Check if node name starts with "memory"
-                if depth == 1 && name_len >= 6 {
-                    if cstr_eq(name_ptr, "memory") || (name_len > 7 && *name_ptr.add(6) == b'@') {
-                        // Check for "memory@..." pattern
-                        let is_memory = cstr_eq(name_ptr, "memory") || {
-                            let prefix = core::slice::from_raw_parts(name_ptr, 6);
-                            prefix == b"memory" && *name_ptr.add(6) == b'@'
-                        };
-                        if is_memory {
-                            in_memory_node = true;
-                            memory_depth = depth + 1;
-                        }
+                if depth == 1
+                    && name_len >= 6
+                    && (cstr_eq(name_ptr, "memory") || (name_len > 7 && *name_ptr.add(6) == b'@'))
+                {
+                    // Check for "memory@..." pattern
+                    let is_memory = cstr_eq(name_ptr, "memory") || {
+                        let prefix = core::slice::from_raw_parts(name_ptr, 6);
+                        prefix == b"memory" && *name_ptr.add(6) == b'@'
+                    };
+                    if is_memory {
+                        in_memory_node = true;
+                        memory_depth = depth + 1;
                     }
                 }
 
@@ -342,9 +349,7 @@ pub unsafe fn parse_dtb(dtb_addr: usize, map: &mut PhysMemoryMap) {
                 if in_memory_node && depth == memory_depth {
                     in_memory_node = false;
                 }
-                if depth > 0 {
-                    depth -= 1;
-                }
+                depth = depth.saturating_sub(1);
             }
             FDT_PROP => {
                 let prop_len = read_be32(struct_base.add(pos)) as usize;

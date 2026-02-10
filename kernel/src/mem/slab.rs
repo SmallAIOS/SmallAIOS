@@ -164,6 +164,12 @@ pub struct SlabAllocator {
     classes: [SlabClass; NUM_CLASSES],
 }
 
+impl Default for SlabAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SlabAllocator {
     /// Create a new slab allocator (all classes empty).
     pub const fn new() -> Self {

@@ -69,9 +69,16 @@ pub struct TensorPool {
     active_count: usize,
 }
 
+impl Default for TensorPool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TensorPool {
     /// Create an uninitialized tensor pool.
     pub const fn new() -> Self {
+        #[allow(clippy::declare_interior_mutable_const)]
         const EMPTY: TensorEntry = TensorEntry::empty();
         Self {
             base: PhysAddr(0),
@@ -193,12 +200,7 @@ impl TensorPool {
     }
 
     fn find_free_slot(&self) -> Option<usize> {
-        for i in 0..MAX_TENSOR_BUFFERS {
-            if !self.entries[i].active {
-                return Some(i);
-            }
-        }
-        None
+        (0..MAX_TENSOR_BUFFERS).find(|&i| !self.entries[i].active)
     }
 
     fn get_entry(&self, handle: TensorHandle) -> Result<&TensorEntry, MemError> {

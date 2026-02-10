@@ -38,6 +38,12 @@ struct KernelAllocatorInner {
 // access from interrupt handlers.
 unsafe impl Sync for KernelAllocator {}
 
+impl Default for KernelAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl KernelAllocator {
     /// Create a new uninitialized global allocator.
     pub const fn new() -> Self {
@@ -74,6 +80,7 @@ impl KernelAllocator {
     ///
     /// # Safety
     /// Caller must ensure exclusive access (no concurrent allocations).
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn buddy(&self) -> &mut BuddyAllocator {
         &mut (*self.inner.get()).buddy
     }
@@ -82,6 +89,7 @@ impl KernelAllocator {
     ///
     /// # Safety
     /// Caller must ensure exclusive access.
+    #[allow(clippy::mut_from_ref)]
     pub unsafe fn slab(&self) -> &mut SlabAllocator {
         &mut (*self.inner.get()).slab
     }
@@ -131,7 +139,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
             size
         };
 
-        let pages_needed = (alloc_size + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K;
+        let pages_needed = alloc_size.div_ceil(PAGE_SIZE_4K);
         let order = pages_needed.next_power_of_two().trailing_zeros() as usize;
 
         match inner.buddy.allocate(order) {
@@ -170,7 +178,7 @@ unsafe impl GlobalAlloc for KernelAllocator {
         } else {
             size
         };
-        let pages_needed = (alloc_size + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K;
+        let pages_needed = alloc_size.div_ceil(PAGE_SIZE_4K);
         let order = pages_needed.next_power_of_two().trailing_zeros() as usize;
 
         // For over-aligned allocations, we need to recover the original buddy address.

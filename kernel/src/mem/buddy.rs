@@ -34,7 +34,7 @@ const BITS_PER_WORD: usize = 64;
 
 /// Number of bitmap words needed for a given number of bits.
 const fn bitmap_words(bits: usize) -> usize {
-    (bits + BITS_PER_WORD - 1) / BITS_PER_WORD
+    bits.div_ceil(BITS_PER_WORD)
 }
 
 /// Maximum bitmap words needed at any order.
@@ -155,6 +155,12 @@ pub struct BuddyAllocator {
     free_pages: usize,
 }
 
+impl Default for BuddyAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BuddyAllocator {
     /// Create a new allocator. All memory starts as allocated;
     /// call `add_free_region` to register usable memory.
@@ -208,7 +214,8 @@ impl BuddyAllocator {
             while order < MAX_ORDER {
                 let next_block_pages = 1usize << (order + 1);
                 // Must be aligned to next order and have enough space
-                if page_idx % next_block_pages != 0 || remaining_pages < next_block_pages {
+                if !page_idx.is_multiple_of(next_block_pages) || remaining_pages < next_block_pages
+                {
                     break;
                 }
                 order += 1;
@@ -290,7 +297,7 @@ impl BuddyAllocator {
         let page_idx = offset / PAGE_SIZE_4K;
         let block_pages = 1usize << order;
 
-        if page_idx % block_pages != 0 {
+        if !page_idx.is_multiple_of(block_pages) {
             return Err(MemError::BadAlignment);
         }
 

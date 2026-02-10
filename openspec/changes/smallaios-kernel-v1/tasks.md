@@ -27,16 +27,16 @@
 
 ## 3. Core Kernel — Scheduler and Interrupts
 
-- [ ] 3.1 Implement task struct (state machine, stack, future, priority, affinity)
-- [ ] 3.2 Implement per-CPU lock-free run queues (LIFO push, FIFO steal)
-- [ ] 3.3 Implement async executor (poll futures, wake on events, work-stealing)
-- [ ] 3.4 Implement x86-64 APIC timer and IPI interrupts
-- [ ] 3.5 Implement ARM64 GICv3 and Generic Timer interrupts
-- [ ] 3.6 Implement SMP boot (SIPI for x86, PSCI for ARM64)
-- [ ] 3.7 Write TLA+ spec for scheduler (deadlock freedom, starvation freedom, fairness)
-- [ ] 3.8 Run TLC model checker — verify scheduler liveness and safety properties
-- [ ] 3.9 Achieve 100% MC/DC coverage on scheduler with unit tests
-- [ ] 3.10 Integration test: spawn 1000 tasks in QEMU, verify all complete
+- [x] 3.1 Implement task struct (state machine, stack, future, priority, affinity)
+- [x] 3.2 Implement per-CPU lock-free run queues (LIFO push, FIFO steal)
+- [x] 3.3 Implement async executor (poll futures, wake on events, work-stealing)
+- [x] 3.4 Implement x86-64 APIC timer and IPI interrupts
+- [x] 3.5 Implement ARM64 GICv3 and Generic Timer interrupts
+- [x] 3.6 Implement SMP boot (SIPI for x86, PSCI for ARM64)
+- [x] 3.7 Write TLA+ spec for scheduler (deadlock freedom, starvation freedom, fairness)
+- [x] 3.8 Run TLC model checker — verify scheduler liveness and safety properties
+- [x] 3.9 Achieve 100% MC/DC coverage on scheduler with unit tests
+- [x] 3.10 Integration test: spawn 1000 tasks in QEMU, verify all complete
 
 ## 4. Core Kernel — Syscall Interface
 
