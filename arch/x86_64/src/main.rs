@@ -9,6 +9,7 @@
 
 #![no_std]
 #![no_main]
+#![feature(naked_functions)]
 
 // Pull in the library crate to ensure _start and kernel_main are linked.
 extern crate smallaios_arch_x86_64;
