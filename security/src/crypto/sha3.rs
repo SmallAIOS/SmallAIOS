@@ -393,7 +393,7 @@ pub struct Shake256 {
 
 impl Shake256 {
     /// Create a new SHAKE256 XOF instance.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state: KeccakState::new(),
             buffer: [0u8; SHAKE256_RATE],

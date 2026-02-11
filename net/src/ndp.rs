@@ -193,31 +193,147 @@ impl NeighborTable {
 // NDP message construction stubs
 // ---------------------------------------------------------------------------
 
+/// Compute the ICMPv6 checksum per RFC 2460 / RFC 4443.
+///
+/// The pseudo-header includes source/destination IPv6 addresses, the ICMPv6
+/// payload length, and next-header value 58 (ICMPv6).
+fn icmpv6_checksum(src_ip: &Ipv6Addr, dst_ip: &Ipv6Addr, icmpv6_payload: &[u8]) -> u16 {
+    let mut sum: u32 = 0;
+
+    // Pseudo-header: source address (16 bytes as 8 u16 words)
+    let src = src_ip.as_bytes();
+    for i in (0..16).step_by(2) {
+        sum += u16::from_be_bytes([src[i], src[i + 1]]) as u32;
+    }
+
+    // Pseudo-header: destination address
+    let dst = dst_ip.as_bytes();
+    for i in (0..16).step_by(2) {
+        sum += u16::from_be_bytes([dst[i], dst[i + 1]]) as u32;
+    }
+
+    // Pseudo-header: upper-layer packet length (u32 BE)
+    let len = icmpv6_payload.len() as u32;
+    sum += len >> 16;
+    sum += len & 0xFFFF;
+
+    // Pseudo-header: next header = 58 (ICMPv6)
+    sum += 58u32;
+
+    // ICMPv6 payload
+    let mut i = 0;
+    while i + 1 < icmpv6_payload.len() {
+        sum += u16::from_be_bytes([icmpv6_payload[i], icmpv6_payload[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < icmpv6_payload.len() {
+        sum += (icmpv6_payload[i] as u32) << 8;
+    }
+
+    // Fold carries
+    while (sum >> 16) != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+
+    !(sum as u16)
+}
+
 /// Build a Neighbor Solicitation message (ICMPv6 type 135).
 ///
-/// # Stub
-/// This function is not yet implemented and always returns
-/// `Err(NetError::NotImplemented)`.
+/// The message layout (RFC 4861 section 4.3):
+/// ```text
+/// Type(1) = 135 | Code(1) = 0 | Checksum(2)
+/// Reserved(4) = 0
+/// Target Address(16)
+/// [Option: Source Link-Layer Address (type=1, len=1, mac=6)]
+/// ```
+///
+/// Returns the raw ICMPv6 message bytes with a valid checksum.
 pub fn create_neighbor_solicitation(
-    _src_ip: &Ipv6Addr,
-    _target_ip: &Ipv6Addr,
-    _src_mac: &MacAddress,
+    src_ip: &Ipv6Addr,
+    target_ip: &Ipv6Addr,
+    src_mac: &MacAddress,
 ) -> Result<Vec<u8>, NetError> {
-    Err(NetError::NotImplemented)
+    // Total: 4 (header) + 4 (reserved) + 16 (target) + 8 (option) = 32 bytes
+    let mut msg = Vec::with_capacity(32);
+
+    // Type = 135 (Neighbor Solicitation)
+    msg.push(NdpType::NeighborSolicitation as u8);
+    // Code = 0
+    msg.push(0);
+    // Checksum placeholder (filled in below)
+    msg.push(0);
+    msg.push(0);
+    // Reserved (4 bytes)
+    msg.extend_from_slice(&[0u8; 4]);
+    // Target Address (16 bytes)
+    msg.extend_from_slice(target_ip.as_bytes());
+    // Option: Source Link-Layer Address
+    // Type = 1, Length = 1 (in units of 8 octets), followed by 6-byte MAC
+    msg.push(1); // option type
+    msg.push(1); // option length (8 bytes total)
+    msg.extend_from_slice(src_mac.as_bytes());
+
+    // Compute ICMPv6 checksum
+    let cksum = icmpv6_checksum(src_ip, &Ipv6Addr::solicited_node_multicast(target_ip), &msg);
+    msg[2] = (cksum >> 8) as u8;
+    msg[3] = cksum as u8;
+
+    Ok(msg)
 }
 
 /// Build a Neighbor Advertisement message (ICMPv6 type 136).
 ///
-/// # Stub
-/// This function is not yet implemented and always returns
-/// `Err(NetError::NotImplemented)`.
+/// The message layout (RFC 4861 section 4.4):
+/// ```text
+/// Type(1) = 136 | Code(1) = 0 | Checksum(2)
+/// R(1 bit) | S(1 bit) | O(1 bit) | Reserved(29 bits)
+/// Target Address(16)
+/// [Option: Target Link-Layer Address (type=2, len=1, mac=6)]
+/// ```
+///
+/// Flags set:
+/// - `solicited`: sets the S (Solicited) and O (Override) flags
+/// - unsolicited: sets only the O (Override) flag
 pub fn create_neighbor_advertisement(
-    _src_ip: &Ipv6Addr,
-    _target_ip: &Ipv6Addr,
-    _src_mac: &MacAddress,
-    _solicited: bool,
+    src_ip: &Ipv6Addr,
+    target_ip: &Ipv6Addr,
+    src_mac: &MacAddress,
+    solicited: bool,
 ) -> Result<Vec<u8>, NetError> {
-    Err(NetError::NotImplemented)
+    // Total: 4 (header) + 4 (flags+reserved) + 16 (target) + 8 (option) = 32 bytes
+    let mut msg = Vec::with_capacity(32);
+
+    // Type = 136 (Neighbor Advertisement)
+    msg.push(NdpType::NeighborAdvertisement as u8);
+    // Code = 0
+    msg.push(0);
+    // Checksum placeholder
+    msg.push(0);
+    msg.push(0);
+    // Flags: R=0, S=solicited, O=1 (override)
+    // Bits: R(7) S(6) O(5) in the first byte of the 4-byte flags field
+    let flags_byte = if solicited {
+        0x60 // S=1, O=1
+    } else {
+        0x20 // S=0, O=1
+    };
+    msg.push(flags_byte);
+    msg.extend_from_slice(&[0u8; 3]); // remaining 3 bytes of flags+reserved
+                                      // Target Address (16 bytes)
+    msg.extend_from_slice(src_ip.as_bytes());
+    // Option: Target Link-Layer Address
+    // Type = 2, Length = 1 (in units of 8 octets)
+    msg.push(2); // option type
+    msg.push(1); // option length
+    msg.extend_from_slice(src_mac.as_bytes());
+
+    // Compute ICMPv6 checksum (src -> dst = target_ip for solicited, or multicast)
+    let cksum = icmpv6_checksum(src_ip, target_ip, &msg);
+    msg[2] = (cksum >> 8) as u8;
+    msg[3] = cksum as u8;
+
+    Ok(msg)
 }
 
 // ---------------------------------------------------------------------------
@@ -347,14 +463,81 @@ mod tests {
     }
 
     #[test]
-    fn test_create_neighbor_solicitation_stub() {
-        let result = create_neighbor_solicitation(&ip(1), &ip(2), &mac(0xaa));
-        assert!(result.is_err());
+    fn test_create_neighbor_solicitation() {
+        let src = ip(1);
+        let target = ip(2);
+        let m = mac(0xaa);
+        let msg = create_neighbor_solicitation(&src, &target, &m).unwrap();
+
+        // Total length: 4 (header) + 4 (reserved) + 16 (target) + 8 (option) = 32
+        assert_eq!(msg.len(), 32);
+
+        // Type = 135
+        assert_eq!(msg[0], NdpType::NeighborSolicitation as u8);
+        // Code = 0
+        assert_eq!(msg[1], 0);
+
+        // Reserved bytes (4..8) should be zero
+        assert_eq!(&msg[4..8], &[0, 0, 0, 0]);
+
+        // Target address at offset 8..24
+        assert_eq!(&msg[8..24], target.as_bytes());
+
+        // Source Link-Layer Address option: type=1, len=1
+        assert_eq!(msg[24], 1);
+        assert_eq!(msg[25], 1);
+        assert_eq!(&msg[26..32], m.as_bytes());
     }
 
     #[test]
-    fn test_create_neighbor_advertisement_stub() {
-        let result = create_neighbor_advertisement(&ip(1), &ip(2), &mac(0xaa), true);
-        assert!(result.is_err());
+    fn test_create_neighbor_advertisement_solicited() {
+        let src = ip(1);
+        let target = ip(2);
+        let m = mac(0xbb);
+        let msg = create_neighbor_advertisement(&src, &target, &m, true).unwrap();
+
+        assert_eq!(msg.len(), 32);
+
+        // Type = 136
+        assert_eq!(msg[0], NdpType::NeighborAdvertisement as u8);
+        // Code = 0
+        assert_eq!(msg[1], 0);
+
+        // Flags byte: S=1, O=1 -> 0x60
+        assert_eq!(msg[4], 0x60);
+
+        // Target address at offset 8..24 is the sender's own IP
+        assert_eq!(&msg[8..24], src.as_bytes());
+
+        // Target Link-Layer Address option: type=2, len=1
+        assert_eq!(msg[24], 2);
+        assert_eq!(msg[25], 1);
+        assert_eq!(&msg[26..32], m.as_bytes());
+    }
+
+    #[test]
+    fn test_create_neighbor_advertisement_unsolicited() {
+        let src = ip(1);
+        let target = ip(2);
+        let m = mac(0xcc);
+        let msg = create_neighbor_advertisement(&src, &target, &m, false).unwrap();
+
+        assert_eq!(msg.len(), 32);
+        assert_eq!(msg[0], NdpType::NeighborAdvertisement as u8);
+
+        // Flags byte: S=0, O=1 -> 0x20
+        assert_eq!(msg[4], 0x20);
+    }
+
+    #[test]
+    fn test_icmpv6_checksum_nonzero() {
+        // Verify checksum bytes are filled in (not left as zeros)
+        let src = ip(1);
+        let target = ip(2);
+        let m = mac(0xdd);
+        let msg = create_neighbor_solicitation(&src, &target, &m).unwrap();
+        let cksum = u16::from_be_bytes([msg[2], msg[3]]);
+        // Checksum should be non-zero for non-trivial data
+        assert_ne!(cksum, 0);
     }
 }

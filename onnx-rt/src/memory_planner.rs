@@ -112,15 +112,74 @@ impl Default for PlannerConfig {
 /// Computes the lifetime of each tensor in the execution graph.
 ///
 /// For each node in execution order, records the first and last step
-/// where each tensor name appears (as an input or output).
-///
-/// Stub implementation: returns an empty vector.
-pub fn compute_tensor_lifetimes(_graph: &ExecutionGraph) -> Vec<TensorLifetime> {
-    // TODO: Walk the execution order, building a map of tensor_name ->
-    // (first_use_step, last_use_step, size_bytes). The size must be
-    // derived from tensor shape and data type information attached to
-    // the graph or model initializers.
-    Vec::new()
+/// where each tensor name appears (as an input or output). Tensor sizes
+/// default to a placeholder since actual sizes depend on runtime shape info.
+pub fn compute_tensor_lifetimes(graph: &ExecutionGraph) -> Vec<TensorLifetime> {
+    use alloc::collections::BTreeMap;
+
+    // Map tensor name -> (first_use, last_use)
+    let mut lifetime_map: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+
+    // Walk execution order and record first/last use of each tensor name
+    for (step, node_idx) in graph.topological_order.iter().enumerate() {
+        let node = &graph.nodes[node_idx.index()];
+
+        // Record output tensors (produced at this step)
+        for output_name in &node.outputs {
+            if output_name.is_empty() {
+                continue;
+            }
+            lifetime_map
+                .entry(output_name.clone())
+                .and_modify(|(_first, last)| *last = step)
+                .or_insert((step, step));
+        }
+
+        // Record input tensors (consumed at this step)
+        for input_name in &node.inputs {
+            if input_name.is_empty() {
+                continue;
+            }
+            lifetime_map
+                .entry(input_name.clone())
+                .and_modify(|(_first, last)| *last = step)
+                .or_insert((step, step));
+        }
+    }
+
+    // Also record graph-level inputs (alive from step 0) and outputs (alive until last step)
+    let last_step = if graph.topological_order.is_empty() {
+        0
+    } else {
+        graph.topological_order.len() - 1
+    };
+
+    for input_name in &graph.input_names {
+        lifetime_map
+            .entry(input_name.clone())
+            .and_modify(|(first, _last)| *first = 0)
+            .or_insert((0, 0));
+    }
+
+    for output_name in &graph.output_names {
+        lifetime_map
+            .entry(output_name.clone())
+            .and_modify(|(_first, last)| *last = last_step)
+            .or_insert((last_step, last_step));
+    }
+
+    // Convert map to vector of TensorLifetime
+    // Use a default placeholder size since actual size requires shape info
+    let default_size = 256;
+    lifetime_map
+        .into_iter()
+        .map(|(name, (first, last))| TensorLifetime {
+            tensor_name: name,
+            first_use: first,
+            last_use: last,
+            size_bytes: default_size,
+        })
+        .collect()
 }
 
 /// Rounds `size` up to the nearest multiple of `alignment`.
@@ -134,42 +193,97 @@ fn align_up(size: usize, alignment: usize) -> usize {
 
 /// Produces a memory plan from a set of tensor lifetimes.
 ///
-/// Uses a simple first-fit allocation strategy:
-/// - Each tensor is assigned its own buffer (no reuse in this stub).
-/// - Buffers are placed sequentially with the configured alignment.
-/// - Peak memory is computed as the sum of all aligned allocations.
+/// When `enable_buffer_reuse` is true, uses first-fit reuse: a new tensor
+/// can reuse the buffer of an earlier tensor if their lifetimes don't
+/// overlap and the buffer is large enough.
 ///
-/// When buffer reuse is fully implemented, non-overlapping lifetimes
-/// will share the same physical buffer to reduce peak memory.
+/// When disabled, each tensor gets its own sequentially placed buffer.
 pub fn plan_memory(lifetimes: &[TensorLifetime], config: &PlannerConfig) -> MemoryPlan {
     if lifetimes.is_empty() {
         return MemoryPlan::empty();
     }
 
     let mut allocations: Vec<BufferAllocation> = Vec::with_capacity(lifetimes.len());
-    let mut current_offset: usize = 0;
+    let mut reuse_count: usize = 0;
 
-    for (i, lifetime) in lifetimes.iter().enumerate() {
-        let aligned_size = align_up(lifetime.size_bytes, config.alignment);
+    if config.enable_buffer_reuse {
+        // Track active buffers: (buffer_id, offset, size, last_use)
+        let mut buffers: Vec<(usize, usize, usize, usize)> = Vec::new();
+        let mut next_buffer_id: usize = 0;
+        let mut current_offset: usize = 0;
 
-        allocations.push(BufferAllocation {
-            buffer_id: i,
-            offset: current_offset,
-            size: aligned_size,
-            tensor_name: lifetime.tensor_name.clone(),
-        });
+        for lifetime in lifetimes {
+            let aligned_size = align_up(lifetime.size_bytes, config.alignment);
 
-        current_offset += aligned_size;
-    }
+            // Try to find a reusable buffer: non-overlapping and large enough
+            let mut reused = false;
+            for buf in &mut buffers {
+                let (buf_id, buf_offset, buf_size, buf_last_use) = *buf;
+                // Buffer is free if its last_use is before this tensor's first_use
+                if buf_last_use < lifetime.first_use && buf_size >= aligned_size {
+                    allocations.push(BufferAllocation {
+                        buffer_id: buf_id,
+                        offset: buf_offset,
+                        size: buf_size,
+                        tensor_name: lifetime.tensor_name.clone(),
+                    });
+                    // Update the buffer's last_use
+                    buf.3 = lifetime.last_use;
+                    reuse_count += 1;
+                    reused = true;
+                    break;
+                }
+            }
 
-    let peak_memory = current_offset;
-    let buffer_count = allocations.len();
+            if !reused {
+                let buf_id = next_buffer_id;
+                next_buffer_id += 1;
+                let offset = current_offset;
+                current_offset += aligned_size;
 
-    MemoryPlan {
-        allocations,
-        peak_memory,
-        buffer_count,
-        reuse_count: 0, // No reuse in this stub implementation.
+                allocations.push(BufferAllocation {
+                    buffer_id: buf_id,
+                    offset,
+                    size: aligned_size,
+                    tensor_name: lifetime.tensor_name.clone(),
+                });
+
+                buffers.push((buf_id, offset, aligned_size, lifetime.last_use));
+            }
+        }
+
+        let peak_memory = current_offset;
+        let buffer_count = next_buffer_id;
+
+        MemoryPlan {
+            allocations,
+            peak_memory,
+            buffer_count,
+            reuse_count,
+        }
+    } else {
+        // No reuse: sequential allocation
+        let mut current_offset: usize = 0;
+        for (i, lifetime) in lifetimes.iter().enumerate() {
+            let aligned_size = align_up(lifetime.size_bytes, config.alignment);
+            allocations.push(BufferAllocation {
+                buffer_id: i,
+                offset: current_offset,
+                size: aligned_size,
+                tensor_name: lifetime.tensor_name.clone(),
+            });
+            current_offset += aligned_size;
+        }
+
+        let peak_memory = current_offset;
+        let buffer_count = allocations.len();
+
+        MemoryPlan {
+            allocations,
+            peak_memory,
+            buffer_count,
+            reuse_count: 0,
+        }
     }
 }
 
@@ -384,13 +498,117 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // compute_tensor_lifetimes stub
+    // compute_tensor_lifetimes
     // ---------------------------------------------------------------
 
     #[test]
-    fn test_compute_tensor_lifetimes_stub() {
+    fn test_compute_tensor_lifetimes_empty_graph() {
         let graph = ExecutionGraph::new();
         let lifetimes = compute_tensor_lifetimes(&graph);
         assert!(lifetimes.is_empty());
+    }
+
+    #[test]
+    fn test_compute_tensor_lifetimes_linear_chain() {
+        use crate::graph::build_execution_graph;
+        use crate::onnx_types::{GraphProto, NodeProto, ValueInfoProto};
+
+        let graph_proto = GraphProto {
+            name: "test".to_string(),
+            node: vec![
+                NodeProto {
+                    op_type: "Relu".to_string(),
+                    name: "n0".to_string(),
+                    input: vec!["x".to_string()],
+                    output: vec!["a".to_string()],
+                    ..NodeProto::default()
+                },
+                NodeProto {
+                    op_type: "Relu".to_string(),
+                    name: "n1".to_string(),
+                    input: vec!["a".to_string()],
+                    output: vec!["y".to_string()],
+                    ..NodeProto::default()
+                },
+            ],
+            input: vec![ValueInfoProto {
+                name: "x".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "y".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            ..GraphProto::default()
+        };
+
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+        let lifetimes = compute_tensor_lifetimes(&exec_graph);
+        assert!(!lifetimes.is_empty());
+
+        // Find tensor "a" -- should be produced at step 0 and consumed at step 1
+        let a_lt = lifetimes.iter().find(|lt| lt.tensor_name == "a").unwrap();
+        assert_eq!(a_lt.first_use, 0);
+        assert_eq!(a_lt.last_use, 1);
+    }
+
+    // ---------------------------------------------------------------
+    // Buffer reuse
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_buffer_reuse_non_overlapping() {
+        let lifetimes = vec![
+            TensorLifetime {
+                tensor_name: "t0".to_string(),
+                first_use: 0,
+                last_use: 1,
+                size_bytes: 256,
+            },
+            TensorLifetime {
+                tensor_name: "t1".to_string(),
+                first_use: 2,
+                last_use: 3,
+                size_bytes: 256,
+            },
+        ];
+        let config = PlannerConfig {
+            enable_buffer_reuse: true,
+            alignment: 64,
+        };
+        let plan = plan_memory(&lifetimes, &config);
+
+        // t1 should reuse t0's buffer since they don't overlap
+        assert_eq!(plan.reuse_count, 1);
+        assert_eq!(plan.buffer_count, 1);
+        assert_eq!(plan.peak_memory, 256);
+    }
+
+    #[test]
+    fn test_buffer_no_reuse_overlapping() {
+        let lifetimes = vec![
+            TensorLifetime {
+                tensor_name: "t0".to_string(),
+                first_use: 0,
+                last_use: 3,
+                size_bytes: 256,
+            },
+            TensorLifetime {
+                tensor_name: "t1".to_string(),
+                first_use: 2,
+                last_use: 5,
+                size_bytes: 256,
+            },
+        ];
+        let config = PlannerConfig {
+            enable_buffer_reuse: true,
+            alignment: 64,
+        };
+        let plan = plan_memory(&lifetimes, &config);
+
+        // Cannot reuse -- lifetimes overlap
+        assert_eq!(plan.reuse_count, 0);
+        assert_eq!(plan.buffer_count, 2);
+        assert_eq!(plan.peak_memory, 512);
     }
 }

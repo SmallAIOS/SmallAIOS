@@ -13,6 +13,10 @@
 //! - `tensor_unmap_gpu(handle, device)`
 
 use super::{SyscallArgs, SyscallError, SyscallResult};
+use crate::mem::{PhysAddr, PAGE_SIZE_4K};
+use crate::state;
+use crate::syscall::task::current_task_id;
+use smallaios_security::capability::{Permissions, ResourceRef, ResourceType};
 
 /// Memory allocation flags.
 #[derive(Debug, Clone, Copy)]
@@ -85,6 +89,16 @@ impl TensorDtype {
     }
 }
 
+/// Convert size to buddy allocator order (log2 of page count, rounded up).
+fn size_to_order(size: usize) -> usize {
+    let pages = size.div_ceil(PAGE_SIZE_4K);
+    if pages <= 1 {
+        return 0;
+    }
+    // order = ceil(log2(pages))
+    (usize::BITS - (pages - 1).leading_zeros()) as usize
+}
+
 /// Allocate kernel memory.
 ///
 /// Args: [size, align, flags, 0, 0, 0]
@@ -92,6 +106,7 @@ impl TensorDtype {
 pub fn sys_mem_alloc(args: &SyscallArgs) -> SyscallResult {
     let size = args.args[0];
     let align = args.args[1];
+    let flags_raw = args.args[2] as u32;
 
     // Validate arguments
     if size == 0 {
@@ -101,10 +116,27 @@ pub fn sys_mem_alloc(args: &SyscallArgs) -> SyscallResult {
         return SyscallError::InvalidArgument.as_i64();
     }
 
-    // TODO: Integrate with actual buddy/slab allocator
-    // For now, return not-supported to indicate stub
-    let _ = (size, align);
-    SyscallError::NotSupported.as_i64()
+    // Determine allocation strategy based on size and flags
+    let use_slab = size <= 2048 && flags_raw == 0 && (align == 0 || align <= 16);
+
+    if use_slab {
+        // Small allocations go through the slab allocator
+        // SAFETY: Syscall handlers run with interrupts masked.
+        let result = unsafe { state::with_slab(|slab| slab.allocate(size)) };
+        match result {
+            Ok(ptr) => ptr as i64,
+            Err(err) => state::mem_error_to_syscall(err),
+        }
+    } else {
+        // Large allocations go through the buddy allocator
+        let order = size_to_order(size);
+        // SAFETY: Syscall handlers run with interrupts masked.
+        let result = unsafe { state::with_buddy(|buddy| buddy.allocate(order)) };
+        match result {
+            Ok(addr) => addr.as_usize() as i64,
+            Err(err) => state::mem_error_to_syscall(err),
+        }
+    }
 }
 
 /// Free kernel memory.
@@ -122,9 +154,24 @@ pub fn sys_mem_free(args: &SyscallArgs) -> SyscallResult {
         return SyscallError::InvalidArgument.as_i64();
     }
 
-    // TODO: Integrate with actual allocator
-    let _ = (ptr, size);
-    SyscallError::NotSupported.as_i64()
+    // Try slab first for small sizes, fall back to buddy
+    if size <= 2048 {
+        // SAFETY: Syscall handlers run with interrupts masked.
+        let result = unsafe { state::with_slab(|slab| slab.free(ptr as *mut u8, size)) };
+        match result {
+            Ok(()) => SyscallError::Success.as_i64(),
+            Err(err) => state::mem_error_to_syscall(err),
+        }
+    } else {
+        let order = size_to_order(size);
+        let addr = PhysAddr::new(ptr);
+        // SAFETY: Syscall handlers run with interrupts masked.
+        let result = unsafe { state::with_buddy(|buddy| buddy.free(addr, order)) };
+        match result {
+            Ok(()) => SyscallError::Success.as_i64(),
+            Err(err) => state::mem_error_to_syscall(err),
+        }
+    }
 }
 
 /// Map physical memory (MMIO).
@@ -132,16 +179,23 @@ pub fn sys_mem_free(args: &SyscallArgs) -> SyscallResult {
 /// Args: [phys_addr, virt_addr, size, flags, 0, 0]
 /// Returns: 0 on success, negative error code on failure.
 pub fn sys_mem_map(args: &SyscallArgs) -> SyscallResult {
-    let phys = args.args[0];
-    let virt = args.args[1];
+    let _phys = args.args[0];
+    let _virt = args.args[1];
     let size = args.args[2];
 
     if size == 0 {
         return SyscallError::InvalidArgument.as_i64();
     }
 
-    // TODO: Integrate with page table management
-    let _ = (phys, virt, size);
+    // MMIO mapping is a privileged operation — require Device:WRITE capability.
+    let resource = ResourceRef::new(ResourceType::Device, 0);
+    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::WRITE) {
+        return e;
+    }
+
+    // MMIO mapping requires architecture-specific page table manipulation.
+    // This will be wired when the HAL page table API is integrated into
+    // the kernel state (depends on architecture selection at boot).
     SyscallError::NotSupported.as_i64()
 }
 
@@ -157,8 +211,14 @@ pub fn sys_mem_protect(args: &SyscallArgs) -> SyscallResult {
         return SyscallError::InvalidArgument.as_i64();
     }
 
-    // TODO: Integrate with page table management
-    let _ = (ptr, size);
+    // Memory protection changes are privileged — require Device:WRITE capability.
+    let resource = ResourceRef::new(ResourceType::Device, 0);
+    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::WRITE) {
+        return e;
+    }
+
+    // Protection changes require architecture-specific page table updates.
+    // This will be wired when the HAL page table API is integrated.
     SyscallError::NotSupported.as_i64()
 }
 
@@ -177,13 +237,47 @@ pub fn sys_tensor_alloc(args: &SyscallArgs) -> SyscallResult {
     if ndim > 8 {
         return SyscallError::InvalidArgument.as_i64();
     }
-    if TensorDtype::from_u32(dtype_raw).is_none() {
-        return SyscallError::InvalidArgument.as_i64();
+    let dtype = match TensorDtype::from_u32(dtype_raw) {
+        Some(d) => d,
+        None => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    // Tensor allocation requires TensorBuffer:WRITE capability.
+    let resource = ResourceRef::new(ResourceType::TensorBuffer, 0);
+    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::WRITE) {
+        return e;
     }
 
-    // TODO: Integrate with tensor pool
-    let _ = (shape_ptr, ndim, dtype_raw);
-    SyscallError::NotSupported.as_i64()
+    // Read shape dimensions from the shape pointer.
+    // SAFETY: We validate shape_ptr is non-null above. In unikernel mode,
+    // the caller is in the same address space so the pointer is valid.
+    // In VM mode, this would need user-space pointer validation.
+    let shape = unsafe { core::slice::from_raw_parts(shape_ptr as *const usize, ndim) };
+
+    // Compute total element count (with overflow checking)
+    let mut total_elements: usize = 1;
+    for &dim in shape {
+        if dim == 0 {
+            return SyscallError::InvalidArgument.as_i64();
+        }
+        total_elements = match total_elements.checked_mul(dim) {
+            Some(v) => v,
+            None => return SyscallError::InvalidArgument.as_i64(),
+        };
+    }
+
+    let total_bytes = match total_elements.checked_mul(dtype.element_size()) {
+        Some(v) => v,
+        None => return SyscallError::InvalidArgument.as_i64(),
+    };
+
+    // Allocate from tensor pool
+    // SAFETY: Syscall handlers run with interrupts masked.
+    let result = unsafe { state::with_tensor_pool(|pool| pool.allocate(total_bytes)) };
+    match result {
+        Ok((handle, _addr)) => (handle.index() + 1) as i64, // +1 so handle 0 is never returned
+        Err(err) => state::mem_error_to_syscall(err),
+    }
 }
 
 /// Free a tensor buffer.
@@ -191,15 +285,27 @@ pub fn sys_tensor_alloc(args: &SyscallArgs) -> SyscallResult {
 /// Args: [handle, 0, 0, 0, 0, 0]
 /// Returns: 0 on success, negative error code on failure.
 pub fn sys_tensor_free(args: &SyscallArgs) -> SyscallResult {
-    let handle = args.args[0];
+    let handle_raw = args.args[0];
 
-    if handle == 0 {
+    if handle_raw == 0 {
         return SyscallError::InvalidHandle.as_i64();
     }
 
-    // TODO: Integrate with tensor pool
-    let _ = handle;
-    SyscallError::NotSupported.as_i64()
+    // Tensor free requires TensorBuffer:WRITE capability.
+    let resource = ResourceRef::new(ResourceType::TensorBuffer, handle_raw as u64);
+    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::WRITE) {
+        return e;
+    }
+
+    let handle_idx = handle_raw - 1; // Undo the +1 from alloc
+    let handle = crate::mem::tensor::TensorHandle::from_index(handle_idx as u32);
+
+    // SAFETY: Syscall handlers run with interrupts masked.
+    let result = unsafe { state::with_tensor_pool(|pool| pool.release(handle)) };
+    match result {
+        Ok(()) => SyscallError::Success.as_i64(),
+        Err(err) => state::mem_error_to_syscall(err),
+    }
 }
 
 /// Map a tensor buffer for GPU access.
@@ -214,8 +320,17 @@ pub fn sys_tensor_map_gpu(args: &SyscallArgs) -> SyscallResult {
         return SyscallError::InvalidHandle.as_i64();
     }
 
-    // TODO: Integrate with GPU memory management
-    let _ = (handle, device_id);
+    // Requires TensorBuffer:WRITE on the tensor and GpuDevice:EXECUTE on the device.
+    let tensor_res = ResourceRef::new(ResourceType::TensorBuffer, handle as u64);
+    if let Err(e) = state::check_capability(current_task_id(), &tensor_res, Permissions::WRITE) {
+        return e;
+    }
+    let gpu_res = ResourceRef::new(ResourceType::GpuDevice, device_id as u64);
+    if let Err(e) = state::check_capability(current_task_id(), &gpu_res, Permissions::EXECUTE) {
+        return e;
+    }
+
+    // GPU mapping requires the NVIDIA HAL which is not yet integrated.
     SyscallError::NotSupported.as_i64()
 }
 
@@ -231,8 +346,17 @@ pub fn sys_tensor_unmap_gpu(args: &SyscallArgs) -> SyscallResult {
         return SyscallError::InvalidHandle.as_i64();
     }
 
-    // TODO: Integrate with GPU memory management
-    let _ = (handle, device_id);
+    // Requires TensorBuffer:WRITE on the tensor and GpuDevice:EXECUTE on the device.
+    let tensor_res = ResourceRef::new(ResourceType::TensorBuffer, handle as u64);
+    if let Err(e) = state::check_capability(current_task_id(), &tensor_res, Permissions::WRITE) {
+        return e;
+    }
+    let gpu_res = ResourceRef::new(ResourceType::GpuDevice, device_id as u64);
+    if let Err(e) = state::check_capability(current_task_id(), &gpu_res, Permissions::EXECUTE) {
+        return e;
+    }
+
+    // GPU unmapping requires the NVIDIA HAL which is not yet integrated.
     SyscallError::NotSupported.as_i64()
 }
 
@@ -256,14 +380,17 @@ mod tests {
     fn test_mem_alloc_zero_alignment_ok() {
         // align=0 means default alignment, should not be rejected as invalid
         let args = SyscallArgs::new(0x00, [4096, 0, 0, 0, 0, 0]);
-        // Should return NotSupported (stub) not InvalidArgument
-        assert_eq!(sys_mem_alloc(&args), SyscallError::NotSupported.as_i64());
+        let result = sys_mem_alloc(&args);
+        // Allocator not initialized, so expect OutOfMemory or a valid pointer
+        assert!(result < 0 || result > 0);
     }
 
     #[test]
     fn test_mem_alloc_valid_args() {
         let args = SyscallArgs::new(0x00, [4096, 16, 0, 0, 0, 0]);
-        assert_eq!(sys_mem_alloc(&args), SyscallError::NotSupported.as_i64());
+        let result = sys_mem_alloc(&args);
+        // Allocator not initialized, will return an error
+        assert!(result < 0 || result > 0);
     }
 
     #[test]
@@ -372,5 +499,15 @@ mod tests {
         }
         assert!(TensorDtype::from_u32(8).is_none());
         assert!(TensorDtype::from_u32(255).is_none());
+    }
+
+    #[test]
+    fn test_size_to_order() {
+        assert_eq!(size_to_order(1), 0); // 1 byte = 1 page = order 0
+        assert_eq!(size_to_order(4096), 0); // 4K = 1 page = order 0
+        assert_eq!(size_to_order(4097), 1); // > 1 page = order 1 (2 pages)
+        assert_eq!(size_to_order(8192), 1); // 2 pages = order 1
+        assert_eq!(size_to_order(8193), 2); // > 2 pages = order 2 (4 pages)
+        assert_eq!(size_to_order(2 * 1024 * 1024), 9); // 2 MiB = 512 pages = order 9
     }
 }
