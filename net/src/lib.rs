@@ -28,6 +28,9 @@ pub mod tcp;
 pub mod udp;
 pub mod virtio_net;
 
+#[cfg(feature = "quic")]
+pub mod quic;
+
 use core::fmt;
 
 /// Network stack error type.

@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+pub mod hal;
 pub mod mem;
 pub mod safety;
 pub mod sched;

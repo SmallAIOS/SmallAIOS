@@ -1,0 +1,20 @@
+# ONNX Runtime benchmark container for Docker baseline comparison.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build: docker build -t smallaios-bench:latest -f Dockerfile.bench ..
+# Run:   docker run --rm -v ./models:/models smallaios-bench:latest \
+#          onnxruntime_perf_test -m /models/mobilenetv2-7.onnx -r 1000
+
+FROM mcr.microsoft.com/onnxruntime/server:latest AS base
+
+# Install perf test tool (included in onnxruntime package)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3-pip \
+    && pip3 install --no-cache-dir onnxruntime \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /bench
+VOLUME ["/models", "/results"]
+
+# Default: run perf test on MobileNetV2
+CMD ["onnxruntime_perf_test", "-m", "/models/mobilenetv2-7.onnx", "-r", "1000", "-w", "10"]

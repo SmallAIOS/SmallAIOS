@@ -1,0 +1,20 @@
+[package]
+name = "smallaios-arch-riscv64"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS RISC-V RV64GC HAL: boot, SV48, PLIC, CLINT, SBI, UART"
+
+[lib]
+name = "smallaios_arch_riscv64"
+path = "src/lib.rs"
+
+[[bin]]
+name = "smallaios-riscv64"
+path = "src/main.rs"
+
+[features]
+default = []
+
+[dependencies]
+smallaios-kernel = { path = "../../kernel" }

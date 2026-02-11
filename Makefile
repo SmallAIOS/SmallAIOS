@@ -5,6 +5,7 @@ CARGO = cargo
 DOCKER = docker
 QEMU_X86 = qemu-system-x86_64
 QEMU_ARM = qemu-system-aarch64
+QEMU_RV = qemu-system-riscv64
 
 # build-std flags for bare-metal targets (no_std needs core/alloc rebuilt)
 BUILD_STD = -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
@@ -42,6 +43,14 @@ build-kernel-x86-debug:
 build-kernel-arm-debug:
 	$(CARGO) build --target aarch64-unknown-none -p smallaios-arch-aarch64 $(BUILD_STD) $(FEATURES)
 
+.PHONY: build-kernel-riscv
+build-kernel-riscv:
+	$(CARGO) build --release --target riscv64gc-unknown-none-elf -p smallaios-arch-riscv64 $(BUILD_STD) $(FEATURES)
+
+.PHONY: build-kernel-riscv-debug
+build-kernel-riscv-debug:
+	$(CARGO) build --target riscv64gc-unknown-none-elf -p smallaios-arch-riscv64 $(BUILD_STD) $(FEATURES)
+
 # === Run in QEMU ===
 
 .PHONY: run-x86
@@ -54,6 +63,13 @@ run-x86: build-kernel-x86
 run-arm: build-kernel-arm
 	$(QEMU_ARM) -machine virt -cpu cortex-a72 -m 512M -nographic \
 		-kernel target/aarch64-unknown-none/release/smallaios-aarch64 \
+		-serial stdio
+
+.PHONY: run-riscv
+run-riscv: build-kernel-riscv
+	$(QEMU_RV) -machine virt -cpu rv64 -m 512M -nographic \
+		-bios default \
+		-kernel target/riscv64gc-unknown-none-elf/release/smallaios-riscv64 \
 		-serial stdio
 
 # === Docker ===
@@ -72,11 +88,50 @@ docker-push:
 
 .PHONY: test
 test:
-	$(CARGO) test -p smallaios-kernel
+	$(CARGO) test \
+		-p smallaios-kernel \
+		-p smallaios-security \
+		-p smallaios-onnx-rt \
+		-p smallaios-ipc \
+		-p smallaios-net \
+		-p smallaios-posix \
+		-p smallaios-container \
+		-p smallaios-bus \
+		-p smallaios-bench
 
 .PHONY: clippy
 clippy:
-	$(CARGO) clippy -p smallaios-kernel -- -D warnings
+	$(CARGO) clippy \
+		-p smallaios-kernel \
+		-p smallaios-security \
+		-p smallaios-onnx-rt \
+		-p smallaios-ipc \
+		-p smallaios-net \
+		-p smallaios-posix \
+		-p smallaios-container \
+		-p smallaios-bus \
+		-p smallaios-bench \
+		-- -D warnings
+
+# === TLA+ Formal Verification ===
+
+TLA_DIR = formal/tla
+TLA_MODELS = CanArbitration Arinc429Scheduler AfdxVirtualLink Mil1553Protocol \
+             SpaceWireLink DdsReliableDelivery DdsDiscovery QuicFlowControl \
+             QuicMigration BuddyAllocator Scheduler
+
+.PHONY: tla-verify
+tla-verify:
+	@echo "Verifying TLA+ models with TLC..."
+	@for model in $(TLA_MODELS); do \
+		echo "--- Checking $$model ---"; \
+		java -cp $${TLA2TOOLS:-/usr/local/lib/tla2tools.jar} \
+			tlc2.TLC $(TLA_DIR)/$$model.tla \
+			-config $(TLA_DIR)/$$model.cfg \
+			-workers auto \
+			-deadlock || exit 1; \
+	done
+	@echo "All TLA+ models verified."
 
 .PHONY: fmt
 fmt:
@@ -119,6 +174,49 @@ deploy-jetson: build-kernel-arm
 .PHONY: serial
 serial:
 	./scripts/serial-console.sh $(DEV)
+
+# === Image Size Verification ===
+
+MAX_KERNEL_SIZE_MB = 15
+
+.PHONY: check-size-x86
+check-size-x86: build-kernel-x86
+	@size=$$(stat --format=%s target/x86_64-unknown-none/release/smallaios-x86_64 2>/dev/null || \
+		stat -f%z target/x86_64-unknown-none/release/smallaios-x86_64); \
+	max=$$(($(MAX_KERNEL_SIZE_MB) * 1024 * 1024)); \
+	echo "x86_64 kernel: $$size bytes ($$(( size / 1024 )) KB)"; \
+	if [ "$$size" -gt "$$max" ]; then \
+		echo "FAIL: exceeds $(MAX_KERNEL_SIZE_MB) MB limit"; exit 1; \
+	else \
+		echo "PASS: within $(MAX_KERNEL_SIZE_MB) MB limit"; \
+	fi
+
+.PHONY: check-size-arm
+check-size-arm: build-kernel-arm
+	@size=$$(stat --format=%s target/aarch64-unknown-none/release/smallaios-aarch64 2>/dev/null || \
+		stat -f%z target/aarch64-unknown-none/release/smallaios-aarch64); \
+	max=$$(($(MAX_KERNEL_SIZE_MB) * 1024 * 1024)); \
+	echo "AArch64 kernel: $$size bytes ($$(( size / 1024 )) KB)"; \
+	if [ "$$size" -gt "$$max" ]; then \
+		echo "FAIL: exceeds $(MAX_KERNEL_SIZE_MB) MB limit"; exit 1; \
+	else \
+		echo "PASS: within $(MAX_KERNEL_SIZE_MB) MB limit"; \
+	fi
+
+.PHONY: check-size-riscv
+check-size-riscv: build-kernel-riscv
+	@size=$$(stat --format=%s target/riscv64gc-unknown-none-elf/release/smallaios-riscv64 2>/dev/null || \
+		stat -f%z target/riscv64gc-unknown-none-elf/release/smallaios-riscv64); \
+	max=$$(($(MAX_KERNEL_SIZE_MB) * 1024 * 1024)); \
+	echo "RISC-V kernel: $$size bytes ($$(( size / 1024 )) KB)"; \
+	if [ "$$size" -gt "$$max" ]; then \
+		echo "FAIL: exceeds $(MAX_KERNEL_SIZE_MB) MB limit"; exit 1; \
+	else \
+		echo "PASS: within $(MAX_KERNEL_SIZE_MB) MB limit"; \
+	fi
+
+.PHONY: check-size
+check-size: check-size-x86 check-size-arm check-size-riscv
 
 # === Clean ===
 
