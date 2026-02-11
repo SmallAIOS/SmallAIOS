@@ -16,6 +16,7 @@ pub mod aes_gcm;
 pub mod constant_time;
 pub mod csprng;
 pub mod hybrid;
+pub mod key_manager;
 pub mod ml_dsa;
 pub mod ml_kem;
 pub mod sha3;
