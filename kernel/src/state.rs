@@ -86,6 +86,8 @@ pub unsafe fn with_slab<F, R>(f: F) -> R
 where
     F: FnOnce(&mut SlabAllocator) -> R,
 {
+    // SAFETY: Syscall handlers run with interrupts masked, guaranteeing
+    // exclusive access per core. The caller asserts this precondition.
     let slab = unsafe { &mut *KERNEL_STATE.slab.get() };
     f(slab)
 }
@@ -98,6 +100,8 @@ pub unsafe fn with_tensor_pool<F, R>(f: F) -> R
 where
     F: FnOnce(&mut TensorPool) -> R,
 {
+    // SAFETY: Syscall handlers run with interrupts masked, guaranteeing
+    // exclusive access per core. The caller asserts this precondition.
     let pool = unsafe { &mut *KERNEL_STATE.tensor_pool.get() };
     f(pool)
 }
@@ -110,6 +114,8 @@ pub unsafe fn with_cap_registry<F, R>(f: F) -> R
 where
     F: FnOnce(&mut CapRegistry) -> R,
 {
+    // SAFETY: Syscall handlers run with interrupts masked, guaranteeing
+    // exclusive access per core. The caller asserts this precondition.
     let registry = unsafe { &mut *KERNEL_STATE.cap_registry.get() };
     f(registry)
 }
@@ -119,7 +125,8 @@ pub fn with_cap_registry_ref<F, R>(f: F) -> R
 where
     F: FnOnce(&CapRegistry) -> R,
 {
-    // SAFETY: Read-only access is safe with shared references.
+    // SAFETY: Read-only shared reference to CapRegistry. Multiple readers are
+    // safe because CapRegistry's read methods (&self) do not mutate state.
     let registry = unsafe { &*KERNEL_STATE.cap_registry.get() };
     f(registry)
 }
@@ -166,6 +173,8 @@ pub unsafe fn with_csprng<F, R>(f: F) -> R
 where
     F: FnOnce(&mut Csprng) -> R,
 {
+    // SAFETY: Syscall handlers run with interrupts masked, guaranteeing
+    // exclusive access per core. The caller asserts this precondition.
     let rng = unsafe { &mut *KERNEL_STATE.csprng.get() };
     f(rng)
 }

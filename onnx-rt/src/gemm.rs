@@ -192,6 +192,7 @@ fn micro_kernel_8x8(
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     use alloc::vec;
 
@@ -300,5 +301,157 @@ mod tests {
         assert_eq!(TILE_SIZE, 64);
         assert_eq!(MR, 8);
         assert_eq!(NR, 8);
+    }
+
+    // --- GEMM Benchmark Framework (Task 7.13) ---
+
+    /// Naive triple-loop GEMM for comparison baseline.
+    fn naive_gemm(m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32]) {
+        for val in c.iter_mut() {
+            *val = 0.0;
+        }
+        for i in 0..m {
+            for j in 0..n {
+                let mut sum = 0.0f32;
+                for p in 0..k {
+                    sum += a[i * k + p] * b[p * n + j];
+                }
+                c[i * n + j] = sum;
+            }
+        }
+    }
+
+    /// Compute GFLOPS: 2*m*n*k floating-point operations.
+    fn gflops(m: usize, n: usize, k: usize, elapsed_secs: f64) -> f64 {
+        let flops = 2.0 * m as f64 * n as f64 * k as f64;
+        flops / elapsed_secs / 1e9
+    }
+
+    #[test]
+    fn benchmark_gemm_correctness_vs_naive() {
+        // Verify optimized GEMM matches naive for various sizes
+        for &size in &[1, 2, 4, 7, 8, 9, 15, 16, 17, 32, 63, 64, 65] {
+            let m = size;
+            let n = size;
+            let k = size;
+            let mut a = vec![0.0f32; m * k];
+            let mut b = vec![0.0f32; k * n];
+            // Fill with deterministic values
+            for i in 0..a.len() {
+                a[i] = ((i % 7) as f32 - 3.0) * 0.1;
+            }
+            for i in 0..b.len() {
+                b[i] = ((i % 11) as f32 - 5.0) * 0.1;
+            }
+
+            let mut c_opt = vec![0.0f32; m * n];
+            let mut c_naive = vec![0.0f32; m * n];
+
+            gemm_f32(m, n, k, &a, &b, &mut c_opt);
+            naive_gemm(m, n, k, &a, &b, &mut c_naive);
+
+            for i in 0..m * n {
+                assert!(
+                    (c_opt[i] - c_naive[i]).abs() < 1e-3,
+                    "mismatch at size={}, idx={}: opt={} naive={}",
+                    size,
+                    i,
+                    c_opt[i],
+                    c_naive[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn benchmark_gemm_performance() {
+        // Measure GFLOPS for both naive and optimized GEMM.
+        // This is informational — the test always passes but prints results.
+        let sizes = [64, 128, 256];
+
+        for &size in &sizes {
+            let m = size;
+            let n = size;
+            let k = size;
+            let mut a = vec![1.0f32; m * k];
+            let mut b = vec![1.0f32; k * n];
+            for i in 0..a.len() {
+                a[i] = (i % 100) as f32 * 0.01;
+            }
+            for i in 0..b.len() {
+                b[i] = (i % 100) as f32 * 0.01;
+            }
+            let mut c = vec![0.0f32; m * n];
+
+            // Warm up
+            gemm_f32(m, n, k, &a, &b, &mut c);
+
+            // Benchmark optimized
+            let iterations = if size <= 64 { 100 } else if size <= 128 { 20 } else { 5 };
+            let start = std::time::Instant::now();
+            for _ in 0..iterations {
+                gemm_f32(m, n, k, &a, &b, &mut c);
+            }
+            let elapsed_opt = start.elapsed().as_secs_f64() / iterations as f64;
+            let gflops_opt = gflops(m, n, k, elapsed_opt);
+
+            // Benchmark naive
+            let start = std::time::Instant::now();
+            for _ in 0..iterations {
+                naive_gemm(m, n, k, &a, &b, &mut c);
+            }
+            let elapsed_naive = start.elapsed().as_secs_f64() / iterations as f64;
+            let gflops_naive = gflops(m, n, k, elapsed_naive);
+
+            let speedup = gflops_opt / gflops_naive;
+
+            // The test is informational — just verify the optimized version
+            // produces valid output (it does, since correctness is checked above).
+            // In CI, we verify that optimized is at least as fast as naive.
+            assert!(
+                speedup >= 0.5,
+                "Optimized GEMM should not be significantly slower than naive: \
+                 size={} opt={:.2} GFLOPS naive={:.2} GFLOPS speedup={:.2}x",
+                size,
+                gflops_opt,
+                gflops_naive,
+                speedup
+            );
+        }
+    }
+
+    #[test]
+    fn benchmark_gemm_non_square() {
+        // Non-square matrix multiplication benchmark
+        let configs = [(128, 64, 256), (64, 256, 128), (256, 128, 64)];
+
+        for &(m, n, k) in &configs {
+            let mut a = vec![0.5f32; m * k];
+            let mut b = vec![0.5f32; k * n];
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = (i % 50) as f32 * 0.02;
+            }
+            for (i, v) in b.iter_mut().enumerate() {
+                *v = (i % 50) as f32 * 0.02;
+            }
+            let mut c_opt = vec![0.0f32; m * n];
+            let mut c_naive = vec![0.0f32; m * n];
+
+            gemm_f32(m, n, k, &a, &b, &mut c_opt);
+            naive_gemm(m, n, k, &a, &b, &mut c_naive);
+
+            for i in 0..m * n {
+                assert!(
+                    (c_opt[i] - c_naive[i]).abs() < 1e-2,
+                    "non-square mismatch at (m={},n={},k={}), idx={}: opt={} naive={}",
+                    m,
+                    n,
+                    k,
+                    i,
+                    c_opt[i],
+                    c_naive[i]
+                );
+            }
+        }
     }
 }

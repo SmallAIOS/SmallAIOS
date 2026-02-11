@@ -559,4 +559,212 @@ mod tests {
         assert!(WireType::from_u8(6).is_none());
         assert!(WireType::from_u8(7).is_none());
     }
+
+    // --- Fuzz-like tests (Task 7.12) ---
+    // Property-based tests feeding random/malformed bytes to the protobuf
+    // parser, verifying no panics occur.
+
+    #[test]
+    fn fuzz_empty_input_no_panic() {
+        let mut dec = ProtoDecoder::new(&[]);
+        assert!(dec.read_varint().is_err());
+        assert!(dec.read_tag().is_err());
+        assert!(dec.read_fixed32().is_err());
+        assert!(dec.read_fixed64().is_err());
+        assert!(dec.read_length_delimited().is_err());
+        assert!(dec.read_string().is_err());
+        assert!(dec.read_float().is_err());
+        assert!(dec.read_double().is_err());
+        assert!(dec.read_sint32().is_err());
+        assert!(dec.read_sint64().is_err());
+        assert!(dec.read_byte().is_err());
+    }
+
+    #[test]
+    fn fuzz_single_byte_inputs_no_panic() {
+        for b in 0..=255u8 {
+            let data = [b];
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_varint();
+
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_tag();
+
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_fixed32();
+
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_fixed64();
+
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_length_delimited();
+
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_string();
+
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_byte();
+
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_sint32();
+
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_sint64();
+        }
+    }
+
+    #[test]
+    fn fuzz_all_continuation_bytes_no_panic() {
+        // All 0xFF bytes — maximum continuation, should eventually error
+        for len in 1..=15 {
+            let data = alloc::vec![0xFF; len];
+            let mut dec = ProtoDecoder::new(&data);
+            let _ = dec.read_varint(); // Must not panic
+        }
+    }
+
+    #[test]
+    fn fuzz_length_delimited_huge_length_no_panic() {
+        // Varint encoding a very large length that exceeds the buffer
+        // u64::MAX varint = [0xFF]*9 + [0x01]
+        let data = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01];
+        let mut dec = ProtoDecoder::new(&data);
+        let result = dec.read_length_delimited();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn fuzz_skip_field_all_wire_types_no_panic() {
+        for wt_val in 0..=7u8 {
+            if let Some(wt) = WireType::from_u8(wt_val) {
+                // With empty data
+                let mut dec = ProtoDecoder::new(&[]);
+                let _ = dec.skip_field(wt);
+
+                // With 1 byte
+                let mut dec = ProtoDecoder::new(&[0x00]);
+                let _ = dec.skip_field(wt);
+
+                // With lots of 0xFF bytes
+                let data = [0xFF; 16];
+                let mut dec = ProtoDecoder::new(&data);
+                let _ = dec.skip_field(wt);
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_tag_field_zero_rejected() {
+        // Tag with field_number=0: varint 0x00 -> field=0, wire=0 -> InvalidFieldNumber
+        let data = [0x00];
+        let mut dec = ProtoDecoder::new(&data);
+        assert_eq!(dec.read_tag().unwrap_err(), ProtoError::InvalidFieldNumber);
+    }
+
+    #[test]
+    fn fuzz_tag_invalid_wire_types_rejected() {
+        // Wire types 3, 4, 6, 7 are invalid
+        for invalid_wt in [3u8, 4, 6, 7] {
+            // field_number=1, wire_type=invalid: tag = (1 << 3) | invalid_wt
+            let tag_byte = (1 << 3) | invalid_wt;
+            let data = [tag_byte];
+            let mut dec = ProtoDecoder::new(&data);
+            assert_eq!(dec.read_tag().unwrap_err(), ProtoError::InvalidWireType);
+        }
+    }
+
+    #[test]
+    fn fuzz_string_with_invalid_utf8_sequences() {
+        // Various invalid UTF-8 sequences
+        let invalid_sequences: &[&[u8]] = &[
+            &[0x01, 0x80],             // lone continuation byte
+            &[0x02, 0xC0, 0x80],       // overlong encoding
+            &[0x03, 0xED, 0xA0, 0x80], // surrogate half
+            &[0x02, 0xFE, 0xFF],       // invalid start bytes
+            &[0x04, 0xF4, 0x90, 0x80, 0x80], // above U+10FFFF
+        ];
+        for seq in invalid_sequences {
+            let mut dec = ProtoDecoder::new(seq);
+            let result = dec.read_string();
+            // Should either error or succeed (never panic)
+            let _ = result;
+        }
+    }
+
+    #[test]
+    fn fuzz_sequential_operations_no_panic() {
+        // Simulate parsing a malformed protobuf message:
+        // tag + varint + tag + length-delimited + ...
+        let data = [
+            0x08, 0x96, 0x01, // field 1, varint 150
+            0x12, 0x03, 0x41, 0x42, 0x43, // field 2, string "ABC"
+            0x1D, 0x00, 0x00, 0x80, 0x3F, // field 3, fixed32 1.0f
+            0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0,
+            0x3F, // field 4, fixed64 1.0f64
+            0xFF, 0xFF, 0xFF, // trailing garbage
+        ];
+
+        let mut dec = ProtoDecoder::new(&data);
+        while !dec.is_empty() {
+            match dec.read_tag() {
+                Ok(header) => {
+                    let _ = dec.skip_field(header.wire_type);
+                }
+                Err(_) => break,
+            }
+        }
+        // Must not panic
+    }
+
+    #[test]
+    fn fuzz_two_byte_patterns_no_panic() {
+        // Exhaustive 2-byte inputs (65536 combinations)
+        for hi in 0..=255u8 {
+            for lo in 0..=255u8 {
+                let data = [hi, lo];
+                let mut dec = ProtoDecoder::new(&data);
+                let _ = dec.read_tag();
+
+                let mut dec = ProtoDecoder::new(&data);
+                let _ = dec.read_varint();
+
+                let mut dec = ProtoDecoder::new(&data);
+                let _ = dec.read_length_delimited();
+            }
+        }
+    }
+
+    #[test]
+    fn fuzz_zigzag_decode_all_boundaries() {
+        // Test zigzag with boundary values
+        assert_eq!(zigzag_decode_32(u32::MAX), i32::MIN);
+        assert_eq!(zigzag_decode_32(u32::MAX - 1), i32::MAX);
+        assert_eq!(zigzag_decode_64(u64::MAX), i64::MIN);
+        assert_eq!(zigzag_decode_64(u64::MAX - 1), i64::MAX);
+    }
+
+    #[test]
+    fn fuzz_truncated_fixed_values_no_panic() {
+        // 1, 2, 3 bytes — too short for fixed32
+        for len in 0..4 {
+            let data = alloc::vec![0xAA; len];
+            let mut dec = ProtoDecoder::new(&data);
+            assert!(dec.read_fixed32().is_err());
+        }
+        // 1-7 bytes — too short for fixed64
+        for len in 0..8 {
+            let data = alloc::vec![0xBB; len];
+            let mut dec = ProtoDecoder::new(&data);
+            assert!(dec.read_fixed64().is_err());
+        }
+    }
+
+    #[test]
+    fn fuzz_varint_with_trailing_data() {
+        // Valid 1-byte varint followed by garbage
+        let data = [0x01, 0xFF, 0xFF, 0xFF];
+        let mut dec = ProtoDecoder::new(&data);
+        assert_eq!(dec.read_varint().unwrap(), 1);
+        assert_eq!(dec.remaining(), 3);
+    }
 }

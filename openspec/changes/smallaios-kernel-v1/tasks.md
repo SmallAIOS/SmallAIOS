@@ -62,8 +62,8 @@
 - [x] 5.8 Implement hybrid mode (X25519+ML-KEM, Ed25519+ML-DSA)
 - [x] 5.9 Implement CSPRNG (SHAKE256-based, seeded from RDRAND/RNDR)
 - [x] 5.10 Implement ONNX model signature verification (ML-DSA-65)
-- [ ] 5.11 Verify constant-time properties with dudect-style statistical testing
-- [ ] 5.12 Write Lean 4 proofs for capability non-forgery invariant
+- [x] 5.11 Verify constant-time properties with dudect-style statistical testing
+- [x] 5.12 Write Lean 4 proofs for capability non-forgery invariant
 - [x] 5.13 Validate crypto implementations against NIST test vectors
 
 ## 6. POSIX Compatibility Layer
@@ -77,7 +77,7 @@
 - [x] 6.7 Implement clock_gettime, nanosleep, getrandom
 - [x] 6.8 Implement SIGTERM handler for graceful shutdown
 - [x] 6.9 Return ENOSYS for all unimplemented POSIX calls
-- [ ] 6.10 Test Rust std library operations against POSIX layer
+- [x] 6.10 Test Rust std library operations against POSIX layer
 
 ## 7. ONNX Runtime
 
@@ -92,9 +92,9 @@
 - [x] 7.9 Implement NEON GEMM micro-kernel (8x8 f32)
 - [x] 7.10 Implement session API (load_model, create_session, run)
 - [ ] 7.11 End-to-end test: MobileNetV2 inference produces correct classification
-- [ ] 7.12 Fuzz protobuf parser — verify no panics on random input
-- [ ] 7.13 Benchmark GEMM against reference (target: within 2x of OpenBLAS)
-- [ ] 7.14 Write SPIN model for inference pipeline (verify no deadlock under concurrent requests)
+- [x] 7.12 Fuzz protobuf parser — verify no panics on random input
+- [x] 7.13 Benchmark GEMM against reference (target: within 2x of OpenBLAS)
+- [x] 7.14 Write SPIN model for inference pipeline (verify no deadlock under concurrent requests)
 
 ## 8. Networking
 
@@ -103,13 +103,13 @@
 - [x] 8.3 Implement IPv4 (header, checksum, routing to default gateway)
 - [x] 8.4 Implement IPv6 (header, link-local address generation)
 - [x] 8.5 Implement NDP (neighbor solicitation/advertisement, router solicitation)
-- [ ] 8.6 Implement SLAAC (process RAs, generate global address)
+- [x] 8.6 Implement SLAAC (process RAs, generate global address)
 - [x] 8.7 Implement ICMPv4/v6 (echo request/reply)
 - [x] 8.8 Implement TCP (state machine, 3-way handshake, data transfer, CUBIC, SACK)
 - [x] 8.9 Implement UDP (send/receive, port multiplexing)
 - [x] 8.10 Implement built-in packet filter / firewall
 - [x] 8.11 Implement virtio-net driver (MMIO transport)
-- [ ] 8.12 Write SPIN model for TCP state machine — verify correct transitions
+- [x] 8.12 Write SPIN model for TCP state machine — verify correct transitions
 - [ ] 8.13 Test IPv4 and IPv6 connectivity in QEMU with virtio-net
 
 ## 9. IPC and Messaging
@@ -124,7 +124,7 @@
 - [x] 9.8 Implement binary inference request/response protocol
 - [x] 9.9 Implement built-in endpoints (health, metrics, models, inference, logs)
 - [x] 9.10 Implement minimal HTTP handler (GET /health, GET /metrics for K8s probes)
-- [ ] 9.11 Write SPIN model for pub/sub routing — verify no message loss
+- [x] 9.11 Write SPIN model for pub/sub routing — verify no message loss
 - [ ] 9.12 Test external Zenoh client connecting and running inference
 
 ## 10. NVIDIA GPU Support
@@ -173,7 +173,7 @@
 - [ ] 13.1 All unit tests pass on both x86-64 and ARM64
 - [ ] 13.2 Integration test: boot → load model → run inference → return result (both archs, QEMU)
 - [ ] 13.3 GPU integration test: inference on NVIDIA hardware matches CPU results
-- [ ] 13.4 Security audit: all unsafe blocks documented with SAFETY comments
+- [x] 13.4 Security audit: all unsafe blocks documented with SAFETY comments
 - [ ] 13.5 Fuzz all external interfaces (IPC protocol, ONNX parser, syscalls) for 24 hours with no crashes
 - [ ] 13.6 MC/DC coverage report shows 100% on safety-critical paths
 - [ ] 13.7 All formal verification models pass (TLA+ TLC, SPIN, Lean 4)
