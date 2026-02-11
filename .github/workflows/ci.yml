@@ -2,9 +2,9 @@ name: SmallAIOS CI
 
 on:
   push:
-    branches: [main, "claude/**", "change/**"]
+    branches: [main, develop, "claude/**", "change/**"]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 env:
   CARGO_TERM_COLOR: always
@@ -204,6 +204,51 @@ jobs:
               -deadlock
           done
           echo "All TLA+ models verified."
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage report
+        run: >-
+          cargo llvm-cov
+          --lcov --output-path lcov.info
+          -p smallaios-kernel
+          -p smallaios-security
+          -p smallaios-onnx-rt
+          -p smallaios-ipc
+          -p smallaios-net
+          -p smallaios-posix
+          -p smallaios-container
+          -p smallaios-bus
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          fail_ci_if_error: false
+
+  sonarcloud:
+    name: SonarCloud Analysis
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: SonarCloud Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
   change-gates:
     name: Change Gates

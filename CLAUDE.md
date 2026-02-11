@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SmallAIOS is a minimal, secure, Rust-based OS kernel purpose-built for AI inference workloads. It boots directly to ONNX inference with ~46 syscalls (vs Linux ~450). Targets x86-64, ARM64, and NVIDIA GPU. Deploys as either a container (Docker/K8s) or bare-metal/VM via QEMU.
 
-**Current state:** Early bootstrap — comprehensive OpenSpec specifications exist (183+ tasks across 13 phases) but code is scaffold/stubs only.
+**Current state:** Prototype phase — 5,784+ tests passing. Production-quality networking (IPv4/IPv6/TCP/ARP/NDP), QUIC/HTTP3 with TLS 1.3, protobuf parser, ONNX runtime with 6 real operators, full PQC crypto stack (SHA-3, AES-256-GCM, ML-KEM-768, ML-DSA-65, Ed25519, X25519), capability system, and NVIDIA GPU compute stack.
 
 ## Build Commands
 
@@ -73,15 +73,64 @@ kernel (foundation)
 - **Release profile:** `opt-level = "z"`, LTO enabled, single codegen unit (size-optimized)
 - **Linker scripts:** Custom per bare-metal target (see `.cargo/config.toml`)
 
-## OpenSpec Workflow
+## Git Workflow
 
-This project uses OpenSpec for spec-driven development. Specifications live in `openspec/`.
+**Gitflow branching model:** feature branches -> `develop` -> `main`
 
-- **Active change:** `openspec/changes/smallaios-kernel-v1/` — contains proposal, design, specs (8 files), and tasks
-- **Reference specs:** `openspec/smallaios-kernel/` — canonical specifications and design docs
-- **Config:** `.openspec/config.yaml`
+- `main` — stable, release-ready code
+- `develop` — integration branch for ongoing work
+- Feature branches merge into `develop` via PR
+- `develop` merges into `main` for releases
+
+### Worktrees + OpenSpec
+
+Each OpenSpec change gets its own git worktree and branch. One change = one branch = one PR.
+
+```
+Main repo:     /home/e/Development/SmallAIOS-Design              (main)
+Worktrees:     /home/e/Development/SmallAIOS-Design-worktrees/
+  kernel-v1:     .../smallaios-kernel-v1          (change/smallaios-kernel-v1)
+  platform:      .../platform-expansion-v2        (change/platform-expansion-v2)
+  cybersec:      .../cybersecurity-compliance-v3   (change/cybersecurity-compliance-v3)
+```
+
+**Branch naming:** `change/<openspec-change-name>`
+
+**Workflow:**
+1. Work in the worktree directory for your change
+2. Use OpenSpec skills (`/opsx:apply`, `/opsx:continue`, etc.) to implement tasks
+3. Commit to the change branch, push, create PR against `develop`
+4. After merge, update worktree: `git pull origin develop`
+
+## OpenSpec Changes
+
+Specifications live in `openspec/`. Reference specs in `openspec/smallaios-kernel/`.
+
+| Change | Tasks Done | Total | Focus |
+|--------|-----------|-------|-------|
+| `smallaios-kernel-v1` | 130 | 144 | Core kernel, memory, scheduler, crypto, ONNX, networking |
+| `platform-expansion-v2` | 191 | 198 | RISC-V, CAN/ARINC/MIL-STD buses, K8s, DDS, QUIC |
+| `cybersecurity-compliance-v3` | 110 | 110 | NIST SP 800-53, audit, supply chain, incident response |
 
 Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:verify`, `/opsx:archive`) to manage changes. The workflow is: proposal → design → specs → tasks → implementation → verification → archive.
+
+## CI/CD
+
+GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` and `develop`, and on PRs targeting either branch.
+
+**Jobs:**
+- **Format Check** — `cargo fmt --check`
+- **Clippy Lint** — all host-testable crates
+- **Unit Tests** — all host-testable crates
+- **Build** — x86-64, AArch64, RISC-V bare-metal kernels
+- **RISC-V QEMU Smoke Test** — boots kernel in QEMU
+- **Image Size Check** — ensures binaries stay under 15 MB
+- **TLA+ Verification** — runs TLC on all formal protocol models
+- **Code Coverage** — `cargo-llvm-cov` with lcov output, uploaded to [Codecov](https://codecov.io)
+- **SonarCloud Analysis** — static analysis via [SonarCloud](https://sonarcloud.io)
+- **Change Gates** — meta-job that gates PR mergeability
+
+**Required secrets:** `CODECOV_TOKEN`, `SONAR_TOKEN`
 
 ## Crate Feature Flags
 
