@@ -11,9 +11,10 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::graph::ExecutionGraph;
-use crate::onnx_types::ModelProto;
-use crate::optimizer::OptimizationLevel;
+use crate::graph::{build_execution_graph, ExecutionGraph};
+use crate::onnx_types::{ModelProto, CURRENT_IR_VERSION};
+use crate::operators::OperatorRegistry;
+use crate::optimizer::{optimize, OptimizationLevel, OptimizerConfig};
 use crate::tensor::Tensor;
 
 // ---------------------------------------------------------------------------
@@ -173,6 +174,88 @@ const ONNX_MAGIC: u8 = 0x08;
 /// and a graph field. Anything smaller than this is rejected.
 const MIN_MODEL_SIZE: usize = 8;
 
+/// Maximum supported ONNX opset version.
+const MAX_OPSET_VERSION: i64 = 21;
+
+// ---------------------------------------------------------------------------
+// Model validation
+// ---------------------------------------------------------------------------
+
+/// Validates a parsed ONNX model for structural correctness.
+///
+/// Checks:
+/// - IR version is supported
+/// - Opset version is within range
+/// - Graph is present and non-empty
+/// - All operators are in the operator registry
+/// - All nodes have at least one output
+/// - No duplicate output tensor names
+pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
+    // Check IR version
+    if model.ir_version > CURRENT_IR_VERSION && model.ir_version != 0 {
+        return Err(SessionError::InvalidModel(String::from(
+            "unsupported IR version",
+        )));
+    }
+
+    // Check opset version
+    for opset in &model.opset_import {
+        if opset.domain.is_empty() && opset.version > MAX_OPSET_VERSION {
+            return Err(SessionError::UnsupportedOpset(opset.version));
+        }
+    }
+
+    // Check graph presence
+    let graph = match &model.graph {
+        Some(g) => g,
+        None => {
+            return Err(SessionError::InvalidModel(String::from(
+                "model has no graph",
+            )));
+        }
+    };
+
+    // Validate operators
+    let registry = OperatorRegistry::new();
+    for node in &graph.node {
+        // Skip custom domain operators
+        if !node.domain.is_empty() {
+            continue;
+        }
+        if !registry.is_supported(&node.op_type) {
+            return Err(SessionError::InvalidModel(alloc::format!(
+                "unsupported operator: {}",
+                node.op_type
+            )));
+        }
+        if node.output.is_empty() {
+            return Err(SessionError::InvalidModel(alloc::format!(
+                "node '{}' has no outputs",
+                node.name
+            )));
+        }
+    }
+
+    // Check for duplicate output names
+    let mut seen_outputs: Vec<&str> = Vec::new();
+    for node in &graph.node {
+        for output in &node.output {
+            if output.is_empty() {
+                continue;
+            }
+            if seen_outputs.contains(&output.as_str()) {
+                return Err(SessionError::InvalidModel(alloc::format!(
+                    "duplicate output tensor: {}",
+                    output
+                )));
+            }
+            seen_outputs.push(output.as_str());
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Top-level model loading
 // ---------------------------------------------------------------------------
@@ -228,10 +311,38 @@ impl Session {
     ///
     /// This validates the model structure, builds the execution graph,
     /// applies optimizations, and prepares the session for inference.
-    /// Currently returns `NotImplemented`.
     pub fn initialize(&mut self, model: &ModelProto) -> Result<(), SessionError> {
-        let _ = model;
-        Err(SessionError::NotImplemented)
+        // Validate model
+        validate_model(model)?;
+
+        let graph = model
+            .graph
+            .as_ref()
+            .ok_or_else(|| SessionError::InvalidModel(String::from("no graph")))?;
+
+        // Build execution graph
+        let mut exec_graph = build_execution_graph(graph)
+            .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?;
+
+        // Apply optimizations
+        let opt_config = match self.config.optimization_level {
+            OptimizationLevel::None => OptimizerConfig::none(),
+            OptimizationLevel::Basic => OptimizerConfig {
+                level: OptimizationLevel::Basic,
+                ..OptimizerConfig::default()
+            },
+            OptimizationLevel::Extended => OptimizerConfig::default(),
+        };
+        let _opt_result = optimize(&mut exec_graph, &opt_config);
+
+        // Store graph metadata
+        self.model_name = graph.name.clone();
+        self.input_names = graph.input.iter().map(|vi| vi.name.clone()).collect();
+        self.output_names = graph.output.iter().map(|vi| vi.name.clone()).collect();
+        self.graph = Some(exec_graph);
+        self.is_initialized = true;
+
+        Ok(())
     }
 
     /// Runs inference on the provided inputs and returns the outputs.
@@ -239,7 +350,8 @@ impl Session {
     /// The session must be initialized before calling this method.
     /// Input tensors are validated against the model's expected input
     /// names and shapes. Currently returns `NotImplemented` after
-    /// validation checks pass.
+    /// graph traversal setup -- operator dispatch will be wired in a
+    /// later phase when the full operator table is complete.
     pub fn run(&self, inputs: &[InferenceInput]) -> Result<Vec<InferenceOutput>, SessionError> {
         if !self.is_initialized {
             return Err(SessionError::ExecutionFailed(String::from(
@@ -260,7 +372,10 @@ impl Session {
             }
         }
 
-        // Stub: actual graph execution not yet implemented.
+        // Stub: graph traversal and operator dispatch not yet wired.
+        // The execution graph is built and optimized, but node-by-node
+        // execution requires connecting each node's OpKind to the
+        // corresponding operator function with tensor I/O plumbing.
         Err(SessionError::NotImplemented)
     }
 
@@ -475,5 +590,173 @@ mod tests {
         assert_eq!(input.name, "images");
         assert_eq!(input.tensor.data_type, DataType::Float);
         assert_eq!(input.tensor.shape.ndim(), 4);
+    }
+
+    // ---- Model validation tests ----
+
+    fn make_simple_model() -> ModelProto {
+        use crate::onnx_types::{GraphProto, NodeProto, OperatorSetIdProto, ValueInfoProto};
+        ModelProto {
+            ir_version: CURRENT_IR_VERSION,
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: 17,
+            }],
+            producer_name: String::from("test"),
+            producer_version: String::from("1.0"),
+            domain: String::new(),
+            model_version: 1,
+            doc_string: String::new(),
+            graph: Some(GraphProto {
+                name: String::from("test"),
+                node: vec![NodeProto {
+                    op_type: String::from("Relu"),
+                    name: String::from("relu0"),
+                    input: vec![String::from("x")],
+                    output: vec![String::from("y")],
+                    ..NodeProto::default()
+                }],
+                input: vec![ValueInfoProto {
+                    name: String::from("x"),
+                    elem_type: 1,
+                    shape: vec![1, 3],
+                }],
+                output: vec![ValueInfoProto {
+                    name: String::from("y"),
+                    elem_type: 1,
+                    shape: vec![1, 3],
+                }],
+                initializer: Vec::new(),
+            }),
+        }
+    }
+
+    #[test]
+    fn test_validate_model_valid() {
+        let model = make_simple_model();
+        assert!(validate_model(&model).is_ok());
+    }
+
+    #[test]
+    fn test_validate_model_no_graph() {
+        let model = ModelProto {
+            ir_version: CURRENT_IR_VERSION,
+            graph: None,
+            ..ModelProto::default()
+        };
+        let result = validate_model(&model);
+        assert!(matches!(result, Err(SessionError::InvalidModel(_))));
+    }
+
+    #[test]
+    fn test_validate_model_unsupported_opset() {
+        use crate::onnx_types::OperatorSetIdProto;
+        let mut model = make_simple_model();
+        model.opset_import = vec![OperatorSetIdProto {
+            domain: String::new(),
+            version: 99,
+        }];
+        let result = validate_model(&model);
+        assert!(matches!(result, Err(SessionError::UnsupportedOpset(99))));
+    }
+
+    #[test]
+    fn test_validate_model_unsupported_operator() {
+        use crate::onnx_types::NodeProto;
+        let mut model = make_simple_model();
+        if let Some(g) = model.graph.as_mut() {
+            g.node.push(NodeProto {
+                op_type: String::from("UnknownOp"),
+                name: String::from("bad"),
+                input: vec![String::from("y")],
+                output: vec![String::from("z")],
+                ..NodeProto::default()
+            });
+        }
+        let result = validate_model(&model);
+        assert!(matches!(result, Err(SessionError::InvalidModel(_))));
+    }
+
+    #[test]
+    fn test_validate_model_duplicate_outputs() {
+        use crate::onnx_types::NodeProto;
+        let mut model = make_simple_model();
+        if let Some(g) = model.graph.as_mut() {
+            g.node.push(NodeProto {
+                op_type: String::from("Relu"),
+                name: String::from("relu1"),
+                input: vec![String::from("x")],
+                output: vec![String::from("y")], // duplicate of first node
+                ..NodeProto::default()
+            });
+        }
+        let result = validate_model(&model);
+        assert!(matches!(result, Err(SessionError::InvalidModel(_))));
+    }
+
+    // ---- Session initialization tests ----
+
+    #[test]
+    fn test_session_initialize_valid_model() {
+        let model = make_simple_model();
+        let mut session = Session::new(SessionConfig::default());
+        let result = session.initialize(&model);
+        assert!(result.is_ok());
+        assert!(session.is_initialized());
+        assert_eq!(session.input_names(), &["x"]);
+        assert_eq!(session.output_names(), &["y"]);
+        assert!(session.graph.is_some());
+        assert_eq!(session.model_name, "test");
+    }
+
+    #[test]
+    fn test_session_initialize_no_graph() {
+        let model = ModelProto {
+            ir_version: CURRENT_IR_VERSION,
+            graph: None,
+            ..ModelProto::default()
+        };
+        let mut session = Session::new(SessionConfig::default());
+        let result = session.initialize(&model);
+        assert!(result.is_err());
+        assert!(!session.is_initialized());
+    }
+
+    #[test]
+    fn test_session_run_after_init_returns_not_implemented() {
+        let model = make_simple_model();
+        let mut session = Session::new(SessionConfig::default());
+        session.initialize(&model).unwrap();
+
+        let input = InferenceInput {
+            name: String::from("x"),
+            tensor: Tensor::new(
+                DataType::Float,
+                TensorShape::new(vec![1, 3]),
+                String::from("x"),
+            ),
+        };
+        let result = session.run(&[input]);
+        // Session is initialized but run still returns NotImplemented
+        // because operator dispatch is not yet wired
+        assert!(matches!(result, Err(SessionError::NotImplemented)));
+    }
+
+    #[test]
+    fn test_session_run_invalid_input_name() {
+        let model = make_simple_model();
+        let mut session = Session::new(SessionConfig::default());
+        session.initialize(&model).unwrap();
+
+        let input = InferenceInput {
+            name: String::from("nonexistent"),
+            tensor: Tensor::new(
+                DataType::Float,
+                TensorShape::new(vec![1, 3]),
+                String::from("nonexistent"),
+            ),
+        };
+        let result = session.run(&[input]);
+        assert!(matches!(result, Err(SessionError::InvalidInput(_))));
     }
 }

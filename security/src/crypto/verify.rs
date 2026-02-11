@@ -28,10 +28,10 @@
 //! Public keys are provisioned at build time or via secure boot.
 //! The set of trusted signing keys is immutable at runtime.
 //!
-//! # Status
+//! # Implementation
 //!
-//! This module defines the API surface. The actual verification logic
-//! depends on the SHA-3 and ML-DSA/hybrid modules being implemented.
+//! The verification logic uses SHA-3-256 for model hashing, ML-DSA-65
+//! for post-quantum signatures, and optionally hybrid Ed25519+ML-DSA-65.
 
 #![allow(unused)]
 
@@ -405,12 +405,36 @@ pub fn verify_model_ml_dsa(
     if model_bytes.len() > MAX_MODEL_SIZE {
         return Err(VerifyError::ModelTooLarge);
     }
-    // Stub: will implement full verification flow:
-    // 1. Compute SHA-3-256(model_bytes)
-    // 2. Compare with signature.metadata.model_hash
+
+    // 1. Compute SHA-3-256(model_bytes) and compare with metadata hash
+    let computed_hash = super::sha3::sha3_256(model_bytes);
+    if computed_hash != *signature.metadata.model_hash() {
+        return Err(VerifyError::HashMismatch);
+    }
+
+    // 2. Check key is in trusted key store
+    let pk_hash = super::sha3::sha3_256(public_key.as_bytes());
+    let mut pk_hash_bytes = [0u8; SHA3_256_DIGEST_LEN];
+    pk_hash_bytes.copy_from_slice(pk_hash.as_bytes());
+    if !trusted_keys.is_ml_dsa_trusted(&pk_hash_bytes) {
+        return Err(VerifyError::UntrustedKey);
+    }
+
     // 3. Serialize metadata and verify ML-DSA-65 signature
-    // 4. Check key is in trusted_keys
-    Err(VerifyError::NotImplemented)
+    let mut msg_buf = [0u8; SHA3_256_DIGEST_LEN + 4 + 8 + 2 + MAX_MODEL_NAME_LEN];
+    let msg_len = signature
+        .metadata
+        .serialize(&mut msg_buf)
+        .map_err(|_| VerifyError::InvalidSignatureFormat)?;
+
+    let sig_bytes = signature.signature_bytes();
+    let ml_dsa_sig =
+        MlDsaSignature::from_slice(sig_bytes).map_err(|_| VerifyError::InvalidSignatureFormat)?;
+
+    super::ml_dsa::ml_dsa_65_verify(public_key, &msg_buf[..msg_len], &ml_dsa_sig)
+        .map_err(|_| VerifyError::SignatureInvalid)?;
+
+    Ok(())
 }
 
 /// Verify an ONNX model's signature using hybrid Ed25519 + ML-DSA-65.
@@ -425,8 +449,47 @@ pub fn verify_model_hybrid(
     if model_bytes.len() > MAX_MODEL_SIZE {
         return Err(VerifyError::ModelTooLarge);
     }
-    // Stub: will implement full verification flow
-    Err(VerifyError::NotImplemented)
+
+    // 1. Compute SHA-3-256(model_bytes) and compare with metadata hash
+    let computed_hash = super::sha3::sha3_256(model_bytes);
+    if computed_hash != *signature.metadata.model_hash() {
+        return Err(VerifyError::HashMismatch);
+    }
+
+    // 2. Check key is in trusted key store (hash the combined key)
+    let mut combined_key = [0u8; HYBRID_SIG_PK_LEN];
+    combined_key[..ED25519_PK_LEN].copy_from_slice(public_key.ed25519_pk());
+    combined_key[ED25519_PK_LEN..].copy_from_slice(public_key.ml_dsa_pk());
+    let pk_hash = super::sha3::sha3_256(&combined_key);
+    let mut pk_hash_bytes = [0u8; SHA3_256_DIGEST_LEN];
+    pk_hash_bytes.copy_from_slice(pk_hash.as_bytes());
+    if !trusted_keys.is_hybrid_trusted(&pk_hash_bytes) {
+        return Err(VerifyError::UntrustedKey);
+    }
+
+    // 3. Serialize metadata for verification
+    let mut msg_buf = [0u8; SHA3_256_DIGEST_LEN + 4 + 8 + 2 + MAX_MODEL_NAME_LEN];
+    let msg_len = signature
+        .metadata
+        .serialize(&mut msg_buf)
+        .map_err(|_| VerifyError::InvalidSignatureFormat)?;
+
+    // 4. Unpack hybrid signature and verify both components
+    let sig_bytes = signature.signature_bytes();
+    if sig_bytes.len() != HYBRID_SIG_LEN {
+        return Err(VerifyError::InvalidSignatureFormat);
+    }
+
+    let mut ed_sig_bytes = [0u8; super::hybrid::ED25519_SIG_LEN];
+    ed_sig_bytes.copy_from_slice(&sig_bytes[..super::hybrid::ED25519_SIG_LEN]);
+    let mut ml_dsa_sig_bytes = [0u8; super::ml_dsa::ML_DSA_65_SIG_LEN];
+    ml_dsa_sig_bytes.copy_from_slice(&sig_bytes[super::hybrid::ED25519_SIG_LEN..]);
+
+    let hybrid_sig = HybridSignature::from_components(ed_sig_bytes, ml_dsa_sig_bytes);
+    super::hybrid::hybrid_verify(public_key, &msg_buf[..msg_len], &hybrid_sig)
+        .map_err(|_| VerifyError::HybridSignatureInvalid)?;
+
+    Ok(())
 }
 
 /// Compute the SHA-3-256 hash of a model binary.
@@ -580,10 +643,51 @@ mod tests {
     }
 
     #[test]
-    fn verify_model_ml_dsa_stub() {
-        let model = b"model data";
-        let hash = hash_model(model).unwrap();
-        let meta = ModelMetadata::new(b"test", 1, 0, hash, SignatureScheme::MlDsa65).unwrap();
+    fn verify_model_ml_dsa_end_to_end() {
+        let model = b"fake ONNX model binary data";
+        let model_hash = hash_model(model).unwrap();
+
+        // Generate ML-DSA-65 key pair
+        let seed = [0x42u8; 32];
+        let kp = super::super::ml_dsa::ml_dsa_65_keygen(&seed).unwrap();
+
+        // Create metadata and serialize the message to sign
+        let meta = ModelMetadata::new(
+            b"test-model",
+            1,
+            1700000000,
+            model_hash,
+            SignatureScheme::MlDsa65,
+        )
+        .unwrap();
+        let mut msg_buf = [0u8; 512];
+        let msg_len = meta.serialize(&mut msg_buf).unwrap();
+
+        // Sign the serialized metadata
+        let rng_seed = [0x37u8; 32];
+        let sig =
+            super::super::ml_dsa::ml_dsa_65_sign(&kp.secret_key, &msg_buf[..msg_len], &rng_seed)
+                .unwrap();
+
+        let model_sig = ModelSignature::new_ml_dsa(meta, &sig);
+
+        // Add key to trusted store
+        let pk_hash = super::super::sha3::sha3_256(kp.public_key.as_bytes());
+        let mut pk_hash_bytes = [0u8; SHA3_256_DIGEST_LEN];
+        pk_hash_bytes.copy_from_slice(pk_hash.as_bytes());
+        let mut store = TrustedKeyStore::new();
+        store.add_ml_dsa_key(pk_hash_bytes).unwrap();
+
+        // Verify
+        let result = verify_model_ml_dsa(model, &model_sig, &kp.public_key, &store);
+        assert!(result.is_ok(), "ML-DSA model verification should succeed");
+    }
+
+    #[test]
+    fn verify_model_ml_dsa_hash_mismatch() {
+        let model = b"real model";
+        let wrong_hash = super::super::sha3::sha3_256(b"different model");
+        let meta = ModelMetadata::new(b"test", 1, 0, wrong_hash, SignatureScheme::MlDsa65).unwrap();
         let sig_bytes = MlDsaSignature::from_bytes([0u8; ML_DSA_65_SIG_LEN]);
         let model_sig = ModelSignature::new_ml_dsa(meta, &sig_bytes);
         let pk = MlDsaPublicKey::from_bytes([0u8; ML_DSA_65_PK_LEN]);
@@ -591,30 +695,65 @@ mod tests {
 
         assert_eq!(
             verify_model_ml_dsa(model, &model_sig, &pk, &store),
-            Err(VerifyError::NotImplemented)
+            Err(VerifyError::HashMismatch)
         );
     }
 
     #[test]
-    fn verify_model_hybrid_stub() {
+    fn verify_model_ml_dsa_untrusted_key() {
         let model = b"model data";
         let hash = hash_model(model).unwrap();
-        let meta = ModelMetadata::new(b"test", 1, 0, hash, SignatureScheme::HybridEdMlDsa).unwrap();
-        let hybrid_sig = HybridSignature::from_components(
-            [0u8; super::super::hybrid::ED25519_SIG_LEN],
-            [0u8; super::super::ml_dsa::ML_DSA_65_SIG_LEN],
-        );
-        let model_sig = ModelSignature::new_hybrid(meta, &hybrid_sig);
-        let pk = HybridSigPublicKey::from_components(
-            [0u8; ED25519_PK_LEN],
-            [0u8; super::super::ml_dsa::ML_DSA_65_PK_LEN],
-        );
-        let store = TrustedKeyStore::new();
+        let meta = ModelMetadata::new(b"test", 1, 0, hash, SignatureScheme::MlDsa65).unwrap();
+        let sig_bytes = MlDsaSignature::from_bytes([0u8; ML_DSA_65_SIG_LEN]);
+        let model_sig = ModelSignature::new_ml_dsa(meta, &sig_bytes);
+        let pk = MlDsaPublicKey::from_bytes([0u8; ML_DSA_65_PK_LEN]);
+        let store = TrustedKeyStore::new(); // empty store
 
         assert_eq!(
-            verify_model_hybrid(model, &model_sig, &pk, &store),
-            Err(VerifyError::NotImplemented)
+            verify_model_ml_dsa(model, &model_sig, &pk, &store),
+            Err(VerifyError::UntrustedKey)
         );
+    }
+
+    #[test]
+    fn verify_model_hybrid_end_to_end() {
+        let model = b"fake ONNX model binary data for hybrid";
+        let model_hash = hash_model(model).unwrap();
+
+        // Generate hybrid key pair
+        let seed = [0x42u8; 64];
+        let kp = super::super::hybrid::hybrid_sig_keygen(&seed).unwrap();
+
+        // Create metadata and serialize the message to sign
+        let meta = ModelMetadata::new(
+            b"hybrid-model",
+            1,
+            1700000000,
+            model_hash,
+            SignatureScheme::HybridEdMlDsa,
+        )
+        .unwrap();
+        let mut msg_buf = [0u8; 512];
+        let msg_len = meta.serialize(&mut msg_buf).unwrap();
+
+        // Sign with hybrid
+        let rng_seed = [0x37u8; 32];
+        let sig = super::super::hybrid::hybrid_sign(&kp.secret_key, &msg_buf[..msg_len], &rng_seed)
+            .unwrap();
+        let model_sig = ModelSignature::new_hybrid(meta, &sig);
+
+        // Add key to trusted store (hash the combined pk)
+        let mut combined_key = [0u8; HYBRID_SIG_PK_LEN];
+        combined_key[..ED25519_PK_LEN].copy_from_slice(kp.public_key.ed25519_pk());
+        combined_key[ED25519_PK_LEN..].copy_from_slice(kp.public_key.ml_dsa_pk());
+        let pk_hash = super::super::sha3::sha3_256(&combined_key);
+        let mut pk_hash_bytes = [0u8; SHA3_256_DIGEST_LEN];
+        pk_hash_bytes.copy_from_slice(pk_hash.as_bytes());
+        let mut store = TrustedKeyStore::new();
+        store.add_hybrid_key(pk_hash_bytes).unwrap();
+
+        let result = verify_model_hybrid(model, &model_sig, &kp.public_key, &store);
+        assert!(result.is_ok(), "hybrid model verification should succeed");
     }
 
     #[test]

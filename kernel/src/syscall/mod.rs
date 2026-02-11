@@ -388,11 +388,10 @@ mod tests {
 
     #[test]
     fn test_dispatch_valid_syscall() {
-        // sys_info should return success (stub returns 0)
+        // sys_info with buf_ptr=0 returns the required buffer size (positive)
         let args = SyscallArgs::zero(nr::SYS_INFO);
         let result = dispatch(&args);
-        // Stub implementations return Success(0)
-        assert_eq!(result, SyscallError::Success.as_i64());
+        assert!(result > 0, "sys_info should return required buffer size");
     }
 
     #[test]
@@ -678,8 +677,13 @@ mod tests {
         ] {
             let args = SyscallArgs::new(nr, max_args);
             let result = dispatch(&args);
-            // Must return a valid error code, not panic
-            assert!(result <= 0 || nr == super::nr::SYS_WATCHDOG_REMAINING);
+            // Must return a valid error code, not panic.
+            // SYS_WATCHDOG_REMAINING and TASK_CURRENT legitimately return positive values.
+            assert!(
+                result <= 0
+                    || nr == super::nr::SYS_WATCHDOG_REMAINING
+                    || nr == super::nr::TASK_CURRENT,
+            );
         }
     }
 
@@ -866,10 +870,9 @@ mod tests {
             dispatch(&SyscallArgs::zero(nr::TASK_SET_CLASS)),
             SyscallError::InvalidArgument.as_i64()
         );
-        assert_eq!(
-            dispatch(&SyscallArgs::zero(nr::TASK_CURRENT)),
-            SyscallError::Success.as_i64()
-        );
+        // TASK_CURRENT returns the current task ID (which may be non-zero
+        // if another test set it); just verify it doesn't error.
+        assert!(dispatch(&SyscallArgs::zero(nr::TASK_CURRENT)) >= 0);
 
         assert_eq!(
             dispatch(&SyscallArgs::zero(nr::IPC_PUBLISH)),
@@ -950,17 +953,15 @@ mod tests {
             SyscallError::InvalidArgument.as_i64()
         );
 
-        assert_eq!(
-            dispatch(&SyscallArgs::zero(nr::SYS_INFO)),
-            SyscallError::Success.as_i64()
-        );
+        // sys_info with null buf_ptr returns the required buffer size (positive)
+        assert!(dispatch(&SyscallArgs::zero(nr::SYS_INFO)) > 0);
         assert_eq!(
             dispatch(&SyscallArgs::zero(nr::SYS_TIME)),
             SyscallError::Success.as_i64()
         );
         assert_eq!(
             dispatch(&SyscallArgs::zero(nr::SYS_SHUTDOWN)),
-            SyscallError::Success.as_i64()
+            SyscallError::PermissionDenied.as_i64()
         );
         assert_eq!(
             dispatch(&SyscallArgs::zero(nr::SYS_LOG)),

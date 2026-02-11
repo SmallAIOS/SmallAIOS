@@ -18,6 +18,7 @@
 
 extern crate alloc;
 
+pub mod gemm;
 pub mod graph;
 pub mod memory_planner;
 pub mod onnx_types;
