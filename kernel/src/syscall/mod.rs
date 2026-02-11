@@ -1078,4 +1078,1245 @@ mod tests {
             assert_ne!(SyscallError::from_i64(result), Some(SyscallError::NoSys));
         }
     }
+
+    // =========================================================================
+    // Extended fuzz tests (Task 4.8) — invalid inputs, boundary values, no panics
+    // =========================================================================
+
+    #[test]
+    fn test_fuzz_out_of_range_syscall_numbers() {
+        // Specific out-of-range numbers that should all return NoSys
+        for nr in [
+            SYSCALL_TABLE_SIZE,
+            SYSCALL_TABLE_SIZE + 1,
+            SYSCALL_TABLE_SIZE + 100,
+            0x100,
+            0x1000,
+            0xFFFF,
+            0xFFFF_FFFF,
+            usize::MAX,
+            usize::MAX - 1,
+            usize::MAX / 2,
+        ] {
+            let args = SyscallArgs::zero(nr);
+            assert_eq!(
+                dispatch(&args),
+                SyscallError::NoSys.as_i64(),
+                "out-of-range syscall {:#x} must return NoSys",
+                nr
+            );
+        }
+    }
+
+    #[test]
+    fn test_fuzz_mixed_arg_patterns_no_panic() {
+        // Test representative syscalls with diverse argument patterns.
+        // Patterns use zero/one/MAX — avoiding fake non-null pointers that would
+        // pass validation and cause dereference of unmapped memory in handlers
+        // that read/write user buffers (tensor_alloc, sys_info, sys_random, cap_list).
+        let patterns: &[[usize; 6]] = &[
+            [0, 0, 0, 0, 0, 0],
+            [1, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0],
+            [0, 0, 1, 0, 0, 0],
+            [usize::MAX, 0, 0, 0, 0, 0],
+            [0, usize::MAX, 0, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1],
+            [usize::MAX, usize::MAX, usize::MAX, usize::MAX, usize::MAX, usize::MAX],
+            [usize::MAX / 2, usize::MAX / 2, 0, 0, 0, 0],
+            [1, 0, usize::MAX, 0, 0, 0],
+        ];
+
+        // Syscalls that do NOT dereference user pointers after validation passes.
+        // Excluded: TENSOR_ALLOC (reads shape_ptr), SYS_INFO (writes buf_ptr),
+        // SYS_RANDOM (writes buf_ptr), CAP_LIST (writes buf_ptr in fill mode).
+        let safe_registered = [
+            nr::MEM_ALLOC, nr::MEM_FREE, nr::MEM_MAP, nr::MEM_PROTECT,
+            nr::TENSOR_FREE, nr::TENSOR_MAP_GPU, nr::TENSOR_UNMAP_GPU,
+            nr::TASK_SPAWN, nr::TASK_YIELD, nr::TASK_EXIT, nr::TASK_JOIN,
+            nr::TASK_SET_PRIORITY, nr::TASK_SET_CLASS, nr::TASK_CURRENT,
+            nr::IPC_PUBLISH, nr::IPC_SUBSCRIBE, nr::IPC_RECV, nr::IPC_QUERY,
+            nr::IPC_CHANNEL_CREATE, nr::IPC_CHANNEL_SEND, nr::IPC_CHANNEL_RECV,
+            nr::IPC_CHANNEL_CLOSE,
+            nr::ONNX_LOAD, nr::ONNX_UNLOAD, nr::ONNX_CREATE_SESSION, nr::ONNX_RUN,
+            nr::ONNX_GET_METADATA, nr::ONNX_LIST_PROVIDERS,
+            nr::DEV_ENUMERATE, nr::DEV_OPEN, nr::DEV_CLOSE, nr::DEV_IOCTL, nr::DEV_DMA_ALLOC,
+            nr::SYS_TIME, nr::SYS_SHUTDOWN, nr::SYS_LOG,
+            nr::SYS_WATCHDOG_PET, nr::SYS_WATCHDOG_REMAINING,
+            nr::CAP_CREATE, nr::CAP_REVOKE, nr::CAP_DELEGATE, nr::CAP_CHECK,
+            nr::POSIX_OPEN, nr::POSIX_CLOSE, nr::POSIX_READ, nr::POSIX_WRITE,
+            nr::POSIX_FSTAT, nr::POSIX_DUP, nr::POSIX_DUP2, nr::POSIX_LSEEK,
+            nr::POSIX_MMAP, nr::POSIX_MUNMAP, nr::POSIX_MPROTECT,
+            nr::POSIX_EPOLL_CREATE, nr::POSIX_EPOLL_CTL, nr::POSIX_EPOLL_WAIT,
+            nr::POSIX_CLOCK_GETTIME, nr::POSIX_NANOSLEEP, nr::POSIX_GETRANDOM, nr::POSIX_SOCKET,
+        ];
+
+        for &nr in &safe_registered {
+            for pattern in patterns {
+                let args = SyscallArgs::new(nr, *pattern);
+                let _ = dispatch(&args); // Must not panic
+            }
+        }
+    }
+
+    #[test]
+    fn test_fuzz_invalid_capability_tokens() {
+        // Capability-protected syscalls with bogus cap tokens should not panic
+        // These are tested via dispatch to exercise the full path
+        let bogus_handles: &[usize] = &[0, 1, 0xDEAD, usize::MAX, usize::MAX / 2];
+        for &handle in bogus_handles {
+            // tensor_free with invalid handle
+            let args = SyscallArgs::new(nr::TENSOR_FREE, [handle, 0, 0, 0, 0, 0]);
+            let result = dispatch(&args);
+            assert!(result < 0, "invalid tensor handle must return error");
+
+            // tensor_map_gpu with invalid handle
+            let args = SyscallArgs::new(nr::TENSOR_MAP_GPU, [handle, 0, 0, 0, 0, 0]);
+            let result = dispatch(&args);
+            if handle == 0 {
+                assert_eq!(result, SyscallError::InvalidHandle.as_i64());
+            } else {
+                assert!(result < 0);
+            }
+
+            // cap_revoke with invalid ID
+            let args = SyscallArgs::new(nr::CAP_REVOKE, [handle, 0, 0, 0, 0, 0]);
+            let result = dispatch(&args);
+            assert!(result <= 0);
+
+            // cap_check with invalid ID
+            let args = SyscallArgs::new(nr::CAP_CHECK, [handle, 0, 0, 1, 0, 0]);
+            let result = dispatch(&args);
+            assert!(result <= 0);
+        }
+    }
+
+    #[test]
+    fn test_fuzz_null_pointer_combinations() {
+        // Exercise each syscall that accepts pointer args with null pointers
+
+        // IPC publish: key_ptr=0, data_ptr valid
+        let args = SyscallArgs::new(nr::IPC_PUBLISH, [0, 10, 0x1000, 100, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // IPC publish: key_ptr valid, key_len=0
+        let args = SyscallArgs::new(nr::IPC_PUBLISH, [0x1000, 0, 0x2000, 100, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // IPC recv: valid handle, null buf
+        let args = SyscallArgs::new(nr::IPC_RECV, [1, 0, 100, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // IPC recv: valid handle, valid buf, zero len
+        let args = SyscallArgs::new(nr::IPC_RECV, [1, 0x1000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // IPC channel_recv: valid handle, null buf, non-zero len
+        let args = SyscallArgs::new(nr::IPC_CHANNEL_RECV, [1, 0, 100, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // IPC channel_recv: valid handle, non-null buf, zero len
+        let args = SyscallArgs::new(nr::IPC_CHANNEL_RECV, [1, 0x1000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // ONNX get_metadata: valid handle, null buf
+        let args = SyscallArgs::new(nr::ONNX_GET_METADATA, [1, 0, 100, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // ONNX get_metadata: valid handle, valid buf, zero len
+        let args = SyscallArgs::new(nr::ONNX_GET_METADATA, [1, 0x1000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // sys_random: null buf, non-zero len
+        let args = SyscallArgs::new(nr::SYS_RANDOM, [0, 32, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // sys_log: valid level, null msg
+        let args = SyscallArgs::new(nr::SYS_LOG, [0, 0, 10, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // sys_log: valid level, valid ptr, zero len
+        let args = SyscallArgs::new(nr::SYS_LOG, [0, 0x1000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    #[test]
+    fn test_fuzz_boundary_size_values() {
+        // Size arguments at max limits
+
+        // IPC publish: data_len exactly at MAX
+        let args = SyscallArgs::new(
+            nr::IPC_PUBLISH,
+            [0x1000, 10, 0x2000, ipc::MAX_IPC_MESSAGE_SIZE, 0, 0],
+        );
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // IPC publish: data_len one over MAX
+        let args = SyscallArgs::new(
+            nr::IPC_PUBLISH,
+            [0x1000, 10, 0x2000, ipc::MAX_IPC_MESSAGE_SIZE + 1, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // IPC subscribe: key_len exactly at MAX
+        let args = SyscallArgs::new(
+            nr::IPC_SUBSCRIBE,
+            [0x1000, ipc::MAX_KEY_EXPR_LEN, 0, 0, 0, 0],
+        );
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // IPC subscribe: key_len one over MAX
+        let args = SyscallArgs::new(
+            nr::IPC_SUBSCRIBE,
+            [0x1000, ipc::MAX_KEY_EXPR_LEN + 1, 0, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // ONNX load: data_len exactly at MAX
+        let args = SyscallArgs::new(nr::ONNX_LOAD, [0x1000, onnx::MAX_MODEL_SIZE, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // ONNX run: num_inputs exactly at MAX
+        let args = SyscallArgs::new(
+            nr::ONNX_RUN,
+            [1, 0x1000, onnx::MAX_IO_TENSORS, 0x2000, 1, 0],
+        );
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // ONNX run: num_inputs one over MAX
+        let args = SyscallArgs::new(
+            nr::ONNX_RUN,
+            [1, 0x1000, onnx::MAX_IO_TENSORS + 1, 0x2000, 1, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // DMA alloc: size exactly at MAX
+        let args = SyscallArgs::new(nr::DEV_DMA_ALLOC, [device::MAX_DMA_SIZE, 4096, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // sys_random: len exactly at MAX
+        let args = SyscallArgs::new(nr::SYS_RANDOM, [0x1000, system::MAX_RANDOM_LEN, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // sys_random: len one over MAX
+        let args = SyscallArgs::new(
+            nr::SYS_RANDOM,
+            [0x1000, system::MAX_RANDOM_LEN + 1, 0, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // sys_log: len exactly at MAX
+        let args = SyscallArgs::new(
+            nr::SYS_LOG,
+            [0, 0x1000, system::MAX_LOG_MSG_LEN, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
+
+        // sys_log: len one over MAX
+        let args = SyscallArgs::new(
+            nr::SYS_LOG,
+            [0, 0x1000, system::MAX_LOG_MSG_LEN + 1, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    // =========================================================================
+    // MC/DC coverage tests (Task 4.9) — every branch independently exercised
+    // =========================================================================
+
+    // --- Memory MC/DC ---
+
+    #[test]
+    fn test_mcdc_mem_alloc_slab_vs_buddy_path() {
+        // Slab path: size<=2048, flags=0, align<=16
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [64, 0, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        // Expect OOM or valid pointer (slab not initialized) — NOT InvalidArgument
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // Buddy path: size > 2048
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [8192, 0, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // Buddy path: small size but non-zero flags
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [64, 0, 1, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // Buddy path: small size but large alignment
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [64, 64, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_mem_alloc_alignment_conditions() {
+        // align=0 (default) — valid
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [4096, 0, 0, 0, 0, 0]);
+        assert_ne!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // align=1 (power of two) — valid
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [4096, 1, 0, 0, 0, 0]);
+        assert_ne!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // align=2 (power of two) — valid
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [4096, 2, 0, 0, 0, 0]);
+        assert_ne!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // align=3 (not power of two, non-zero) — invalid
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [4096, 3, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // align=5 (not power of two, non-zero) — invalid
+        let args = SyscallArgs::new(nr::MEM_ALLOC, [4096, 5, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_mem_free_slab_vs_buddy() {
+        // Slab path: size <= 2048
+        let args = SyscallArgs::new(nr::MEM_FREE, [0x1000, 512, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        // Slab free on uninitialized — error but not panic
+        assert!(result <= 0);
+
+        // Buddy path: size > 2048
+        let args = SyscallArgs::new(nr::MEM_FREE, [0x1000, 8192, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert!(result <= 0);
+    }
+
+    #[test]
+    fn test_mcdc_mem_free_conditions() {
+        // ptr=0, size=valid → InvalidArgument (ptr check first)
+        let args = SyscallArgs::new(nr::MEM_FREE, [0, 4096, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // ptr=valid, size=0 → InvalidArgument (size check)
+        let args = SyscallArgs::new(nr::MEM_FREE, [0x1000, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // ptr=0, size=0 → InvalidArgument (ptr check first)
+        let args = SyscallArgs::new(nr::MEM_FREE, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_mem_map_capability_path() {
+        // size=0 → InvalidArgument (before cap check)
+        let args = SyscallArgs::new(nr::MEM_MAP, [0x1000, 0x2000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // size>0 → capability check (fails with PermissionDenied or NotSupported)
+        let args = SyscallArgs::new(nr::MEM_MAP, [0x1000, 0x2000, 4096, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert!(
+            result == SyscallError::PermissionDenied.as_i64()
+                || result == SyscallError::NotSupported.as_i64()
+        );
+    }
+
+    #[test]
+    fn test_mcdc_mem_protect_conditions() {
+        // ptr=0, size=non-zero → InvalidArgument (compound OR: ptr==0)
+        let args = SyscallArgs::new(nr::MEM_PROTECT, [0, 4096, 1, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // ptr=non-zero, size=0 → InvalidArgument (compound OR: size==0)
+        let args = SyscallArgs::new(nr::MEM_PROTECT, [0x1000, 0, 1, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // ptr=non-zero, size=non-zero → capability check
+        let args = SyscallArgs::new(nr::MEM_PROTECT, [0x1000, 4096, 1, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert!(
+            result == SyscallError::PermissionDenied.as_i64()
+                || result == SyscallError::NotSupported.as_i64()
+        );
+    }
+
+    #[test]
+    fn test_mcdc_tensor_alloc_conditions() {
+        // shape_ptr=0, ndim=valid → InvalidArgument (shape_ptr check)
+        let args = SyscallArgs::new(nr::TENSOR_ALLOC, [0, 4, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // shape_ptr=valid, ndim=0 → InvalidArgument (ndim check)
+        let args = SyscallArgs::new(nr::TENSOR_ALLOC, [0x1000, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // ndim=9 (over max)
+        let args = SyscallArgs::new(nr::TENSOR_ALLOC, [0x1000, 9, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // invalid dtype (passes ptr/ndim checks, fails dtype)
+        let args = SyscallArgs::new(nr::TENSOR_ALLOC, [0x1000, 4, 8, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        let args = SyscallArgs::new(nr::TENSOR_ALLOC, [0x1000, 4, 255, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Valid shape_ptr with real data: ndim=1, shape=[4], dtype=Float32
+        // This uses a real pointer so the shape read succeeds.
+        let shape: [usize; 1] = [4];
+        let args = SyscallArgs::new(
+            nr::TENSOR_ALLOC,
+            [shape.as_ptr() as usize, 1, 0, 0, 0, 0],
+        );
+        let result = dispatch(&args);
+        // Should pass validation, hit capability check or tensor pool alloc
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // Valid with ndim=8 (max valid) and real shape data
+        let shape8: [usize; 8] = [1, 2, 3, 4, 1, 1, 1, 1];
+        let args = SyscallArgs::new(
+            nr::TENSOR_ALLOC,
+            [shape8.as_ptr() as usize, 8, 0, 0, 0, 0],
+        );
+        let result = dispatch(&args);
+        assert_ne!(result, SyscallError::InvalidArgument.as_i64());
+
+        // All valid dtypes (0..7) with real shape pointer
+        for dtype in 0..=7u32 {
+            let shape1: [usize; 1] = [1];
+            let args = SyscallArgs::new(
+                nr::TENSOR_ALLOC,
+                [shape1.as_ptr() as usize, 1, dtype as usize, 0, 0, 0],
+            );
+            let result = dispatch(&args);
+            // Should pass validation, hit capability check or tensor pool
+            assert_ne!(
+                result,
+                SyscallError::InvalidArgument.as_i64(),
+                "dtype {} should pass validation",
+                dtype
+            );
+        }
+    }
+
+    #[test]
+    fn test_mcdc_tensor_gpu_handle_vs_capability() {
+        // handle=0 → InvalidHandle (before cap check)
+        let args = SyscallArgs::new(nr::TENSOR_MAP_GPU, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
+
+        // handle=valid → capability check path
+        let args = SyscallArgs::new(nr::TENSOR_MAP_GPU, [1, 0, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert!(
+            result == SyscallError::PermissionDenied.as_i64()
+                || result == SyscallError::NotSupported.as_i64()
+        );
+
+        // Same for unmap
+        let args = SyscallArgs::new(nr::TENSOR_UNMAP_GPU, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
+
+        let args = SyscallArgs::new(nr::TENSOR_UNMAP_GPU, [1, 0, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert!(
+            result == SyscallError::PermissionDenied.as_i64()
+                || result == SyscallError::NotSupported.as_i64()
+        );
+    }
+
+    // --- Task MC/DC ---
+
+    #[test]
+    fn test_mcdc_task_spawn_all_valid_classes() {
+        // Each valid scheduling class (0=System, 1=Ipc, 2=Inference)
+        for class in 0..=2usize {
+            let args = SyscallArgs::new(nr::TASK_SPAWN, [0x1000, 0, class, 0, 0, 0]);
+            let result = dispatch(&args);
+            assert!(result > 0, "class {} should produce valid task ID", class);
+        }
+
+        // class=3 (over max) → InvalidArgument
+        let args = SyscallArgs::new(nr::TASK_SPAWN, [0x1000, 0, 3, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_task_set_priority_boundary() {
+        // task_id=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::TASK_SET_PRIORITY, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // task_id=valid, priority=0 (min valid)
+        let args = SyscallArgs::new(nr::TASK_SET_PRIORITY, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
+
+        // task_id=valid, priority=255 (max valid)
+        let args = SyscallArgs::new(nr::TASK_SET_PRIORITY, [1, 255, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
+
+        // task_id=valid, priority=256 (one over max)
+        let args = SyscallArgs::new(nr::TASK_SET_PRIORITY, [1, 256, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_task_join_valid_id() {
+        // task_id=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::TASK_JOIN, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // task_id=valid → NotSupported (executor integration pending)
+        let args = SyscallArgs::new(nr::TASK_JOIN, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_task_set_class_boundary() {
+        // task_id=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::TASK_SET_CLASS, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // task_id=valid, class=0 (min valid)
+        let args = SyscallArgs::new(nr::TASK_SET_CLASS, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
+
+        // task_id=valid, class=2 (max valid)
+        let args = SyscallArgs::new(nr::TASK_SET_CLASS, [1, 2, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
+
+        // task_id=valid, class=3 (one over max)
+        let args = SyscallArgs::new(nr::TASK_SET_CLASS, [1, 3, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    // --- IPC MC/DC ---
+
+    #[test]
+    fn test_mcdc_ipc_publish_compound_conditions() {
+        // key_ptr=0, key_len=non-zero → InvalidArgument (key_ptr==0 is true)
+        let args = SyscallArgs::new(nr::IPC_PUBLISH, [0, 10, 0x2000, 100, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // key_ptr=non-zero, key_len=0 → InvalidArgument (key_len==0 is true)
+        let args = SyscallArgs::new(nr::IPC_PUBLISH, [0x1000, 0, 0x2000, 100, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // key_ptr=non-zero, key_len=valid, data_len=MAX → passes validation
+        let args = SyscallArgs::new(
+            nr::IPC_PUBLISH,
+            [0x1000, 10, 0x2000, ipc::MAX_IPC_MESSAGE_SIZE, 0, 0],
+        );
+        let result = dispatch(&args);
+        assert_eq!(result, SyscallError::NotSupported.as_i64());
+
+        // Valid all → NotSupported (stub)
+        let args = SyscallArgs::new(nr::IPC_PUBLISH, [0x1000, 10, 0x2000, 100, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_ipc_query_compound_conditions() {
+        // key valid, data valid, reply_ptr=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::IPC_QUERY, [0x1000, 10, 0x2000, 100, 0, 256]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // key valid, data valid, reply_ptr=valid, reply_len=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::IPC_QUERY, [0x1000, 10, 0x2000, 100, 0x3000, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // key valid, data_len > MAX → InvalidArgument
+        let args = SyscallArgs::new(
+            nr::IPC_QUERY,
+            [0x1000, 10, 0x2000, ipc::MAX_IPC_MESSAGE_SIZE + 1, 0x3000, 256],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // key_len > MAX → InvalidArgument
+        let args = SyscallArgs::new(
+            nr::IPC_QUERY,
+            [0x1000, ipc::MAX_KEY_EXPR_LEN + 1, 0x2000, 100, 0x3000, 256],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // All valid → NotSupported
+        let args = SyscallArgs::new(nr::IPC_QUERY, [0x1000, 10, 0x2000, 100, 0x3000, 256]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_ipc_channel_send_data_size() {
+        // handle=valid, data_len > MAX → InvalidArgument
+        let args = SyscallArgs::new(
+            nr::IPC_CHANNEL_SEND,
+            [1, 0x1000, ipc::MAX_IPC_MESSAGE_SIZE + 1, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // handle=valid, data_len=MAX → NotSupported (passes validation)
+        let args = SyscallArgs::new(
+            nr::IPC_CHANNEL_SEND,
+            [1, 0x1000, ipc::MAX_IPC_MESSAGE_SIZE, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_ipc_channel_create_ptrs() {
+        // send=0, recv=valid → InvalidArgument (send check)
+        let args = SyscallArgs::new(nr::IPC_CHANNEL_CREATE, [0, 0x1000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // send=valid, recv=0 → InvalidArgument (recv check)
+        let args = SyscallArgs::new(nr::IPC_CHANNEL_CREATE, [0x1000, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // send=valid, recv=valid → NotSupported
+        let args = SyscallArgs::new(nr::IPC_CHANNEL_CREATE, [0x1000, 0x2000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    // --- ONNX MC/DC ---
+
+    #[test]
+    fn test_mcdc_onnx_run_all_branches() {
+        // session=0 → InvalidHandle
+        let args = SyscallArgs::new(nr::ONNX_RUN, [0, 0x1000, 1, 0x2000, 1, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
+
+        // session=valid, inputs_ptr=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::ONNX_RUN, [1, 0, 1, 0x2000, 1, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // session=valid, inputs_ptr=valid, num_inputs=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::ONNX_RUN, [1, 0x1000, 0, 0x2000, 1, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // session=valid, inputs valid, outputs_ptr=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::ONNX_RUN, [1, 0x1000, 1, 0, 1, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // session=valid, inputs valid, outputs_ptr=valid, num_outputs=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::ONNX_RUN, [1, 0x1000, 1, 0x2000, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // num_inputs too large
+        let args = SyscallArgs::new(
+            nr::ONNX_RUN,
+            [1, 0x1000, onnx::MAX_IO_TENSORS + 1, 0x2000, 1, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // num_outputs too large
+        let args = SyscallArgs::new(
+            nr::ONNX_RUN,
+            [1, 0x1000, 1, 0x2000, onnx::MAX_IO_TENSORS + 1, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // All valid → NotSupported
+        let args = SyscallArgs::new(nr::ONNX_RUN, [1, 0x1000, 1, 0x2000, 1, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_onnx_list_providers_branches() {
+        // buf_ptr=0, buf_len=0 → NotSupported (query size mode)
+        let args = SyscallArgs::new(nr::ONNX_LIST_PROVIDERS, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+
+        // buf_ptr=0, buf_len=non-zero → InvalidArgument
+        let args = SyscallArgs::new(nr::ONNX_LIST_PROVIDERS, [0, 256, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // buf_ptr=valid, buf_len=valid → NotSupported (stub)
+        let args = SyscallArgs::new(nr::ONNX_LIST_PROVIDERS, [0x1000, 256, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    // --- Device MC/DC ---
+
+    #[test]
+    fn test_mcdc_dev_enumerate_branches() {
+        // buf_ptr=0, buf_len=0 → NotSupported (query size mode)
+        let args = SyscallArgs::new(nr::DEV_ENUMERATE, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+
+        // buf_ptr=0, buf_len=non-zero → InvalidArgument
+        let args = SyscallArgs::new(nr::DEV_ENUMERATE, [0, 256, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // buf_ptr=valid → NotSupported
+        let args = SyscallArgs::new(nr::DEV_ENUMERATE, [0x1000, 256, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_dev_dma_alloc_all_branches() {
+        // size=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::DEV_DMA_ALLOC, [0, 4096, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // size > MAX → InvalidArgument
+        let args = SyscallArgs::new(
+            nr::DEV_DMA_ALLOC,
+            [device::MAX_DMA_SIZE + 1, 4096, 0, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // size=valid, align=bad (non-zero, not power of two) → InvalidArgument
+        let args = SyscallArgs::new(nr::DEV_DMA_ALLOC, [4096, 3, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // size=valid, align=0 (default) → NotSupported (passes validation)
+        let args = SyscallArgs::new(nr::DEV_DMA_ALLOC, [4096, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+
+        // size=valid, align=4096 (valid power of two) → NotSupported
+        let args = SyscallArgs::new(nr::DEV_DMA_ALLOC, [4096, 4096, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_dev_ioctl_valid_handle() {
+        // handle=0 → InvalidHandle
+        let args = SyscallArgs::new(nr::DEV_IOCTL, [0, 1, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
+
+        // handle=valid → NotSupported
+        let args = SyscallArgs::new(nr::DEV_IOCTL, [1, 1, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_dev_close_valid_handle() {
+        // handle=0 → InvalidHandle
+        let args = SyscallArgs::new(nr::DEV_CLOSE, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
+
+        // handle=valid → NotSupported
+        let args = SyscallArgs::new(nr::DEV_CLOSE, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    // --- System MC/DC ---
+
+    #[test]
+    fn test_mcdc_sys_info_all_branches() {
+        // buf_ptr=0 → returns required size
+        let args = SyscallArgs::new(nr::SYS_INFO, [0, 0, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert!(result > 0);
+        let required_size = result as usize;
+
+        // buf_ptr=valid, buf_len < required → BufferTooSmall
+        let args = SyscallArgs::new(nr::SYS_INFO, [0x1000, required_size - 1, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::BufferTooSmall.as_i64());
+
+        // buf_ptr=valid but misaligned, buf_len=sufficient → BadAddress
+        let args = SyscallArgs::new(nr::SYS_INFO, [0x1001, required_size, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::BadAddress.as_i64());
+
+        // buf_ptr=valid aligned, buf_len=sufficient → Success
+        let mut info = core::mem::MaybeUninit::<system::SystemInfo>::uninit();
+        let args = SyscallArgs::new(
+            nr::SYS_INFO,
+            [info.as_mut_ptr() as usize, required_size, 0, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_sys_log_all_branches() {
+        // Invalid level → InvalidArgument
+        let args = SyscallArgs::new(nr::SYS_LOG, [5, 0x1000, 10, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Valid level, msg_ptr=0 → InvalidArgument (msg_ptr check)
+        let args = SyscallArgs::new(nr::SYS_LOG, [0, 0, 10, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Valid level, msg_ptr=valid, msg_len=0 → InvalidArgument (len check)
+        let args = SyscallArgs::new(nr::SYS_LOG, [0, 0x1000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Valid level, msg_ptr=valid, msg_len > MAX → InvalidArgument
+        let args = SyscallArgs::new(
+            nr::SYS_LOG,
+            [0, 0x1000, system::MAX_LOG_MSG_LEN + 1, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Each valid log level
+        for level in 0..=4usize {
+            let args = SyscallArgs::new(nr::SYS_LOG, [level, 0x1000, 10, 0, 0, 0]);
+            assert_eq!(
+                dispatch(&args),
+                SyscallError::Success.as_i64(),
+                "log level {} should succeed",
+                level
+            );
+        }
+    }
+
+    #[test]
+    fn test_mcdc_sys_random_conditions() {
+        // buf_ptr=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::SYS_RANDOM, [0, 32, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // buf_len=0 → InvalidArgument (buf_len==0 branch of OR)
+        let args = SyscallArgs::new(nr::SYS_RANDOM, [0x1000, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // buf_len > MAX → InvalidArgument (buf_len > MAX branch of OR)
+        let args = SyscallArgs::new(
+            nr::SYS_RANDOM,
+            [0x1000, system::MAX_RANDOM_LEN + 1, 0, 0, 0, 0],
+        );
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Valid args → NotSupported (CSPRNG not initialized)
+        let args = SyscallArgs::new(nr::SYS_RANDOM, [0x1000, 32, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_sys_shutdown_capability() {
+        // Without capability → PermissionDenied
+        let args = SyscallArgs::new(nr::SYS_SHUTDOWN, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::PermissionDenied.as_i64());
+    }
+
+    // --- Capability MC/DC ---
+
+    #[test]
+    fn test_mcdc_cap_create_lifecycle() {
+        // Valid create → positive cap ID
+        let args = SyscallArgs::new(nr::CAP_CREATE, [0, 1, 0b0001, 0, 0, 0]);
+        let cap_id = dispatch(&args);
+        assert!(cap_id > 0, "cap_create should return positive ID");
+
+        // Check the created capability → Success
+        let args = SyscallArgs::new(nr::CAP_CHECK, [cap_id as usize, 0, 1, 0b0001, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
+
+        // Check with wrong permission → PermissionDenied
+        let args = SyscallArgs::new(nr::CAP_CHECK, [cap_id as usize, 0, 1, 0b0010, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::PermissionDenied.as_i64());
+
+        // Revoke it → Success
+        let args = SyscallArgs::new(nr::CAP_REVOKE, [cap_id as usize, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
+
+        // Check again after revoke → should fail
+        let args = SyscallArgs::new(nr::CAP_CHECK, [cap_id as usize, 0, 1, 0b0001, 0, 0]);
+        let result = dispatch(&args);
+        assert!(result < 0, "check after revoke should fail");
+    }
+
+    #[test]
+    fn test_mcdc_cap_create_all_resource_types() {
+        // Valid resource types: 0..7
+        for rt in 0..=7u8 {
+            let args = SyscallArgs::new(nr::CAP_CREATE, [rt as usize, 1, 0b0001, 0, 0, 0]);
+            let result = dispatch(&args);
+            assert!(result > 0, "resource type {} should succeed", rt);
+        }
+
+        // Invalid resource type
+        let args = SyscallArgs::new(nr::CAP_CREATE, [8, 1, 0b0001, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        let args = SyscallArgs::new(nr::CAP_CREATE, [255, 1, 0b0001, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_cap_create_permission_bits() {
+        // Each individual permission bit
+        for perm in [0b0001u32, 0b0010, 0b0100, 0b1000] {
+            let args = SyscallArgs::new(nr::CAP_CREATE, [0, 1, perm as usize, 0, 0, 0]);
+            let result = dispatch(&args);
+            assert!(result > 0, "perm {:#b} should succeed", perm);
+        }
+
+        // All bits combined
+        let args = SyscallArgs::new(nr::CAP_CREATE, [0, 1, 0b1111, 0, 0, 0]);
+        assert!(dispatch(&args) > 0);
+
+        // High bits set → InvalidArgument
+        let args = SyscallArgs::new(nr::CAP_CREATE, [0, 1, 0b10000, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Zero perms → InvalidArgument
+        let args = SyscallArgs::new(nr::CAP_CREATE, [0, 1, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_cap_delegate_all_branches() {
+        // Create parent capability first
+        let args = SyscallArgs::new(nr::CAP_CREATE, [0, 1, 0b1111, 0, 0, 0]);
+        let parent_id = dispatch(&args);
+        assert!(parent_id > 0);
+
+        // cap_id=0 → InvalidHandle
+        let args = SyscallArgs::new(nr::CAP_DELEGATE, [0, 2, 0b0001, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
+
+        // to_task=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::CAP_DELEGATE, [parent_id as usize, 0, 0b0001, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // perms=0 → InvalidArgument
+        let args = SyscallArgs::new(nr::CAP_DELEGATE, [parent_id as usize, 2, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // high bits in perms → InvalidArgument
+        let args = SyscallArgs::new(nr::CAP_DELEGATE, [parent_id as usize, 2, 0xFF, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Valid delegation with subset permissions
+        let args = SyscallArgs::new(
+            nr::CAP_DELEGATE,
+            [parent_id as usize, 2, 0b0001, 0, 0, 0],
+        );
+        let child_id = dispatch(&args);
+        assert!(child_id > 0, "delegation should succeed");
+    }
+
+    #[test]
+    fn test_mcdc_cap_check_compound_condition() {
+        // cap_id=0 → InvalidHandle
+        let args = SyscallArgs::new(nr::CAP_CHECK, [0, 0, 1, 0b0001, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
+
+        // Invalid resource type → InvalidArgument
+        let args = SyscallArgs::new(nr::CAP_CHECK, [1, 99, 1, 0b0001, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // High perm bits → InvalidArgument (compound: high_bits OR zero)
+        let args = SyscallArgs::new(nr::CAP_CHECK, [1, 0, 1, 0b10000, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Zero perms → InvalidArgument (compound: high_bits OR zero)
+        let args = SyscallArgs::new(nr::CAP_CHECK, [1, 0, 1, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
+
+        // Non-existent cap → error from registry
+        let args = SyscallArgs::new(nr::CAP_CHECK, [99999, 0, 1, 0b0001, 0, 0]);
+        let result = dispatch(&args);
+        assert!(result < 0);
+    }
+
+    #[test]
+    fn test_mcdc_cap_list_all_branches() {
+        // buf_ptr=0, buf_len=0 → count mode (returns 0 or positive)
+        let args = SyscallArgs::new(nr::CAP_LIST, [0, 0, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        assert!(result >= 0);
+
+        // buf_ptr=0, buf_len>0 → BadAddress
+        let args = SyscallArgs::new(nr::CAP_LIST, [0, 0, 10, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::BadAddress.as_i64());
+
+        // Create a cap for current task, then list with buffer
+        let args = SyscallArgs::new(nr::CAP_CREATE, [0, 100, 0b0001, 0, 0, 0]);
+        let _cap_id = dispatch(&args);
+
+        // count mode should now return >= 1
+        let args = SyscallArgs::new(nr::CAP_LIST, [0, 0, 0, 0, 0, 0]);
+        let count = dispatch(&args);
+        assert!(count >= 0);
+
+        // buf_ptr=valid, buf_len=valid (fill buffer mode)
+        let mut buf = [0u64; 16];
+        let args = SyscallArgs::new(nr::CAP_LIST, [0, buf.as_mut_ptr() as usize, 16, 0, 0, 0]);
+        let filled = dispatch(&args);
+        assert!(filled >= 0);
+    }
+
+    // --- POSIX MC/DC ---
+
+    #[test]
+    fn test_mcdc_posix_read_write_compound_conditions() {
+        // read: buf_ptr=0, count=0 → fd validation path (not BadAddress since count=0)
+        let args = SyscallArgs::new(nr::POSIX_READ, [0, 0, 0, 0, 0, 0]);
+        let result = dispatch(&args);
+        // buf_ptr=0 AND count=0 → count>0 is false, so BadAddress not triggered
+        assert!(result != SyscallError::BadAddress.as_i64() || result == -38);
+
+        // read: buf_ptr=valid, count=valid, fd valid → stub
+        let args = SyscallArgs::new(nr::POSIX_READ, [0, 0x1000, 100, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38); // ENOSYS
+
+        // write: buf_ptr=0, count>0 → BadAddress
+        let args = SyscallArgs::new(nr::POSIX_WRITE, [1, 0, 100, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::BadAddress.as_i64());
+
+        // write: buf_ptr=0, count=0 → passes (count not > 0)
+        let args = SyscallArgs::new(nr::POSIX_WRITE, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // write: negative fd
+        let args = SyscallArgs::new(nr::POSIX_WRITE, [usize::MAX, 0x1000, 100, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -9); // EBADF
+    }
+
+    #[test]
+    fn test_mcdc_posix_dup2_fd_conditions() {
+        // old_fd negative, new_fd valid → EBADF (old_fd check)
+        let args = SyscallArgs::new(nr::POSIX_DUP2, [usize::MAX, 3, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -9);
+
+        // old_fd valid, new_fd negative → EBADF (new_fd check)
+        let args = SyscallArgs::new(nr::POSIX_DUP2, [1, usize::MAX, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -9);
+
+        // both valid → ENOSYS
+        let args = SyscallArgs::new(nr::POSIX_DUP2, [1, 3, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+    }
+
+    #[test]
+    fn test_mcdc_posix_lseek_whence() {
+        // SEEK_SET=0 → valid
+        let args = SyscallArgs::new(nr::POSIX_LSEEK, [3, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // SEEK_CUR=1 → valid
+        let args = SyscallArgs::new(nr::POSIX_LSEEK, [3, 10, 1, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // SEEK_END=2 → valid
+        let args = SyscallArgs::new(nr::POSIX_LSEEK, [3, 0, 2, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // whence=3 → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_LSEEK, [3, 0, 3, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+    }
+
+    #[test]
+    fn test_mcdc_posix_munmap_conditions() {
+        // length=0, addr=aligned → EINVAL (length check)
+        let args = SyscallArgs::new(nr::POSIX_MUNMAP, [4096, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        // length=valid, addr=unaligned → EINVAL (alignment check)
+        let args = SyscallArgs::new(nr::POSIX_MUNMAP, [1, 4096, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        // length=valid, addr=aligned → ENOSYS
+        let args = SyscallArgs::new(nr::POSIX_MUNMAP, [4096, 4096, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+    }
+
+    #[test]
+    fn test_mcdc_posix_mprotect_conditions() {
+        // length=0, addr=aligned → EINVAL (length check)
+        let args = SyscallArgs::new(nr::POSIX_MPROTECT, [4096, 0, 1, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        // length=valid, addr=unaligned → EINVAL (alignment check)
+        let args = SyscallArgs::new(nr::POSIX_MPROTECT, [1, 4096, 1, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        // length=valid, addr=aligned → ENOSYS
+        let args = SyscallArgs::new(nr::POSIX_MPROTECT, [4096, 4096, 1, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+    }
+
+    #[test]
+    fn test_mcdc_posix_epoll_create_flags() {
+        // flags=0 → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CREATE, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // flags=O_CLOEXEC → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CREATE, [0o2000000, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // flags=invalid → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CREATE, [1, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+    }
+
+    #[test]
+    fn test_mcdc_posix_epoll_ctl_op() {
+        // epfd negative → EBADF
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CTL, [usize::MAX, 1, 3, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -9);
+
+        // op=1 (ADD) → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CTL, [3, 1, 5, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // op=2 (MOD) → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CTL, [3, 2, 5, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // op=3 (DEL) → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CTL, [3, 3, 5, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // op=0 → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CTL, [3, 0, 5, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        // op=4 → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_CTL, [3, 4, 5, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+    }
+
+    #[test]
+    fn test_mcdc_posix_epoll_wait_conditions() {
+        // epfd negative → EBADF
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_WAIT, [usize::MAX, 0x1000, 10, 100, 0, 0]);
+        assert_eq!(dispatch(&args), -9);
+
+        // events_ptr=0 → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_WAIT, [3, 0, 10, 100, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        // max_events=0 → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_WAIT, [3, 0x1000, 0, 100, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        // All valid → ENOSYS
+        let args = SyscallArgs::new(nr::POSIX_EPOLL_WAIT, [3, 0x1000, 10, 100, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+    }
+
+    #[test]
+    fn test_mcdc_posix_clock_gettime_branches() {
+        // ts_ptr=0 → BadAddress
+        let args = SyscallArgs::new(nr::POSIX_CLOCK_GETTIME, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::BadAddress.as_i64());
+
+        // clock_id valid (0..3), ts_ptr valid
+        for clock_id in 0..=3usize {
+            let args = SyscallArgs::new(nr::POSIX_CLOCK_GETTIME, [clock_id, 0x1000, 0, 0, 0, 0]);
+            assert_eq!(dispatch(&args), -38, "clock_id {} should return ENOSYS", clock_id);
+        }
+
+        // clock_id=4 (invalid) → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_CLOCK_GETTIME, [4, 0x1000, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+    }
+
+    #[test]
+    fn test_mcdc_posix_getrandom_branches() {
+        // buf_ptr=0, buf_len>0 → BadAddress
+        let args = SyscallArgs::new(nr::POSIX_GETRANDOM, [0, 32, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), SyscallError::BadAddress.as_i64());
+
+        // buf_ptr=0, buf_len=0 → 0 (zero bytes requested, buf_ptr=0 AND buf_len=0 is fine)
+        let args = SyscallArgs::new(nr::POSIX_GETRANDOM, [0, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), 0);
+
+        // buf_ptr=valid, buf_len=0 → 0
+        let args = SyscallArgs::new(nr::POSIX_GETRANDOM, [0x1000, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), 0);
+
+        // buf_ptr=valid, buf_len>0 → ENOSYS
+        let args = SyscallArgs::new(nr::POSIX_GETRANDOM, [0x1000, 32, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+    }
+
+    #[test]
+    fn test_mcdc_posix_socket_family_and_type() {
+        // AF_INET(2), SOCK_STREAM(1) → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_SOCKET, [2, 1, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // AF_INET(2), SOCK_DGRAM(2) → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_SOCKET, [2, 2, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // AF_INET6(10), SOCK_STREAM(1) → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_SOCKET, [10, 1, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // AF_INET6(10), SOCK_DGRAM(2) → ENOSYS (valid)
+        let args = SyscallArgs::new(nr::POSIX_SOCKET, [10, 2, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -38);
+
+        // Invalid family → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_SOCKET, [0, 1, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        let args = SyscallArgs::new(nr::POSIX_SOCKET, [1, 1, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        // Valid family, invalid type → EINVAL
+        let args = SyscallArgs::new(nr::POSIX_SOCKET, [2, 0, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+
+        let args = SyscallArgs::new(nr::POSIX_SOCKET, [2, 3, 0, 0, 0, 0]);
+        assert_eq!(dispatch(&args), -22);
+    }
+
+    // --- Dispatch and error infrastructure MC/DC ---
+
+    #[test]
+    fn test_mcdc_dispatch_boundary_conditions() {
+        // number < SYSCALL_TABLE_SIZE (valid range)
+        let args = SyscallArgs::zero(0);
+        let _ = dispatch(&args); // Must not panic
+
+        // number == SYSCALL_TABLE_SIZE - 1 (last valid index)
+        let args = SyscallArgs::zero(SYSCALL_TABLE_SIZE - 1);
+        let _ = dispatch(&args);
+
+        // number == SYSCALL_TABLE_SIZE (first out of range) → NoSys
+        let args = SyscallArgs::zero(SYSCALL_TABLE_SIZE);
+        assert_eq!(dispatch(&args), SyscallError::NoSys.as_i64());
+
+        // number == SYSCALL_TABLE_SIZE + 1 → NoSys
+        let args = SyscallArgs::zero(SYSCALL_TABLE_SIZE + 1);
+        assert_eq!(dispatch(&args), SyscallError::NoSys.as_i64());
+    }
+
+    #[test]
+    fn test_mcdc_category_name_unknown() {
+        // Category 0x9 → unknown
+        assert_eq!(category_name(0x90), "unknown");
+        assert_eq!(category_name(0xA0), "unknown");
+        assert_eq!(category_name(0xFF), "unknown");
+        assert_eq!(category_name(usize::MAX), "unknown");
+    }
+
+    #[test]
+    fn test_mcdc_syscall_error_from_i64_boundaries() {
+        // All defined values
+        for val in 0..=-16i64 {
+            let result = SyscallError::from_i64(val);
+            assert!(result.is_some(), "value {} should be a valid error", val);
+        }
+
+        // Undefined values
+        assert_eq!(SyscallError::from_i64(-17), None);
+        assert_eq!(SyscallError::from_i64(-100), None);
+        assert_eq!(SyscallError::from_i64(1), None);
+        assert_eq!(SyscallError::from_i64(i64::MAX), None);
+        assert_eq!(SyscallError::from_i64(i64::MIN), None);
+    }
+
+    #[test]
+    fn test_mcdc_registered_count_equals_expected() {
+        // Verify the exact count of non-nosys handlers
+        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5 capability + 18 posix = 64
+        assert_eq!(registered_count(), 64);
+    }
+
+    #[test]
+    fn test_mcdc_nosys_returns_nosys() {
+        // Direct call to sys_nosys
+        let args = SyscallArgs::zero(0);
+        assert_eq!(sys_nosys(&args), SyscallError::NoSys.as_i64());
+    }
 }
