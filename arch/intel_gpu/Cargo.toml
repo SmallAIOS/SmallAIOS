@@ -1,0 +1,15 @@
+[package]
+name = "smallaios-arch-intel-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS Intel GPU HAL: PCIe, GPU init, memory, compute, DMA"
+
+[features]
+default = []
+xe_lp = []     # Xe-LP (Tiger Lake, Alder Lake iGPU)
+xe_hpg = []    # Xe-HPG (Arc A-series discrete)
+xe_hpc = []    # Xe-HPC (Data Center GPU Max / Ponte Vecchio)
+
+[dependencies]
+smallaios-kernel = { path = "../../kernel" }

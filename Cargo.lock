@@ -10,6 +10,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallaios-arch-intel-gpu"
+version = "0.1.0"
+dependencies = [
+ "smallaios-kernel",
+]
+
+[[package]]
 name = "smallaios-arch-nvidia"
 version = "0.1.0"
 dependencies = [
