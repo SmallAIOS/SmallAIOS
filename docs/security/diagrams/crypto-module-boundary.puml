@@ -1,0 +1,67 @@
+@startuml SmallAIOS Crypto Module Boundary
+' FIPS 140-3 Level 1 Crypto Module Boundary
+' SPDX-License-Identifier: Apache-2.0
+
+skinparam componentStyle rectangle
+skinparam backgroundColor white
+
+title FIPS 140-3 Level 1 Crypto Module Boundary (SC-13)
+
+frame "Crypto Module Boundary" as cmb #LightCyan {
+    component "SHA-3-256 / SHAKE256\n(FIPS 202)" as sha3 #LightGreen
+    component "AES-256-GCM\n(FIPS 197)" as aes #LightYellow
+    component "ML-KEM-768\n(FIPS 203)" as kem #LightYellow
+    component "ML-DSA-65\n(FIPS 204)" as dsa #LightYellow
+    component "CSPRNG\n(RDRAND/RNDR seeded)" as rng #LightYellow
+
+    component "Key Manager\n(SC-12)" as km #LightGreen
+    component "Self-Test (KATs)\n(Boot-time)" as kat #LightGreen
+    component "Constant-Time\nOperations" as ct #LightGreen
+
+    note as legend
+        Green = Production-quality
+        Yellow = Stub (awaiting impl)
+    end note
+}
+
+' Inputs
+rectangle "Plaintext\nData" as pt_in
+rectangle "Ciphertext\nData" as ct_in
+rectangle "Key Material\nRequests" as key_req
+
+' Outputs
+rectangle "Ciphertext\nOutput" as ct_out
+rectangle "Plaintext\nOutput" as pt_out
+rectangle "Signatures" as sig_out
+rectangle "Key Pairs" as kp_out
+rectangle "Hash Digests" as hash_out
+
+' I/O flows
+pt_in --> aes : "encrypt"
+ct_in --> aes : "decrypt"
+aes --> ct_out
+aes --> pt_out
+
+pt_in --> sha3 : "hash"
+sha3 --> hash_out
+
+key_req --> km : "generate/rotate"
+km --> rng : "entropy"
+km --> kp_out
+
+pt_in --> dsa : "sign"
+dsa --> sig_out
+
+pt_in --> kem : "encapsulate"
+ct_in --> kem : "decapsulate"
+
+' Internal flows
+km --> aes : "session keys"
+km --> dsa : "signing keys"
+km --> kem : "KEM keys"
+kat --> sha3 : "KAT vectors"
+kat --> aes : "KAT vectors"
+kat --> kem : "KAT vectors"
+kat --> dsa : "KAT vectors"
+
+@enduml

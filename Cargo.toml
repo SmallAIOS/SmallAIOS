@@ -4,13 +4,18 @@ members = [
     "kernel",
     "arch/x86_64",
     "arch/aarch64",
+    "arch/riscv64",
     "arch/nvidia",
+    "arch/intel_gpu",
+    "arch/amd",
     "onnx-rt",
     "ipc",
     "net",
     "posix",
     "security",
     "container",
+    "bus",
+    "bench",
 ]
 
 [workspace.package]

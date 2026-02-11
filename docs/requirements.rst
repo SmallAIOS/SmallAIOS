@@ -258,3 +258,239 @@ Implementation Traceability — Phase 2
 
    5 tests covering: page flags, page table index extraction, page offset,
    PTE construction, empty page table.
+
+Cybersecurity Compliance
+------------------------
+
+.. req:: Tamper-Evident Audit Logging
+   :id: REQ_040
+   :safety_level: DAL_A
+   :tags: security, audit, nist-au
+
+   The security subsystem shall implement tamper-evident audit logging with
+   SHA-3-256 hash chain, ML-DSA-65 batch signing, and configurable retention
+   policy per deployment class (7d edge, 90d datacenter, 365d safety-critical).
+
+.. req:: Continuous Security Monitoring
+   :id: REQ_041
+   :safety_level: DAL_A
+   :tags: security, monitoring, nist-si
+
+   The security subsystem shall implement continuous monitoring including
+   capability denial rate tracking, memory allocation failure tracking,
+   inference latency anomaly detection (3-sigma), and SYN flood detection.
+
+.. req:: Incident Response Automation
+   :id: REQ_042
+   :safety_level: DAL_A
+   :tags: security, incident, nist-ir
+
+   The security subsystem shall implement automated incident containment
+   including capability revocation, task termination, connection reset,
+   and evidence preservation with Zenoh IPC event publishing.
+
+.. req:: Supply Chain Security
+   :id: REQ_043
+   :safety_level: DAL_A
+   :tags: security, supply-chain, nist-sr
+
+   The build system shall generate CycloneDX SBOMs, integrate cargo-audit
+   for vulnerability scanning, implement reproducible builds, and produce
+   ML-DSA-65 build attestation signatures.
+
+.. req:: OT/ICS Security Hardening
+   :id: REQ_044
+   :safety_level: DAL_A
+   :tags: security, ot, iec-61508
+
+   The security subsystem shall implement WCET instrumentation, fail-safe
+   state definitions, OT anomaly detection, and safe shutdown procedures
+   with bounded time (configurable, default 100ms).
+
+.. req:: Information Flow Enforcement
+   :id: REQ_045
+   :safety_level: DAL_A
+   :tags: security, boundary, nist-ac
+
+   The security subsystem shall enforce information flow rules per task type:
+   ONNX runtime shall not access network, IPC router shall not access GPU,
+   bus handlers shall not access ONNX runtime.
+
+.. req:: Post-Quantum Key Management
+   :id: REQ_046
+   :safety_level: DAL_A
+   :tags: security, crypto, nist-sc
+
+   The security subsystem shall implement key lifecycle management including
+   boot-time generation, memory-only storage, reboot rotation, and volatile-write
+   zeroization with verification pass.
+
+.. req:: NIST SP 800-53 Compliance
+   :id: REQ_047
+   :safety_level: DAL_A
+   :tags: security, compliance, nist
+
+   The system shall maintain documented NIST SP 800-53 Rev 5 control mappings
+   covering all 20 control families with implementation status per control,
+   SSP skeleton, and POA&M for planned controls.
+
+.. spec:: Audit Hash Chain Integrity
+   :id: SPEC_040
+   :safety_level: DAL_A
+   :tags: security, audit
+   :links: REQ_040
+
+   SHA-3-256(previous_batch_hash || serialized_entries) per batch, with genesis
+   hash of 32 zero bytes, monotonic sequence numbers, and verification function.
+
+.. spec:: Monitoring Alert Thresholds
+   :id: SPEC_041
+   :safety_level: DAL_A
+   :tags: security, monitoring
+   :links: REQ_041
+
+   Configurable per-metric alert thresholds with boot-time configuration,
+   Prometheus export in OpenMetrics format, and Zenoh IPC export.
+
+.. spec:: Containment Actions
+   :id: SPEC_042
+   :safety_level: DAL_A
+   :tags: security, incident
+   :links: REQ_042
+
+   Automated containment: capability revocation for compromised tasks,
+   task termination, network connection reset, inference rejection.
+
+.. spec:: WCET Static Bounds
+   :id: SPEC_044
+   :safety_level: DAL_A
+   :tags: security, ot
+   :links: REQ_044
+
+   Static WCET bounds for 6 critical paths: syscall dispatch (5us x86),
+   capability check (1us), buddy alloc (3us), slab alloc (500ns),
+   task schedule (2us), interrupt handle (500ns). No-recursion policy enforced.
+
+.. spec:: Access Matrix
+   :id: SPEC_045
+   :safety_level: DAL_A
+   :tags: security, boundary
+   :links: REQ_045
+
+   Task-type to resource-type access matrix: SYSTEM (all 6 resources),
+   IPC (memory, network, audit, capability), INFERENCE (memory, gpu).
+
+.. impl:: security/src/audit/
+   :id: IMPL_040
+   :safety_level: DAL_A
+   :tags: security, audit
+   :links: SPEC_040
+
+   Audit subsystem: entry.rs (struct), taxonomy.rs (events), accumulator.rs
+   (batching), integrity.rs (hash chain), batch_signing.rs (ML-DSA-65),
+   ipc_export.rs (Zenoh), retention.rs (policy), ring_buffer.rs, syslog.rs.
+
+.. impl:: security/src/monitoring/
+   :id: IMPL_041
+   :safety_level: DAL_A
+   :tags: security, monitoring
+   :links: SPEC_041
+
+   Monitoring subsystem: rate_tracker.rs (denial/allocation counters),
+   latency_stats.rs (p50/p99/p999 with 3-sigma anomaly), watchdog_monitor.rs,
+   alerts.rs (threshold config), prometheus.rs (OpenMetrics), ipc_export.rs (Zenoh).
+
+.. impl:: security/src/incident/
+   :id: IMPL_042
+   :safety_level: DAL_A
+   :tags: security, incident
+   :links: SPEC_042
+
+   Incident subsystem: containment.rs (automated actions), evidence.rs
+   (state export), event.rs (Zenoh publishing), severity_classifier.rs,
+   communication.rs, post_incident.rs.
+
+.. impl:: security/src/ot/wcet_bounds.rs
+   :id: IMPL_044
+   :safety_level: DAL_A
+   :tags: security, ot
+   :links: SPEC_044
+
+   Static WCET bounds for all 6 critical paths with no-recursion policy,
+   bounded loop inventory, and per-architecture bound values (x86/ARM64).
+
+.. impl:: security/src/boundary/data_flow_auth.rs
+   :id: IMPL_045
+   :safety_level: DAL_A
+   :tags: security, boundary
+   :links: SPEC_045
+
+   Cross-boundary data flow verification with 8 defined flows, authentication
+   mechanism requirements, and integrity/confidentiality checks.
+
+.. test:: Audit MC/DC Coverage Tests
+   :id: TEST_040
+   :safety_level: DAL_A
+   :tags: security, audit, mcdc, test
+   :links: IMPL_040
+
+   MC/DC tests for audit critical paths: batch accumulator push/tick/flush,
+   hash chain verification, retention policy, signing queue, IPC serialization.
+   Each condition independently shown to affect decision outcome.
+
+.. test:: Monitoring Unit Tests
+   :id: TEST_041
+   :safety_level: DAL_A
+   :tags: security, monitoring, test
+   :links: IMPL_041
+
+   Tests covering: counter accuracy, anomaly detection trigger, threshold
+   configuration, metrics export format (Prometheus + Zenoh).
+
+.. test:: Incident Response Unit Tests
+   :id: TEST_042
+   :safety_level: DAL_A
+   :tags: security, incident, test
+   :links: IMPL_042
+
+   Tests covering: containment action execution, evidence export format,
+   incident event serialization, severity classification.
+
+.. test:: WCET Bounds Tests
+   :id: TEST_044
+   :safety_level: DAL_A
+   :tags: security, ot, test
+   :links: IMPL_044
+
+   Tests covering: all paths have bounds, bounds are non-zero, ARM64 >= x86,
+   no-recursion verified, loop bounds are finite.
+
+.. verify:: TLA+ Audit Hash Chain Model
+   :id: VERIFY_040
+   :safety_level: DAL_A
+   :tags: security, audit, formal
+   :links: SPEC_040; TEST_040
+
+   TLA+ model (formal/tla/AuditHashChain.tla) verifying: batch ordering,
+   no sequence gaps, no replay, genesis anchoring, hash chain continuity,
+   no empty batches, hash uniqueness.
+
+.. verify:: Lean 4 Information Flow Proof
+   :id: VERIFY_045
+   :safety_level: DAL_A
+   :tags: security, boundary, formal
+   :links: SPEC_045; TEST_044
+
+   Lean 4 proof (formal/lean4/InformationFlow.lean) verifying: system
+   unrestricted access, inference isolation (no network/capability/bus/audit),
+   IPC restrictions (no gpu/bus), privilege monotonicity, access totality.
+
+.. verify:: TLA+ Scheduler Anomaly Detection Model
+   :id: VERIFY_041
+   :safety_level: DAL_A
+   :tags: security, monitoring, formal
+   :links: SPEC_041; TEST_041
+
+   TLA+ model (formal/tla/SchedulerAnomaly.tla) verifying: alert boundedness,
+   suppression effectiveness, denial count bounds, threshold correctness,
+   mutual exclusion, watchdog liveness.

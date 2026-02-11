@@ -17,10 +17,12 @@
 
 extern crate alloc;
 
+pub mod bus_transport;
 pub mod endpoints;
 pub mod http;
 pub mod inference_proto;
 pub mod key_expr;
+pub mod mgmt;
 pub mod pubsub;
 pub mod reqrep;
 pub mod router;

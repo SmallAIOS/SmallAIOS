@@ -12,6 +12,9 @@
 //! - `sys_watchdog_remaining() -> u32` — query remaining watchdog time
 
 use super::{SyscallArgs, SyscallError, SyscallResult};
+use crate::state;
+use crate::syscall::task::current_task_id;
+use smallaios_security::capability::{Permissions, ResourceRef, ResourceType};
 
 /// Log levels for sys_log.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,22 +47,76 @@ pub const MAX_LOG_MSG_LEN: usize = 4096;
 /// Maximum random buffer size per call: 256 bytes.
 pub const MAX_RANDOM_LEN: usize = 256;
 
+/// System information structure returned by sys_info.
+#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+pub struct SystemInfo {
+    /// Kernel version major.
+    pub version_major: u16,
+    /// Kernel version minor.
+    pub version_minor: u16,
+    /// Kernel version patch.
+    pub version_patch: u16,
+    /// Number of CPU cores available.
+    pub cpu_count: u16,
+    /// Total physical memory in bytes.
+    pub total_memory: u64,
+    /// Free physical memory in bytes.
+    pub free_memory: u64,
+    /// Architecture identifier (0=x86_64, 1=aarch64).
+    pub arch: u32,
+    /// Kernel state initialized flag.
+    pub initialized: u32,
+}
+
 /// Get system information.
 ///
 /// Args: [buf_ptr, buf_len, 0, 0, 0, 0]
 /// Returns: 0 on success (info written to buffer), negative error code on failure.
 ///
-/// When buf_ptr is 0, returns the required buffer size.
+/// When buf_ptr is 0, returns the required buffer size as a positive value.
 pub fn sys_info(args: &SyscallArgs) -> SyscallResult {
     let buf_ptr = args.args[0];
-    let _buf_len = args.args[1];
+    let buf_len = args.args[1];
+
+    let info_size = core::mem::size_of::<SystemInfo>();
 
     if buf_ptr == 0 {
-        // TODO: Return required size for SystemInfo struct
-        return SyscallError::Success.as_i64();
+        // Return required buffer size
+        return info_size as i64;
     }
 
-    // TODO: Fill SystemInfo struct with kernel version, arch, CPU count, memory stats
+    if buf_len < info_size {
+        return SyscallError::BufferTooSmall.as_i64();
+    }
+
+    // Validate pointer alignment for SystemInfo (requires 8-byte alignment)
+    if !buf_ptr.is_multiple_of(core::mem::align_of::<SystemInfo>()) {
+        return SyscallError::BadAddress.as_i64();
+    }
+
+    let info = SystemInfo {
+        version_major: 0,
+        version_minor: 1,
+        version_patch: 0,
+        cpu_count: 1,    // Unikernel — single core
+        total_memory: 0, // Will be filled when buddy allocator reports stats
+        free_memory: 0,
+        #[cfg(target_arch = "x86_64")]
+        arch: 0,
+        #[cfg(target_arch = "aarch64")]
+        arch: 1,
+        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        arch: 0xFF,
+        initialized: if state::is_initialized() { 1 } else { 0 },
+    };
+
+    // SAFETY: In unikernel mode, the caller is in the same address space.
+    unsafe {
+        let dst = buf_ptr as *mut SystemInfo;
+        core::ptr::write(dst, info);
+    }
+
     SyscallError::Success.as_i64()
 }
 
@@ -79,6 +136,12 @@ pub fn sys_time(_args: &SyscallArgs) -> SyscallResult {
 /// Returns: does not return on success, negative error code on failure.
 pub fn sys_shutdown(args: &SyscallArgs) -> SyscallResult {
     let _exit_code = args.args[0];
+
+    // Shutdown is a privileged operation — require SystemControl:EXECUTE capability.
+    let resource = ResourceRef::new(ResourceType::SystemControl, 0);
+    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::EXECUTE) {
+        return e;
+    }
 
     // TODO: Trigger graceful shutdown:
     // 1. Stop accepting new inference requests
@@ -129,9 +192,14 @@ pub fn sys_random(args: &SyscallArgs) -> SyscallResult {
         return SyscallError::InvalidArgument.as_i64();
     }
 
-    // TODO: Integrate with CSPRNG (SHAKE256-based, seeded from RDRAND/RNDR)
-    let _ = (buf_ptr, buf_len);
-    SyscallError::NotSupported.as_i64()
+    // SAFETY: In unikernel mode, the caller is in the same address space.
+    // Syscall handlers run with interrupts masked, so CSPRNG access is exclusive.
+    let buf = unsafe { core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len) };
+    let result = unsafe { state::csprng_generate(buf) };
+    match result {
+        Ok(()) => SyscallError::Success.as_i64(),
+        Err(_) => SyscallError::NotSupported.as_i64(),
+    }
 }
 
 /// Service the hardware watchdog timer.
@@ -158,15 +226,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_sys_info_null_ptr_returns_success() {
+    fn test_sys_info_null_ptr_returns_size() {
         let args = SyscallArgs::new(0x50, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(sys_info(&args), SyscallError::Success.as_i64());
+        let result = sys_info(&args);
+        let expected_size = core::mem::size_of::<SystemInfo>() as i64;
+        assert_eq!(result, expected_size);
+        assert!(result > 0);
     }
 
     #[test]
     fn test_sys_info_with_buffer() {
-        let args = SyscallArgs::new(0x50, [0x1000, 256, 0, 0, 0, 0]);
+        let mut info = core::mem::MaybeUninit::<SystemInfo>::uninit();
+        let args = SyscallArgs::new(
+            0x50,
+            [
+                info.as_mut_ptr() as usize,
+                core::mem::size_of::<SystemInfo>(),
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
         assert_eq!(sys_info(&args), SyscallError::Success.as_i64());
+        let info = unsafe { info.assume_init() };
+        assert_eq!(info.version_major, 0);
+        assert_eq!(info.version_minor, 1);
+        assert_eq!(info.cpu_count, 1);
+    }
+
+    #[test]
+    fn test_sys_info_buffer_too_small() {
+        let args = SyscallArgs::new(0x50, [0x1000, 1, 0, 0, 0, 0]);
+        assert_eq!(sys_info(&args), SyscallError::BufferTooSmall.as_i64());
     }
 
     #[test]
@@ -176,9 +268,10 @@ mod tests {
     }
 
     #[test]
-    fn test_sys_shutdown_returns_success() {
+    fn test_sys_shutdown_requires_capability() {
+        // Without SystemControl capability, shutdown is denied.
         let args = SyscallArgs::new(0x52, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(sys_shutdown(&args), SyscallError::Success.as_i64());
+        assert_eq!(sys_shutdown(&args), SyscallError::PermissionDenied.as_i64());
     }
 
     #[test]

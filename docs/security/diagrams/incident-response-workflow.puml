@@ -1,0 +1,80 @@
+@startuml SmallAIOS Incident Response Workflow
+' Incident Response Workflow per NIST SP 800-61
+' SPDX-License-Identifier: Apache-2.0
+
+skinparam backgroundColor white
+
+title Incident Response Workflow (NIST SP 800-61)
+
+|Automated|
+start
+:Event detected;
+note right
+  Sources:
+  - Monitoring thresholds
+  - Audit log anomaly
+  - Watchdog timeout
+  - External report
+end note
+
+:Classify severity;
+if (Severity?) then (Critical/High)
+  :Publish incident event\n(smallaios/v1/incidents);
+  :Execute automated containment;
+  note right
+    - Capability revocation
+    - Task termination
+    - Connection reset
+    - Inference rejection
+  end note
+  :Preserve evidence;
+  note right
+    - Export audit log batches
+    - Capture task snapshots
+    - Export memory stats
+    - Export capability registry
+  end note
+else (Medium/Low)
+  :Log incident event;
+  :Adjust monitoring thresholds;
+endif
+
+|Human|
+:Incident Commander notified;
+if (Severity?) then (Critical)
+  :Activate full response team;
+  :Isolate affected system;
+  :Invoke emergency CCB;
+else (High)
+  :Security Lead + CCB member;
+  :Increase monitoring;
+else (Medium)
+  :Security Lead review;
+  :Schedule CCB discussion;
+else (Low)
+  :Security Lead tracks;
+  :Continue normal ops;
+endif
+
+:Analyze root cause;
+:Determine eradication actions;
+:Apply corrective patch;
+note right
+  Emergency: Security Lead + 1 CCB
+  Normal: Standard CCB process
+end note
+
+:Verify fix via test suite;
+:Restore from known-good baseline;
+:Resume operations with\nincreased monitoring (24-48h);
+
+|Post-Incident|
+:Conduct post-incident review\n(within 5 business days);
+:Write post-incident report;
+:Enter corrective actions\nin POA&M;
+:Present to steering committee;
+:Update incident response plan\n(lessons learned);
+
+stop
+
+@enduml

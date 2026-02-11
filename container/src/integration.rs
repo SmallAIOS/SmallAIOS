@@ -588,21 +588,24 @@ mod tests {
         let mut buf = [0u8; 32];
         assert_eq!(rng.generate(&mut buf), Err(CsprngError::NotSeeded));
 
-        // Seed the CSPRNG (stub returns NotImplemented but sets seeded=true).
+        // Seed the CSPRNG.
         let seed = CsprngSeed::from_bytes([0x42; 32]);
-        let seed_result = rng.seed(&seed);
-        assert_eq!(seed_result, Err(CsprngError::NotImplemented));
+        rng.seed(&seed).expect("seed should succeed");
 
-        // Even though seed returned error, seeded flag is set.
         assert!(rng.is_seeded());
 
-        // Generate returns NotImplemented (stub behavior).
-        let gen_result = rng.generate(&mut buf);
-        assert_eq!(gen_result, Err(CsprngError::NotImplemented));
+        // Generate random bytes.
+        rng.generate(&mut buf).expect("generate should succeed");
+
+        // Output should not be all zeros from a non-zero seed.
+        assert!(
+            buf.iter().any(|&b| b != 0),
+            "output should not be all zeros"
+        );
 
         // Verify reseed interval tracking.
         assert!(!rng.needs_reseed());
-        assert_eq!(rng.bytes_generated(), 0);
+        assert_eq!(rng.bytes_generated(), 32);
     }
 
     // =========================================================================

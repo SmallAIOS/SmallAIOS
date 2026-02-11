@@ -1,0 +1,47 @@
+@startuml SmallAIOS Data Flow Diagram
+' Cross-boundary data flow with authentication requirements
+' SPDX-License-Identifier: Apache-2.0
+
+skinparam backgroundColor white
+
+title SmallAIOS Cross-Boundary Data Flow (AC-4)
+
+rectangle "External Clients" as ext #LightGray
+rectangle "K8s Control Plane" as k8s #LightGray
+rectangle "Physical Bus\n(CAN/ARINC/1553)" as bus #LightGray
+rectangle "NVIDIA GPU" as gpu #LightGray
+
+frame "SmallAIOS Kernel" as kernel {
+    rectangle "ONNX Runtime" as onnx #LightBlue
+    rectangle "IPC Router\n(Zenoh)" as ipc #LightGreen
+    rectangle "Audit Subsystem" as audit #LightGreen
+    rectangle "Monitoring" as mon #LightGreen
+}
+
+' Authenticated flows (green arrows)
+ext -[#green,bold]-> kernel : "Inference request\n[Mutual TLS, encrypted]"
+kernel -[#green,bold]-> ext : "Inference response\n[Mutual TLS, encrypted]"
+
+k8s -[#green,bold]-> kernel : "Pod management\n[Mutual TLS, encrypted]"
+kernel -[#green,bold]-> k8s : "Health + metrics\n[Mutual TLS, integrity]"
+
+bus -[#green,bold]-> kernel : "Sensor data\n[Bus frame integrity]"
+kernel -[#green,bold]-> bus : "Actuator commands\n[Capability + integrity]"
+
+kernel -[#green,bold]-> gpu : "Tensor DMA\n[DMA permissions]"
+gpu -[#green,bold]-> kernel : "Results DMA\n[DMA permissions]"
+
+' Internal flows
+onnx -[#blue]-> ipc : "Results"
+ipc -[#blue]-> audit : "Audit events"
+ipc -[#blue]-> mon : "Metrics"
+
+' Legend
+legend right
+  |= Color |= Meaning |
+  | <#green> | Authenticated cross-boundary flow |
+  | <#blue> | Internal kernel flow (capability-gated) |
+  | <#red> | Denied flow (AC-4 enforcement) |
+endlegend
+
+@enduml

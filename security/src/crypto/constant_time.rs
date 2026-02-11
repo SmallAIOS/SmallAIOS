@@ -251,6 +251,7 @@ pub fn ct_swap(condition: CtBool, a: &mut [u8], b: &mut [u8]) -> Result<(), Cons
 
 #[cfg(test)]
 mod tests {
+    extern crate std;
     use super::*;
     use alloc::format;
 
@@ -439,5 +440,198 @@ mod tests {
     fn ct_bool_debug() {
         assert_eq!(format!("{:?}", CtBool::TRUE), "CtBool(TRUE)");
         assert_eq!(format!("{:?}", CtBool::FALSE), "CtBool(FALSE)");
+    }
+
+    // --- Dudect-style constant-time statistical tests (Task 5.11) ---
+    //
+    // These tests measure execution time distributions for two classes of
+    // inputs and apply a statistical test (Welch's t-test) to check whether
+    // the distributions are distinguishably different. If the t-statistic
+    // exceeds a threshold, the operation is likely not constant-time.
+    //
+    // Note: These tests are probabilistic. On a heavily loaded system they
+    // may produce false positives. The threshold is intentionally generous.
+
+    /// Simple Welch's t-test: returns |t| for two sample sets.
+    fn welch_t_statistic(
+        n1: usize,
+        sum1: f64,
+        sum_sq1: f64,
+        n2: usize,
+        sum2: f64,
+        sum_sq2: f64,
+    ) -> f64 {
+        if n1 < 2 || n2 < 2 {
+            return 0.0;
+        }
+        let mean1 = sum1 / n1 as f64;
+        let mean2 = sum2 / n2 as f64;
+        let var1 = (sum_sq1 - sum1 * sum1 / n1 as f64) / (n1 - 1) as f64;
+        let var2 = (sum_sq2 - sum2 * sum2 / n2 as f64) / (n2 - 1) as f64;
+        let se = (var1 / n1 as f64 + var2 / n2 as f64).sqrt();
+        if se < f64::EPSILON {
+            return 0.0;
+        }
+        ((mean1 - mean2) / se).abs()
+    }
+
+    /// Threshold for the t-statistic. Values below this indicate the
+    /// timing difference is not statistically significant.
+    /// 4.5 corresponds to p < 0.00001 approximately.
+    const DUDECT_THRESHOLD: f64 = 4.5;
+
+    #[test]
+    fn dudect_ct_eq_byte_constant_time() {
+        // Class A: compare byte to itself (equal)
+        // Class B: compare byte to different value (not equal)
+        // Both should take the same time.
+        let iterations = 10_000;
+        let mut n_a = 0usize;
+        let mut sum_a = 0.0f64;
+        let mut sum_sq_a = 0.0f64;
+        let mut n_b = 0usize;
+        let mut sum_b = 0.0f64;
+        let mut sum_sq_b = 0.0f64;
+
+        for i in 0..iterations {
+            let a = (i & 0xFF) as u8;
+            let b_eq = a;
+            let b_neq = a.wrapping_add(1);
+
+            // Measure class A (equal)
+            let start = core::hint::black_box(std::time::Instant::now());
+            for _ in 0..100 {
+                let _ = core::hint::black_box(ct_eq_byte(
+                    core::hint::black_box(a),
+                    core::hint::black_box(b_eq),
+                ));
+            }
+            let elapsed_a = start.elapsed().as_nanos() as f64;
+            n_a += 1;
+            sum_a += elapsed_a;
+            sum_sq_a += elapsed_a * elapsed_a;
+
+            // Measure class B (not equal)
+            let start = core::hint::black_box(std::time::Instant::now());
+            for _ in 0..100 {
+                let _ = core::hint::black_box(ct_eq_byte(
+                    core::hint::black_box(a),
+                    core::hint::black_box(b_neq),
+                ));
+            }
+            let elapsed_b = start.elapsed().as_nanos() as f64;
+            n_b += 1;
+            sum_b += elapsed_b;
+            sum_sq_b += elapsed_b * elapsed_b;
+        }
+
+        let t = welch_t_statistic(n_a, sum_a, sum_sq_a, n_b, sum_b, sum_sq_b);
+        assert!(
+            t < DUDECT_THRESHOLD,
+            "ct_eq_byte timing difference detected: t={:.2} (threshold={:.1})",
+            t,
+            DUDECT_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn dudect_ct_eq_slices_constant_time() {
+        let iterations = 5_000;
+        let mut n_a = 0usize;
+        let mut sum_a = 0.0f64;
+        let mut sum_sq_a = 0.0f64;
+        let mut n_b = 0usize;
+        let mut sum_b = 0.0f64;
+        let mut sum_sq_b = 0.0f64;
+
+        let data_a = [0xAAu8; 32];
+        let data_b_eq = [0xAAu8; 32];
+        let mut data_b_neq = [0xAAu8; 32];
+        data_b_neq[31] = 0xBB; // Last byte differs
+
+        for _ in 0..iterations {
+            // Class A: equal slices
+            let start = core::hint::black_box(std::time::Instant::now());
+            for _ in 0..100 {
+                let _ = core::hint::black_box(ct_eq(
+                    core::hint::black_box(&data_a),
+                    core::hint::black_box(&data_b_eq),
+                ));
+            }
+            let elapsed_a = start.elapsed().as_nanos() as f64;
+            n_a += 1;
+            sum_a += elapsed_a;
+            sum_sq_a += elapsed_a * elapsed_a;
+
+            // Class B: different slices (last byte differs)
+            let start = core::hint::black_box(std::time::Instant::now());
+            for _ in 0..100 {
+                let _ = core::hint::black_box(ct_eq(
+                    core::hint::black_box(&data_a),
+                    core::hint::black_box(&data_b_neq),
+                ));
+            }
+            let elapsed_b = start.elapsed().as_nanos() as f64;
+            n_b += 1;
+            sum_b += elapsed_b;
+            sum_sq_b += elapsed_b * elapsed_b;
+        }
+
+        let t = welch_t_statistic(n_a, sum_a, sum_sq_a, n_b, sum_b, sum_sq_b);
+        assert!(
+            t < DUDECT_THRESHOLD,
+            "ct_eq timing difference detected: t={:.2} (threshold={:.1})",
+            t,
+            DUDECT_THRESHOLD
+        );
+    }
+
+    #[test]
+    fn dudect_ct_select_byte_constant_time() {
+        let iterations = 5_000;
+        let mut n_a = 0usize;
+        let mut sum_a = 0.0f64;
+        let mut sum_sq_a = 0.0f64;
+        let mut n_b = 0usize;
+        let mut sum_b = 0.0f64;
+        let mut sum_sq_b = 0.0f64;
+
+        for _ in 0..iterations {
+            // Class A: condition = TRUE
+            let start = core::hint::black_box(std::time::Instant::now());
+            for _ in 0..100 {
+                let _ = core::hint::black_box(ct_select_byte(
+                    core::hint::black_box(CtBool::TRUE),
+                    core::hint::black_box(0xAA),
+                    core::hint::black_box(0xBB),
+                ));
+            }
+            let elapsed_a = start.elapsed().as_nanos() as f64;
+            n_a += 1;
+            sum_a += elapsed_a;
+            sum_sq_a += elapsed_a * elapsed_a;
+
+            // Class B: condition = FALSE
+            let start = core::hint::black_box(std::time::Instant::now());
+            for _ in 0..100 {
+                let _ = core::hint::black_box(ct_select_byte(
+                    core::hint::black_box(CtBool::FALSE),
+                    core::hint::black_box(0xAA),
+                    core::hint::black_box(0xBB),
+                ));
+            }
+            let elapsed_b = start.elapsed().as_nanos() as f64;
+            n_b += 1;
+            sum_b += elapsed_b;
+            sum_sq_b += elapsed_b * elapsed_b;
+        }
+
+        let t = welch_t_statistic(n_a, sum_a, sum_sq_a, n_b, sum_b, sum_sq_b);
+        assert!(
+            t < DUDECT_THRESHOLD,
+            "ct_select_byte timing difference detected: t={:.2} (threshold={:.1})",
+            t,
+            DUDECT_THRESHOLD
+        );
     }
 }

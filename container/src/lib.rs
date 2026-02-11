@@ -18,6 +18,7 @@ extern crate alloc;
 
 pub mod boot;
 pub mod config;
+pub mod deploy;
 pub mod health;
 pub mod image;
 pub mod integration;

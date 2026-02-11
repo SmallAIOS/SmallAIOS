@@ -22,5 +22,12 @@
 
 extern crate alloc;
 
+pub mod audit;
+pub mod boundary;
 pub mod capability;
+pub mod compliance;
 pub mod crypto;
+pub mod incident;
+pub mod monitoring;
+pub mod ot;
+pub mod supply_chain;

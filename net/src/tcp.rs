@@ -285,6 +285,48 @@ impl TcpConnection {
         Ok(TcpAction::Send(Vec::from(syn_header.serialize())))
     }
 
+    /// Initiate an active close by sending a FIN segment.
+    ///
+    /// Transitions from `Established` to `FinWait1` or from `CloseWait` to
+    /// `LastAck`, and returns a FIN+ACK segment to send.
+    pub fn close(&mut self) -> Result<TcpAction, NetError> {
+        match self.state {
+            TcpState::Established => {
+                let fin = TcpHeader {
+                    src_port: self.local_port,
+                    dst_port: self.remote_port,
+                    seq_num: self.send_next,
+                    ack_num: self.recv_next,
+                    data_offset: 5,
+                    flags: TcpFlags::FIN | TcpFlags::ACK,
+                    window: self.recv_window,
+                    checksum: 0,
+                    urgent_ptr: 0,
+                };
+                self.send_next = self.send_next.wrapping_add(1);
+                self.state = TcpState::FinWait1;
+                Ok(TcpAction::Send(Vec::from(fin.serialize())))
+            }
+            TcpState::CloseWait => {
+                let fin = TcpHeader {
+                    src_port: self.local_port,
+                    dst_port: self.remote_port,
+                    seq_num: self.send_next,
+                    ack_num: self.recv_next,
+                    data_offset: 5,
+                    flags: TcpFlags::FIN | TcpFlags::ACK,
+                    window: self.recv_window,
+                    checksum: 0,
+                    urgent_ptr: 0,
+                };
+                self.send_next = self.send_next.wrapping_add(1);
+                self.state = TcpState::LastAck;
+                Ok(TcpAction::Send(Vec::from(fin.serialize())))
+            }
+            _ => Err(NetError::InvalidProtocol),
+        }
+    }
+
     /// Process an incoming TCP segment and advance the state machine.
     ///
     /// Returns the action to take in response, or [`NetError::NotImplemented`]
@@ -368,8 +410,171 @@ impl TcpConnection {
                 }
             }
 
-            // All other state transitions are not yet implemented.
-            _ => Err(NetError::NotImplemented),
+            // -----------------------------------------------------------
+            // Established — handle data, ACK, FIN
+            // -----------------------------------------------------------
+            TcpState::Established => {
+                // RST → close immediately
+                if header.flags & TcpFlags::RST != 0 {
+                    self.state = TcpState::Closed;
+                    return Ok(Some(TcpAction::Close));
+                }
+
+                // Update send window from ACK
+                if header.flags & TcpFlags::ACK != 0 {
+                    self.send_una = header.ack_num;
+                    self.send_window = header.window;
+                }
+
+                // Accept data: advance recv_next by payload length
+                let data_len = _payload.len() as u32;
+                if data_len > 0 {
+                    self.recv_next = self.recv_next.wrapping_add(data_len);
+
+                    // Send ACK for received data
+                    let ack = TcpHeader {
+                        src_port: self.local_port,
+                        dst_port: self.remote_port,
+                        seq_num: self.send_next,
+                        ack_num: self.recv_next,
+                        data_offset: 5,
+                        flags: TcpFlags::ACK,
+                        window: self.recv_window,
+                        checksum: 0,
+                        urgent_ptr: 0,
+                    };
+                    return Ok(Some(TcpAction::Send(Vec::from(ack.serialize()))));
+                }
+
+                // FIN → transition to CloseWait, send ACK
+                if header.flags & TcpFlags::FIN != 0 {
+                    self.recv_next = self.recv_next.wrapping_add(1);
+                    self.state = TcpState::CloseWait;
+
+                    let ack = TcpHeader {
+                        src_port: self.local_port,
+                        dst_port: self.remote_port,
+                        seq_num: self.send_next,
+                        ack_num: self.recv_next,
+                        data_offset: 5,
+                        flags: TcpFlags::ACK,
+                        window: self.recv_window,
+                        checksum: 0,
+                        urgent_ptr: 0,
+                    };
+                    return Ok(Some(TcpAction::Send(Vec::from(ack.serialize()))));
+                }
+
+                // Pure ACK with no data
+                Ok(Some(TcpAction::Nothing))
+            }
+
+            // -----------------------------------------------------------
+            // CloseWait — local app closes, send FIN
+            // -----------------------------------------------------------
+            TcpState::CloseWait => {
+                // The local side should call close() to send FIN.
+                // If we receive more data or ACKs, just acknowledge.
+                Ok(Some(TcpAction::Nothing))
+            }
+
+            // -----------------------------------------------------------
+            // FinWait1 — we sent FIN, waiting for ACK and/or peer FIN
+            // -----------------------------------------------------------
+            TcpState::FinWait1 => {
+                if header.flags & TcpFlags::ACK != 0 && header.flags & TcpFlags::FIN != 0 {
+                    // Simultaneous close: ACK our FIN + peer FIN
+                    self.recv_next = header.seq_num.wrapping_add(1);
+                    self.state = TcpState::TimeWait;
+                    let ack = TcpHeader {
+                        src_port: self.local_port,
+                        dst_port: self.remote_port,
+                        seq_num: self.send_next,
+                        ack_num: self.recv_next,
+                        data_offset: 5,
+                        flags: TcpFlags::ACK,
+                        window: self.recv_window,
+                        checksum: 0,
+                        urgent_ptr: 0,
+                    };
+                    Ok(Some(TcpAction::Send(Vec::from(ack.serialize()))))
+                } else if header.flags & TcpFlags::ACK != 0 {
+                    // Our FIN was ACKed
+                    self.send_una = header.ack_num;
+                    self.state = TcpState::FinWait2;
+                    Ok(Some(TcpAction::Nothing))
+                } else if header.flags & TcpFlags::FIN != 0 {
+                    // Peer FIN without ACKing ours (simultaneous close variant)
+                    self.recv_next = header.seq_num.wrapping_add(1);
+                    self.state = TcpState::Closing;
+                    let ack = TcpHeader {
+                        src_port: self.local_port,
+                        dst_port: self.remote_port,
+                        seq_num: self.send_next,
+                        ack_num: self.recv_next,
+                        data_offset: 5,
+                        flags: TcpFlags::ACK,
+                        window: self.recv_window,
+                        checksum: 0,
+                        urgent_ptr: 0,
+                    };
+                    Ok(Some(TcpAction::Send(Vec::from(ack.serialize()))))
+                } else {
+                    Ok(Some(TcpAction::Nothing))
+                }
+            }
+
+            // -----------------------------------------------------------
+            // FinWait2 — our FIN was ACKed, waiting for peer FIN
+            // -----------------------------------------------------------
+            TcpState::FinWait2 => {
+                if header.flags & TcpFlags::FIN != 0 {
+                    self.recv_next = header.seq_num.wrapping_add(1);
+                    self.state = TcpState::TimeWait;
+                    let ack = TcpHeader {
+                        src_port: self.local_port,
+                        dst_port: self.remote_port,
+                        seq_num: self.send_next,
+                        ack_num: self.recv_next,
+                        data_offset: 5,
+                        flags: TcpFlags::ACK,
+                        window: self.recv_window,
+                        checksum: 0,
+                        urgent_ptr: 0,
+                    };
+                    Ok(Some(TcpAction::Send(Vec::from(ack.serialize()))))
+                } else {
+                    Ok(Some(TcpAction::Nothing))
+                }
+            }
+
+            // -----------------------------------------------------------
+            // Closing — both sides sent FIN, waiting for ACK of our FIN
+            // -----------------------------------------------------------
+            TcpState::Closing => {
+                if header.flags & TcpFlags::ACK != 0 {
+                    self.send_una = header.ack_num;
+                    self.state = TcpState::TimeWait;
+                    Ok(Some(TcpAction::Nothing))
+                } else {
+                    Ok(Some(TcpAction::Nothing))
+                }
+            }
+
+            // -----------------------------------------------------------
+            // LastAck — peer closed first, we sent FIN, waiting for ACK
+            // -----------------------------------------------------------
+            TcpState::LastAck => {
+                if header.flags & TcpFlags::ACK != 0 {
+                    self.state = TcpState::Closed;
+                    Ok(Some(TcpAction::Close))
+                } else {
+                    Ok(Some(TcpAction::Nothing))
+                }
+            }
+
+            // TimeWait and Closed — no more processing
+            _ => Ok(Some(TcpAction::Nothing)),
         }
     }
 }
@@ -412,6 +617,44 @@ pub fn tcp_checksum_pseudo_header(src_ip: [u8; 4], dst_ip: [u8; 4], tcp_len: u16
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Helper: create a TcpConnection and drive it through the 3-way handshake
+    /// (Listen → SynReceived → Established) so tests can start from a fully
+    /// open connection.
+    fn establish_connection() -> TcpConnection {
+        let mut conn = TcpConnection::new(80);
+        conn.listen().unwrap();
+
+        // SYN from peer
+        let syn = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 100,
+            ack_num: 0,
+            data_offset: 5,
+            flags: TcpFlags::SYN,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        conn.on_segment(&syn, &[]).unwrap();
+
+        // ACK from peer completing the handshake
+        let ack = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: 2001,
+            data_offset: 5,
+            flags: TcpFlags::ACK,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        conn.on_segment(&ack, &[]).unwrap();
+        assert_eq!(conn.state(), TcpState::Established);
+        conn
+    }
 
     // -- TcpState methods ---------------------------------------------------
 
@@ -661,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn test_established_returns_not_implemented() {
+    fn test_established_data_transfer() {
         let mut conn = TcpConnection::new(80);
         conn.listen().unwrap();
 
@@ -693,7 +936,7 @@ mod tests {
         conn.on_segment(&ack, &[]).unwrap();
         assert_eq!(conn.state(), TcpState::Established);
 
-        // Data segment in Established — not yet implemented.
+        // Data segment in Established — should return ACK
         let data_seg = TcpHeader {
             src_port: 5000,
             dst_port: 80,
@@ -705,10 +948,228 @@ mod tests {
             checksum: 0,
             urgent_ptr: 0,
         };
-        assert_eq!(
-            conn.on_segment(&data_seg, b"hello"),
-            Err(NetError::NotImplemented)
-        );
+        let result = conn.on_segment(&data_seg, b"hello").unwrap();
+        // Should ACK the 5 bytes of data
+        match result {
+            Some(TcpAction::Send(data)) => {
+                let (hdr, _) = TcpHeader::parse(&data).unwrap();
+                assert_eq!(hdr.flags, TcpFlags::ACK);
+                assert_eq!(hdr.ack_num, 106); // 101 + 5
+            }
+            _ => panic!("expected Some(TcpAction::Send)"),
+        }
+        assert_eq!(conn.recv_next, 106);
+    }
+
+    #[test]
+    fn test_established_pure_ack() {
+        let mut conn = establish_connection();
+        let ack = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: 2001,
+            data_offset: 5,
+            flags: TcpFlags::ACK,
+            window: 32768,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        let result = conn.on_segment(&ack, &[]).unwrap();
+        assert!(matches!(result, Some(TcpAction::Nothing)));
+        assert_eq!(conn.send_window, 32768);
+    }
+
+    #[test]
+    fn test_established_rst_closes() {
+        let mut conn = establish_connection();
+        let rst = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: 2001,
+            data_offset: 5,
+            flags: TcpFlags::RST,
+            window: 0,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        let result = conn.on_segment(&rst, &[]).unwrap();
+        assert!(matches!(result, Some(TcpAction::Close)));
+        assert_eq!(conn.state(), TcpState::Closed);
+    }
+
+    #[test]
+    fn test_established_fin_to_close_wait() {
+        let mut conn = establish_connection();
+        let fin = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: 2001,
+            data_offset: 5,
+            flags: TcpFlags::FIN | TcpFlags::ACK,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        let result = conn.on_segment(&fin, &[]).unwrap();
+        assert_eq!(conn.state(), TcpState::CloseWait);
+        // Should send ACK for the FIN
+        match result {
+            Some(TcpAction::Send(data)) => {
+                let (hdr, _) = TcpHeader::parse(&data).unwrap();
+                assert_eq!(hdr.flags, TcpFlags::ACK);
+                assert_eq!(hdr.ack_num, 102); // 101 + 1 for FIN
+            }
+            _ => panic!("expected Some(TcpAction::Send)"),
+        }
+    }
+
+    #[test]
+    fn test_close_from_established() {
+        let mut conn = establish_connection();
+        let action = conn.close().unwrap();
+        assert_eq!(conn.state(), TcpState::FinWait1);
+        match action {
+            TcpAction::Send(data) => {
+                let (hdr, _) = TcpHeader::parse(&data).unwrap();
+                assert_eq!(hdr.flags, TcpFlags::FIN | TcpFlags::ACK);
+            }
+            _ => panic!("expected TcpAction::Send"),
+        }
+    }
+
+    #[test]
+    fn test_close_from_close_wait() {
+        let mut conn = establish_connection();
+        // Receive FIN to enter CloseWait
+        let fin = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: 2001,
+            data_offset: 5,
+            flags: TcpFlags::FIN | TcpFlags::ACK,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        conn.on_segment(&fin, &[]).unwrap();
+        assert_eq!(conn.state(), TcpState::CloseWait);
+
+        // Now close from our side
+        let action = conn.close().unwrap();
+        assert_eq!(conn.state(), TcpState::LastAck);
+        match action {
+            TcpAction::Send(data) => {
+                let (hdr, _) = TcpHeader::parse(&data).unwrap();
+                assert_eq!(hdr.flags, TcpFlags::FIN | TcpFlags::ACK);
+            }
+            _ => panic!("expected TcpAction::Send"),
+        }
+    }
+
+    #[test]
+    fn test_fin_wait1_to_fin_wait2() {
+        let mut conn = establish_connection();
+        conn.close().unwrap();
+        assert_eq!(conn.state(), TcpState::FinWait1);
+
+        // Receive ACK of our FIN
+        let ack = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: conn.send_next,
+            data_offset: 5,
+            flags: TcpFlags::ACK,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        conn.on_segment(&ack, &[]).unwrap();
+        assert_eq!(conn.state(), TcpState::FinWait2);
+    }
+
+    #[test]
+    fn test_fin_wait2_to_time_wait() {
+        let mut conn = establish_connection();
+        conn.close().unwrap();
+
+        // ACK our FIN -> FinWait2
+        let ack = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: conn.send_next,
+            data_offset: 5,
+            flags: TcpFlags::ACK,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        conn.on_segment(&ack, &[]).unwrap();
+        assert_eq!(conn.state(), TcpState::FinWait2);
+
+        // Receive peer FIN -> TimeWait
+        let fin = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: conn.send_next,
+            data_offset: 5,
+            flags: TcpFlags::FIN | TcpFlags::ACK,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        let result = conn.on_segment(&fin, &[]).unwrap();
+        assert_eq!(conn.state(), TcpState::TimeWait);
+        match result {
+            Some(TcpAction::Send(data)) => {
+                let (hdr, _) = TcpHeader::parse(&data).unwrap();
+                assert_eq!(hdr.flags, TcpFlags::ACK);
+            }
+            _ => panic!("expected Some(TcpAction::Send)"),
+        }
+    }
+
+    #[test]
+    fn test_last_ack_to_closed() {
+        let mut conn = establish_connection();
+        // Receive FIN -> CloseWait
+        let fin = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 101,
+            ack_num: 2001,
+            data_offset: 5,
+            flags: TcpFlags::FIN | TcpFlags::ACK,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        conn.on_segment(&fin, &[]).unwrap();
+        // Close our side -> LastAck
+        conn.close().unwrap();
+        assert_eq!(conn.state(), TcpState::LastAck);
+
+        // Receive ACK of our FIN -> Closed
+        let ack = TcpHeader {
+            src_port: 5000,
+            dst_port: 80,
+            seq_num: 102,
+            ack_num: conn.send_next,
+            data_offset: 5,
+            flags: TcpFlags::ACK,
+            window: 65535,
+            checksum: 0,
+            urgent_ptr: 0,
+        };
+        let result = conn.on_segment(&ack, &[]).unwrap();
+        assert_eq!(conn.state(), TcpState::Closed);
+        assert!(matches!(result, Some(TcpAction::Close)));
     }
 
     // -- Pseudo-header checksum ---------------------------------------------

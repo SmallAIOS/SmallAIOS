@@ -30,6 +30,11 @@ impl TensorHandle {
     pub fn index(self) -> usize {
         self.0 as usize
     }
+
+    /// Create a handle from a raw index.
+    pub const fn from_index(idx: u32) -> Self {
+        Self(idx)
+    }
 }
 
 /// Metadata for a single tensor buffer.

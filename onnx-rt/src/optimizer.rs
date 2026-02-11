@@ -8,6 +8,7 @@
 //! establish the optimization framework; concrete pass implementations
 //! will follow.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::graph::ExecutionGraph;
@@ -167,13 +168,44 @@ pub fn optimize(graph: &mut ExecutionGraph, config: &OptimizerConfig) -> Optimiz
     result
 }
 
-/// Dead code elimination: removes nodes whose outputs are never consumed.
+/// Dead code elimination: identifies nodes whose outputs are never consumed.
 ///
-/// Stub implementation; returns 0 (no nodes removed).
-pub fn dead_code_elimination(_graph: &mut ExecutionGraph) -> usize {
-    // TODO: Identify nodes whose outputs are not consumed by any
-    // downstream node or graph output, and remove them.
-    0
+/// Counts nodes whose outputs are not consumed by any downstream node
+/// or listed as a graph output. In a full implementation, these nodes
+/// would be removed from the graph. Currently returns the count but
+/// does not mutate the graph structure (since removing nodes would
+/// invalidate NodeIndex references).
+pub fn dead_code_elimination(graph: &mut ExecutionGraph) -> usize {
+    if graph.nodes.is_empty() {
+        return 0;
+    }
+
+    // Collect all consumed tensor names (inputs of all nodes + graph outputs)
+    let mut consumed: Vec<String> = Vec::new();
+    for node in &graph.nodes {
+        for input_name in &node.inputs {
+            if !input_name.is_empty() {
+                consumed.push(input_name.clone());
+            }
+        }
+    }
+    for output_name in &graph.output_names {
+        consumed.push(output_name.clone());
+    }
+
+    // Count nodes whose outputs are all unconsumed
+    let mut dead_count = 0;
+    for node in &graph.nodes {
+        let all_outputs_dead = node
+            .outputs
+            .iter()
+            .all(|output| output.is_empty() || !consumed.iter().any(|c| c == output));
+        if all_outputs_dead && !node.outputs.is_empty() {
+            dead_count += 1;
+        }
+    }
+
+    dead_count
 }
 
 /// Constant folding: evaluates constant sub-expressions at compile time.

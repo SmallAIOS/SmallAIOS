@@ -13,9 +13,11 @@
 
 extern crate alloc;
 
+pub mod hal;
 pub mod mem;
 pub mod safety;
 pub mod sched;
+pub mod state;
 pub mod syscall;
 
 /// Kernel version
