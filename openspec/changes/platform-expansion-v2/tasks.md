@@ -3,13 +3,13 @@
 - [x] 14.1 Define SmallAIOS management API Zenoh endpoints (deploy, undeploy, status, config)
 - [x] 14.2 Implement management API handler in kernel IPC module
 - [x] 14.3 Implement node resource reporting (CPU, memory, GPU, loaded models)
-- [ ] 14.4 Scaffold Go Virtual Kubelet provider project (go.mod, main, provider interface)
-- [ ] 14.5 Implement Virtual Kubelet Zenoh client (connect to SmallAIOS management API)
-- [ ] 14.6 Implement pod spec translation (container image → ONNX model URL, env → config)
-- [ ] 14.7 Implement pod lifecycle management (Pending → Running → Succeeded/Failed)
-- [ ] 14.8 Implement node resource advertisement (CPU, memory, nvidia.com/gpu extended resource)
-- [ ] 14.9 Implement health probe integration (liveness/readiness via existing /health endpoint)
-- [ ] 14.10 Implement metrics integration (Prometheus /metrics passthrough)
+- [x] 14.4 Scaffold Go Virtual Kubelet provider project (go.mod, main, provider interface)
+- [x] 14.5 Implement Virtual Kubelet Zenoh client (connect to SmallAIOS management API)
+- [x] 14.6 Implement pod spec translation (container image → ONNX model URL, env → config)
+- [x] 14.7 Implement pod lifecycle management (Pending → Running → Succeeded/Failed)
+- [x] 14.8 Implement node resource advertisement (CPU, memory, nvidia.com/gpu extended resource)
+- [x] 14.9 Implement health probe integration (liveness/readiness via existing /health endpoint)
+- [x] 14.10 Implement metrics integration (Prometheus /metrics passthrough)
 - [ ] 14.11 Test with K3s on Jetson/RPi (edge deployment)
 - [ ] 14.12 Test with K8s on Xeon/Spark (datacenter deployment)
 - [ ] 14.13 Test multi-node: single provider managing multiple SmallAIOS instances
@@ -132,7 +132,7 @@
 - [x] 22.1 Define QUIC connection, stream, and endpoint types in `smallaios-net` crate
 - [x] 22.2 Implement QUIC packet encoding/decoding: Initial, Handshake, 0-RTT, 1-RTT packet types
 - [x] 22.3 Implement QUIC frame encoding/decoding: STREAM, ACK, CRYPTO, NEW_CONNECTION_ID, PATH_CHALLENGE/RESPONSE, MAX_DATA, MAX_STREAM_DATA, etc.
-- [ ] 22.4 Integrate TLS 1.3 handshake with ML-KEM-768 hybrid key exchange (client and server)
+- [x] 22.4 Integrate TLS 1.3 handshake with ML-KEM-768 hybrid key exchange (client and server)
 - [x] 22.5 Implement QUIC packet protection: AES-128-GCM and ChaCha20-Poly1305 AEAD, header protection
 - [x] 22.6 Implement 1-RTT connection establishment (client and server roles)
 - [x] 22.7 Implement 0-RTT session resumption with TLS session tickets and replay protection

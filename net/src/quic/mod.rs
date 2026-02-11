@@ -37,6 +37,7 @@ pub mod key_update;
 pub mod endpoint;
 pub mod zenoh;
 pub mod h3;
+pub mod tls;
 
 pub use packet::{PacketType, LongHeader, ShortHeader, QuicVersion};
 pub use frame::{FrameType, QuicFrame};
@@ -53,3 +54,4 @@ pub use key_update::{KeyUpdateManager, KeyUpdateState};
 pub use endpoint::{QuicEndpoint, EndpointConfig, EndpointEvent, ConnectionHandle};
 pub use zenoh::{ZenohQuicTransport, QuicLocator, ZenohMsgType, SessionState};
 pub use h3::{H3Frame, H3FrameType, H3Settings, HttpMethod, HttpStatus, ManagementPath};
+pub use tls::{TlsHandshake, TlsHandshakeState, TlsRole, TlsKeySchedule, HybridKeyShare, HybridServerShare, NAMED_GROUP_X25519_MLKEM768};
