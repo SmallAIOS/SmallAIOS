@@ -1,0 +1,74 @@
+@startuml SmallAIOS Trust Domain Overview
+' SmallAIOS Trust Domain Architecture
+' SPDX-License-Identifier: Apache-2.0
+
+skinparam componentStyle rectangle
+skinparam backgroundColor white
+
+title SmallAIOS Trust Domain Overview
+
+frame "SmallAIOS Kernel (Single Address Space)" as kernel {
+    component "Capability System\n(AC-3, AC-6)" as caps #LightGreen
+    component "Scheduler\n(SYSTEM > IPC > INFERENCE)" as sched #LightBlue
+    component "Memory Management\n(Buddy + Slab + Tensor)" as mem #LightBlue
+
+    frame "ONNX Runtime" as onnx {
+        component "Model Parser\n(Protobuf)" as parser
+        component "Operators\n(CPU/GPU)" as ops
+    }
+
+    frame "Security Subsystem" as sec {
+        component "Audit Logging\n(AU-2, AU-9)" as audit #LightGreen
+        component "Crypto Module\n(SC-12, SC-13)" as crypto #LightGreen
+        component "Monitoring\n(SI-4)" as mon #LightGreen
+        component "Incident Response\n(IR-4)" as ir #LightGreen
+    }
+
+    frame "IPC Router" as ipc {
+        component "Zenoh Pub/Sub" as zenoh
+    }
+}
+
+frame "Network Boundary\n(Mutual TLS 1.3)" as netbound #LightYellow {
+    component "TLS Termination\n(PQ Hybrid)" as tls
+    component "Stateful Firewall" as fw
+}
+
+frame "K8s Boundary\n(Mutual TLS)" as k8sbound #LightYellow {
+    component "Virtual Kubelet API" as vk
+}
+
+frame "Bus Boundary\n(Frame Integrity)" as busbound #LightYellow {
+    component "CAN / ARINC / 1553\nSpaceWire / CCSDS" as bus
+}
+
+frame "GPU Boundary\n(DMA Permissions)" as gpubound #LightYellow {
+    component "PCIe BAR\nDMA Engine" as gpu
+}
+
+cloud "External Clients" as clients
+cloud "K8s Control Plane" as k8s
+cloud "Physical Bus" as physbus
+cloud "NVIDIA GPU" as nvgpu
+
+' Trust boundary crossings
+clients --> tls : "Inference\nrequests"
+tls --> caps : "Capability-gated"
+k8s --> vk : "Pod management"
+vk --> caps : "Capability-gated"
+physbus --> bus : "Sensor data"
+bus --> caps : "Capability-gated"
+ops --> gpu : "Tensor DMA"
+gpu --> nvgpu : "DMA transfer"
+
+' Information flow enforcement
+audit --> zenoh : "smallaios/v1/audit"
+mon --> zenoh : "smallaios/v1/metrics"
+ir --> zenoh : "smallaios/v1/incidents"
+
+' Denied flows (red dashed)
+onnx -[#red,dashed]-> netbound : "DENIED\n(AC-4)"
+ipc -[#red,dashed]-> gpubound : "DENIED\n(AC-4)"
+busbound -[#red,dashed]-> onnx : "DENIED\n(AC-4)"
+
+@enduml
