@@ -27,7 +27,17 @@ pub mod boundary;
 pub mod capability;
 pub mod compliance;
 pub mod crypto;
+#[cfg(feature = "formal-gate")]
+pub mod enforcement;
+#[cfg(feature = "formal-gate")]
+pub mod gate;
 pub mod incident;
+#[cfg(feature = "formal-gate")]
+pub mod labels;
+#[cfg(feature = "formal-gate")]
+pub mod message_types;
 pub mod monitoring;
+#[cfg(feature = "formal-gate")]
+pub mod policy;
 pub mod ot;
 pub mod supply_chain;

@@ -1,42 +1,42 @@
 ## 1. Foundation Types and Feature Flag
 
-- [ ] 1.1 Add `formal-gate` feature flag to `security/Cargo.toml` (default off)
-- [ ] 1.2 Implement `IntegrityLevel` enum (Low/Medium/High) with `PartialOrd`, `Ord`, `from_u8`, `as_str` in `security/src/labels.rs`
-- [ ] 1.3 Implement `MessageTypeId(u32)` newtype in `security/src/labels.rs`
-- [ ] 1.4 Implement `SecurityLabel` struct (classification + integrity + message_type) in `security/src/labels.rs`; compiles to ZST when `formal-gate` disabled
-- [ ] 1.5 Implement `EnforcementMode` enum (Enforcing/Permissive) in `security/src/enforcement.rs`
-- [ ] 1.6 Implement `GateVerdict` enum (Allowed/Denied/PermissivePass) and `DenyReason` enum in `security/src/enforcement.rs`
-- [ ] 1.7 Export new modules from `security/src/lib.rs`; gate all new modules behind `#[cfg(feature = "formal-gate")]`
-- [ ] 1.8 Unit tests for all foundation types: construction, comparison, ordering, serialization, feature-flag conditional compilation
+- [x] 1.1 Add `formal-gate` feature flag to `security/Cargo.toml` (default off)
+- [x] 1.2 Implement `IntegrityLevel` enum (Low/Medium/High) with `PartialOrd`, `Ord`, `from_u8`, `as_str` in `security/src/labels.rs`
+- [x] 1.3 Implement `MessageTypeId(u32)` newtype in `security/src/labels.rs`
+- [x] 1.4 Implement `SecurityLabel` struct (classification + integrity + message_type) in `security/src/labels.rs`; compiles to ZST when `formal-gate` disabled
+- [x] 1.5 Implement `EnforcementMode` enum (Enforcing/Permissive) in `security/src/enforcement.rs`
+- [x] 1.6 Implement `GateVerdict` enum (Allowed/Denied/PermissivePass) and `DenyReason` enum in `security/src/enforcement.rs`
+- [x] 1.7 Export new modules from `security/src/lib.rs`; gate all new modules behind `#[cfg(feature = "formal-gate")]`
+- [x] 1.8 Unit tests for all foundation types: construction, comparison, ordering, serialization, feature-flag conditional compilation
 
 ## 2. Verified Message Types and Invariant System
 
-- [ ] 2.1 Implement `Invariant` enum (MaxRank, MinRank, AllowedDtype, MaxElements, MaxPayloadBytes, ValueRange, EnumMembership, NonZeroDimensions, MonotonicTimestamp, RateLimit) in `security/src/message_types.rs`
-- [ ] 2.2 Implement `SchemaHash` type alias (`[u8; 32]`) and `VerifiedMessageType` struct in `security/src/message_types.rs`
-- [ ] 2.3 Implement `InvariantChecker` — stateless checks (rank, dtype, elements, payload size, value range, enum, dimensions) and stateful checks (monotonic timestamp, rate limit) with per-type state tracking
-- [ ] 2.4 Implement `MessageTypeRegistry` — fixed-size array (`[Option<VerifiedMessageType>; 64]`), register, lookup by ID, iterate, count
-- [ ] 2.5 Implement the default message type catalog (11 types: InferenceTensorInput, InferenceTensorOutput, InferenceRequest, InferenceResponse, BusSensorFrame, BusActuatorCommand, GpuTensorTransfer, GpuInferenceResult, K8sPodCommand, K8sHealthMetrics, IpcPubSubMessage) as `const` entries
-- [ ] 2.6 Unit tests: registry CRUD, invariant checking (all 10 invariant kinds), stateful invariant state tracking, catalog completeness
+- [x] 2.1 Implement `Invariant` enum (MaxRank, MinRank, AllowedDtype, MaxElements, MaxPayloadBytes, ValueRange, EnumMembership, NonZeroDimensions, MonotonicTimestamp, RateLimit) in `security/src/message_types.rs`
+- [x] 2.2 Implement `SchemaHash` type alias (`[u8; 32]`) and `VerifiedMessageType` struct in `security/src/message_types.rs`
+- [x] 2.3 Implement `InvariantChecker` — stateless checks (rank, dtype, elements, payload size, value range, enum, dimensions) and stateful checks (monotonic timestamp, rate limit) with per-type state tracking
+- [x] 2.4 Implement `MessageTypeRegistry` — fixed-size array (`[Option<VerifiedMessageType>; 64]`), register, lookup by ID, iterate, count
+- [x] 2.5 Implement the default message type catalog (11 types: InferenceTensorInput, InferenceTensorOutput, InferenceRequest, InferenceResponse, BusSensorFrame, BusActuatorCommand, GpuTensorTransfer, GpuInferenceResult, K8sPodCommand, K8sHealthMetrics, IpcPubSubMessage) as `const` entries
+- [x] 2.6 Unit tests: registry CRUD, invariant checking (all 10 invariant kinds), stateful invariant state tracking, catalog completeness
 
 ## 3. Security Gate
 
-- [ ] 3.1 Implement `BoundaryCrossing` struct (boundary, direction, task_id, label, data reference) in `security/src/gate.rs`
-- [ ] 3.2 Implement `SecurityGate` struct with policy reference, default mode, and statistics counters
-- [ ] 3.3 Implement `SecurityGate::check()` — 5-layer verification pipeline: (1) capability, (2) classification, (3) integrity (Biba), (4) message type + invariants, (5) mode resolution → verdict
-- [ ] 3.4 Implement hierarchical mode resolution: type mode → boundary mode → global mode
+- [x] 3.1 Implement `BoundaryCrossing` struct (boundary, direction, task_id, label, data reference) in `security/src/gate.rs`
+- [x] 3.2 Implement `SecurityGate` struct with policy reference, default mode, and statistics counters
+- [x] 3.3 Implement `SecurityGate::check()` — 5-layer verification pipeline: (1) capability, (2) classification, (3) integrity (Biba), (4) message type + invariants, (5) mode resolution → verdict
+- [x] 3.4 Implement hierarchical mode resolution: type mode → boundary mode → global mode
 - [ ] 3.5 Implement audit emission on every gate decision (integrate with `security/src/audit/`)
 - [ ] 3.6 Implement no-op `SecurityGate` when `formal-gate` disabled (unconditional `Allowed`, ZST)
-- [ ] 3.7 Unit tests: all 5 layers independently, layer composition, mode resolution hierarchy, Enforcing vs Permissive verdicts, audit emission, no-op path, statistics counters
+- [x] 3.7 Unit tests: all 5 layers independently, layer composition, mode resolution hierarchy, Enforcing vs Permissive verdicts, audit emission, no-op path, statistics counters
 
 ## 4. Security Policy and Loading
 
-- [ ] 4.1 Implement `ModelWhitelist` — fixed-size array (`[[u8; 32]; 32]`), add, contains, count
-- [ ] 4.2 Implement `SecurityPolicy` struct (type_registry, model_whitelist, boundary_modes, global_mode, policy_hash, policy_signature, version)
-- [ ] 4.3 Implement compiled-in default `SecurityPolicy` as `const` (all default types, Permissive modes, zero signature)
-- [ ] 4.4 Implement `SecurityPolicy::load_from_blob()` — parse magic (0x53504F4C), version, ML-DSA-65 signature, payload; verify signature; deserialize
-- [ ] 4.5 Implement `SecurityPolicy::remote_update()` — verify signature, validate consistency (no enforcement demotion, no duplicate type IDs), atomic swap, retain old policy for rollback
-- [ ] 4.6 Implement model re-validation after policy swap: check all loaded models against new whitelist, unload non-compliant models
-- [ ] 4.7 Unit tests: blob parsing (valid, invalid magic, bad signature), remote update (accept, reject demotion, reject bad signature), model whitelist CRUD, rollback
+- [x] 4.1 Implement `ModelWhitelist` — fixed-size array (`[[u8; 32]; 32]`), add, contains, count
+- [x] 4.2 Implement `SecurityPolicy` struct (type_registry, model_whitelist, boundary_modes, global_mode, policy_hash, policy_signature, version)
+- [x] 4.3 Implement compiled-in default `SecurityPolicy` as `const` (all default types, Permissive modes, zero signature)
+- [x] 4.4 Implement `SecurityPolicy::load_from_blob()` — parse magic (0x53504F4C), version, ML-DSA-65 signature, payload; verify signature; deserialize
+- [x] 4.5 Implement `SecurityPolicy::remote_update()` — verify signature, validate consistency (no enforcement demotion, no duplicate type IDs), atomic swap, retain old policy for rollback
+- [x] 4.6 Implement model re-validation after policy swap: check all loaded models against new whitelist, unload non-compliant models
+- [x] 4.7 Unit tests: blob parsing (valid, invalid magic, bad signature), remote update (accept, reject demotion, reject bad signature), model whitelist CRUD, rollback
 
 ## 5. Boundary Integration
 
