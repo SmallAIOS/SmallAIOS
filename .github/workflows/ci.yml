@@ -42,6 +42,7 @@ jobs:
           -p smallaios-posix
           -p smallaios-container
           -p smallaios-bus
+          -p smallaios-peripheral --all-features
           -p smallaios-bench
           -- -D warnings
 
@@ -106,6 +107,7 @@ jobs:
           -p smallaios-posix
           -p smallaios-container
           -p smallaios-bus
+          -p smallaios-peripheral --all-features
           -p smallaios-bench
 
   riscv-qemu-smoke:
@@ -205,6 +207,12 @@ jobs:
             QuicMigration
             BuddyAllocator
             Scheduler
+            I2CArbitration
+            SPIProtocol
+            GPIOInterrupt
+            UARTFlowControl
+            CSIFrameBuffer
+            I2SRingBuffer
           )
           for model in "${models[@]}"; do
             echo "=== Verifying $model ==="
@@ -240,6 +248,7 @@ jobs:
           -p smallaios-posix
           -p smallaios-container
           -p smallaios-bus
+          -p smallaios-peripheral --all-features
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
         with:
