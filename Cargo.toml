@@ -4,6 +4,7 @@ members = [
     "kernel",
     "arch/x86_64",
     "arch/aarch64",
+    "arch/riscv64",
     "arch/nvidia",
     "onnx-rt",
     "ipc",
@@ -11,6 +12,8 @@ members = [
     "posix",
     "security",
     "container",
+    "bus",
+    "bench",
 ]
 
 [workspace.package]

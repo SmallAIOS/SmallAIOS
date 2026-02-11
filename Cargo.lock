@@ -17,7 +17,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallaios-arch-riscv64"
+version = "0.1.0"
+dependencies = [
+ "smallaios-kernel",
+]
+
+[[package]]
 name = "smallaios-arch-x86_64"
+version = "0.1.0"
+dependencies = [
+ "smallaios-kernel",
+]
+
+[[package]]
+name = "smallaios-bench"
+version = "0.1.0"
+dependencies = [
+ "smallaios-kernel",
+]
+
+[[package]]
+name = "smallaios-bus"
 version = "0.1.0"
 dependencies = [
  "smallaios-kernel",

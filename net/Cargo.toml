@@ -6,9 +6,10 @@ license.workspace = true
 description = "SmallAIOS native network stack: IPv4, IPv6, TCP, UDP, ICMPv4/v6"
 
 [features]
-default = ["ipv4", "ipv6"]
+default = ["ipv4", "ipv6", "quic"]
 ipv4 = []
 ipv6 = []
+quic = []
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }
