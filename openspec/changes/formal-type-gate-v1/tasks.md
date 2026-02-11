@@ -24,8 +24,8 @@
 - [x] 3.2 Implement `SecurityGate` struct with policy reference, default mode, and statistics counters
 - [x] 3.3 Implement `SecurityGate::check()` — 5-layer verification pipeline: (1) capability, (2) classification, (3) integrity (Biba), (4) message type + invariants, (5) mode resolution → verdict
 - [x] 3.4 Implement hierarchical mode resolution: type mode → boundary mode → global mode
-- [ ] 3.5 Implement audit emission on every gate decision (integrate with `security/src/audit/`)
-- [ ] 3.6 Implement no-op `SecurityGate` when `formal-gate` disabled (unconditional `Allowed`, ZST)
+- [x] 3.5 Implement audit emission on every gate decision (integrate with `security/src/audit/`)
+- [x] 3.6 Implement no-op `SecurityGate` when `formal-gate` disabled (unconditional `Allowed`, ZST)
 - [x] 3.7 Unit tests: all 5 layers independently, layer composition, mode resolution hierarchy, Enforcing vs Permissive verdicts, audit emission, no-op path, statistics counters
 
 ## 4. Security Policy and Loading
@@ -40,36 +40,36 @@
 
 ## 5. Boundary Integration
 
-- [ ] 5.1 Extend `DataFlow` struct with `expected_message_type: Option<MessageTypeId>` field; update `CROSS_BOUNDARY_FLOWS` entries; ensure existing tests pass
-- [ ] 5.2 Extend `BoundaryDefinition` struct with `default_mode: EnforcementMode` field; update `BOUNDARY_DEFINITIONS` entries (default to Permissive); ensure existing tests pass
-- [ ] 5.3 Add `SecurityLabel` field to IPC `Message` struct in `ipc/src/pubsub.rs`; conditionally compiled (`formal-gate`)
-- [ ] 5.4 Add gate check call site at network boundary (inbound inference requests in `ipc/src/inference_proto.rs` or `net/` ingress path)
-- [ ] 5.5 Add gate check call site at model loading (`onnx-rt/src/session.rs` — `Session::initialize()` validates model hash against policy whitelist and I/O shapes against registered types)
-- [ ] 5.6 Integration tests: end-to-end gate check across Network→Kernel flow, Bus→Kernel flow, Kernel→GPU flow; Enforcing rejection; Permissive pass-through
+- [x] 5.1 Extend `DataFlow` struct with `expected_message_type: Option<MessageTypeId>` field; update `CROSS_BOUNDARY_FLOWS` entries; ensure existing tests pass
+- [x] 5.2 Extend `BoundaryDefinition` struct with `default_mode: EnforcementMode` field; update `BOUNDARY_DEFINITIONS` entries (default to Permissive); ensure existing tests pass
+- [x] 5.3 Add `SecurityLabel` field to IPC `Message` struct in `ipc/src/pubsub.rs`; conditionally compiled (`formal-gate`)
+- [x] 5.4 Add gate check call site at network boundary (inbound inference requests in `ipc/src/inference_proto.rs` or `net/` ingress path)
+- [x] 5.5 Add gate check call site at model loading (`onnx-rt/src/session.rs` — `Session::initialize()` validates model hash against policy whitelist and I/O shapes against registered types)
+- [x] 5.6 Integration tests: end-to-end gate check across Network→Kernel flow, Bus→Kernel flow, Kernel→GPU flow; Enforcing rejection; Permissive pass-through
 
 ## 6. Boot Sequence Integration
 
-- [ ] 6.1 Add policy loading substep within `SecurityReady` phase in `container/src/boot.rs`: load default policy, check for external blob, verify and swap if present, initialize SecurityGate
-- [ ] 6.2 Add model-vs-policy validation in `ModelsLoaded` phase: hash check, I/O shape conformance, capability grant gated on validation
-- [ ] 6.3 Update `ContainerConfig` in `container/src/config.rs` with policy-related fields: `policy_blob_address`, `policy_verification_key`, `formal_gate_enabled`
-- [ ] 6.4 Integration tests: boot with default policy, boot with external blob (valid and invalid), model rejection on whitelist miss
+- [x] 6.1 Add policy loading substep within `SecurityReady` phase in `container/src/boot.rs`: load default policy, check for external blob, verify and swap if present, initialize SecurityGate
+- [x] 6.2 Add model-vs-policy validation in `ModelsLoaded` phase: hash check, I/O shape conformance, capability grant gated on validation
+- [x] 6.3 Update `ContainerConfig` in `container/src/config.rs` with policy-related fields: `policy_blob_address`, `policy_verification_key`, `formal_gate_enabled`
+- [x] 6.4 Integration tests: boot with default policy, boot with external blob (valid and invalid), model rejection on whitelist miss
 
 ## 7. Formal Verification Artifacts
 
-- [ ] 7.1 Write `formal/lean4/IntegrityLattice.lean` — prove Low ≤ Medium ≤ High forms total order; prove Biba no-write-up property
-- [ ] 7.2 Write `formal/lean4/MessageTypeProperties.lean` — prove registry well-formedness (no duplicate IDs); prove invariant check totality and determinism
-- [ ] 7.3 Write `formal/lean4/TensorTypeInvariants.lean` — prove tensor invariants (rank bounds, dtype membership) are sound with respect to ONNX type system
-- [ ] 7.4 Write `formal/lean4/LabelComposition.lean` — prove SecurityLabel comparison composes correctly with ClassificationLevel and IntegrityLevel orderings
-- [ ] 7.5 Write `formal/tla/SecurityGate.tla` + `.cfg` — model gate state machine; verify safety (no unchecked crossing), monotonicity (mode transitions), atomicity (policy swap), liveness (checks terminate)
-- [ ] 7.6 Write `formal/tla/PolicyUpdate.tla` + `.cfg` — model remote update protocol; verify authentication-before-swap, atomicity, rollback, monotonicity
-- [ ] 7.7 Run TLC on both TLA+ models; verify all properties pass with no counterexamples
-- [ ] 7.8 Compute SHA-3-256 hashes of all proof files; update default message type catalog with correct `schema_hash` values
+- [x] 7.1 Write `formal/lean4/IntegrityLattice.lean` — prove Low ≤ Medium ≤ High forms total order; prove Biba no-write-up property
+- [x] 7.2 Write `formal/lean4/MessageTypeProperties.lean` — prove registry well-formedness (no duplicate IDs); prove invariant check totality and determinism
+- [x] 7.3 Write `formal/lean4/TensorTypeInvariants.lean` — prove tensor invariants (rank bounds, dtype membership) are sound with respect to ONNX type system
+- [x] 7.4 Write `formal/lean4/LabelComposition.lean` — prove SecurityLabel comparison composes correctly with ClassificationLevel and IntegrityLevel orderings
+- [x] 7.5 Write `formal/tla/SecurityGate.tla` + `.cfg` — model gate state machine; verify safety (no unchecked crossing), monotonicity (mode transitions), atomicity (policy swap), liveness (checks terminate)
+- [x] 7.6 Write `formal/tla/PolicyUpdate.tla` + `.cfg` — model remote update protocol; verify authentication-before-swap, atomicity, rollback, monotonicity
+- [x] 7.7 Run TLC on both TLA+ models; verify all properties pass with no counterexamples
+- [x] 7.8 Compute SHA-3-256 hashes of all proof files; update default message type catalog with correct `schema_hash` values
 
 ## 8. Testing and CI
 
-- [ ] 8.1 Achieve 100% MC/DC coverage on gate.rs, labels.rs, enforcement.rs, message_types.rs, policy.rs
-- [ ] 8.2 Fuzz invariant checking with random tensor metadata (shape, dtype, element count, payload sizes)
-- [ ] 8.3 Fuzz policy blob parsing with random byte sequences — verify no panics
-- [ ] 8.4 Add `formal-gate` feature to CI matrix: run full test suite with feature enabled and disabled
-- [ ] 8.5 Add TLA+ SecurityGate and PolicyUpdate models to CI verification job
-- [ ] 8.6 Verify binary size impact: measure kernel binary with and without `formal-gate`, ensure < 15 MB
+- [x] 8.1 Achieve 100% MC/DC coverage on gate.rs, labels.rs, enforcement.rs, message_types.rs, policy.rs
+- [x] 8.2 Fuzz invariant checking with random tensor metadata (shape, dtype, element count, payload sizes)
+- [x] 8.3 Fuzz policy blob parsing with random byte sequences — verify no panics
+- [x] 8.4 Add `formal-gate` feature to CI matrix: run full test suite with feature enabled and disabled
+- [x] 8.5 Add TLA+ SecurityGate and PolicyUpdate models to CI verification job
+- [x] 8.6 Verify binary size impact: measure kernel binary with and without `formal-gate`, ensure < 15 MB

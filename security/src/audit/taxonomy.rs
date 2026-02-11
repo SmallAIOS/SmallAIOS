@@ -24,6 +24,8 @@ pub enum EventCategory {
     Inference = 3,
     /// System-level events (boot, shutdown, watchdog).
     System = 4,
+    /// Security gate events (formal methods firewall decisions).
+    Security = 5,
 }
 
 impl EventCategory {
@@ -35,6 +37,7 @@ impl EventCategory {
             2 => Some(Self::Resource),
             3 => Some(Self::Inference),
             4 => Some(Self::System),
+            5 => Some(Self::Security),
             _ => None,
         }
     }
@@ -47,6 +50,7 @@ impl EventCategory {
             Self::Resource => "resource",
             Self::Inference => "inference",
             Self::System => "system",
+            Self::Security => "security",
         }
     }
 }
@@ -90,6 +94,16 @@ pub enum EventSubcategory {
     Shutdown = 41,
     /// Watchdog event (reset/warning).
     Watchdog = 42,
+
+    // Security gate subcategories
+    /// Gate check passed — all layers verified.
+    GateAllowed = 50,
+    /// Gate check denied — a verification layer failed (Enforcing mode).
+    GateDenied = 51,
+    /// Gate check would have denied but mode is Permissive.
+    GatePermissivePass = 52,
+    /// Security policy was updated.
+    PolicyUpdate = 53,
 }
 
 impl EventSubcategory {
@@ -109,6 +123,10 @@ impl EventSubcategory {
             40 => Some(Self::Boot),
             41 => Some(Self::Shutdown),
             42 => Some(Self::Watchdog),
+            50 => Some(Self::GateAllowed),
+            51 => Some(Self::GateDenied),
+            52 => Some(Self::GatePermissivePass),
+            53 => Some(Self::PolicyUpdate),
             _ => None,
         }
     }
@@ -129,6 +147,10 @@ impl EventSubcategory {
             Self::Boot => "boot",
             Self::Shutdown => "shutdown",
             Self::Watchdog => "watchdog",
+            Self::GateAllowed => "gate-allowed",
+            Self::GateDenied => "gate-denied",
+            Self::GatePermissivePass => "gate-permissive-pass",
+            Self::PolicyUpdate => "policy-update",
         }
     }
 
@@ -140,6 +162,10 @@ impl EventSubcategory {
             Self::Allocation | Self::Exhaustion => EventCategory::Resource,
             Self::Request | Self::Completion | Self::Timeout => EventCategory::Inference,
             Self::Boot | Self::Shutdown | Self::Watchdog => EventCategory::System,
+            Self::GateAllowed
+            | Self::GateDenied
+            | Self::GatePermissivePass
+            | Self::PolicyUpdate => EventCategory::Security,
         }
     }
 }
@@ -268,6 +294,38 @@ impl AuditEventType {
         }
     }
 
+    /// Security gate: all layers passed.
+    pub const fn gate_allowed() -> Self {
+        Self {
+            category: EventCategory::Security,
+            subcategory: EventSubcategory::GateAllowed,
+        }
+    }
+
+    /// Security gate: denied in Enforcing mode.
+    pub const fn gate_denied() -> Self {
+        Self {
+            category: EventCategory::Security,
+            subcategory: EventSubcategory::GateDenied,
+        }
+    }
+
+    /// Security gate: would have denied but Permissive mode.
+    pub const fn gate_permissive_pass() -> Self {
+        Self {
+            category: EventCategory::Security,
+            subcategory: EventSubcategory::GatePermissivePass,
+        }
+    }
+
+    /// Security policy update event.
+    pub const fn policy_update() -> Self {
+        Self {
+            category: EventCategory::Security,
+            subcategory: EventSubcategory::PolicyUpdate,
+        }
+    }
+
     /// Encode as a two-byte value: [category, subcategory].
     pub fn to_bytes(&self) -> [u8; 2] {
         [self.category as u8, self.subcategory as u8]
@@ -287,11 +345,11 @@ mod tests {
 
     #[test]
     fn category_from_u8_roundtrip() {
-        for i in 0..=4u8 {
+        for i in 0..=5u8 {
             let cat = EventCategory::from_u8(i).unwrap();
             assert_eq!(cat as u8, i);
         }
-        assert!(EventCategory::from_u8(5).is_none());
+        assert!(EventCategory::from_u8(6).is_none());
         assert!(EventCategory::from_u8(255).is_none());
     }
 
@@ -337,6 +395,22 @@ mod tests {
         assert_eq!(EventSubcategory::Boot.category(), EventCategory::System);
         assert_eq!(EventSubcategory::Shutdown.category(), EventCategory::System);
         assert_eq!(EventSubcategory::Watchdog.category(), EventCategory::System);
+        assert_eq!(
+            EventSubcategory::GateAllowed.category(),
+            EventCategory::Security
+        );
+        assert_eq!(
+            EventSubcategory::GateDenied.category(),
+            EventCategory::Security
+        );
+        assert_eq!(
+            EventSubcategory::GatePermissivePass.category(),
+            EventCategory::Security
+        );
+        assert_eq!(
+            EventSubcategory::PolicyUpdate.category(),
+            EventCategory::Security
+        );
     }
 
     #[test]
@@ -373,6 +447,10 @@ mod tests {
             AuditEventType::system_boot(),
             AuditEventType::system_shutdown(),
             AuditEventType::system_watchdog(),
+            AuditEventType::gate_allowed(),
+            AuditEventType::gate_denied(),
+            AuditEventType::gate_permissive_pass(),
+            AuditEventType::policy_update(),
         ];
         for et in &events {
             assert_eq!(et.subcategory.category(), et.category);
@@ -384,7 +462,7 @@ mod tests {
 
     #[test]
     fn subcategory_from_u8_all_valid() {
-        let valid = [0, 1, 2, 10, 11, 20, 21, 30, 31, 32, 40, 41, 42];
+        let valid = [0, 1, 2, 10, 11, 20, 21, 30, 31, 32, 40, 41, 42, 50, 51, 52, 53];
         for v in valid {
             assert!(
                 EventSubcategory::from_u8(v).is_some(),
@@ -396,7 +474,7 @@ mod tests {
 
     #[test]
     fn subcategory_from_u8_invalid() {
-        let invalid = [3, 5, 12, 22, 33, 43, 100, 255];
+        let invalid = [3, 5, 12, 22, 33, 43, 54, 100, 255];
         for v in invalid {
             assert!(
                 EventSubcategory::from_u8(v).is_none(),
@@ -413,6 +491,7 @@ mod tests {
         assert_eq!(EventCategory::Resource.as_str(), "resource");
         assert_eq!(EventCategory::Inference.as_str(), "inference");
         assert_eq!(EventCategory::System.as_str(), "system");
+        assert_eq!(EventCategory::Security.as_str(), "security");
     }
 
     #[test]
@@ -422,5 +501,9 @@ mod tests {
         assert_eq!(EventSubcategory::Exhaustion.as_str(), "exhaustion");
         assert_eq!(EventSubcategory::Timeout.as_str(), "timeout");
         assert_eq!(EventSubcategory::Watchdog.as_str(), "watchdog");
+        assert_eq!(EventSubcategory::GateAllowed.as_str(), "gate-allowed");
+        assert_eq!(EventSubcategory::GateDenied.as_str(), "gate-denied");
+        assert_eq!(EventSubcategory::GatePermissivePass.as_str(), "gate-permissive-pass");
+        assert_eq!(EventSubcategory::PolicyUpdate.as_str(), "policy-update");
     }
 }

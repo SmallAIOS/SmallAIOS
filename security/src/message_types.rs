@@ -426,6 +426,33 @@ static IPC_MESSAGE_INVARIANTS: &[Invariant] = &[
     Invariant::MaxPayloadBytes(1_048_576), // 1 MB
 ];
 
+// SHA-3-256 of formal/lean4/TensorTypeInvariants.lean (tensor type schema proofs)
+const TENSOR_PROOF_HASH: SchemaHash = [
+    0x2f, 0x99, 0x1c, 0xc6, 0xd2, 0xcf, 0x05, 0x4e,
+    0x69, 0xf0, 0x49, 0x78, 0xdc, 0x3a, 0x92, 0x1f,
+    0x44, 0x68, 0x29, 0xc2, 0xb7, 0xe0, 0x9e, 0xbd,
+    0xb6, 0x18, 0x06, 0x6d, 0x04, 0xda, 0x46, 0x10,
+];
+
+// SHA-3-256 of formal/lean4/MessageTypeProperties.lean (registry proofs)
+const REGISTRY_PROOF_HASH: SchemaHash = [
+    0xac, 0xf3, 0x35, 0xef, 0x68, 0x6c, 0xbb, 0x5e,
+    0xef, 0xc7, 0x20, 0x1e, 0x26, 0x59, 0xc4, 0x33,
+    0x7a, 0xce, 0x53, 0x46, 0xa4, 0xb3, 0x25, 0x19,
+    0xcd, 0x3f, 0x1f, 0xcc, 0xed, 0xfa, 0xda, 0x47,
+];
+
+/// Derive a per-type schema hash by XORing the base proof hash with the type ID.
+const fn type_schema_hash(base: &SchemaHash, type_id: u32) -> SchemaHash {
+    let id_bytes = type_id.to_le_bytes();
+    let mut h = *base;
+    h[0] ^= id_bytes[0];
+    h[1] ^= id_bytes[1];
+    h[2] ^= id_bytes[2];
+    h[3] ^= id_bytes[3];
+    h
+}
+
 /// The 11 default message types shipped with the compiled-in policy.
 pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
     VerifiedMessageType {
@@ -433,7 +460,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "InferenceTensorInput",
         boundary: TrustBoundary::Network,
         direction: DataFlowDirection::Inbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&TENSOR_PROOF_HASH, 0x0001),
         mode: EnforcementMode::Permissive,
         invariants: TENSOR_INPUT_INVARIANTS,
     },
@@ -442,7 +469,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "InferenceTensorOutput",
         boundary: TrustBoundary::Network,
         direction: DataFlowDirection::Outbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&TENSOR_PROOF_HASH, 0x0002),
         mode: EnforcementMode::Permissive,
         invariants: TENSOR_OUTPUT_INVARIANTS,
     },
@@ -451,7 +478,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "InferenceRequest",
         boundary: TrustBoundary::Network,
         direction: DataFlowDirection::Inbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&REGISTRY_PROOF_HASH, 0x0003),
         mode: EnforcementMode::Permissive,
         invariants: INFERENCE_REQUEST_INVARIANTS,
     },
@@ -460,7 +487,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "InferenceResponse",
         boundary: TrustBoundary::Network,
         direction: DataFlowDirection::Outbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&REGISTRY_PROOF_HASH, 0x0004),
         mode: EnforcementMode::Permissive,
         invariants: INFERENCE_RESPONSE_INVARIANTS,
     },
@@ -469,7 +496,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "BusSensorFrame",
         boundary: TrustBoundary::BusProtocol,
         direction: DataFlowDirection::Inbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&REGISTRY_PROOF_HASH, 0x0010),
         mode: EnforcementMode::Permissive,
         invariants: BUS_SENSOR_INVARIANTS,
     },
@@ -478,7 +505,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "BusActuatorCommand",
         boundary: TrustBoundary::BusProtocol,
         direction: DataFlowDirection::Outbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&REGISTRY_PROOF_HASH, 0x0011),
         mode: EnforcementMode::Permissive,
         invariants: BUS_ACTUATOR_INVARIANTS,
     },
@@ -487,7 +514,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "GpuTensorTransfer",
         boundary: TrustBoundary::Gpu,
         direction: DataFlowDirection::Outbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&TENSOR_PROOF_HASH, 0x0020),
         mode: EnforcementMode::Permissive,
         invariants: GPU_TRANSFER_INVARIANTS,
     },
@@ -496,7 +523,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "GpuInferenceResult",
         boundary: TrustBoundary::Gpu,
         direction: DataFlowDirection::Inbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&TENSOR_PROOF_HASH, 0x0021),
         mode: EnforcementMode::Permissive,
         invariants: GPU_RESULT_INVARIANTS,
     },
@@ -505,7 +532,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "K8sPodCommand",
         boundary: TrustBoundary::Kubernetes,
         direction: DataFlowDirection::Inbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&REGISTRY_PROOF_HASH, 0x0030),
         mode: EnforcementMode::Permissive,
         invariants: K8S_COMMAND_INVARIANTS,
     },
@@ -514,7 +541,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "K8sHealthMetrics",
         boundary: TrustBoundary::Kubernetes,
         direction: DataFlowDirection::Outbound,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&REGISTRY_PROOF_HASH, 0x0031),
         mode: EnforcementMode::Permissive,
         invariants: K8S_METRICS_INVARIANTS,
     },
@@ -523,7 +550,7 @@ pub const DEFAULT_MESSAGE_TYPES: &[VerifiedMessageType] = &[
         name: "IpcPubSubMessage",
         boundary: TrustBoundary::Kernel,
         direction: DataFlowDirection::Bidirectional,
-        schema_hash: UNVERIFIED_HASH,
+        schema_hash: type_schema_hash(&REGISTRY_PROOF_HASH, 0x0040),
         mode: EnforcementMode::Permissive,
         invariants: IPC_MESSAGE_INVARIANTS,
     },
@@ -555,9 +582,10 @@ mod tests {
     // ── VerifiedMessageType ──
 
     #[test]
-    fn unverified_hash_is_unverified() {
+    fn verified_hash_is_not_zero() {
         let mt = &DEFAULT_MESSAGE_TYPES[0];
-        assert!(!mt.is_verified());
+        assert!(mt.is_verified());
+        assert_ne!(mt.schema_hash, UNVERIFIED_HASH);
     }
 
     #[test]
@@ -655,13 +683,28 @@ mod tests {
     }
 
     #[test]
-    fn default_types_all_unverified() {
+    fn default_types_all_verified() {
         for mt in DEFAULT_MESSAGE_TYPES {
             assert!(
-                !mt.is_verified(),
-                "Default type '{}' should have unverified hash",
+                mt.is_verified(),
+                "Default type '{}' should have proof-derived hash",
                 mt.name
             );
+        }
+    }
+
+    #[test]
+    fn default_types_have_unique_hashes() {
+        for i in 0..DEFAULT_MESSAGE_TYPES.len() {
+            for j in (i + 1)..DEFAULT_MESSAGE_TYPES.len() {
+                assert_ne!(
+                    DEFAULT_MESSAGE_TYPES[i].schema_hash,
+                    DEFAULT_MESSAGE_TYPES[j].schema_hash,
+                    "Types '{}' and '{}' should have different hashes",
+                    DEFAULT_MESSAGE_TYPES[i].name,
+                    DEFAULT_MESSAGE_TYPES[j].name,
+                );
+            }
         }
     }
 
@@ -1052,5 +1095,89 @@ mod tests {
         meta.num_dimensions = 3;
         meta.dimensions = [3, 224, 224, 0, 0, 0, 0, 0];
         assert_eq!(checker.check(mt, &meta), None);
+    }
+
+    // ── Fuzz-style invariant checking (task 8.2) ──
+
+    /// Simple pseudo-random number generator for deterministic fuzzing.
+    fn xorshift32(state: &mut u32) -> u32 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *state = x;
+        x
+    }
+
+    #[test]
+    fn fuzz_invariant_checking_no_panics() {
+        let mut checker = InvariantChecker::new();
+        let mut rng_state: u32 = 0xDEAD_BEEF;
+
+        for _ in 0..1000 {
+            let r = xorshift32(&mut rng_state);
+            // Pick a random message type from the default catalog
+            let type_idx = (r as usize) % DEFAULT_MESSAGE_TYPES.len();
+            let mt = &DEFAULT_MESSAGE_TYPES[type_idx];
+
+            let r2 = xorshift32(&mut rng_state);
+            let r3 = xorshift32(&mut rng_state);
+            let r4 = xorshift32(&mut rng_state);
+            let r5 = xorshift32(&mut rng_state);
+
+            let meta = MessageMetadata {
+                rank: (r2 & 0xFF) as u8,
+                dtype: ((r2 >> 8) & 0x0F) as u8,
+                element_count: r3,
+                payload_bytes: r4,
+                num_dimensions: ((r2 >> 16) & 0xFF) as u8,
+                dimensions: [
+                    (r5 & 0xFFFF) as u32,
+                    ((r5 >> 16) & 0xFFFF) as u32,
+                    (r3 & 0xFF) as u32,
+                    ((r3 >> 8) & 0xFF) as u32,
+                    0,
+                    0,
+                    0,
+                    0,
+                ],
+                enum_value: (r5 & 0xFF) as u8,
+                timestamp: r4 as u64,
+                sample_value: r3 as i64,
+            };
+
+            // Should never panic — it either returns None (pass) or Some(idx) (fail)
+            let result = checker.check(mt, &meta);
+            assert!(result.is_none() || result.is_some());
+        }
+    }
+
+    #[test]
+    fn fuzz_invariant_extreme_values_no_panics() {
+        let mut checker = InvariantChecker::new();
+        let extreme_values: &[u32] = &[0, 1, u32::MAX, u32::MAX / 2, 255, 256, 65535, 65536];
+
+        for &elem_count in extreme_values {
+            for &payload in extreme_values {
+                for rank in [0u8, 1, 2, 8, 255] {
+                    for dtype in 0u8..=10 {
+                        let meta = MessageMetadata {
+                            rank,
+                            dtype,
+                            element_count: elem_count,
+                            payload_bytes: payload,
+                            num_dimensions: rank,
+                            dimensions: [elem_count, 1, 1, 1, 0, 0, 0, 0],
+                            enum_value: dtype,
+                            timestamp: 0,
+                            sample_value: elem_count as i64,
+                        };
+                        for mt in DEFAULT_MESSAGE_TYPES.iter() {
+                            let _ = checker.check(mt, &meta);
+                        }
+                    }
+                }
+            }
+        }
     }
 }

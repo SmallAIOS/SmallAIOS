@@ -38,6 +38,10 @@ pub struct Message {
     pub timestamp: u64,
     /// Identity of the publisher that created this message.
     pub publisher: PublisherId,
+    /// Security label for formal methods gate verification.
+    /// Only present when the `formal-gate` feature is enabled.
+    #[cfg(feature = "formal-gate")]
+    pub security_label: smallaios_security::labels::SecurityLabel,
 }
 
 /// A bounded FIFO queue of messages for a single subscriber.
@@ -122,12 +126,16 @@ impl Publisher {
     /// Build a [`Message`] from the given payload and timestamp.
     ///
     /// The message inherits this publisher's key expression and identity.
+    /// When `formal-gate` is enabled, the message is assigned a default
+    /// untrusted/public security label.
     pub fn create_message(&self, payload: Vec<u8>, timestamp: u64) -> Message {
         Message {
             key: self.key_expr.clone(),
             payload,
             timestamp,
             publisher: self.id,
+            #[cfg(feature = "formal-gate")]
+            security_label: smallaios_security::labels::SecurityLabel::untrusted_public(),
         }
     }
 }
@@ -187,6 +195,19 @@ mod tests {
         KeyExpr::new(s).unwrap()
     }
 
+    /// Helper to construct a Message in tests, handling the optional
+    /// security_label field when formal-gate is enabled.
+    fn test_msg(key: KeyExpr, payload: Vec<u8>, timestamp: u64, publisher: PublisherId) -> Message {
+        Message {
+            key,
+            payload,
+            timestamp,
+            publisher,
+            #[cfg(feature = "formal-gate")]
+            security_label: smallaios_security::labels::SecurityLabel::untrusted_public(),
+        }
+    }
+
     // === Publisher ===
 
     #[test]
@@ -222,18 +243,8 @@ mod tests {
     #[test]
     fn queue_push_pop_fifo() {
         let mut q = MessageQueue::new();
-        let msg1 = Message {
-            key: ke("a"),
-            payload: vec![1],
-            timestamp: 1,
-            publisher: PublisherId(1),
-        };
-        let msg2 = Message {
-            key: ke("a"),
-            payload: vec![2],
-            timestamp: 2,
-            publisher: PublisherId(1),
-        };
+        let msg1 = test_msg(ke("a"), vec![1], 1, PublisherId(1));
+        let msg2 = test_msg(ke("a"), vec![2], 2, PublisherId(1));
         q.push(msg1.clone()).unwrap();
         q.push(msg2.clone()).unwrap();
 
@@ -253,13 +264,8 @@ mod tests {
         assert!(q.is_empty());
         assert_eq!(q.len(), 0);
 
-        q.push(Message {
-            key: ke("x"),
-            payload: vec![],
-            timestamp: 0,
-            publisher: PublisherId(0),
-        })
-        .unwrap();
+        q.push(test_msg(ke("x"), vec![], 0, PublisherId(0)))
+            .unwrap();
 
         assert!(!q.is_empty());
         assert_eq!(q.len(), 1);
@@ -269,20 +275,10 @@ mod tests {
     fn queue_full_error() {
         let mut q = MessageQueue::new();
         for i in 0..MAX_QUEUED {
-            q.push(Message {
-                key: ke("k"),
-                payload: vec![i as u8],
-                timestamp: i as u64,
-                publisher: PublisherId(0),
-            })
-            .unwrap();
+            q.push(test_msg(ke("k"), vec![i as u8], i as u64, PublisherId(0)))
+                .unwrap();
         }
-        let result = q.push(Message {
-            key: ke("k"),
-            payload: vec![0xFF],
-            timestamp: 999,
-            publisher: PublisherId(0),
-        });
+        let result = q.push(test_msg(ke("k"), vec![0xFF], 999, PublisherId(0)));
         assert_eq!(result, Err(IpcError::BufferFull));
     }
 
@@ -291,23 +287,13 @@ mod tests {
         let mut q = MessageQueue::new();
         // Fill the queue.
         for i in 0..MAX_QUEUED {
-            q.push(Message {
-                key: ke("k"),
-                payload: vec![i as u8],
-                timestamp: i as u64,
-                publisher: PublisherId(0),
-            })
-            .unwrap();
+            q.push(test_msg(ke("k"), vec![i as u8], i as u64, PublisherId(0)))
+                .unwrap();
         }
         // Pop one to make room.
         let _ = q.pop();
         // Should succeed now.
-        let result = q.push(Message {
-            key: ke("k"),
-            payload: vec![0],
-            timestamp: 0,
-            publisher: PublisherId(0),
-        });
+        let result = q.push(test_msg(ke("k"), vec![0], 0, PublisherId(0)));
         assert!(result.is_ok());
     }
 
@@ -316,12 +302,7 @@ mod tests {
     #[test]
     fn subscriber_deliver_and_receive() {
         let mut sub = Subscriber::new(SubscriptionId(1), ke("sensor/**"));
-        let msg = Message {
-            key: ke("sensor/temp"),
-            payload: vec![42],
-            timestamp: 10,
-            publisher: PublisherId(1),
-        };
+        let msg = test_msg(ke("sensor/temp"), vec![42], 10, PublisherId(1));
         sub.deliver(msg.clone()).unwrap();
         assert_eq!(sub.pending(), 1);
         let received = sub.receive().unwrap();
@@ -340,13 +321,8 @@ mod tests {
     fn subscriber_deliver_order() {
         let mut sub = Subscriber::new(SubscriptionId(3), ke("data"));
         for i in 0u8..5 {
-            sub.deliver(Message {
-                key: ke("data"),
-                payload: vec![i],
-                timestamp: i as u64,
-                publisher: PublisherId(1),
-            })
-            .unwrap();
+            sub.deliver(test_msg(ke("data"), vec![i], i as u64, PublisherId(1)))
+                .unwrap();
         }
         for i in 0u8..5 {
             let msg = sub.receive().unwrap();
@@ -359,20 +335,10 @@ mod tests {
     fn subscriber_buffer_full() {
         let mut sub = Subscriber::new(SubscriptionId(4), ke("full"));
         for i in 0..MAX_QUEUED {
-            sub.deliver(Message {
-                key: ke("full"),
-                payload: vec![i as u8],
-                timestamp: i as u64,
-                publisher: PublisherId(0),
-            })
-            .unwrap();
+            sub.deliver(test_msg(ke("full"), vec![i as u8], i as u64, PublisherId(0)))
+                .unwrap();
         }
-        let result = sub.deliver(Message {
-            key: ke("full"),
-            payload: vec![0xFF],
-            timestamp: 999,
-            publisher: PublisherId(0),
-        });
+        let result = sub.deliver(test_msg(ke("full"), vec![0xFF], 999, PublisherId(0)));
         assert_eq!(result, Err(IpcError::BufferFull));
     }
 
@@ -380,30 +346,15 @@ mod tests {
 
     #[test]
     fn message_clone_and_eq() {
-        let msg = Message {
-            key: ke("a/b"),
-            payload: vec![1, 2, 3],
-            timestamp: 77,
-            publisher: PublisherId(5),
-        };
+        let msg = test_msg(ke("a/b"), vec![1, 2, 3], 77, PublisherId(5));
         let cloned = msg.clone();
         assert_eq!(msg, cloned);
     }
 
     #[test]
     fn message_not_equal_different_payload() {
-        let msg1 = Message {
-            key: ke("a"),
-            payload: vec![1],
-            timestamp: 0,
-            publisher: PublisherId(1),
-        };
-        let msg2 = Message {
-            key: ke("a"),
-            payload: vec![2],
-            timestamp: 0,
-            publisher: PublisherId(1),
-        };
+        let msg1 = test_msg(ke("a"), vec![1], 0, PublisherId(1));
+        let msg2 = test_msg(ke("a"), vec![2], 0, PublisherId(1));
         assert_ne!(msg1, msg2);
     }
 }

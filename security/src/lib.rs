@@ -31,6 +31,8 @@ pub mod crypto;
 pub mod enforcement;
 #[cfg(feature = "formal-gate")]
 pub mod gate;
+#[cfg(not(feature = "formal-gate"))]
+pub mod gate_noop;
 pub mod incident;
 #[cfg(feature = "formal-gate")]
 pub mod labels;

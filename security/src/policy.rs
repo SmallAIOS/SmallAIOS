@@ -508,4 +508,88 @@ mod tests {
         assert_eq!(result.rejected_models.len(), 1);
         assert_eq!(result.rejected_models[0], denied);
     }
+
+    // ── Fuzz-style policy blob parsing (task 8.3) ──
+
+    /// Simple pseudo-random number generator for deterministic fuzzing.
+    fn xorshift32(state: &mut u32) -> u32 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        *state = x;
+        x
+    }
+
+    #[test]
+    fn fuzz_policy_blob_random_bytes_no_panics() {
+        let mut rng_state: u32 = 0xCAFE_BABE;
+
+        for _ in 0..1000 {
+            // Generate random blobs of varying lengths
+            let len = (xorshift32(&mut rng_state) % 256) as usize;
+            let mut blob = alloc::vec![0u8; len];
+            for b in blob.iter_mut() {
+                *b = (xorshift32(&mut rng_state) & 0xFF) as u8;
+            }
+
+            // Should never panic — either returns Ok or Err
+            let result = SecurityPolicy::load_from_blob(&blob);
+            assert!(result.is_ok() || result.is_err());
+        }
+    }
+
+    #[test]
+    fn fuzz_policy_blob_near_valid_no_panics() {
+        let mut rng_state: u32 = 0xBAAD_F00D;
+
+        for _ in 0..200 {
+            // Start with a valid blob and mutate random bytes
+            let mut blob = make_blob(POLICY_MAGIC, POLICY_VERSION, &[1]);
+            let num_mutations = (xorshift32(&mut rng_state) % 5) as usize + 1;
+            for _ in 0..num_mutations {
+                if !blob.is_empty() {
+                    let idx = (xorshift32(&mut rng_state) as usize) % blob.len();
+                    blob[idx] = (xorshift32(&mut rng_state) & 0xFF) as u8;
+                }
+            }
+
+            let result = SecurityPolicy::load_from_blob(&blob);
+            assert!(result.is_ok() || result.is_err());
+        }
+    }
+
+    #[test]
+    fn fuzz_policy_blob_edge_lengths_no_panics() {
+        // Test blobs at every length from 0 to header_size + 10
+        let header_size = 8 + POLICY_SIG_SIZE;
+        for len in 0..=header_size + 10 {
+            let blob = alloc::vec![0u8; len];
+            let _ = SecurityPolicy::load_from_blob(&blob);
+        }
+        // Also test with magic/version set correctly at various lengths
+        for len in 4..=header_size + 10 {
+            let mut blob = alloc::vec![0u8; len];
+            blob[..4].copy_from_slice(&POLICY_MAGIC.to_le_bytes());
+            if len >= 8 {
+                blob[4..8].copy_from_slice(&POLICY_VERSION.to_le_bytes());
+            }
+            let _ = SecurityPolicy::load_from_blob(&blob);
+        }
+    }
+
+    #[test]
+    fn fuzz_remote_update_random_blobs_no_panics() {
+        let mut rng_state: u32 = 0xFEED_FACE;
+        let policy = SecurityPolicy::default_policy();
+
+        for _ in 0..500 {
+            let len = (xorshift32(&mut rng_state) % 256) as usize;
+            let mut blob = alloc::vec![0u8; len];
+            for b in blob.iter_mut() {
+                *b = (xorshift32(&mut rng_state) & 0xFF) as u8;
+            }
+            let _ = policy.remote_update(&blob);
+        }
+    }
 }

@@ -19,6 +19,8 @@ extern crate alloc;
 
 pub mod bus_transport;
 pub mod endpoints;
+#[cfg(feature = "formal-gate")]
+pub mod gate_check;
 pub mod http;
 pub mod inference_proto;
 pub mod key_expr;
