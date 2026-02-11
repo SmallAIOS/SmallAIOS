@@ -5,6 +5,7 @@ SmallAIOS runs AI inference on embedded, edge, and industrial platforms — many
 - **Camera input** is impossible. MIPI CSI-2 cameras (Jetson, RPi, industrial vision) need I2C for sensor configuration and a CSI/MIPI receiver for pixel data. USB cameras need a host controller. Vision inference (MobileNetV2, YOLO) cannot run on live frames.
 - **Audio input** is impossible. I2S/TDM codecs (used in industrial and edge devices) need I2C for codec configuration and I2S for sample streaming. Audio inference (Whisper-tiny) cannot run on live audio.
 - **Sensor fusion** is impossible. IMUs, temperature sensors, pressure sensors, and ADCs on I2C/SPI buses cannot be read.
+- **Radar/LiDAR input** is impossible. Many radar modules (TI AWR/IWR series) output processed detections over UART. Solid-state LiDAR modules (Livox, Benewake) use UART for point data. Without a UART driver, these sensors are inaccessible.
 - **GPIO control** is impossible. Inference-triggered actuation (alerts, relays, indicator LEDs) cannot happen.
 
 These are required for real-world AI inference deployments, especially on Jetson, Raspberry Pi, FPGA SoCs, and industrial ARM/RISC-V platforms already targeted by SmallAIOS.
@@ -18,8 +19,9 @@ These are required for real-world AI inference deployments, especially on Jetson
 - Add GPIO controller HAL trait and platform drivers (ARM MMIO, RISC-V MMIO, FPGA AXI)
 - Add MIPI CSI-2 camera interface: I2C-based sensor configuration, CSI receiver HAL trait, frame buffer management, V4L2-style capture API for ONNX input pipeline
 - Add I2S/TDM audio interface: I2C-based codec configuration, I2S/TDM HAL trait, ring buffer DMA streaming, PCM capture API for ONNX input pipeline
-- Extend kernel HAL (`kernel/src/hal.rs`) with new traits: `I2cController`, `SpiController`, `GpioController`, `CsiReceiver`, `I2sController`
-- Add compile-time feature flags: `i2c`, `spi`, `gpio`, `camera-csi`, `audio-i2s` — all default-off
+- Add UART controller HAL trait and platform drivers (ARM PL011/16550, RISC-V 16550/SiFive, FPGA AXI UART Lite soft-IP) for radar/LiDAR/GPS serial data ingestion
+- Extend kernel HAL (`kernel/src/hal.rs`) with new traits: `I2cController`, `SpiController`, `GpioController`, `CsiReceiver`, `I2sController`, `UartController`
+- Add compile-time feature flags: `i2c`, `spi`, `gpio`, `camera-csi`, `audio-i2s`, `uart` — all default-off
 - Integrate with existing capability system (`security` crate) — peripheral access requires explicit capabilities
 - Extend device syscalls (`kernel/src/syscall/device.rs`) to open/control peripheral devices
 - Add DTB-based peripheral discovery for I2C/SPI/GPIO controllers on ARM, RISC-V, and FPGA platforms
@@ -33,23 +35,24 @@ These are required for real-world AI inference deployments, especially on Jetson
 - `peripheral-gpio`: GPIO controller — input/output/alternate-function pin modes, pull-up/pull-down configuration, interrupt-on-edge (rising/falling/both), debounce, atomic pin set/clear. Platform drivers for ARM PL061 / generic MMIO, RISC-V MMIO, Xilinx AXI GPIO soft-IP.
 - `camera-csi`: MIPI CSI-2 camera interface — I2C sensor configuration (register read/write), CSI-2 receiver (1-4 data lanes, up to 1.5 Gbps/lane), frame capture (RAW8/10/12, YUV422, RGB888), frame buffer allocation via DMA, V4L2-compatible ioctl subset for userspace/ONNX input pipeline integration, supported sensors: OV5640, IMX219, IMX477 (config tables).
 - `audio-i2s`: I2S/TDM audio interface — I2C codec configuration, I2S master/slave mode, TDM multi-channel (up to 8 channels), sample rates 8-192 kHz, bit depths 16/24/32, DMA ring-buffer streaming, PCM capture API for ONNX input pipeline, supported codecs: TLV320AIC3x, WM8960, ES8388 (config tables).
+- `peripheral-uart`: UART controller — configurable baud rates (9600–3 Mbps), 8N1/8E1/8O1 framing, hardware flow control (RTS/CTS), RX FIFO with interrupt or DMA, line-buffered and raw modes. Platform drivers for ARM PL011, NS16550A/16550-compatible, SiFive UART, Xilinx AXI UART Lite soft-IP. Primary use case: serial data ingestion from radar modules (TI AWR/IWR UART output), LiDAR (Benewake TFmini, Livox), GPS/GNSS receivers (NMEA/UBX), and debug consoles.
 
 ### Modified Capabilities
 
-- `05-device-hal`: Extend HAL trait set with `I2cController`, `SpiController`, `GpioController`, `CsiReceiver`, `I2sController`. Add new `HalError` variants as needed (`NackReceived`, `ArbitrationLost`, `FrameError`).
-- `02-security-model`: Add capability types for peripheral access — `CAP_I2C`, `CAP_SPI`, `CAP_GPIO`, `CAP_CAMERA`, `CAP_AUDIO`. Peripheral open/read/write/ioctl requires matching capability.
+- `05-device-hal`: Extend HAL trait set with `I2cController`, `SpiController`, `GpioController`, `CsiReceiver`, `I2sController`, `UartController`. Add new `HalError` variants as needed (`NackReceived`, `ArbitrationLost`, `FrameError`, `FramingError`, `ParityError`, `Overrun`).
+- `02-security-model`: Add capability types for peripheral access — `CAP_I2C`, `CAP_SPI`, `CAP_GPIO`, `CAP_CAMERA`, `CAP_AUDIO`, `CAP_UART`. Peripheral open/read/write/ioctl requires matching capability.
 - `07-container-interface`: Add build-time feature flag documentation. Add container config for peripheral passthrough.
 - `10-hardware-platforms`: Document peripheral availability per platform (Jetson: I2C/SPI/GPIO/CSI native; RPi: I2C/SPI/GPIO/CSI native; Zynq: I2C/SPI/GPIO via FPGA fabric; PolarFire: I2C/SPI/GPIO via FPGA fabric).
 
 ## Impact
 
 - **Rust workspace**: New `peripheral` crate (I2C, SPI, GPIO drivers), extend `kernel` crate (HAL traits, syscall handlers), extend `security` crate (new capability types), extend `onnx-rt` crate (camera/audio input providers)
-- **Feature flags**: `i2c`, `spi`, `gpio`, `camera-csi`, `audio-i2s` — all default OFF (security-by-default). Enable per-deployment as needed. Zero binary size cost when disabled.
+- **Feature flags**: `i2c`, `spi`, `gpio`, `camera-csi`, `audio-i2s`, `uart` — all default OFF (security-by-default). Enable per-deployment as needed. Zero binary size cost when disabled.
 - **Build targets**: No new targets — uses existing ARM64, RISC-V, and FPGA platforms
-- **Hardware dependencies**: I2C peripherals (sensors, camera modules, audio codecs), SPI peripherals (flash, ADCs), CSI camera modules (OV5640, IMX219), I2S audio codecs (TLV320AIC3x, WM8960)
+- **Hardware dependencies**: I2C peripherals (sensors, camera modules, audio codecs), SPI peripherals (flash, ADCs, radar ADC streams), CSI camera modules (OV5640, IMX219), I2S audio codecs (TLV320AIC3x, WM8960), UART peripherals (radar modules, LiDAR, GPS/GNSS receivers)
 - **Security**: All peripheral access gated by capability system. Feature flags provide compile-time elimination. No peripheral code in datacenter/avionics builds unless explicitly enabled.
 - **Safety certification**: I2C/SPI/GPIO drivers subject to same DO-178C/ISO 26262 coverage requirements as bus protocol drivers
-- **Formal verification**: TLA+ models for I2C arbitration, SPI protocol state machine, GPIO interrupt handling
+- **Formal verification**: TLA+ models for I2C arbitration, SPI protocol state machine, GPIO interrupt handling, UART RX FIFO overflow prevention
 
 ## Non-Goals
 
