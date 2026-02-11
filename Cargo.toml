@@ -7,6 +7,7 @@ members = [
     "arch/riscv64",
     "arch/nvidia",
     "arch/intel_gpu",
+    "arch/amd",
     "onnx-rt",
     "ipc",
     "net",

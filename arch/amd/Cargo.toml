@@ -1,0 +1,20 @@
+[package]
+name = "smallaios-arch-amd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS AMD GPU HAL: PCIe, GPU init, memory, compute, DMA"
+
+[features]
+default = []
+gfx900 = []   # Vega 10 (MI25, Vega 56/64)
+gfx906 = []   # Vega 20 (MI50/MI60)
+gfx908 = []   # CDNA 1 (MI100)
+gfx90a = []   # CDNA 2 (MI200)
+gfx942 = []   # CDNA 3 (MI300X)
+gfx1010 = []  # RDNA 1 (RX 5600/5700)
+gfx1030 = []  # RDNA 2 (RX 6700/6800/6900)
+gfx1100 = []  # RDNA 3 (RX 7800/7900)
+
+[dependencies]
+smallaios-kernel = { path = "../../kernel" }
