@@ -102,6 +102,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallaios-peripheral"
+version = "0.1.0"
+dependencies = [
+ "smallaios-kernel",
+ "smallaios-security",
+]
+
+[[package]]
 name = "smallaios-posix"
 version = "0.1.0"
 dependencies = [

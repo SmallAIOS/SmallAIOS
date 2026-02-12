@@ -1,0 +1,25 @@
+[package]
+name = "smallaios-peripheral"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS peripheral drivers: I2C, SPI, GPIO, UART, CSI camera, I2S audio"
+
+[features]
+default = []
+i2c = []
+spi = []
+gpio = []
+uart = []
+camera-csi = ["i2c"]
+audio-i2s = ["i2c"]
+
+# Convenience bundles
+sensor-io = ["i2c", "spi", "gpio"]
+vision = ["camera-csi", "i2c", "gpio"]
+audio = ["audio-i2s", "i2c"]
+full-peripheral = ["i2c", "spi", "gpio", "camera-csi", "audio-i2s", "uart"]
+
+[dependencies]
+smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
+smallaios-security = { path = "../security" }

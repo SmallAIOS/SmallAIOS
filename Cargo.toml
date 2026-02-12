@@ -15,6 +15,7 @@ members = [
     "security",
     "container",
     "bus",
+    "peripheral",
     "bench",
 ]
 
