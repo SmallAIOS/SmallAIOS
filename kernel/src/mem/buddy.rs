@@ -22,9 +22,17 @@ pub const MAX_ORDER: usize = 21;
 const NUM_ORDERS: usize = MAX_ORDER + 1;
 
 /// Maximum number of blocks we can track at order 0.
-/// Production: 16M pages (64 GiB). Tests: 1024 pages (4 MiB) to fit on stack.
+/// Default: 256K pages (1 GiB). Use `large-memory` feature for 16M pages (64 GiB).
+/// Tests: 1024 pages (4 MiB) to fit on stack.
+///
+/// Note: Each order bitmap is MAX_PAGES/64 × 8 bytes. With 22 orders + alloc bitmap,
+/// total static size ≈ MAX_PAGES × 23 / 8 bytes. At 256K pages ≈ 736 KB; at 16M ≈ 46 MB.
 #[cfg(not(test))]
+#[cfg(feature = "large-memory")]
 const MAX_PAGES: usize = 16 * 1024 * 1024;
+#[cfg(not(test))]
+#[cfg(not(feature = "large-memory"))]
+const MAX_PAGES: usize = 256 * 1024;
 #[cfg(test)]
 const MAX_PAGES: usize = 1024;
 
@@ -366,7 +374,7 @@ mod tests {
     use super::*;
     use alloc::boxed::Box;
 
-    // BuddyAllocator is very large (~44 MB of bitmaps), must be heap-allocated in tests.
+    // BuddyAllocator can be large (up to ~44 MB with large-memory feature), must be heap-allocated in tests.
     fn make_allocator(pages: usize) -> Box<BuddyAllocator> {
         let mut alloc = Box::new(BuddyAllocator::new());
         let base = PhysAddr::new(0x10_0000); // 1 MiB
