@@ -16,14 +16,14 @@
 
 #![allow(dead_code)]
 
-pub mod codec;
-pub mod tlv320aic3x;
-pub mod wm8960;
-pub mod es8388;
 pub mod arm_i2s;
-pub mod riscv_i2s;
+pub mod codec;
+pub mod es8388;
 pub mod fpga_i2s;
 pub mod preprocess;
+pub mod riscv_i2s;
+pub mod tlv320aic3x;
+pub mod wm8960;
 
 pub use smallaios_kernel::hal::{
     AudioBuffer, HalError, I2sBitDepth, I2sConfig, I2sController, I2sIrqSource, I2sMode, I2sRole,
@@ -119,9 +119,7 @@ pub fn compute_bclk(config: &I2sConfig) -> u32 {
 ///
 /// `size = buffer_frames * channels * bytes_per_sample`
 pub fn compute_buffer_size(config: &I2sConfig) -> usize {
-    config.buffer_frames as usize
-        * config.channels as usize
-        * bytes_per_sample(config.bit_depth)
+    config.buffer_frames as usize * config.channels as usize * bytes_per_sample(config.bit_depth)
 }
 
 /// Validate a buffer index against the configured buffer count.

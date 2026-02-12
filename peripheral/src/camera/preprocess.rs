@@ -39,7 +39,7 @@ use alloc::vec::Vec;
 /// RGB888 byte vector of length `width * height * 3`.
 pub fn yuv422_to_rgb888(yuv: &[u8], width: usize, height: usize) -> Vec<u8> {
     let expected_len = width * height * 2;
-    if yuv.len() < expected_len || width == 0 || height == 0 || width % 2 != 0 {
+    if yuv.len() < expected_len || width == 0 || height == 0 || !width.is_multiple_of(2) {
         return Vec::new();
     }
 
@@ -151,10 +151,10 @@ pub fn resize_bilinear(
                 let p01 = src[(y1 * src_w + x0) * 3 + c] as u32;
                 let p11 = src[(y1 * src_w + x1) * 3 + c] as u32;
 
-                // Bilinear interpolation in fixed-point.
-                let top = p00 * (65536 - x_frac) + p10 * x_frac;
-                let bot = p01 * (65536 - x_frac) + p11 * x_frac;
-                let val = (top * (65536 - y_frac) + bot * y_frac) >> 32;
+                // Bilinear interpolation in fixed-point (u64 to avoid overflow).
+                let top = p00 as u64 * (65536 - x_frac) as u64 + p10 as u64 * x_frac as u64;
+                let bot = p01 as u64 * (65536 - x_frac) as u64 + p11 as u64 * x_frac as u64;
+                let val = ((top * (65536 - y_frac) as u64 + bot * y_frac as u64) >> 32) as u32;
 
                 dst[dst_off + c] = val.min(255) as u8;
             }
@@ -202,9 +202,21 @@ pub fn normalize_f32(
 
     // Precompute inverse std for multiplication instead of division.
     let inv_std = [
-        if std_dev[0] != 0.0 { 1.0 / std_dev[0] } else { 1.0 },
-        if std_dev[1] != 0.0 { 1.0 / std_dev[1] } else { 1.0 },
-        if std_dev[2] != 0.0 { 1.0 / std_dev[2] } else { 1.0 },
+        if std_dev[0] != 0.0 {
+            1.0 / std_dev[0]
+        } else {
+            1.0
+        },
+        if std_dev[1] != 0.0 {
+            1.0 / std_dev[1]
+        } else {
+            1.0
+        },
+        if std_dev[2] != 0.0 {
+            1.0 / std_dev[2]
+        } else {
+            1.0
+        },
     ];
 
     let mut output = vec![0.0f32; 3 * pixels];

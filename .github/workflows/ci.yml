@@ -42,7 +42,7 @@ jobs:
           -p smallaios-posix
           -p smallaios-container
           -p smallaios-bus
-          -p smallaios-peripheral --all-features
+          -p smallaios-peripheral --features smallaios-peripheral/full-peripheral
           -p smallaios-bench
           -- -D warnings
 
@@ -107,7 +107,7 @@ jobs:
           -p smallaios-posix
           -p smallaios-container
           -p smallaios-bus
-          -p smallaios-peripheral --all-features
+          -p smallaios-peripheral --features smallaios-peripheral/full-peripheral
           -p smallaios-bench
 
   riscv-qemu-smoke:
@@ -248,7 +248,7 @@ jobs:
           -p smallaios-posix
           -p smallaios-container
           -p smallaios-bus
-          -p smallaios-peripheral --all-features
+          -p smallaios-peripheral --features smallaios-peripheral/full-peripheral
       - name: Upload to Codecov
         uses: codecov/codecov-action@v4
         with:
