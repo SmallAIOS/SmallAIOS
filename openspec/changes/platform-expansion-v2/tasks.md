@@ -10,9 +10,9 @@
 - [x] 14.8 Implement node resource advertisement (CPU, memory, nvidia.com/gpu extended resource)
 - [x] 14.9 Implement health probe integration (liveness/readiness via existing /health endpoint)
 - [x] 14.10 Implement metrics integration (Prometheus /metrics passthrough)
-- [ ] 14.11 Test with K3s on Jetson/RPi (edge deployment)
-- [ ] 14.12 Test with K8s on Xeon/Spark (datacenter deployment)
-- [ ] 14.13 Test multi-node: single provider managing multiple SmallAIOS instances
+- [ ] 14.11 Test with K3s on Jetson/RPi (edge deployment) (DEFERRED: requires hardware)
+- [ ] 14.12 Test with K8s on Xeon/Spark (datacenter deployment) (DEFERRED: requires hardware)
+- [ ] 14.13 Test multi-node: single provider managing multiple SmallAIOS instances (DEFERRED: requires hardware)
 
 ## 15. Safety-Critical Bus Protocols — CAN Bus
 
@@ -125,7 +125,7 @@
 - [x] 21.22 Unit tests for SPDP/SEDP discovery state machines
 - [x] 21.23 Unit tests for QoS compatibility matrix (all valid/invalid combinations)
 - [x] 21.24 Integration test: DDS pub/sub within SmallAIOS (loopback)
-- [ ] 21.25 Interoperability test: SmallAIOS DDS ↔ FastDDS (ROS 2 node) on same network
+- [ ] 21.25 Interoperability test: SmallAIOS DDS ↔ FastDDS (ROS 2 node) on same network (DEFERRED: requires hardware)
 
 ## 22. QUIC Transport
 
@@ -153,7 +153,7 @@
 - [x] 22.22 Integration test: QUIC connection establishment and data transfer (loopback)
 - [x] 22.23 Integration test: Zenoh pub/sub over QUIC transport
 - [x] 22.24 Integration test: connection migration (simulated IP address change)
-- [ ] 22.25 Interoperability test: SmallAIOS QUIC ↔ external QUIC implementation (e.g., quiche, quinn)
+- [ ] 22.25 Interoperability test: SmallAIOS QUIC ↔ external QUIC implementation (e.g., quiche, quinn) (DEFERRED: requires hardware)
 
 ## 23. RISC-V Architecture Support
 
@@ -184,7 +184,7 @@
 - [x] 24.8 Implement Zynq UltraScale+ platform support package (PS-PL interface, clocks, resets)
 - [x] 24.9 Implement PolarFire SoC platform support package (RISC-V + FPGA fabric)
 - [x] 24.10 Unit tests for AXI register access and DMA transfers (mock MMIO)
-- [ ] 24.11 Integration test on Zynq board: read/write FPGA registers from SmallAIOS
+- [ ] 24.11 Integration test on Zynq board: read/write FPGA registers from SmallAIOS (DEFERRED: requires hardware)
 
 ## 25. Deployment and Provisioning (Phase 11 Revision)
 
@@ -228,7 +228,7 @@
 - [x] 28.11 Create hardware-specific configs (DGX Spark, Xeon, Jetson, RPi)
 - [x] 28.12 Document BIOS settings, CPU frequency pinning, thermal monitoring
 - [x] 28.13 Implement report generation (markdown tables, CSV export)
-- [ ] 28.14 Run benchmark suite on all 4 hardware targets, generate comparison report
+- [ ] 28.14 Run benchmark suite on all 4 hardware targets, generate comparison report (DEFERRED: requires hardware)
 
 ## 29. Formal Verification — Bus Protocols, DDS, and QUIC
 
