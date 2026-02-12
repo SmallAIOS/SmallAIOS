@@ -121,6 +121,15 @@ pub struct ContainerConfig {
     pub max_memory_mb: u64,
     /// Number of worker tasks.
     pub num_workers: u32,
+    /// Address of an external policy blob (0 = no external blob).
+    #[cfg(feature = "formal-gate")]
+    pub policy_blob_address: u64,
+    /// ML-DSA-65 public key for policy signature verification (32 bytes).
+    #[cfg(feature = "formal-gate")]
+    pub policy_verification_key: [u8; 32],
+    /// Whether the formal gate security layer is enabled.
+    #[cfg(feature = "formal-gate")]
+    pub formal_gate_enabled: bool,
 }
 
 impl Default for ContainerConfig {
@@ -147,6 +156,12 @@ impl Default for ContainerConfig {
             },
             max_memory_mb: 512,
             num_workers: 4,
+            #[cfg(feature = "formal-gate")]
+            policy_blob_address: 0,
+            #[cfg(feature = "formal-gate")]
+            policy_verification_key: [0u8; 32],
+            #[cfg(feature = "formal-gate")]
+            formal_gate_enabled: true,
         }
     }
 }
@@ -221,6 +236,10 @@ pub fn parse_env_override(config: &mut ContainerConfig, key: &str, value: &str) 
         }
         "SMALLAIOS_GPU" => {
             config.inference.enable_gpu = value == "true";
+        }
+        #[cfg(feature = "formal-gate")]
+        "SMALLAIOS_FORMAL_GATE" => {
+            config.formal_gate_enabled = value == "true";
         }
         "SMALLAIOS_MAX_MEMORY" => {
             if let Some(m) = parse_u64(value) {
@@ -511,5 +530,37 @@ mod tests {
         cfg.inference.enable_gpu = true;
         parse_env_override(&mut cfg, "SMALLAIOS_GPU", "false");
         assert!(!cfg.inference.enable_gpu);
+    }
+
+    // -- Formal gate config fields -----------------------------------------
+
+    #[cfg(feature = "formal-gate")]
+    #[test]
+    fn test_default_formal_gate_enabled() {
+        let cfg = ContainerConfig::default();
+        assert!(cfg.formal_gate_enabled);
+    }
+
+    #[cfg(feature = "formal-gate")]
+    #[test]
+    fn test_default_policy_blob_address_zero() {
+        let cfg = ContainerConfig::default();
+        assert_eq!(cfg.policy_blob_address, 0);
+    }
+
+    #[cfg(feature = "formal-gate")]
+    #[test]
+    fn test_default_policy_verification_key_zero() {
+        let cfg = ContainerConfig::default();
+        assert_eq!(cfg.policy_verification_key, [0u8; 32]);
+    }
+
+    #[cfg(feature = "formal-gate")]
+    #[test]
+    fn test_env_override_formal_gate_disabled() {
+        let mut cfg = ContainerConfig::default();
+        assert!(cfg.formal_gate_enabled);
+        parse_env_override(&mut cfg, "SMALLAIOS_FORMAL_GATE", "false");
+        assert!(!cfg.formal_gate_enabled);
     }
 }

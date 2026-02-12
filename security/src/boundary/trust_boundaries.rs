@@ -99,6 +99,10 @@ pub struct BoundaryDefinition {
     pub max_data_rate_bps: u64,
     /// Number of entry points.
     pub entry_point_count: u16,
+    /// Default enforcement mode for the security gate at this boundary.
+    /// When `formal-gate` is disabled, this field is still present but unused.
+    /// Defaults to Permissive for all boundaries (can be overridden by policy).
+    pub default_enforcement_mode: u8, // 0 = Enforcing, 1 = Permissive
 }
 
 /// Complete trust boundary definitions for all SmallAIOS boundaries.
@@ -110,7 +114,8 @@ pub const BOUNDARY_DEFINITIONS: &[BoundaryDefinition] = &[
         flow: DataFlowDirection::Bidirectional,
         max_connections: 0, // No connection concept; task-based
         max_data_rate_bps: 0,
-        entry_point_count: 46, // ~46 syscalls
+        entry_point_count: 46,       // ~46 syscalls
+        default_enforcement_mode: 1, // Permissive
     },
     // K8s boundary: Virtual Kubelet API
     BoundaryDefinition {
@@ -120,6 +125,7 @@ pub const BOUNDARY_DEFINITIONS: &[BoundaryDefinition] = &[
         max_connections: 16,
         max_data_rate_bps: 10_000_000, // 10 MB/s
         entry_point_count: 8,          // Pod CRUD, health, metrics, logs, exec
+        default_enforcement_mode: 1,   // Permissive
     },
     // Network boundary: TLS 1.3
     BoundaryDefinition {
@@ -129,6 +135,7 @@ pub const BOUNDARY_DEFINITIONS: &[BoundaryDefinition] = &[
         max_connections: 256,
         max_data_rate_bps: 100_000_000, // 100 MB/s
         entry_point_count: 4,           // TCP, UDP, TLS, QUIC
+        default_enforcement_mode: 1,    // Permissive
     },
     // Bus protocol boundary
     BoundaryDefinition {
@@ -138,15 +145,17 @@ pub const BOUNDARY_DEFINITIONS: &[BoundaryDefinition] = &[
         max_connections: 32,          // Max bus channels
         max_data_rate_bps: 1_000_000, // 1 MB/s typical for CAN/1553
         entry_point_count: 6,         // CAN, ARINC 429, ARINC 664, MIL-STD-1553, SpaceWire, CCSDS
+        default_enforcement_mode: 1,  // Permissive
     },
     // GPU boundary
     BoundaryDefinition {
         boundary: TrustBoundary::Gpu,
         auth: AuthMechanism::DmaPermissions,
         flow: DataFlowDirection::Bidirectional,
-        max_connections: 1,   // Single GPU context
-        max_data_rate_bps: 0, // DMA speed, not rate-limited
-        entry_point_count: 3, // Command submission, DMA transfer, BAR access
+        max_connections: 1,          // Single GPU context
+        max_data_rate_bps: 0,        // DMA speed, not rate-limited
+        entry_point_count: 3,        // Command submission, DMA transfer, BAR access
+        default_enforcement_mode: 1, // Permissive
     },
 ];
 

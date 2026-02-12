@@ -99,6 +99,7 @@ version = "0.1.0"
 dependencies = [
  "smallaios-arch-nvidia",
  "smallaios-kernel",
+ "smallaios-security",
 ]
 
 [[package]]

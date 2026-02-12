@@ -265,6 +265,10 @@ mod tests {
             AuditEventType::system_boot(),
             AuditEventType::system_shutdown(),
             AuditEventType::system_watchdog(),
+            AuditEventType::gate_allowed(),
+            AuditEventType::gate_denied(),
+            AuditEventType::gate_permissive_pass(),
+            AuditEventType::policy_update(),
         ];
 
         for et in &event_types {

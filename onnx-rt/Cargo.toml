@@ -9,7 +9,9 @@ description = "SmallAIOS ONNX runtime: model parser, graph optimizer, execution 
 default = ["cpu"]
 cpu = []
 cuda = ["smallaios-arch-nvidia"]
+formal-gate = ["dep:smallaios-security", "smallaios-security/formal-gate"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }
 smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }
+smallaios-security = { path = "../security", optional = true }
