@@ -1,64 +1,64 @@
 ## 1. USB Core Protocol Stack
 
-- [ ] 1.1 Create `smallaios-usb` crate with feature flags (xhci, gadget, inference-gadget)
-- [ ] 1.2 Implement USB device descriptor parser (zero-copy from byte buffer)
-- [ ] 1.3 Implement USB configuration descriptor parser (nested interface/endpoint chain)
-- [ ] 1.4 Implement USB endpoint descriptor parser (address, direction, transfer type, max packet size)
-- [ ] 1.5 Implement USB string descriptor parser (UTF-16LE decoding)
-- [ ] 1.6 Implement USB device enumeration state machine (reset → SET_ADDRESS → GET_DESCRIPTOR → SET_CONFIGURATION)
-- [ ] 1.7 Implement USB control transfer state machine (SETUP → DATA → STATUS)
-- [ ] 1.8 Implement USB bulk transfer management (submit, complete, resubmit ring)
-- [ ] 1.9 Implement USB endpoint state tracking (active, halted, idle) and halt recovery
-- [ ] 1.10 Implement USB device registry (VID/PID matching, interface class matching, driver binding)
-- [ ] 1.11 Unit tests for descriptor parsers (100% coverage on valid/invalid/truncated descriptors)
-- [ ] 1.12 Unit tests for enumeration state machine (success, timeout, stall scenarios)
+- [x] 1.1 Create `smallaios-usb` crate with feature flags (xhci, gadget, inference-gadget)
+- [x] 1.2 Implement USB device descriptor parser (zero-copy from byte buffer)
+- [x] 1.3 Implement USB configuration descriptor parser (nested interface/endpoint chain)
+- [x] 1.4 Implement USB endpoint descriptor parser (address, direction, transfer type, max packet size)
+- [x] 1.5 Implement USB string descriptor parser (UTF-16LE decoding)
+- [x] 1.6 Implement USB device enumeration state machine (reset → SET_ADDRESS → GET_DESCRIPTOR → SET_CONFIGURATION)
+- [x] 1.7 Implement USB control transfer state machine (SETUP → DATA → STATUS)
+- [x] 1.8 Implement USB bulk transfer management (submit, complete, resubmit ring)
+- [x] 1.9 Implement USB endpoint state tracking (active, halted, idle) and halt recovery
+- [x] 1.10 Implement USB device registry (VID/PID matching, interface class matching, driver binding)
+- [x] 1.11 Unit tests for descriptor parsers (100% coverage on valid/invalid/truncated descriptors)
+- [x] 1.12 Unit tests for enumeration state machine (success, timeout, stall scenarios)
 - [ ] 1.13 Write TLA+ model for USB enumeration state machine
 
 ## 2. xHCI Host Controller Driver
 
-- [ ] 2.1 Extend PCIe enumeration in arch crates to detect xHCI controllers (class 0x0C/0x03/0x30)
-- [ ] 2.2 Implement xHCI capability register parsing (HCSPARAMS1/2/3, HCCPARAMS1/2)
-- [ ] 2.3 Implement xHCI controller reset and initialization (USBCMD.HCRST, wait CNR, configure MaxSlots)
-- [ ] 2.4 Implement Device Context Base Address Array (DCBAA) allocation and initialization
-- [ ] 2.5 Implement scratchpad buffer allocation from HCSPARAMS2
-- [ ] 2.6 Implement Command Ring (enqueue TRBs, ring doorbell, handle Link TRBs)
-- [ ] 2.7 Implement Event Ring (dequeue events, advance ERDP, handle EHB)
-- [ ] 2.8 Implement per-endpoint Transfer Rings (Normal TRBs, Link TRBs, cycle bit management)
-- [ ] 2.9 Implement Enable Slot and Address Device command sequences
-- [ ] 2.10 Implement Configure Endpoint command for bulk endpoint setup
-- [ ] 2.11 Implement port status change detection and port reset sequence
-- [ ] 2.12 Implement MSI-X interrupt configuration for xHCI interrupter
-- [ ] 2.13 Implement polling fallback when MSI-X is unavailable
-- [ ] 2.14 Implement device disconnection handling (Disable Slot, resource cleanup)
-- [ ] 2.15 Unit tests for TRB encoding/decoding (all TRB types: Normal, Setup, Data, Status, Link, Command, Event)
-- [ ] 2.16 Unit tests for ring management (enqueue, dequeue, wrap-around, cycle bit)
+- [x] 2.1 Extend PCIe enumeration in arch crates to detect xHCI controllers (class 0x0C/0x03/0x30)
+- [x] 2.2 Implement xHCI capability register parsing (HCSPARAMS1/2/3, HCCPARAMS1/2)
+- [x] 2.3 Implement xHCI controller reset and initialization (USBCMD.HCRST, wait CNR, configure MaxSlots)
+- [x] 2.4 Implement Device Context Base Address Array (DCBAA) allocation and initialization
+- [x] 2.5 Implement scratchpad buffer allocation from HCSPARAMS2
+- [x] 2.6 Implement Command Ring (enqueue TRBs, ring doorbell, handle Link TRBs)
+- [x] 2.7 Implement Event Ring (dequeue events, advance ERDP, handle EHB)
+- [x] 2.8 Implement per-endpoint Transfer Rings (Normal TRBs, Link TRBs, cycle bit management)
+- [x] 2.9 Implement Enable Slot and Address Device command sequences
+- [x] 2.10 Implement Configure Endpoint command for bulk endpoint setup
+- [x] 2.11 Implement port status change detection and port reset sequence
+- [x] 2.12 Implement MSI-X interrupt configuration for xHCI interrupter
+- [x] 2.13 Implement polling fallback when MSI-X is unavailable
+- [x] 2.14 Implement device disconnection handling (Disable Slot, resource cleanup)
+- [x] 2.15 Unit tests for TRB encoding/decoding (all TRB types: Normal, Setup, Data, Status, Link, Command, Event)
+- [x] 2.16 Unit tests for ring management (enqueue, dequeue, wrap-around, cycle bit)
 - [ ] 2.17 Integration test: xHCI init → enumerate USB device → bulk transfer (mock or QEMU)
 - [ ] 2.18 Write TLA+ model for xHCI transfer ring producer/consumer
 
 ## 3. USB Device/Gadget Controller Framework
 
-- [ ] 3.1 Define `UsbDeviceController` HAL trait in kernel/src/hal.rs
-- [ ] 3.2 Implement gadget function registration framework
-- [ ] 3.3 Implement USB descriptor composition (device, config, interface, endpoint from registered functions)
-- [ ] 3.4 Implement composite device support with Interface Association Descriptors (IAD)
-- [ ] 3.5 Implement EP0 control transfer handling for standard device requests (GET_DESCRIPTOR, SET_ADDRESS, SET_CONFIGURATION)
-- [ ] 3.6 Implement gadget endpoint data transfer API (write IN, read OUT, stall)
-- [ ] 3.7 Implement USB bus event handling (reset, suspend, resume, speed negotiation)
-- [ ] 3.8 Implement DWC3 device controller driver (shared by Zynq and Tegra platforms)
-- [ ] 3.9 Unit tests for descriptor composition (single function, composite, IAD)
-- [ ] 3.10 Unit tests for EP0 request handling (standard requests, vendor requests, stall)
+- [x] 3.1 Define `UsbDeviceController` HAL trait in kernel/src/hal.rs
+- [x] 3.2 Implement gadget function registration framework
+- [x] 3.3 Implement USB descriptor composition (device, config, interface, endpoint from registered functions)
+- [x] 3.4 Implement composite device support with Interface Association Descriptors (IAD)
+- [x] 3.5 Implement EP0 control transfer handling for standard device requests (GET_DESCRIPTOR, SET_ADDRESS, SET_CONFIGURATION)
+- [x] 3.6 Implement gadget endpoint data transfer API (write IN, read OUT, stall)
+- [x] 3.7 Implement USB bus event handling (reset, suspend, resume, speed negotiation)
+- [x] 3.8 Implement DWC3 device controller driver (shared by Zynq and Tegra platforms)
+- [x] 3.9 Unit tests for descriptor composition (single function, composite, IAD)
+- [x] 3.10 Unit tests for EP0 request handling (standard requests, vendor requests, stall)
 
 ## 4. USB Inference Gadget
 
-- [ ] 4.1 Implement inference gadget function (vendor class 0xFF, bulk IN + bulk OUT endpoints)
-- [ ] 4.2 Implement inference request parser (request_id, model_name, tensor_size, tensor_data)
-- [ ] 4.3 Implement inference response formatter (request_id, status, result_size, result_data)
-- [ ] 4.4 Implement request validation (model name length ≤ 256, tensor size ≤ 256 MiB)
-- [ ] 4.5 Implement Zenoh bridge: publish inference requests to `usb/inference/{model}`
-- [ ] 4.6 Implement Zenoh bridge: subscribe to inference results and route to USB response
-- [ ] 4.7 Implement concurrent request tracking (up to 4 outstanding requests by request_id)
-- [ ] 4.8 Implement DMA integration for zero-copy tensor transfer (tensors > 4096 bytes)
-- [ ] 4.9 Unit tests for request/response protocol (valid, malformed, unknown model, concurrent)
+- [x] 4.1 Implement inference gadget function (vendor class 0xFF, bulk IN + bulk OUT endpoints)
+- [x] 4.2 Implement inference request parser (request_id, model_name, tensor_size, tensor_data)
+- [x] 4.3 Implement inference response formatter (request_id, status, result_size, result_data)
+- [x] 4.4 Implement request validation (model name length ≤ 256, tensor size ≤ 256 MiB)
+- [x] 4.5 Implement Zenoh bridge: publish inference requests to `usb/inference/{model}`
+- [x] 4.6 Implement Zenoh bridge: subscribe to inference results and route to USB response
+- [x] 4.7 Implement concurrent request tracking (up to 4 outstanding requests by request_id)
+- [x] 4.8 Implement DMA integration for zero-copy tensor transfer (tensors > 4096 bytes)
+- [x] 4.9 Unit tests for request/response protocol (valid, malformed, unknown model, concurrent)
 - [ ] 4.10 Integration test: host submits inference request over USB → ONNX result returned
 
 ## 5. HackRF One SDR Driver
@@ -129,12 +129,12 @@
 
 ## 8. HAL and Syscall Integration
 
-- [ ] 8.1 Add `UsbHostController` trait to kernel/src/hal.rs
-- [ ] 8.2 Add `UsbDeviceController` trait to kernel/src/hal.rs
-- [ ] 8.3 Add USB-specific error variants to HalError (UsbTransferError, UsbStall, UsbDeviceNotFound, UsbEndpointHalted)
+- [x] 8.1 Add `UsbHostController` trait to kernel/src/hal.rs
+- [x] 8.2 Add `UsbDeviceController` trait to kernel/src/hal.rs
+- [x] 8.3 Add USB-specific error variants to HalError (UsbTransferError, UsbStall, UsbDeviceNotFound, UsbEndpointHalted)
 - [ ] 8.4 Implement sys_dev_enumerate for USB device listing
 - [ ] 8.5 Implement sys_dev_open / sys_dev_close for USB device handles
 - [ ] 8.6 Implement sys_dev_ioctl dispatch to USB driver operations
 - [ ] 8.7 Implement sys_dev_dma_alloc integration with USB DMA buffers
-- [ ] 8.8 Unit tests for HAL trait method signatures and error types
+- [x] 8.8 Unit tests for HAL trait method signatures and error types
 - [ ] 8.9 Unit tests for device syscall USB integration (enumerate, open, ioctl, DMA)
