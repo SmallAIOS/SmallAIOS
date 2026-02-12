@@ -11,8 +11,8 @@
 //!
 //! The BCH(63,56) code provides single-error correction for each code block.
 
-use alloc::vec::Vec;
 use crate::BusError;
+use alloc::vec::Vec;
 
 /// CLTU start sequence (2 bytes).
 pub const CLTU_START: [u8; 2] = [0xEB, 0x90];
@@ -267,8 +267,8 @@ mod tests {
         assert_eq!(cltu[3], 0x22);
         assert_eq!(cltu[7], FILL_BYTE); // last info byte is fill
         assert_eq!(cltu[8], FILL_BYTE); // second fill byte... wait let's check
-        // Actually: start is bytes 0-1, then block 0 is bytes 2-9
-        // bytes 2..8 are info (7 bytes), byte 9 is parity
+                                        // Actually: start is bytes 0-1, then block 0 is bytes 2-9
+                                        // bytes 2..8 are info (7 bytes), byte 9 is parity
         assert_eq!(cltu[2], 0x11); // info[0]
         assert_eq!(cltu[3], 0x22); // info[1]
         assert_eq!(cltu[4], 0x33); // info[2]
@@ -276,7 +276,7 @@ mod tests {
         assert_eq!(cltu[6], 0x55); // info[4]
         assert_eq!(cltu[7], FILL_BYTE); // info[5] = fill
         assert_eq!(cltu[8], FILL_BYTE); // info[6] = fill
-        // byte 9 is parity
+                                        // byte 9 is parity
     }
 
     #[test]

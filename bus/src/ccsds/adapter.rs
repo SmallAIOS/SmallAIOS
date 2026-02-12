@@ -13,9 +13,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use super::packet::{SpacePacket, MAX_APID};
 use crate::transport::{BusSample, ZenohTransport};
 use crate::BusError;
-use super::packet::{SpacePacket, MAX_APID};
 
 /// Maximum number of queued receive packets.
 const MAX_RX_QUEUE: usize = 64;
@@ -103,10 +103,7 @@ impl ZenohTransport for CcsdsZenohAdapter {
         Ok(())
     }
 
-    fn receive<'a>(
-        &mut self,
-        buf: &'a mut [u8],
-    ) -> Result<Option<BusSample<'a>>, BusError> {
+    fn receive<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<BusSample<'a>>, BusError> {
         if let Some((key, data)) = self.rx_queue.pop_front() {
             let key_bytes = key.as_bytes();
             let total = key_bytes.len() + 1 + data.len();

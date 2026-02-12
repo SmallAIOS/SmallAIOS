@@ -18,10 +18,10 @@
 //! - Microchip MCP2515 datasheet (DS20001801)
 //! - ISO 11898-1 CAN data link layer
 
-use crate::BusError;
 use crate::can::controller::{CanBitTiming, CanController, CanMode, CanStats};
 use crate::can::frame::{CanFrame, FrameType};
 use crate::can::state::BusState;
+use crate::BusError;
 
 // ---------------------------------------------------------------------------
 // SPI abstraction
@@ -233,7 +233,6 @@ impl<S: SpiDevice> Mcp2515<S> {
         self.stats.tx_frames += 1;
         Ok(())
     }
-
 }
 
 impl<S: SpiDevice> CanController for Mcp2515<S> {
@@ -277,7 +276,8 @@ impl<S: SpiDevice> CanController for Mcp2515<S> {
             return Err(BusError::NotSupported);
         }
         // CNF1: SJW(2) + BRP(6)
-        let cnf1 = ((timing.sjw.saturating_sub(1) & 0x03) << 6) | (timing.prescaler.saturating_sub(1) as u8 & 0x3F);
+        let cnf1 = ((timing.sjw.saturating_sub(1) & 0x03) << 6)
+            | (timing.prescaler.saturating_sub(1) as u8 & 0x3F);
         // CNF2: BTLMODE(1)=1 + SAM(1)=0 + PHSEG1(3) + PRSEG(3)
         let prseg = (timing.tseg1 / 2).saturating_sub(1) & 0x07;
         let phseg1 = (timing.tseg1 - timing.tseg1 / 2).saturating_sub(1) & 0x07;
@@ -396,7 +396,7 @@ mod tests {
         spi.push_response(&[]); // reset
         spi.push_response(&[0, 0, mode_bits::CONFIGURATION]); // read CANSTAT
         spi.push_response(&[]); // write RXB0CTRL
-        // set_mode_bits: bit_modify
+                                // set_mode_bits: bit_modify
         spi.push_response(&[]);
         // read_mode_bits: verify
         spi.push_response(&[0, 0, mode_bits::LOOPBACK]);
@@ -414,7 +414,7 @@ mod tests {
         spi.push_response(&[]); // reset
         spi.push_response(&[0, 0, mode_bits::CONFIGURATION]); // read CANSTAT
         spi.push_response(&[]); // write RXB0CTRL
-        // set_bit_timing: 3 write_reg calls
+                                // set_bit_timing: 3 write_reg calls
         spi.push_response(&[]); // CNF1
         spi.push_response(&[]); // CNF2
         spi.push_response(&[]); // CNF3
@@ -474,7 +474,7 @@ mod tests {
         // set_mode to Normal
         spi.push_response(&[]); // bit_modify
         spi.push_response(&[0, 0, mode_bits::NORMAL]); // verify
-        // receive: read CANINTF -> no RX0IF
+                                                       // receive: read CANINTF -> no RX0IF
         spi.push_response(&[0, 0, 0x00]);
 
         let mut drv = Mcp2515::new(spi);

@@ -147,8 +147,7 @@ impl ReplayFilter {
         if now_us > self.window_size_us {
             self.window_start_us = now_us - self.window_size_us;
         }
-        self.entries
-            .retain(|&(_, ts)| ts >= self.window_start_us);
+        self.entries.retain(|&(_, ts)| ts >= self.window_start_us);
     }
 
     /// Number of entries in the filter.
@@ -220,7 +219,9 @@ impl RetryToken {
         offset += addr_len;
 
         let issued_at_us = u64::from_be_bytes(
-            data[offset..offset + 8].try_into().map_err(|_| crate::NetError::InvalidHeader)?,
+            data[offset..offset + 8]
+                .try_into()
+                .map_err(|_| crate::NetError::InvalidHeader)?,
         );
 
         Ok(Self {

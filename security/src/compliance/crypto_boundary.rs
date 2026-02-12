@@ -53,24 +53,24 @@ impl ApprovedAlgorithm {
     /// Security strength in bits (NIST SP 800-57).
     pub fn security_strength_bits(&self) -> u32 {
         match self {
-            Self::Sha3_256 => 128,     // Collision resistance
-            Self::Shake256 => 128,     // Security level
-            Self::Aes256Gcm => 256,    // Key size
-            Self::MlKem768 => 192,     // NIST security level 3
-            Self::MlDsa65 => 192,      // NIST security level 3
-            Self::HkdfSha3 => 128,     // Derived from SHA-3-256
+            Self::Sha3_256 => 128,  // Collision resistance
+            Self::Shake256 => 128,  // Security level
+            Self::Aes256Gcm => 256, // Key size
+            Self::MlKem768 => 192,  // NIST security level 3
+            Self::MlDsa65 => 192,   // NIST security level 3
+            Self::HkdfSha3 => 128,  // Derived from SHA-3-256
         }
     }
 
     /// Whether this algorithm is fully implemented (vs stub).
     pub fn is_implemented(&self) -> bool {
         match self {
-            Self::Sha3_256 => true,    // Production implementation
-            Self::Shake256 => true,    // Production implementation
-            Self::Aes256Gcm => false,  // Stub
-            Self::MlKem768 => false,   // Stub
-            Self::MlDsa65 => false,    // Stub
-            Self::HkdfSha3 => false,   // Stub
+            Self::Sha3_256 => true,   // Production implementation
+            Self::Shake256 => true,   // Production implementation
+            Self::Aes256Gcm => false, // Stub
+            Self::MlKem768 => false,  // Stub
+            Self::MlDsa65 => false,   // Stub
+            Self::HkdfSha3 => false,  // Stub
         }
     }
 
@@ -139,7 +139,7 @@ impl RotationPolicy {
     pub const fn for_session_key() -> Self {
         Self {
             max_age_ns: 24 * NS_PER_HOUR, // 24 hours
-            max_usage: 1u64 << 32,         // 2^32 operations
+            max_usage: 1u64 << 32,        // 2^32 operations
         }
     }
 
@@ -187,7 +187,10 @@ mod tests {
     #[test]
     fn algorithm_fips_references() {
         assert_eq!(ApprovedAlgorithm::Sha3_256.fips_reference(), "FIPS 202");
-        assert_eq!(ApprovedAlgorithm::Aes256Gcm.fips_reference(), "FIPS 197 + SP 800-38D");
+        assert_eq!(
+            ApprovedAlgorithm::Aes256Gcm.fips_reference(),
+            "FIPS 197 + SP 800-38D"
+        );
         assert_eq!(ApprovedAlgorithm::MlKem768.fips_reference(), "FIPS 203");
         assert_eq!(ApprovedAlgorithm::MlDsa65.fips_reference(), "FIPS 204");
     }
@@ -210,7 +213,7 @@ mod tests {
     fn implementation_status_count() {
         let (implemented, stub) = implementation_status();
         assert_eq!(implemented, 2); // SHA-3 and SHAKE256
-        assert_eq!(stub, 4);        // AES-GCM, ML-KEM, ML-DSA, HKDF
+        assert_eq!(stub, 4); // AES-GCM, ML-KEM, ML-DSA, HKDF
         assert_eq!(implemented + stub, ALL_APPROVED.len());
     }
 

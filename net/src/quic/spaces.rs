@@ -180,7 +180,11 @@ impl PacketNumberSpaceState {
     }
 
     /// Process an ACK for packets we sent. Returns newly acked packet numbers.
-    pub fn on_ack_received(&mut self, largest_acked: u64, acked_ranges: &[(u64, u64)]) -> Vec<SentPacket> {
+    pub fn on_ack_received(
+        &mut self,
+        largest_acked: u64,
+        acked_ranges: &[(u64, u64)],
+    ) -> Vec<SentPacket> {
         if self.largest_acked_pn.is_none_or(|la| largest_acked > la) {
             self.largest_acked_pn = Some(largest_acked);
         }
@@ -281,7 +285,10 @@ mod tests {
     #[test]
     fn test_space_variants() {
         assert_ne!(PacketNumberSpace::Initial, PacketNumberSpace::Handshake);
-        assert_ne!(PacketNumberSpace::Handshake, PacketNumberSpace::ApplicationData);
+        assert_ne!(
+            PacketNumberSpace::Handshake,
+            PacketNumberSpace::ApplicationData
+        );
     }
 
     #[test]

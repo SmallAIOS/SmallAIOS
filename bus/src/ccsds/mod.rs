@@ -15,7 +15,7 @@ pub mod test_vectors;
 pub mod tm_frame;
 
 pub use adapter::CcsdsZenohAdapter;
-pub use cltu::{cltu_encode, cltu_decode};
+pub use cltu::{cltu_decode, cltu_encode};
 pub use packet::{PacketType, SeqFlags, SpacePacket};
 pub use router::ApidRouter;
 pub use tc_frame::TcFrame;

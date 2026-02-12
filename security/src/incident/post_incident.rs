@@ -6,9 +6,9 @@
 //! Provides structured templates for root cause analysis,
 //! corrective action tracking, and lessons learned per NIST SP 800-61.
 
+use super::event::IncidentSeverity;
 use alloc::string::String;
 use alloc::vec::Vec;
-use super::event::IncidentSeverity;
 
 /// Maximum corrective actions per review.
 const MAX_CORRECTIVE_ACTIONS: usize = 16;
@@ -241,12 +241,7 @@ mod tests {
 
     #[test]
     fn create_review() {
-        let review = PostIncidentReview::new(
-            1,
-            IncidentSeverity::High,
-            1_000_000,
-            2_000_000,
-        );
+        let review = PostIncidentReview::new(1, IncidentSeverity::High, 1_000_000, 2_000_000);
         assert_eq!(review.incident_id, 1);
         assert_eq!(review.severity, IncidentSeverity::High);
         assert_eq!(review.root_cause, RootCauseCategory::Unknown);
@@ -280,13 +275,12 @@ mod tests {
     #[test]
     fn update_action_status() {
         let mut review = PostIncidentReview::new(1, IncidentSeverity::High, 0, 100);
-        review.add_corrective_action(
-            String::from("Fix bug"),
-            String::from("dev"),
-            0,
-        );
+        review.add_corrective_action(String::from("Fix bug"), String::from("dev"), 0);
         assert!(review.update_action_status(0, ActionStatus::InProgress));
-        assert_eq!(review.corrective_actions[0].status, ActionStatus::InProgress);
+        assert_eq!(
+            review.corrective_actions[0].status,
+            ActionStatus::InProgress
+        );
 
         assert!(review.update_action_status(0, ActionStatus::Completed));
         assert_eq!(review.corrective_actions[0].status, ActionStatus::Completed);
@@ -303,11 +297,7 @@ mod tests {
         let mut review = PostIncidentReview::new(1, IncidentSeverity::High, 0, 100);
         for i in 0..MAX_CORRECTIVE_ACTIONS {
             assert!(review
-                .add_corrective_action(
-                    alloc::format!("action-{}", i),
-                    String::from("owner"),
-                    0,
-                )
+                .add_corrective_action(alloc::format!("action-{}", i), String::from("owner"), 0,)
                 .is_some());
         }
         assert!(review
@@ -369,8 +359,14 @@ mod tests {
 
     #[test]
     fn root_cause_strings() {
-        assert_eq!(RootCauseCategory::SoftwareDefect.as_str(), "software-defect");
-        assert_eq!(RootCauseCategory::ExternalAttack.as_str(), "external-attack");
+        assert_eq!(
+            RootCauseCategory::SoftwareDefect.as_str(),
+            "software-defect"
+        );
+        assert_eq!(
+            RootCauseCategory::ExternalAttack.as_str(),
+            "external-attack"
+        );
         assert_eq!(RootCauseCategory::Unknown.as_str(), "unknown");
     }
 

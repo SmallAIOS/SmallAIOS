@@ -7,10 +7,10 @@
 //! SmallAIOS uses ML-DSA-65 identity certificates instead of
 //! classical RSA/ECDSA.
 
+use crate::dds::types::{DomainId, GuidPrefix};
+use crate::BusError;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::BusError;
-use crate::dds::types::{DomainId, GuidPrefix};
 
 /// Identity handle — opaque reference to an authenticated identity.
 pub type IdentityHandle = u64;
@@ -388,7 +388,10 @@ mod tests {
     #[test]
     fn test_builtin_auth_get_status_unknown() {
         let plugin = BuiltinAuthPlugin::new();
-        assert_eq!(plugin.get_status(&GuidPrefix::new([0x01; 12])), AuthStatus::Pending);
+        assert_eq!(
+            plugin.get_status(&GuidPrefix::new([0x01; 12])),
+            AuthStatus::Pending
+        );
     }
 
     #[test]
@@ -441,13 +444,11 @@ mod tests {
         let doc = PermissionsDocument {
             subject: String::from("test"),
             allowed_domains: vec![0],
-            rules: vec![
-                PermissionRule {
-                    topic_pattern: String::from("Sensor*"),
-                    allow_publish: true,
-                    allow_subscribe: false,
-                },
-            ],
+            rules: vec![PermissionRule {
+                topic_pattern: String::from("Sensor*"),
+                allow_publish: true,
+                allow_subscribe: false,
+            }],
         };
         assert!(check_topic_permission(&doc, "SensorData", true));
         assert!(!check_topic_permission(&doc, "SensorData", false));

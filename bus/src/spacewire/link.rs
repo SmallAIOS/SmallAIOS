@@ -135,9 +135,7 @@ impl LinkStateMachine {
                 self.error_reset_count += 1;
                 LinkState::ErrorReset
             }
-            (_, LinkEvent::LinkDisable) => {
-                LinkState::ErrorReset
-            }
+            (_, LinkEvent::LinkDisable) => LinkState::ErrorReset,
 
             // No transition for unhandled events
             _ => self.state,
@@ -178,10 +176,19 @@ mod tests {
         let mut fsm = LinkStateMachine::new(false);
         fsm.enable();
 
-        assert_eq!(fsm.process_event(LinkEvent::ResetTimeout), LinkState::ErrorWait);
-        assert_eq!(fsm.process_event(LinkEvent::ErrorWaitTimeout), LinkState::Ready);
+        assert_eq!(
+            fsm.process_event(LinkEvent::ResetTimeout),
+            LinkState::ErrorWait
+        );
+        assert_eq!(
+            fsm.process_event(LinkEvent::ErrorWaitTimeout),
+            LinkState::Ready
+        );
         assert_eq!(fsm.process_event(LinkEvent::LinkStart), LinkState::Started);
-        assert_eq!(fsm.process_event(LinkEvent::NullReceived), LinkState::Connecting);
+        assert_eq!(
+            fsm.process_event(LinkEvent::NullReceived),
+            LinkState::Connecting
+        );
         assert_eq!(fsm.process_event(LinkEvent::FctReceived), LinkState::Run);
         assert!(fsm.can_transfer());
         assert_eq!(fsm.run_count(), 1);
@@ -191,10 +198,22 @@ mod tests {
     fn test_autostart() {
         let mut fsm = LinkStateMachine::new(true);
 
-        assert_eq!(fsm.process_event(LinkEvent::ResetTimeout), LinkState::ErrorWait);
-        assert_eq!(fsm.process_event(LinkEvent::ErrorWaitTimeout), LinkState::Ready);
-        assert_eq!(fsm.process_event(LinkEvent::AutostartNull), LinkState::Started);
-        assert_eq!(fsm.process_event(LinkEvent::NullReceived), LinkState::Connecting);
+        assert_eq!(
+            fsm.process_event(LinkEvent::ResetTimeout),
+            LinkState::ErrorWait
+        );
+        assert_eq!(
+            fsm.process_event(LinkEvent::ErrorWaitTimeout),
+            LinkState::Ready
+        );
+        assert_eq!(
+            fsm.process_event(LinkEvent::AutostartNull),
+            LinkState::Started
+        );
+        assert_eq!(
+            fsm.process_event(LinkEvent::NullReceived),
+            LinkState::Connecting
+        );
         assert_eq!(fsm.process_event(LinkEvent::FctReceived), LinkState::Run);
     }
 
@@ -204,7 +223,10 @@ mod tests {
         fsm.process_event(LinkEvent::ResetTimeout);
         fsm.process_event(LinkEvent::ErrorWaitTimeout);
         // AutostartNull should not transition when autostart is disabled
-        assert_eq!(fsm.process_event(LinkEvent::AutostartNull), LinkState::Ready);
+        assert_eq!(
+            fsm.process_event(LinkEvent::AutostartNull),
+            LinkState::Ready
+        );
     }
 
     #[test]
@@ -227,7 +249,10 @@ mod tests {
         fsm.process_event(LinkEvent::FctReceived);
         assert_eq!(fsm.state(), LinkState::Run);
 
-        assert_eq!(fsm.process_event(LinkEvent::DisconnectTimeout), LinkState::ErrorReset);
+        assert_eq!(
+            fsm.process_event(LinkEvent::DisconnectTimeout),
+            LinkState::ErrorReset
+        );
         assert_eq!(fsm.disconnect_count(), 1);
         assert_eq!(fsm.error_reset_count(), 1);
         assert!(!fsm.can_transfer());
@@ -240,7 +265,10 @@ mod tests {
         fsm.process_event(LinkEvent::ErrorWaitTimeout);
         assert_eq!(fsm.state(), LinkState::Ready);
 
-        assert_eq!(fsm.process_event(LinkEvent::LinkError), LinkState::ErrorReset);
+        assert_eq!(
+            fsm.process_event(LinkEvent::LinkError),
+            LinkState::ErrorReset
+        );
         assert_eq!(fsm.error_reset_count(), 1);
     }
 
@@ -253,7 +281,10 @@ mod tests {
         fsm.process_event(LinkEvent::LinkStart);
         assert_eq!(fsm.state(), LinkState::Started);
 
-        assert_eq!(fsm.process_event(LinkEvent::LinkDisable), LinkState::ErrorReset);
+        assert_eq!(
+            fsm.process_event(LinkEvent::LinkDisable),
+            LinkState::ErrorReset
+        );
     }
 
     #[test]
@@ -286,8 +317,14 @@ mod tests {
     fn test_ignored_events() {
         let mut fsm = LinkStateMachine::new(false);
         // FCT in ErrorReset should be ignored
-        assert_eq!(fsm.process_event(LinkEvent::FctReceived), LinkState::ErrorReset);
+        assert_eq!(
+            fsm.process_event(LinkEvent::FctReceived),
+            LinkState::ErrorReset
+        );
         // NULL in ErrorReset should be ignored
-        assert_eq!(fsm.process_event(LinkEvent::NullReceived), LinkState::ErrorReset);
+        assert_eq!(
+            fsm.process_event(LinkEvent::NullReceived),
+            LinkState::ErrorReset
+        );
     }
 }

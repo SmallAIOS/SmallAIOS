@@ -6,11 +6,11 @@
 //! Implements writer-side heartbeat generation and reader-side acknack
 //! response for guaranteed sample delivery with retransmission.
 
-use alloc::collections::BTreeSet;
-use alloc::vec::Vec;
-use crate::BusError;
 use crate::dds::endpoint::SequenceNumber;
 use crate::dds::types::Guid;
+use crate::BusError;
+use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
 
 /// Maximum number of samples retained for retransmission.
 const MAX_WRITER_CACHE: usize = 256;
@@ -272,7 +272,11 @@ impl ReaderAckNack {
     /// - num_missing (4 bytes, little-endian)
     /// - missing SNs (8 bytes each, little-endian)
     /// - count (4 bytes, little-endian)
-    pub fn encode_acknack(&mut self, writer_eid: &[u8; 4], buf: &mut [u8]) -> Result<usize, BusError> {
+    pub fn encode_acknack(
+        &mut self,
+        writer_eid: &[u8; 4],
+        buf: &mut [u8],
+    ) -> Result<usize, BusError> {
         let missing_count = self.missing.len();
         let total = 4 + 4 + 8 + 4 + (missing_count * 8) + 4;
         if buf.len() < total {
@@ -355,8 +359,8 @@ pub struct AckNackData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::dds::types::*;
+    use alloc::vec;
 
     fn test_guid(id: u8) -> Guid {
         Guid::new(GuidPrefix::new([id; 12]), EntityId::user([0, 0, id], 0x02))
@@ -445,7 +449,10 @@ mod tests {
     fn test_heartbeat_encode_buffer_too_small() {
         let mut wh = WriterHeartbeat::new(test_guid(1));
         let mut buf = [0u8; 10];
-        assert_eq!(wh.encode_heartbeat(&mut buf).err(), Some(BusError::BufferTooSmall));
+        assert_eq!(
+            wh.encode_heartbeat(&mut buf).err(),
+            Some(BusError::BufferTooSmall)
+        );
     }
 
     #[test]
@@ -557,12 +564,18 @@ mod tests {
         let mut ra = ReaderAckNack::new(test_guid(2));
         let writer_eid = [0; 4];
         let mut buf = [0u8; 5];
-        assert_eq!(ra.encode_acknack(&writer_eid, &mut buf).err(), Some(BusError::BufferTooSmall));
+        assert_eq!(
+            ra.encode_acknack(&writer_eid, &mut buf).err(),
+            Some(BusError::BufferTooSmall)
+        );
     }
 
     #[test]
     fn test_acknack_decode_too_short() {
-        assert_eq!(ReaderAckNack::decode_acknack(&[0u8; 10]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            ReaderAckNack::decode_acknack(&[0u8; 10]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]

@@ -220,7 +220,9 @@ impl PeripheralDiscovery {
 
     /// Find a peripheral by compatible string.
     pub fn find_by_compatible(&self, compatible: &[u8]) -> Option<&FpgaPeripheral> {
-        self.peripherals.iter().find(|p| p.compatible.matches(compatible))
+        self.peripherals
+            .iter()
+            .find(|p| p.compatible.matches(compatible))
     }
 
     /// Find all peripherals matching a compatible string.
@@ -308,7 +310,13 @@ mod tests {
 
     #[test]
     fn test_make_peripheral() {
-        let p = make_peripheral(b"xlnx,axi-gpio-2.0", b"gpio@40000000", 0x4000_0000, 0x1000, &[5, 6]);
+        let p = make_peripheral(
+            b"xlnx,axi-gpio-2.0",
+            b"gpio@40000000",
+            0x4000_0000,
+            0x1000,
+            &[5, 6],
+        );
         assert!(p.compatible.matches(b"xlnx,axi-gpio-2.0"));
         assert!(p.node_name.matches(b"gpio@40000000"));
         assert_eq!(p.base_addr, 0x4000_0000);
@@ -336,7 +344,13 @@ mod tests {
     #[test]
     fn test_discovery_register_peripheral() {
         let mut disc = PeripheralDiscovery::new();
-        let p = make_peripheral(b"xlnx,axi-gpio-2.0", b"gpio@40000000", 0x4000_0000, 0x1000, &[5]);
+        let p = make_peripheral(
+            b"xlnx,axi-gpio-2.0",
+            b"gpio@40000000",
+            0x4000_0000,
+            0x1000,
+            &[5],
+        );
         disc.register_peripheral(p).unwrap();
         assert_eq!(disc.count(), 1);
     }
@@ -345,11 +359,19 @@ mod tests {
     fn test_discovery_find_by_compatible() {
         let mut disc = PeripheralDiscovery::new();
         disc.register_peripheral(make_peripheral(
-            b"xlnx,axi-gpio-2.0", b"gpio@40000000", 0x4000_0000, 0x1000, &[5],
+            b"xlnx,axi-gpio-2.0",
+            b"gpio@40000000",
+            0x4000_0000,
+            0x1000,
+            &[5],
         ))
         .unwrap();
         disc.register_peripheral(make_peripheral(
-            b"xlnx,axi-uart-1.0", b"uart@41000000", 0x4100_0000, 0x100, &[3],
+            b"xlnx,axi-uart-1.0",
+            b"uart@41000000",
+            0x4100_0000,
+            0x100,
+            &[3],
         ))
         .unwrap();
 
@@ -362,15 +384,27 @@ mod tests {
     fn test_discovery_find_all_by_compatible() {
         let mut disc = PeripheralDiscovery::new();
         disc.register_peripheral(make_peripheral(
-            b"xlnx,axi-gpio-2.0", b"gpio0@40000000", 0x4000_0000, 0x1000, &[5],
+            b"xlnx,axi-gpio-2.0",
+            b"gpio0@40000000",
+            0x4000_0000,
+            0x1000,
+            &[5],
         ))
         .unwrap();
         disc.register_peripheral(make_peripheral(
-            b"xlnx,axi-gpio-2.0", b"gpio1@40001000", 0x4000_1000, 0x1000, &[6],
+            b"xlnx,axi-gpio-2.0",
+            b"gpio1@40001000",
+            0x4000_1000,
+            0x1000,
+            &[6],
         ))
         .unwrap();
         disc.register_peripheral(make_peripheral(
-            b"xlnx,axi-uart-1.0", b"uart@41000000", 0x4100_0000, 0x100, &[3],
+            b"xlnx,axi-uart-1.0",
+            b"uart@41000000",
+            0x4100_0000,
+            0x100,
+            &[3],
         ))
         .unwrap();
 
@@ -395,7 +429,11 @@ mod tests {
     fn test_discovery_address_overlap_peripheral() {
         let mut disc = PeripheralDiscovery::new();
         disc.register_peripheral(make_peripheral(
-            b"test,ip-a", b"a@40000000", 0x4000_0000, 0x1000, &[],
+            b"test,ip-a",
+            b"a@40000000",
+            0x4000_0000,
+            0x1000,
+            &[],
         ))
         .unwrap();
 
@@ -414,12 +452,20 @@ mod tests {
         let mut disc = PeripheralDiscovery::new();
         disc.set_kernel_region(0x8000_0000, 0x8100_0000);
         disc.register_peripheral(make_peripheral(
-            b"test,ip-a", b"a@40000000", 0x4000_0000, 0x1000, &[],
+            b"test,ip-a",
+            b"a@40000000",
+            0x4000_0000,
+            0x1000,
+            &[],
         ))
         .unwrap();
         // Non-overlapping
         disc.register_peripheral(make_peripheral(
-            b"test,ip-b", b"b@40001000", 0x4000_1000, 0x1000, &[],
+            b"test,ip-b",
+            b"b@40001000",
+            0x4000_1000,
+            0x1000,
+            &[],
         ))
         .unwrap();
         assert_eq!(disc.count(), 2);
@@ -429,7 +475,11 @@ mod tests {
     fn test_discovery_clear() {
         let mut disc = PeripheralDiscovery::new();
         disc.register_peripheral(make_peripheral(
-            b"test,ip", b"ip@40000000", 0x4000_0000, 0x1000, &[],
+            b"test,ip",
+            b"ip@40000000",
+            0x4000_0000,
+            0x1000,
+            &[],
         ))
         .unwrap();
         disc.clear();
@@ -439,12 +489,23 @@ mod tests {
     #[test]
     fn test_error_display() {
         assert_eq!(format!("{}", DiscoveryError::InvalidDtb), "invalid DTB");
-        assert_eq!(format!("{}", DiscoveryError::TooManyPeripherals), "too many peripherals");
         assert_eq!(
-            format!("{}", DiscoveryError::AddressOverlap { conflict_addr: 0x1234 }),
+            format!("{}", DiscoveryError::TooManyPeripherals),
+            "too many peripherals"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                DiscoveryError::AddressOverlap {
+                    conflict_addr: 0x1234
+                }
+            ),
             "address overlap at 0x1234"
         );
-        assert_eq!(format!("{}", DiscoveryError::UnknownCompatible), "unknown compatible string");
+        assert_eq!(
+            format!("{}", DiscoveryError::UnknownCompatible),
+            "unknown compatible string"
+        );
         assert_eq!(format!("{}", DiscoveryError::ParseError), "DTB parse error");
     }
 }

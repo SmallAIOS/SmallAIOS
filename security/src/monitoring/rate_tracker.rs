@@ -251,11 +251,7 @@ impl MemoryFailureTracker {
 
     /// Record a failure in the specified region.
     /// Returns `true` if the threshold was crossed for that region.
-    pub fn record_failure(
-        &mut self,
-        region: super::alerts::AllocatorRegion,
-        now_ns: u64,
-    ) -> bool {
+    pub fn record_failure(&mut self, region: super::alerts::AllocatorRegion, now_ns: u64) -> bool {
         match region {
             super::alerts::AllocatorRegion::Buddy => self.buddy.record(now_ns),
             super::alerts::AllocatorRegion::Slab => self.slab.record(now_ns),
@@ -415,11 +411,15 @@ mod tests {
         tracker.record_failure(AllocatorRegion::Tensor, 0);
 
         assert_eq!(
-            tracker.region_tracker(AllocatorRegion::Buddy).current_count(),
+            tracker
+                .region_tracker(AllocatorRegion::Buddy)
+                .current_count(),
             1
         );
         assert_eq!(
-            tracker.region_tracker(AllocatorRegion::Slab).current_count(),
+            tracker
+                .region_tracker(AllocatorRegion::Slab)
+                .current_count(),
             1
         );
         assert_eq!(

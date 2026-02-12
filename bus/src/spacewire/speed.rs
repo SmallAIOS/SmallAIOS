@@ -98,7 +98,11 @@ impl LinkSpeed {
     /// Compute the startup clock divisor for the system clock.
     pub fn startup_divisor(&self, sys_clock_mhz: u32) -> u16 {
         let divisor = (2 * sys_clock_mhz) / self.startup_mbps;
-        if divisor == 0 { 1 } else { divisor as u16 }
+        if divisor == 0 {
+            1
+        } else {
+            divisor as u16
+        }
     }
 
     /// Returns the character transmission time in nanoseconds.

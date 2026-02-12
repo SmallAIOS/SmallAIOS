@@ -553,7 +553,12 @@ mod tests {
             let encoded = word.encode();
             assert!(check_parity(encoded), "parity failed for label {}", val);
             let decoded = Arinc429Word::decode(encoded).unwrap();
-            assert_eq!(decoded.label.value(), val, "label roundtrip failed for {}", val);
+            assert_eq!(
+                decoded.label.value(),
+                val,
+                "label roundtrip failed for {}",
+                val
+            );
         }
     }
 

@@ -114,7 +114,11 @@ impl fmt::Display for PolarFireError {
             PolarFireError::FicNotInitialized => write!(f, "FIC not initialized"),
             PolarFireError::FicInitFailed => write!(f, "FIC initialization failed"),
             PolarFireError::AddressOutOfRange { fic, address } => {
-                write!(f, "address 0x{address:x} out of range for FIC{}", fic.index())
+                write!(
+                    f,
+                    "address 0x{address:x} out of range for FIC{}",
+                    fic.index()
+                )
             }
             PolarFireError::InterruptRoutingFailed => write!(f, "MSS interrupt routing failed"),
             PolarFireError::HssNotAvailable => write!(f, "HSS boot data not available"),
@@ -375,10 +379,14 @@ mod tests {
         platform.init_fic(FicId::Fic0).unwrap();
 
         // Valid address in FIC0 range
-        platform.validate_fic_address(FicId::Fic0, 0x2000_1000).unwrap();
+        platform
+            .validate_fic_address(FicId::Fic0, 0x2000_1000)
+            .unwrap();
 
         // Out of range
-        assert!(platform.validate_fic_address(FicId::Fic0, 0x5000_0000).is_err());
+        assert!(platform
+            .validate_fic_address(FicId::Fic0, 0x5000_0000)
+            .is_err());
     }
 
     #[test]
@@ -480,8 +488,14 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        assert_eq!(format!("{}", PolarFireError::FicNotInitialized), "FIC not initialized");
-        assert_eq!(format!("{}", PolarFireError::FicInitFailed), "FIC initialization failed");
+        assert_eq!(
+            format!("{}", PolarFireError::FicNotInitialized),
+            "FIC not initialized"
+        );
+        assert_eq!(
+            format!("{}", PolarFireError::FicInitFailed),
+            "FIC initialization failed"
+        );
         assert_eq!(
             format!(
                 "{}",
@@ -496,7 +510,13 @@ mod tests {
             format!("{}", PolarFireError::InterruptRoutingFailed),
             "MSS interrupt routing failed"
         );
-        assert_eq!(format!("{}", PolarFireError::HssNotAvailable), "HSS boot data not available");
-        assert_eq!(format!("{}", PolarFireError::FabricNotReady), "FPGA fabric not ready");
+        assert_eq!(
+            format!("{}", PolarFireError::HssNotAvailable),
+            "HSS boot data not available"
+        );
+        assert_eq!(
+            format!("{}", PolarFireError::FabricNotReady),
+            "FPGA fabric not ready"
+        );
     }
 }

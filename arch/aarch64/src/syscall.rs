@@ -14,6 +14,8 @@
 //!   - X0-X18 are caller-saved (corruptible)
 //!   - X19-X29, SP, LR (X30) are callee-saved
 
+use core::arch::naked_asm;
+
 /// SVC handler called from the exception vector table.
 ///
 /// This function is called by the synchronous exception handler
@@ -85,88 +87,86 @@ pub unsafe extern "C" fn svc_handler(regs: *mut u64) {
 pub extern "C" fn sync_exception_entry() {
     // SAFETY: Naked function implementing the exception entry/exit path.
     // All register saves/restores handled explicitly in assembly.
-    unsafe {
-        naked_asm!(
-            // Save all general-purpose registers (X0-X30) + SP_EL0 + ELR_EL1 + SPSR_EL1
-            // Sub stack for 34 * 8 = 272 bytes
-            "sub sp, sp, #272",
+    naked_asm!(
+        // Save all general-purpose registers (X0-X30) + SP_EL0 + ELR_EL1 + SPSR_EL1
+        // Sub stack for 34 * 8 = 272 bytes
+        "sub sp, sp, #272",
 
-            // Save X0-X29 (pairs)
-            "stp x0, x1, [sp, #0x00]",
-            "stp x2, x3, [sp, #0x10]",
-            "stp x4, x5, [sp, #0x20]",
-            "stp x6, x7, [sp, #0x30]",
-            "stp x8, x9, [sp, #0x40]",
-            "stp x10, x11, [sp, #0x50]",
-            "stp x12, x13, [sp, #0x60]",
-            "stp x14, x15, [sp, #0x70]",
-            "stp x16, x17, [sp, #0x80]",
-            "stp x18, x19, [sp, #0x90]",
-            "stp x20, x21, [sp, #0xA0]",
-            "stp x22, x23, [sp, #0xB0]",
-            "stp x24, x25, [sp, #0xC0]",
-            "stp x26, x27, [sp, #0xD0]",
-            "stp x28, x29, [sp, #0xE0]",
+        // Save X0-X29 (pairs)
+        "stp x0, x1, [sp, #0x00]",
+        "stp x2, x3, [sp, #0x10]",
+        "stp x4, x5, [sp, #0x20]",
+        "stp x6, x7, [sp, #0x30]",
+        "stp x8, x9, [sp, #0x40]",
+        "stp x10, x11, [sp, #0x50]",
+        "stp x12, x13, [sp, #0x60]",
+        "stp x14, x15, [sp, #0x70]",
+        "stp x16, x17, [sp, #0x80]",
+        "stp x18, x19, [sp, #0x90]",
+        "stp x20, x21, [sp, #0xA0]",
+        "stp x22, x23, [sp, #0xB0]",
+        "stp x24, x25, [sp, #0xC0]",
+        "stp x26, x27, [sp, #0xD0]",
+        "stp x28, x29, [sp, #0xE0]",
 
-            // Save X30 (LR) and SP_EL0
-            "mrs x10, sp_el0",
-            "stp x30, x10, [sp, #0xF0]",
+        // Save X30 (LR) and SP_EL0
+        "mrs x10, sp_el0",
+        "stp x30, x10, [sp, #0xF0]",
 
-            // Save ELR_EL1 and SPSR_EL1
-            "mrs x10, elr_el1",
-            "mrs x11, spsr_el1",
-            "stp x10, x11, [sp, #0x100]",
+        // Save ELR_EL1 and SPSR_EL1
+        "mrs x10, elr_el1",
+        "mrs x11, spsr_el1",
+        "stp x10, x11, [sp, #0x100]",
 
-            // Check ESR_EL1 for SVC exception class
-            "mrs x10, esr_el1",
-            "lsr x10, x10, #26",    // EC field is bits [31:26]
-            "cmp x10, #0x15",       // EC 0x15 = SVC from AArch64
-            "b.ne 1f",              // Not SVC — skip to generic handler
+        // Check ESR_EL1 for SVC exception class
+        "mrs x10, esr_el1",
+        "lsr x10, x10, #26",    // EC field is bits [31:26]
+        "cmp x10, #0x15",       // EC 0x15 = SVC from AArch64
+        "b.ne 1f",              // Not SVC — skip to generic handler
 
-            // Call svc_handler(regs: *mut u64)
-            "mov x0, sp",
-            "bl {svc_handler}",
-            "b 2f",
+        // Call svc_handler(regs: *mut u64)
+        "mov x0, sp",
+        "bl {svc_handler}",
+        "b 2f",
 
-            // Generic exception handler (non-SVC) — halt for now
-            "1:",
-            "b 1b",
+        // Generic exception handler (non-SVC) — halt for now
+        "1:",
+        "b 1b",
 
-            // Restore and return
-            "2:",
-            // Restore ELR_EL1 and SPSR_EL1
-            "ldp x10, x11, [sp, #0x100]",
-            "msr elr_el1, x10",
-            "msr spsr_el1, x11",
+        // Restore and return
+        "2:",
+        // Restore ELR_EL1 and SPSR_EL1
+        "ldp x10, x11, [sp, #0x100]",
+        "msr elr_el1, x10",
+        "msr spsr_el1, x11",
 
-            // Restore X30 (LR) and SP_EL0
-            "ldp x30, x10, [sp, #0xF0]",
-            "msr sp_el0, x10",
+        // Restore X30 (LR) and SP_EL0
+        "ldp x30, x10, [sp, #0xF0]",
+        "msr sp_el0, x10",
 
-            // Restore X0-X29
-            "ldp x28, x29, [sp, #0xE0]",
-            "ldp x26, x27, [sp, #0xD0]",
-            "ldp x24, x25, [sp, #0xC0]",
-            "ldp x22, x23, [sp, #0xB0]",
-            "ldp x20, x21, [sp, #0xA0]",
-            "ldp x18, x19, [sp, #0x90]",
-            "ldp x16, x17, [sp, #0x80]",
-            "ldp x14, x15, [sp, #0x70]",
-            "ldp x12, x13, [sp, #0x60]",
-            "ldp x10, x11, [sp, #0x50]",
-            "ldp x8, x9, [sp, #0x40]",
-            "ldp x6, x7, [sp, #0x30]",
-            "ldp x4, x5, [sp, #0x20]",
-            "ldp x2, x3, [sp, #0x10]",
-            "ldp x0, x1, [sp, #0x00]",
+        // Restore X0-X29
+        "ldp x28, x29, [sp, #0xE0]",
+        "ldp x26, x27, [sp, #0xD0]",
+        "ldp x24, x25, [sp, #0xC0]",
+        "ldp x22, x23, [sp, #0xB0]",
+        "ldp x20, x21, [sp, #0xA0]",
+        "ldp x18, x19, [sp, #0x90]",
+        "ldp x16, x17, [sp, #0x80]",
+        "ldp x14, x15, [sp, #0x70]",
+        "ldp x12, x13, [sp, #0x60]",
+        "ldp x10, x11, [sp, #0x50]",
+        "ldp x8, x9, [sp, #0x40]",
+        "ldp x6, x7, [sp, #0x30]",
+        "ldp x4, x5, [sp, #0x20]",
+        "ldp x2, x3, [sp, #0x10]",
+        "ldp x0, x1, [sp, #0x00]",
 
-            // Restore stack pointer
-            "add sp, sp, #272",
+        // Restore stack pointer
+        "add sp, sp, #272",
 
-            // Return from exception
-            "eret",
+        // Return from exception
+        "eret",
 
-            svc_handler = sym svc_handler,
-        );
-    }
+        svc_handler = sym svc_handler,
+    );
 }

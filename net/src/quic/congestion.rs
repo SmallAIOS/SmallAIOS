@@ -247,7 +247,10 @@ impl CongestionController {
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(lost_bytes);
 
         // Enter recovery if not already in it for this loss event
-        if self.recovery_start_pn.is_none_or(|rpn| largest_lost_pn > rpn) {
+        if self
+            .recovery_start_pn
+            .is_none_or(|rpn| largest_lost_pn > rpn)
+        {
             self.recovery_start_pn = Some(largest_lost_pn);
             self.state = CongestionState::Recovery;
             self.ssthresh = (self.congestion_window * LOSS_REDUCTION_NUMERATOR
@@ -338,7 +341,7 @@ mod tests {
         let mut rtt = RttEstimator::new();
         rtt.update(50_000, 0); // First sample
         rtt.update(100_000, 20_000); // Second sample with ack delay
-        // The adjusted RTT should be closer to 80k than 100k
+                                     // The adjusted RTT should be closer to 80k than 100k
         assert!(rtt.smoothed_rtt() < 90_000);
     }
 
@@ -363,7 +366,7 @@ mod tests {
         let mut rtt = RttEstimator::new();
         rtt.update(100_000, 0);
         let pto = rtt.pto(25_000); // 25ms max ack delay
-        // PTO = 100k + max(4*50k, 1k) + 25k = 100k + 200k + 25k = 325k
+                                   // PTO = 100k + max(4*50k, 1k) + 25k = 100k + 200k + 25k = 325k
         assert_eq!(pto, 325_000);
     }
 

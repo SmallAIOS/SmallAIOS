@@ -7,8 +7,8 @@
 //! on the primary bus. The manager tracks per-bus health and selects the
 //! active bus based on error thresholds.
 
-use crate::BusError;
 use crate::mil1553::bc::{Bus, MessageResult};
+use crate::BusError;
 
 /// Dual-bus health status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,11 +196,7 @@ impl DualBusManager {
     /// - If the result is a failure and the alternate bus is available,
     ///   returns `Some(alternate_bus)` to suggest a retry.
     /// - Returns `None` if no retry is needed or possible.
-    pub fn record_result(
-        &mut self,
-        bus: Bus,
-        result: &MessageResult,
-    ) -> Option<Bus> {
+    pub fn record_result(&mut self, bus: Bus, result: &MessageResult) -> Option<Bus> {
         match result {
             MessageResult::Success { .. } => {
                 self.tracker_mut(bus).record_success();

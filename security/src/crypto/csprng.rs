@@ -146,6 +146,7 @@ impl Csprng {
     /// This is the preferred way to initialize the CSPRNG in production.
     /// Reads 32 bytes from the hardware RNG and uses them as the seed.
     pub fn seed_from_hardware(&mut self) -> Result<(), CsprngError> {
+        #[allow(unused_mut)]
         let mut hw_seed = [0u8; CSPRNG_SEED_LEN];
 
         #[cfg(target_arch = "x86_64")]

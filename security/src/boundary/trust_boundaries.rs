@@ -119,7 +119,7 @@ pub const BOUNDARY_DEFINITIONS: &[BoundaryDefinition] = &[
         flow: DataFlowDirection::Bidirectional,
         max_connections: 16,
         max_data_rate_bps: 10_000_000, // 10 MB/s
-        entry_point_count: 8, // Pod CRUD, health, metrics, logs, exec
+        entry_point_count: 8,          // Pod CRUD, health, metrics, logs, exec
     },
     // Network boundary: TLS 1.3
     BoundaryDefinition {
@@ -128,23 +128,23 @@ pub const BOUNDARY_DEFINITIONS: &[BoundaryDefinition] = &[
         flow: DataFlowDirection::Bidirectional,
         max_connections: 256,
         max_data_rate_bps: 100_000_000, // 100 MB/s
-        entry_point_count: 4, // TCP, UDP, TLS, QUIC
+        entry_point_count: 4,           // TCP, UDP, TLS, QUIC
     },
     // Bus protocol boundary
     BoundaryDefinition {
         boundary: TrustBoundary::BusProtocol,
         auth: AuthMechanism::BusFrameIntegrity,
         flow: DataFlowDirection::Bidirectional,
-        max_connections: 32, // Max bus channels
+        max_connections: 32,          // Max bus channels
         max_data_rate_bps: 1_000_000, // 1 MB/s typical for CAN/1553
-        entry_point_count: 6, // CAN, ARINC 429, ARINC 664, MIL-STD-1553, SpaceWire, CCSDS
+        entry_point_count: 6,         // CAN, ARINC 429, ARINC 664, MIL-STD-1553, SpaceWire, CCSDS
     },
     // GPU boundary
     BoundaryDefinition {
         boundary: TrustBoundary::Gpu,
         auth: AuthMechanism::DmaPermissions,
         flow: DataFlowDirection::Bidirectional,
-        max_connections: 1, // Single GPU context
+        max_connections: 1,   // Single GPU context
         max_data_rate_bps: 0, // DMA speed, not rate-limited
         entry_point_count: 3, // Command submission, DMA transfer, BAR access
     },
@@ -152,9 +152,7 @@ pub const BOUNDARY_DEFINITIONS: &[BoundaryDefinition] = &[
 
 /// Look up the boundary definition for a trust boundary.
 pub fn definition_for(boundary: TrustBoundary) -> Option<&'static BoundaryDefinition> {
-    BOUNDARY_DEFINITIONS
-        .iter()
-        .find(|d| d.boundary == boundary)
+    BOUNDARY_DEFINITIONS.iter().find(|d| d.boundary == boundary)
 }
 
 /// Count of boundaries using a specific auth mechanism.
@@ -222,7 +220,10 @@ mod tests {
     fn auth_mechanism_strings() {
         assert_eq!(AuthMechanism::CapabilityToken.as_str(), "capability-token");
         assert_eq!(AuthMechanism::MutualTls.as_str(), "mutual-tls");
-        assert_eq!(AuthMechanism::BusFrameIntegrity.as_str(), "bus-frame-integrity");
+        assert_eq!(
+            AuthMechanism::BusFrameIntegrity.as_str(),
+            "bus-frame-integrity"
+        );
     }
 
     #[test]

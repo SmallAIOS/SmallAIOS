@@ -9,22 +9,25 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::dds::adapter::DdsZenohAdapter;
+    use crate::dds::best_effort::{BestEffortReader, BestEffortWriter};
+    use crate::dds::cdr::{CdrDeserializer, CdrSerializer, Endianness};
+    use crate::dds::discovery::{DiscoveredEndpoint, EndpointKind, SedpDatabase};
+    use crate::dds::endpoint::{check_match, DataReader, DataWriter, MatchStatus};
+    use crate::dds::qos::*;
+    use crate::dds::rtps::{RtpsHeader, RtpsMessage, Submessage, SubmessageKind};
+    use crate::dds::topic::Topic;
+    use crate::dds::types::*;
+    use crate::transport::ZenohTransport;
     use alloc::string::String;
     use alloc::vec;
     use alloc::vec::Vec;
-    use crate::dds::cdr::{CdrSerializer, CdrDeserializer, Endianness};
-    use crate::dds::endpoint::{DataWriter, DataReader, check_match, MatchStatus};
-    use crate::dds::qos::*;
-    use crate::dds::topic::Topic;
-    use crate::dds::types::*;
-    use crate::dds::rtps::{RtpsHeader, RtpsMessage, Submessage, SubmessageKind};
-    use crate::dds::best_effort::{BestEffortWriter, BestEffortReader};
-    use crate::dds::discovery::{SedpDatabase, DiscoveredEndpoint, EndpointKind};
-    use crate::dds::adapter::DdsZenohAdapter;
-    use crate::transport::ZenohTransport;
 
     fn make_guid(prefix: u8, entity: u8) -> Guid {
-        Guid::new(GuidPrefix::new([prefix; 12]), EntityId::user([0, 0, entity], 0x02))
+        Guid::new(
+            GuidPrefix::new([prefix; 12]),
+            EntityId::user([0, 0, entity], 0x02),
+        )
     }
 
     fn make_topic(name: &str) -> Topic {
@@ -39,7 +42,10 @@ mod tests {
     fn test_loopback_writer_to_reader() {
         let topic = make_topic("SensorTopic");
         let qos = QosPolicy {
-            history: HistoryQos { kind: HistoryKind::KeepAll, depth: 0 },
+            history: HistoryQos {
+                kind: HistoryKind::KeepAll,
+                depth: 0,
+            },
             ..Default::default()
         };
 
@@ -257,7 +263,10 @@ mod tests {
         }
 
         // Cross-topic should not match
-        assert_eq!(check_match(&writers[0], &readers[1]), MatchStatus::NotMatched);
+        assert_eq!(
+            check_match(&writers[0], &readers[1]),
+            MatchStatus::NotMatched
+        );
 
         // Publish to each topic
         for (i, writer) in writers.iter_mut().enumerate() {
@@ -283,7 +292,10 @@ mod tests {
         let topic = make_topic("DurableTopic");
         let qos = QosPolicy {
             durability: DurabilityKind::TransientLocal,
-            history: HistoryQos { kind: HistoryKind::KeepLast, depth: 5 },
+            history: HistoryQos {
+                kind: HistoryKind::KeepLast,
+                depth: 5,
+            },
             ..Default::default()
         };
 
@@ -316,7 +328,10 @@ mod tests {
     #[test]
     fn test_loopback_qos_history_enforcement() {
         let qos = QosPolicy {
-            history: HistoryQos { kind: HistoryKind::KeepLast, depth: 3 },
+            history: HistoryQos {
+                kind: HistoryKind::KeepLast,
+                depth: 3,
+            },
             ..Default::default()
         };
 

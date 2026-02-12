@@ -16,9 +16,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use super::bc::Bus;
 use crate::transport::{BusSample, ZenohTransport};
 use crate::BusError;
-use super::bc::Bus;
 
 /// Maximum number of queued receive messages.
 const MAX_RX_QUEUE: usize = 64;
@@ -119,10 +119,7 @@ impl ZenohTransport for Mil1553ZenohAdapter {
         Ok(())
     }
 
-    fn receive<'a>(
-        &mut self,
-        buf: &'a mut [u8],
-    ) -> Result<Option<BusSample<'a>>, BusError> {
+    fn receive<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<BusSample<'a>>, BusError> {
         if let Some((key, data)) = self.rx_queue.pop_front() {
             let key_bytes = key.as_bytes();
             let total = key_bytes.len() + 1 + data.len();

@@ -16,8 +16,8 @@
 
 use alloc::vec::Vec;
 
-use crate::BusError;
 use super::word::Label;
+use crate::BusError;
 
 /// Maximum number of scheduled labels.
 pub const MAX_SCHEDULED_LABELS: usize = 128;
@@ -223,7 +223,9 @@ mod tests {
     #[test]
     fn test_schedule_label() {
         let mut sched = TxScheduler::high_speed();
-        sched.schedule(Label::new(0o310), 50, make_word(0o310)).unwrap();
+        sched
+            .schedule(Label::new(0o310), 50, make_word(0o310))
+            .unwrap();
         assert_eq!(sched.count(), 1);
     }
 
@@ -240,14 +242,18 @@ mod tests {
     fn test_schedule_replaces_existing() {
         let mut sched = TxScheduler::high_speed();
         sched.schedule(Label::new(0o310), 50, make_word(1)).unwrap();
-        sched.schedule(Label::new(0o310), 100, make_word(2)).unwrap();
+        sched
+            .schedule(Label::new(0o310), 100, make_word(2))
+            .unwrap();
         assert_eq!(sched.count(), 1);
     }
 
     #[test]
     fn test_unschedule() {
         let mut sched = TxScheduler::high_speed();
-        sched.schedule(Label::new(0o310), 50, make_word(0o310)).unwrap();
+        sched
+            .schedule(Label::new(0o310), 50, make_word(0o310))
+            .unwrap();
         sched.unschedule(Label::new(0o310));
         assert_eq!(sched.count(), 0);
     }
@@ -268,7 +274,9 @@ mod tests {
     #[test]
     fn test_poll_immediate_first_word() {
         let mut sched = TxScheduler::high_speed();
-        sched.schedule(Label::new(0o310), 50, make_word(0o310)).unwrap();
+        sched
+            .schedule(Label::new(0o310), 50, make_word(0o310))
+            .unwrap();
 
         // First poll at t=0: word is due (last_tx_us=0, period has passed)
         let word = sched.poll(0);
@@ -279,7 +287,9 @@ mod tests {
     fn test_poll_respects_period() {
         let mut sched = TxScheduler::high_speed();
         // 50 Hz = 20000us period
-        sched.schedule(Label::new(0o310), 50, make_word(0o310)).unwrap();
+        sched
+            .schedule(Label::new(0o310), 50, make_word(0o310))
+            .unwrap();
 
         // First transmission at t=0
         sched.poll(0);
@@ -313,7 +323,7 @@ mod tests {
     #[test]
     fn test_poll_most_overdue_first() {
         let mut sched = TxScheduler::new(0); // no gap for simplicity
-        // Label 1 at 100 Hz (10000us period)
+                                             // Label 1 at 100 Hz (10000us period)
         sched.schedule(Label::new(1), 100, make_word(1)).unwrap();
         // Label 2 at 50 Hz (20000us period)
         sched.schedule(Label::new(2), 50, make_word(2)).unwrap();

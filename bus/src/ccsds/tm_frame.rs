@@ -7,8 +7,8 @@
 //! frame header containing spacecraft ID, virtual channel, frame counter,
 //! and First Header Pointer.
 
-use alloc::vec::Vec;
 use crate::BusError;
+use alloc::vec::Vec;
 
 /// TM frame primary header size in bytes.
 pub const TM_HEADER_LEN: usize = 6;
@@ -62,7 +62,12 @@ impl TmFrame {
     }
 
     /// Create an idle frame (no packets).
-    pub fn idle(scid: u16, vcid: u8, frame_counter: u8, frame_size: usize) -> Result<Self, BusError> {
+    pub fn idle(
+        scid: u16,
+        vcid: u8,
+        frame_counter: u8,
+        frame_size: usize,
+    ) -> Result<Self, BusError> {
         if scid > 0x3FF || vcid > 7 {
             return Err(BusError::OutOfRange);
         }
@@ -163,12 +168,18 @@ mod tests {
 
     #[test]
     fn test_tm_frame_invalid_scid() {
-        assert_eq!(TmFrame::new(0x400, 0, 0, 0, &[0x00]).err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            TmFrame::new(0x400, 0, 0, 0, &[0x00]).err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
     fn test_tm_frame_invalid_vcid() {
-        assert_eq!(TmFrame::new(0, 8, 0, 0, &[0x00]).err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            TmFrame::new(0, 8, 0, 0, &[0x00]).err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
@@ -194,7 +205,10 @@ mod tests {
 
     #[test]
     fn test_tm_frame_decode_too_short() {
-        assert_eq!(TmFrame::decode(&[0u8; 6]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            TmFrame::decode(&[0u8; 6]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]

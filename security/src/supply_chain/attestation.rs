@@ -288,7 +288,10 @@ mod tests {
             String::from("nightly"),
             1_000,
         );
-        assert_ne!(att1.signing_payload().as_bytes(), att2.signing_payload().as_bytes());
+        assert_ne!(
+            att1.signing_payload().as_bytes(),
+            att2.signing_payload().as_bytes()
+        );
     }
 
     #[test]
@@ -362,12 +365,7 @@ mod tests {
 
     #[test]
     fn validate_missing_timestamp() {
-        let att = BuildAttestation::new(
-            sample_hash(1),
-            sample_hash(2),
-            String::from("nightly"),
-            0,
-        );
+        let att = BuildAttestation::new(sample_hash(1), sample_hash(2), String::from("nightly"), 0);
         assert_eq!(att.validate(), Err(AttestationError::MissingTimestamp));
     }
 

@@ -7,9 +7,9 @@
 //! RETIRE_CONNECTION_ID, CONNECTION_CLOSE, MAX_DATA, MAX_STREAM_DATA,
 //! MAX_STREAMS, and RESET_STREAM frames.
 
-use alloc::vec::Vec;
+use super::packet::{decode_var_int, encode_var_int};
 use crate::NetError;
-use super::packet::{encode_var_int, decode_var_int};
+use alloc::vec::Vec;
 
 /// QUIC frame type identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,7 +130,11 @@ pub enum QuicFrame {
     /// RETIRE_CONNECTION_ID frame.
     RetireConnectionId { sequence: u64 },
     /// RESET_STREAM frame.
-    ResetStream { stream_id: u64, error_code: u64, final_size: u64 },
+    ResetStream {
+        stream_id: u64,
+        error_code: u64,
+        final_size: u64,
+    },
     /// STOP_SENDING frame.
     StopSending { stream_id: u64, error_code: u64 },
     /// PATH_CHALLENGE frame.
@@ -251,14 +255,21 @@ impl QuicFrame {
                 off += encode_var_int(*sequence, &mut buf[off..]);
                 Ok(off)
             }
-            QuicFrame::ResetStream { stream_id, error_code, final_size } => {
+            QuicFrame::ResetStream {
+                stream_id,
+                error_code,
+                final_size,
+            } => {
                 let mut off = encode_var_int(0x04, buf);
                 off += encode_var_int(*stream_id, &mut buf[off..]);
                 off += encode_var_int(*error_code, &mut buf[off..]);
                 off += encode_var_int(*final_size, &mut buf[off..]);
                 Ok(off)
             }
-            QuicFrame::StopSending { stream_id, error_code } => {
+            QuicFrame::StopSending {
+                stream_id,
+                error_code,
+            } => {
                 let mut off = encode_var_int(0x05, buf);
                 off += encode_var_int(*stream_id, &mut buf[off..]);
                 off += encode_var_int(*error_code, &mut buf[off..]);
@@ -354,13 +365,26 @@ impl QuicFrame {
                 let (error_code, c2) = decode_var_int(&data[off..])?;
                 off += c2;
                 let (final_size, c3) = decode_var_int(&data[off..])?;
-                Ok((QuicFrame::ResetStream { stream_id, error_code, final_size }, off + c3))
+                Ok((
+                    QuicFrame::ResetStream {
+                        stream_id,
+                        error_code,
+                        final_size,
+                    },
+                    off + c3,
+                ))
             }
             FrameType::StopSending => {
                 let (stream_id, c1) = decode_var_int(&data[off..])?;
                 off += c1;
                 let (error_code, c2) = decode_var_int(&data[off..])?;
-                Ok((QuicFrame::StopSending { stream_id, error_code }, off + c2))
+                Ok((
+                    QuicFrame::StopSending {
+                        stream_id,
+                        error_code,
+                    },
+                    off + c2,
+                ))
             }
             FrameType::PathChallenge => {
                 if data.len() < off + 8 {
@@ -563,7 +587,10 @@ fn decode_connection_close(data: &[u8]) -> Result<(QuicFrame, usize), NetError> 
     ))
 }
 
-fn encode_new_connection_id(ncid: &NewConnectionIdFrame, buf: &mut [u8]) -> Result<usize, NetError> {
+fn encode_new_connection_id(
+    ncid: &NewConnectionIdFrame,
+    buf: &mut [u8],
+) -> Result<usize, NetError> {
     let mut off = encode_var_int(0x18, buf);
     off += encode_var_int(ncid.sequence, &mut buf[off..]);
     off += encode_var_int(ncid.retire_prior_to, &mut buf[off..]);
@@ -616,7 +643,10 @@ mod tests {
 
     #[test]
     fn test_frame_type_roundtrip() {
-        for id in [0x00, 0x01, 0x02, 0x04, 0x05, 0x06, 0x08, 0x10, 0x11, 0x12, 0x13, 0x18, 0x19, 0x1a, 0x1b, 0x1c] {
+        for id in [
+            0x00, 0x01, 0x02, 0x04, 0x05, 0x06, 0x08, 0x10, 0x11, 0x12, 0x13, 0x18, 0x19, 0x1a,
+            0x1b, 0x1c,
+        ] {
             let ft = FrameType::from_id(id);
             if !matches!(ft, FrameType::Unknown(_)) {
                 // Stream and Ack have range of IDs, so to_id may differ
@@ -780,11 +810,20 @@ mod tests {
 
     #[test]
     fn test_max_stream_data_encode_decode() {
-        let frame = QuicFrame::MaxStreamData { stream_id: 4, maximum: 500_000 };
+        let frame = QuicFrame::MaxStreamData {
+            stream_id: 4,
+            maximum: 500_000,
+        };
         let mut buf = [0u8; 16];
         let len = frame.encode(&mut buf).unwrap();
         let (decoded, _) = QuicFrame::decode(&buf[..len]).unwrap();
-        assert_eq!(decoded, QuicFrame::MaxStreamData { stream_id: 4, maximum: 500_000 });
+        assert_eq!(
+            decoded,
+            QuicFrame::MaxStreamData {
+                stream_id: 4,
+                maximum: 500_000
+            }
+        );
     }
 
     #[test]
@@ -860,7 +899,10 @@ mod tests {
 
     #[test]
     fn test_stop_sending_encode_decode() {
-        let frame = QuicFrame::StopSending { stream_id: 8, error_code: 0x02 };
+        let frame = QuicFrame::StopSending {
+            stream_id: 8,
+            error_code: 0x02,
+        };
         let mut buf = [0u8; 8];
         let len = frame.encode(&mut buf).unwrap();
         let (decoded, _) = QuicFrame::decode(&buf[..len]).unwrap();
@@ -869,7 +911,9 @@ mod tests {
 
     #[test]
     fn test_path_challenge_encode_decode() {
-        let frame = QuicFrame::PathChallenge { data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08] };
+        let frame = QuicFrame::PathChallenge {
+            data: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08],
+        };
         let mut buf = [0u8; 16];
         let len = frame.encode(&mut buf).unwrap();
         let (decoded, _) = QuicFrame::decode(&buf[..len]).unwrap();

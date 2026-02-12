@@ -7,9 +7,9 @@
 //! a wire format for all primitive types, strings, sequences, and structs
 //! with configurable endianness and natural alignment.
 
+use crate::BusError;
 use alloc::string::String;
 use alloc::vec::Vec;
-use crate::BusError;
 
 /// CDR byte order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -537,7 +537,10 @@ mod tests {
         ser.serialize_byte_seq(&[0x01, 0x02, 0x03, 0xFF]);
         let data = ser.into_bytes();
         let mut de = CdrDeserializer::new(&data, Endianness::LittleEndian);
-        assert_eq!(de.deserialize_byte_seq().unwrap(), &[0x01, 0x02, 0x03, 0xFF]);
+        assert_eq!(
+            de.deserialize_byte_seq().unwrap(),
+            &[0x01, 0x02, 0x03, 0xFF]
+        );
     }
 
     #[test]
@@ -605,10 +608,10 @@ mod tests {
     fn test_struct_serialization() {
         // Simulate a struct: { u8 kind; u32 id; string name; f64 value; }
         let mut ser = CdrSerializer::new(Endianness::LittleEndian);
-        ser.serialize_u8(1);           // kind
-        ser.serialize_u32(42);         // id (aligned to 4)
+        ser.serialize_u8(1); // kind
+        ser.serialize_u32(42); // id (aligned to 4)
         ser.serialize_string("sensor"); // name
-        ser.serialize_f64(98.6);       // value (aligned to 8)
+        ser.serialize_f64(98.6); // value (aligned to 8)
 
         let data = ser.into_bytes();
         let mut de = CdrDeserializer::new(&data, Endianness::LittleEndian);

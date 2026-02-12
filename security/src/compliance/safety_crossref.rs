@@ -162,16 +162,76 @@ pub struct SafetyCrossRef {
 
 /// Complete safety cross-reference table for all kernel components.
 pub const SAFETY_CROSSREF: &[SafetyCrossRef] = &[
-    SafetyCrossRef { component: KernelComponent::MemoryAllocator, dal: DalLevel::A, sil: SilLevel::Sil4, asil: AsilLevel::D, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::Scheduler, dal: DalLevel::A, sil: SilLevel::Sil4, asil: AsilLevel::D, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::SyscallDispatch, dal: DalLevel::A, sil: SilLevel::Sil3, asil: AsilLevel::D, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::CapabilitySystem, dal: DalLevel::A, sil: SilLevel::Sil4, asil: AsilLevel::D, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::CryptoModule, dal: DalLevel::A, sil: SilLevel::Sil3, asil: AsilLevel::C, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::OnnxRuntime, dal: DalLevel::B, sil: SilLevel::Sil2, asil: AsilLevel::B, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::NetworkStack, dal: DalLevel::C, sil: SilLevel::Sil2, asil: AsilLevel::B, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::IpcMessaging, dal: DalLevel::B, sil: SilLevel::Sil2, asil: AsilLevel::B, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::AuditSubsystem, dal: DalLevel::B, sil: SilLevel::Sil2, asil: AsilLevel::B, mcdc_target_pct: 100 },
-    SafetyCrossRef { component: KernelComponent::Watchdog, dal: DalLevel::A, sil: SilLevel::Sil4, asil: AsilLevel::D, mcdc_target_pct: 100 },
+    SafetyCrossRef {
+        component: KernelComponent::MemoryAllocator,
+        dal: DalLevel::A,
+        sil: SilLevel::Sil4,
+        asil: AsilLevel::D,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::Scheduler,
+        dal: DalLevel::A,
+        sil: SilLevel::Sil4,
+        asil: AsilLevel::D,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::SyscallDispatch,
+        dal: DalLevel::A,
+        sil: SilLevel::Sil3,
+        asil: AsilLevel::D,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::CapabilitySystem,
+        dal: DalLevel::A,
+        sil: SilLevel::Sil4,
+        asil: AsilLevel::D,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::CryptoModule,
+        dal: DalLevel::A,
+        sil: SilLevel::Sil3,
+        asil: AsilLevel::C,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::OnnxRuntime,
+        dal: DalLevel::B,
+        sil: SilLevel::Sil2,
+        asil: AsilLevel::B,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::NetworkStack,
+        dal: DalLevel::C,
+        sil: SilLevel::Sil2,
+        asil: AsilLevel::B,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::IpcMessaging,
+        dal: DalLevel::B,
+        sil: SilLevel::Sil2,
+        asil: AsilLevel::B,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::AuditSubsystem,
+        dal: DalLevel::B,
+        sil: SilLevel::Sil2,
+        asil: AsilLevel::B,
+        mcdc_target_pct: 100,
+    },
+    SafetyCrossRef {
+        component: KernelComponent::Watchdog,
+        dal: DalLevel::A,
+        sil: SilLevel::Sil4,
+        asil: AsilLevel::D,
+        mcdc_target_pct: 100,
+    },
 ];
 
 /// DO-178C verification objective to NIST 800-53 CA control mapping.
@@ -221,7 +281,10 @@ pub fn classification_for(component: KernelComponent) -> Option<&'static SafetyC
 
 /// Count of components at DAL A.
 pub fn dal_a_count() -> usize {
-    SAFETY_CROSSREF.iter().filter(|r| r.dal == DalLevel::A).count()
+    SAFETY_CROSSREF
+        .iter()
+        .filter(|r| r.dal == DalLevel::A)
+        .count()
 }
 
 /// Get all components requiring 100% MC/DC coverage.
@@ -339,7 +402,10 @@ mod tests {
 
     #[test]
     fn component_strings() {
-        assert_eq!(KernelComponent::MemoryAllocator.as_str(), "memory-allocator");
+        assert_eq!(
+            KernelComponent::MemoryAllocator.as_str(),
+            "memory-allocator"
+        );
         assert_eq!(KernelComponent::Scheduler.as_str(), "scheduler");
         assert_eq!(KernelComponent::Watchdog.as_str(), "watchdog");
     }

@@ -81,10 +81,7 @@ pub const NOTIFICATION_MATRIX: &[NotificationRule] = &[
 
 /// Get the list of channels to notify for a given severity.
 pub fn channels_for_severity(severity: IncidentSeverity) -> ChannelIter {
-    ChannelIter {
-        severity,
-        pos: 0,
-    }
+    ChannelIter { severity, pos: 0 }
 }
 
 /// Iterator over notification channels for a severity level.
@@ -128,26 +125,26 @@ const NS_PER_MINUTE: u64 = 60_000_000_000;
 pub const ESCALATION_TIMELINES: &[EscalationTimeline] = &[
     EscalationTimeline {
         severity: IncidentSeverity::Critical,
-        initial_notification_ns: 0,                  // Immediate
-        re_notify_interval_ns: 5 * NS_PER_MINUTE,   // Every 5 minutes
-        auto_escalate_ns: 0,                         // Already highest
+        initial_notification_ns: 0,               // Immediate
+        re_notify_interval_ns: 5 * NS_PER_MINUTE, // Every 5 minutes
+        auto_escalate_ns: 0,                      // Already highest
     },
     EscalationTimeline {
         severity: IncidentSeverity::High,
-        initial_notification_ns: 0,                  // Immediate
-        re_notify_interval_ns: 15 * NS_PER_MINUTE,  // Every 15 minutes
-        auto_escalate_ns: 60 * NS_PER_MINUTE,       // Escalate to Critical after 1 hour
+        initial_notification_ns: 0,                // Immediate
+        re_notify_interval_ns: 15 * NS_PER_MINUTE, // Every 15 minutes
+        auto_escalate_ns: 60 * NS_PER_MINUTE,      // Escalate to Critical after 1 hour
     },
     EscalationTimeline {
         severity: IncidentSeverity::Medium,
-        initial_notification_ns: NS_PER_MINUTE,      // 1 minute delay
-        re_notify_interval_ns: 60 * NS_PER_MINUTE,  // Hourly
-        auto_escalate_ns: 4 * 60 * NS_PER_MINUTE,   // Escalate to High after 4 hours
+        initial_notification_ns: NS_PER_MINUTE, // 1 minute delay
+        re_notify_interval_ns: 60 * NS_PER_MINUTE, // Hourly
+        auto_escalate_ns: 4 * 60 * NS_PER_MINUTE, // Escalate to High after 4 hours
     },
     EscalationTimeline {
         severity: IncidentSeverity::Low,
-        initial_notification_ns: 5 * NS_PER_MINUTE,  // 5 minute delay
-        re_notify_interval_ns: 0,                    // No re-notification
+        initial_notification_ns: 5 * NS_PER_MINUTE, // 5 minute delay
+        re_notify_interval_ns: 0,                   // No re-notification
         auto_escalate_ns: 24 * 60 * NS_PER_MINUTE,  // Escalate to Medium after 24 hours
     },
 ];
@@ -163,7 +160,8 @@ mod tests {
 
     #[test]
     fn critical_uses_all_channels() {
-        let channels: alloc::vec::Vec<_> = channels_for_severity(IncidentSeverity::Critical).collect();
+        let channels: alloc::vec::Vec<_> =
+            channels_for_severity(IncidentSeverity::Critical).collect();
         assert_eq!(channels.len(), 4);
         let channel_types: alloc::vec::Vec<_> = channels.iter().map(|r| r.channel).collect();
         assert!(channel_types.contains(&NotificationChannel::AuditLog));
@@ -180,7 +178,8 @@ mod tests {
 
     #[test]
     fn medium_skips_alertmanager() {
-        let channels: alloc::vec::Vec<_> = channels_for_severity(IncidentSeverity::Medium).collect();
+        let channels: alloc::vec::Vec<_> =
+            channels_for_severity(IncidentSeverity::Medium).collect();
         assert_eq!(channels.len(), 3);
         let channel_types: alloc::vec::Vec<_> = channels.iter().map(|r| r.channel).collect();
         assert!(!channel_types.contains(&NotificationChannel::AlertmanagerWebhook));
@@ -199,7 +198,9 @@ mod tests {
         for severity_val in 0..=3u8 {
             let severity = IncidentSeverity::from_u8(severity_val).unwrap();
             let channels: alloc::vec::Vec<_> = channels_for_severity(severity).collect();
-            let audit = channels.iter().find(|r| r.channel == NotificationChannel::AuditLog);
+            let audit = channels
+                .iter()
+                .find(|r| r.channel == NotificationChannel::AuditLog);
             assert!(audit.is_some(), "AuditLog missing for {:?}", severity);
             assert!(audit.unwrap().mandatory);
         }
@@ -208,7 +209,10 @@ mod tests {
     #[test]
     fn channel_strings() {
         assert_eq!(NotificationChannel::ZenohIpc.as_str(), "zenoh-ipc");
-        assert_eq!(NotificationChannel::AlertmanagerWebhook.as_str(), "alertmanager-webhook");
+        assert_eq!(
+            NotificationChannel::AlertmanagerWebhook.as_str(),
+            "alertmanager-webhook"
+        );
         assert_eq!(NotificationChannel::Syslog.as_str(), "syslog");
         assert_eq!(NotificationChannel::AuditLog.as_str(), "audit-log");
     }

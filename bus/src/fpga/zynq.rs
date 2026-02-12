@@ -439,7 +439,12 @@ mod tests {
     #[test]
     fn test_all_resets() {
         let mut platform = ZynqPlatform::new(33);
-        for reset in [PlReset::Reset0, PlReset::Reset1, PlReset::Reset2, PlReset::Reset3] {
+        for reset in [
+            PlReset::Reset0,
+            PlReset::Reset1,
+            PlReset::Reset2,
+            PlReset::Reset3,
+        ] {
             assert!(platform.is_in_reset(reset));
             platform.deassert_reset(reset).unwrap();
             assert!(!platform.is_in_reset(reset));
@@ -489,7 +494,10 @@ mod tests {
             format!("{}", ZynqError::InterfaceNotPresent),
             "PS-PL interface not present"
         );
-        assert_eq!(format!("{}", ZynqError::ResetTooShort), "reset pulse too short");
+        assert_eq!(
+            format!("{}", ZynqError::ResetTooShort),
+            "reset pulse too short"
+        );
     }
 
     #[test]

@@ -6,9 +6,9 @@
 //! The BC manages the command/response protocol on the bus, scheduling
 //! messages, detecting timeouts, and handling retries.
 
-use alloc::vec::Vec;
-use crate::BusError;
 use crate::mil1553::word::{CommandWord, DataWord, StatusWord};
+use crate::BusError;
+use alloc::vec::Vec;
 
 /// Response timeout in microseconds (14 us per MIL-STD-1553B).
 pub const RESPONSE_TIMEOUT_US: u64 = 14;
@@ -39,10 +39,7 @@ pub enum Bus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageResult {
     /// Transaction completed successfully.
-    Success {
-        status: StatusWord,
-        data: Vec<u16>,
-    },
+    Success { status: StatusWord, data: Vec<u16> },
     /// RT responded with busy flag.
     Busy,
     /// RT did not respond within the timeout.
@@ -71,7 +68,11 @@ pub struct BcMessage {
 impl BcMessage {
     /// Create a BC-to-RT message (write data to RT).
     pub fn bc_to_rt(rt: u8, subaddress: u8, data: &[u16], bus: Bus) -> Result<Self, BusError> {
-        let wc = if data.len() == 32 { 0 } else { data.len() as u8 };
+        let wc = if data.len() == 32 {
+            0
+        } else {
+            data.len() as u8
+        };
         let command = CommandWord::new(rt, false, subaddress, wc)?;
         if data.is_empty() || data.len() > 32 {
             return Err(BusError::OutOfRange);
@@ -101,8 +102,10 @@ impl BcMessage {
 
     /// Create an RT-to-RT transfer message.
     pub fn rt_to_rt(
-        rx_rt: u8, rx_sa: u8,
-        tx_rt: u8, tx_sa: u8,
+        rx_rt: u8,
+        rx_sa: u8,
+        tx_rt: u8,
+        tx_sa: u8,
         word_count: u8,
         bus: Bus,
     ) -> Result<Self, BusError> {
@@ -132,7 +135,10 @@ impl BcMessage {
 
     /// Returns the encoded data words for BC-to-RT transmission.
     pub fn encode_data(&self) -> Vec<u32> {
-        self.tx_data.iter().map(|&d| DataWord::new(d).encode()).collect()
+        self.tx_data
+            .iter()
+            .map(|&d| DataWord::new(d).encode())
+            .collect()
     }
 }
 
@@ -197,10 +203,14 @@ impl BcSequencer {
             _ => {}
         }
         // Check for bus failover
-        if self.bus_a_timeouts + self.bus_a_errors >= self.error_threshold && self.active_bus == Bus::A {
+        if self.bus_a_timeouts + self.bus_a_errors >= self.error_threshold
+            && self.active_bus == Bus::A
+        {
             self.active_bus = Bus::B;
         }
-        if self.bus_b_timeouts + self.bus_b_errors >= self.error_threshold && self.active_bus == Bus::B {
+        if self.bus_b_timeouts + self.bus_b_errors >= self.error_threshold
+            && self.active_bus == Bus::B
+        {
             self.active_bus = Bus::A;
         }
     }
@@ -267,13 +277,19 @@ mod tests {
 
     #[test]
     fn test_bc_to_rt_empty_data() {
-        assert_eq!(BcMessage::bc_to_rt(1, 1, &[], Bus::A).err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            BcMessage::bc_to_rt(1, 1, &[], Bus::A).err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
     fn test_bc_to_rt_too_much_data() {
         let data = [0u16; 33];
-        assert_eq!(BcMessage::bc_to_rt(1, 1, &data, Bus::A).err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            BcMessage::bc_to_rt(1, 1, &data, Bus::A).err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
@@ -344,10 +360,13 @@ mod tests {
     fn test_sequencer_success_no_counter_increment() {
         let mut seq = BcSequencer::new(100);
         let sw = StatusWord::new(5).unwrap();
-        seq.record_result(Bus::A, &MessageResult::Success {
-            status: sw,
-            data: Vec::new(),
-        });
+        seq.record_result(
+            Bus::A,
+            &MessageResult::Success {
+                status: sw,
+                data: Vec::new(),
+            },
+        );
         assert_eq!(seq.timeouts(Bus::A), 0);
         assert_eq!(seq.errors(Bus::A), 0);
     }

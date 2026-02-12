@@ -18,10 +18,10 @@
 //! - Xilinx PG096: AXI CAN Controller LogiCORE IP Product Guide
 //! - ISO 11898-1 CAN data link layer
 
-use crate::BusError;
 use crate::can::controller::{CanBitTiming, CanController, CanMode, CanStats};
 use crate::can::frame::{CanFrame, FrameType};
 use crate::can::state::BusState;
+use crate::BusError;
 
 // ---------------------------------------------------------------------------
 // MMIO abstraction
@@ -220,8 +220,10 @@ impl<M: MmioAccess> AxiCan<M> {
         let len = frame.data.len().min(8);
         d[..len].copy_from_slice(&frame.data[..len]);
 
-        let dw1 = ((d[0] as u32) << 24) | ((d[1] as u32) << 16) | ((d[2] as u32) << 8) | d[3] as u32;
-        let dw2 = ((d[4] as u32) << 24) | ((d[5] as u32) << 16) | ((d[6] as u32) << 8) | d[7] as u32;
+        let dw1 =
+            ((d[0] as u32) << 24) | ((d[1] as u32) << 16) | ((d[2] as u32) << 8) | d[3] as u32;
+        let dw2 =
+            ((d[4] as u32) << 24) | ((d[5] as u32) << 16) | ((d[6] as u32) << 8) | d[7] as u32;
 
         self.mmio.write32(reg::TXFIFO_ID, id_reg);
         self.mmio.write32(reg::TXFIFO_DLC, dlc);
@@ -282,7 +284,8 @@ impl<M: MmioAccess> CanController for AxiCan<M> {
             return Err(BusError::NotSupported);
         }
         // BRPR: prescaler - 1
-        self.mmio.write32(reg::BRPR, timing.prescaler.saturating_sub(1) as u32);
+        self.mmio
+            .write32(reg::BRPR, timing.prescaler.saturating_sub(1) as u32);
         // BTR: SJW(2) + TSEG2(3) + TSEG1(4)
         let btr = (((timing.sjw.saturating_sub(1) as u32) & 0x03) << 7)
             | (((timing.tseg2.saturating_sub(1) as u32) & 0x07) << 4)
@@ -409,7 +412,10 @@ mod tests {
         drv.init().unwrap();
         drv.mode = CanMode::Normal; // Force mode
         let timing = CanBitTiming::standard_500kbps();
-        assert_eq!(drv.set_bit_timing(&timing).err(), Some(BusError::NotSupported));
+        assert_eq!(
+            drv.set_bit_timing(&timing).err(),
+            Some(BusError::NotSupported)
+        );
     }
 
     #[test]
@@ -487,6 +493,9 @@ mod tests {
         let mmio = MockMmio::new();
         let mut drv = AxiCan::new(mmio);
         drv.init().unwrap();
-        assert_eq!(drv.set_mode(CanMode::ListenOnly).err(), Some(BusError::NotSupported));
+        assert_eq!(
+            drv.set_mode(CanMode::ListenOnly).err(),
+            Some(BusError::NotSupported)
+        );
     }
 }

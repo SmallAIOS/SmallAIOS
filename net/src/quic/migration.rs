@@ -131,11 +131,7 @@ impl MigrationManager {
 
     /// Detect that a packet arrived from a new address.
     /// Returns true if migration was detected.
-    pub fn on_packet_from_new_address(
-        &mut self,
-        local_addr: &[u8],
-        remote_addr: &[u8],
-    ) -> bool {
+    pub fn on_packet_from_new_address(&mut self, local_addr: &[u8], remote_addr: &[u8]) -> bool {
         if let Some(ref active) = self.active_path {
             if active.matches(local_addr, remote_addr) {
                 return false; // Same path

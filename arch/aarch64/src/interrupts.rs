@@ -45,6 +45,7 @@ pub const IPI_IRQ: u32 = 0; // SGI 0
 ///
 /// # Safety
 /// GIC must be mapped.
+#[allow(dead_code)]
 unsafe fn gicd_read(offset: usize) -> u32 {
     let ptr = (GICD_BASE + offset) as *const u32;
     core::ptr::read_volatile(ptr)

@@ -134,7 +134,10 @@ mod tests {
     fn test_bus_error_display() {
         assert_eq!(format!("{}", BusError::FrameTooShort), "frame too short");
         assert_eq!(format!("{}", BusError::CrcMismatch), "CRC mismatch");
-        assert_eq!(format!("{}", BusError::PayloadTooLarge), "payload too large");
+        assert_eq!(
+            format!("{}", BusError::PayloadTooLarge),
+            "payload too large"
+        );
         assert_eq!(format!("{}", BusError::InvalidId), "invalid identifier");
         assert_eq!(format!("{}", BusError::InvalidDlc), "invalid DLC");
         assert_eq!(format!("{}", BusError::NotSupported), "not supported");
@@ -142,7 +145,10 @@ mod tests {
         assert_eq!(format!("{}", BusError::OutOfRange), "value out of range");
         assert_eq!(format!("{}", BusError::InvalidBcd), "invalid BCD digit");
         assert_eq!(format!("{}", BusError::BusOff), "bus off");
-        assert_eq!(format!("{}", BusError::FilterTableFull), "filter table full");
+        assert_eq!(
+            format!("{}", BusError::FilterTableFull),
+            "filter table full"
+        );
         assert_eq!(format!("{}", BusError::SchedulerFull), "scheduler full");
         assert_eq!(format!("{}", BusError::InvalidLabel), "invalid label");
         assert_eq!(format!("{}", BusError::InvalidApid), "invalid APID");

@@ -9,7 +9,6 @@
 
 #[cfg(test)]
 mod tests {
-    use alloc::vec::Vec;
     use crate::can::adapter::CanZenohAdapter;
     use crate::can::canaerospace::{CanaMessage, DataType};
     use crate::can::controller::{CanBitTiming, CanController, CanMode, MockCanController};
@@ -19,6 +18,7 @@ mod tests {
     use crate::can::frame::{CanFrame, FrameType};
     use crate::can::state::{BusEvent, BusState, BusStateMachine};
     use crate::transport::ZenohTransport;
+    use alloc::vec::Vec;
 
     // -----------------------------------------------------------------------
     // Loopback: Standard frame TX -> loopback -> RX
@@ -28,7 +28,8 @@ mod tests {
     fn test_loopback_standard_frame() {
         let mut ctrl = MockCanController::new();
         ctrl.init().unwrap();
-        ctrl.set_bit_timing(&CanBitTiming::standard_500kbps()).unwrap();
+        ctrl.set_bit_timing(&CanBitTiming::standard_500kbps())
+            .unwrap();
         ctrl.set_mode(CanMode::Loopback).unwrap();
 
         // Transmit a standard frame
@@ -148,7 +149,10 @@ mod tests {
 
         // Initialize the controller through the adapter
         adapter.controller_mut().init().unwrap();
-        adapter.controller_mut().set_mode(CanMode::Loopback).unwrap();
+        adapter
+            .controller_mut()
+            .set_mode(CanMode::Loopback)
+            .unwrap();
 
         // Transmit a CAN frame via the Zenoh adapter
         let frame = CanFrame::new_standard(0x1A3, &[0xCA, 0xFE]).unwrap();
@@ -220,11 +224,12 @@ mod tests {
     fn test_loopback_canaerospace_roundtrip() {
         // Create a CANaerospace NOD (Normal Operation Data) message
         let msg = CanaMessage::new_nod(
-            200, // CAN ID for AIRSPEED_IAS
+            200,  // CAN ID for AIRSPEED_IAS
             0x01, // Node ID
             DataType::Float,
             &125.5f32.to_be_bytes(),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Convert to CAN frame
         let frame = msg.to_can_frame().unwrap();
@@ -236,7 +241,10 @@ mod tests {
 
         // Decode back to CANaerospace
         let decoded_msg = CanaMessage::from_can_frame(&decoded_frame).unwrap();
-        assert_eq!(decoded_msg.msg_type, crate::can::canaerospace::MessageType::NodNormal);
+        assert_eq!(
+            decoded_msg.msg_type,
+            crate::can::canaerospace::MessageType::NodNormal
+        );
         assert_eq!(decoded_msg.data_type, DataType::Float.raw());
 
         // Verify the float value
@@ -252,7 +260,8 @@ mod tests {
     fn test_loopback_full_pipeline() {
         let mut ctrl = MockCanController::new();
         ctrl.init().unwrap();
-        ctrl.set_bit_timing(&CanBitTiming::standard_1mbps()).unwrap();
+        ctrl.set_bit_timing(&CanBitTiming::standard_1mbps())
+            .unwrap();
         ctrl.set_mode(CanMode::Loopback).unwrap();
 
         // Create a frame, encode it, transmit through controller

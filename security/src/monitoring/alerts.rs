@@ -21,9 +21,17 @@ pub enum AlertSeverity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertType {
     /// Excessive capability denials for a single task.
-    CapabilityDenialRate { task_id: u64, count: u32, window_secs: u32 },
+    CapabilityDenialRate {
+        task_id: u64,
+        count: u32,
+        window_secs: u32,
+    },
     /// Memory allocation failure spike.
-    MemoryAllocationFailure { region: AllocatorRegion, count: u32, window_secs: u32 },
+    MemoryAllocationFailure {
+        region: AllocatorRegion,
+        count: u32,
+        window_secs: u32,
+    },
     /// Inference latency outlier detected.
     InferenceLatencyAnomaly {
         task_id: u64,

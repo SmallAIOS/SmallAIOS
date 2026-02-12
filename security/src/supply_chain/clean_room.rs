@@ -93,9 +93,11 @@ impl CleanRoomRegistry {
 
     /// Mark an attestation as peer-reviewed.
     pub fn mark_reviewed(&mut self, crate_name: &str, module_path: &str) -> bool {
-        if let Some(att) = self.attestations.iter_mut().find(|a| {
-            a.crate_name == crate_name && a.module_path == module_path
-        }) {
+        if let Some(att) = self
+            .attestations
+            .iter_mut()
+            .find(|a| a.crate_name == crate_name && a.module_path == module_path)
+        {
             att.peer_reviewed = true;
             true
         } else {
@@ -105,9 +107,9 @@ impl CleanRoomRegistry {
 
     /// Get attestation for a module.
     pub fn get(&self, crate_name: &str, module_path: &str) -> Option<&CleanRoomAttestation> {
-        self.attestations.iter().find(|a| {
-            a.crate_name == crate_name && a.module_path == module_path
-        })
+        self.attestations
+            .iter()
+            .find(|a| a.crate_name == crate_name && a.module_path == module_path)
     }
 
     /// Count of total attestations.
@@ -122,12 +124,18 @@ impl CleanRoomRegistry {
 
     /// Count of unreviewed attestations.
     pub fn unreviewed_count(&self) -> usize {
-        self.attestations.iter().filter(|a| !a.peer_reviewed).count()
+        self.attestations
+            .iter()
+            .filter(|a| !a.peer_reviewed)
+            .count()
     }
 
     /// List attestations by development method.
     pub fn by_method(&self, method: DevelopmentMethod) -> Vec<&CleanRoomAttestation> {
-        self.attestations.iter().filter(|a| a.method == method).collect()
+        self.attestations
+            .iter()
+            .filter(|a| a.method == method)
+            .collect()
     }
 }
 
@@ -142,7 +150,11 @@ impl Default for CleanRoomRegistry {
 /// These represent the major modules and their development provenance.
 pub const KNOWN_ATTESTATIONS: &[(&str, &str, &str)] = &[
     ("smallaios-security", "crypto::sha3", "FIPS 202"),
-    ("smallaios-security", "crypto::aes_gcm", "FIPS 197 + SP 800-38D"),
+    (
+        "smallaios-security",
+        "crypto::aes_gcm",
+        "FIPS 197 + SP 800-38D",
+    ),
     ("smallaios-security", "crypto::ml_kem", "FIPS 203"),
     ("smallaios-security", "crypto::ml_dsa", "FIPS 204"),
     ("smallaios-net", "tcp", "RFC 9293"),
@@ -201,8 +213,20 @@ mod tests {
     #[test]
     fn counts() {
         let mut reg = CleanRoomRegistry::new();
-        reg.attest(String::from("a"), String::from("b"), DevelopmentMethod::FromStandard, String::from("s"), 0);
-        reg.attest(String::from("c"), String::from("d"), DevelopmentMethod::OriginalDesign, String::from("s"), 0);
+        reg.attest(
+            String::from("a"),
+            String::from("b"),
+            DevelopmentMethod::FromStandard,
+            String::from("s"),
+            0,
+        );
+        reg.attest(
+            String::from("c"),
+            String::from("d"),
+            DevelopmentMethod::OriginalDesign,
+            String::from("s"),
+            0,
+        );
         assert_eq!(reg.total_count(), 2);
         assert_eq!(reg.unreviewed_count(), 2);
     }
@@ -210,9 +234,27 @@ mod tests {
     #[test]
     fn by_method() {
         let mut reg = CleanRoomRegistry::new();
-        reg.attest(String::from("a"), String::from("b"), DevelopmentMethod::FromStandard, String::from("s"), 0);
-        reg.attest(String::from("c"), String::from("d"), DevelopmentMethod::OriginalDesign, String::from("s"), 0);
-        reg.attest(String::from("e"), String::from("f"), DevelopmentMethod::FromStandard, String::from("s"), 0);
+        reg.attest(
+            String::from("a"),
+            String::from("b"),
+            DevelopmentMethod::FromStandard,
+            String::from("s"),
+            0,
+        );
+        reg.attest(
+            String::from("c"),
+            String::from("d"),
+            DevelopmentMethod::OriginalDesign,
+            String::from("s"),
+            0,
+        );
+        reg.attest(
+            String::from("e"),
+            String::from("f"),
+            DevelopmentMethod::FromStandard,
+            String::from("s"),
+            0,
+        );
 
         assert_eq!(reg.by_method(DevelopmentMethod::FromStandard).len(), 2);
         assert_eq!(reg.by_method(DevelopmentMethod::OriginalDesign).len(), 1);
@@ -241,9 +283,15 @@ mod tests {
 
     #[test]
     fn method_strings() {
-        assert_eq!(DevelopmentMethod::FromSpecification.as_str(), "from-specification");
+        assert_eq!(
+            DevelopmentMethod::FromSpecification.as_str(),
+            "from-specification"
+        );
         assert_eq!(DevelopmentMethod::FromStandard.as_str(), "from-standard");
-        assert_eq!(DevelopmentMethod::OriginalDesign.as_str(), "original-design");
+        assert_eq!(
+            DevelopmentMethod::OriginalDesign.as_str(),
+            "original-design"
+        );
     }
 
     #[test]

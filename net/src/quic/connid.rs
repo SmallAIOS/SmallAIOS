@@ -5,9 +5,9 @@
 //!
 //! Handles CID generation, retirement, rotation, and lookup.
 
-use alloc::vec::Vec;
-use crate::NetError;
 use super::packet::MAX_CID_LEN;
+use crate::NetError;
+use alloc::vec::Vec;
 
 /// Maximum number of active connection IDs per connection.
 pub const MAX_ACTIVE_CIDS: usize = 8;
@@ -101,9 +101,14 @@ impl ConnectionIdManager {
 
         // Deterministic pseudo-random CID generation
         let mut id = Vec::with_capacity(self.cid_length);
-        let mut state = self.gen_seed.wrapping_add(seq).wrapping_mul(0x5851_F42D_4C95_7F2D);
+        let mut state = self
+            .gen_seed
+            .wrapping_add(seq)
+            .wrapping_mul(0x5851_F42D_4C95_7F2D);
         for _ in 0..self.cid_length {
-            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             id.push((state >> 33) as u8);
         }
         self.gen_seed = state;
@@ -181,7 +186,11 @@ impl ConnectionIdManager {
     pub fn rotate_remote_cid(&mut self) -> Option<&ConnectionId> {
         let current_seq = self.active_remote_cid().map(|c| c.sequence)?;
         // Retire the current one
-        if let Some(cid) = self.remote_cids.iter_mut().find(|c| c.sequence == current_seq) {
+        if let Some(cid) = self
+            .remote_cids
+            .iter_mut()
+            .find(|c| c.sequence == current_seq)
+        {
             cid.retired = true;
         }
         // Return the next active one
@@ -211,7 +220,10 @@ mod tests {
     #[test]
     fn test_connection_id_too_long() {
         let long = vec![0u8; 21];
-        assert_eq!(ConnectionId::new(&long, 0, [0; 16]).err(), Some(NetError::InvalidAddress));
+        assert_eq!(
+            ConnectionId::new(&long, 0, [0; 16]).err(),
+            Some(NetError::InvalidAddress)
+        );
     }
 
     #[test]
@@ -224,7 +236,10 @@ mod tests {
 
     #[test]
     fn test_manager_cid_too_long() {
-        assert_eq!(ConnectionIdManager::new(21).err(), Some(NetError::InvalidAddress));
+        assert_eq!(
+            ConnectionIdManager::new(21).err(),
+            Some(NetError::InvalidAddress)
+        );
     }
 
     #[test]

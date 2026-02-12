@@ -19,9 +19,9 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use super::types::MAX_DOMAIN_ID;
 use crate::transport::{BusSample, ZenohTransport};
 use crate::BusError;
-use super::types::MAX_DOMAIN_ID;
 
 /// Maximum number of queued receive samples.
 const MAX_RX_QUEUE: usize = 256;
@@ -149,10 +149,7 @@ impl ZenohTransport for DdsZenohAdapter {
         Ok(())
     }
 
-    fn receive<'a>(
-        &mut self,
-        buf: &'a mut [u8],
-    ) -> Result<Option<BusSample<'a>>, BusError> {
+    fn receive<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<BusSample<'a>>, BusError> {
         if let Some((key, data)) = self.rx_queue.pop_front() {
             let key_bytes = key.as_bytes();
             let total = key_bytes.len() + 1 + data.len();
@@ -298,17 +295,13 @@ mod tests {
     #[test]
     fn test_transmit_valid() {
         let mut adapter = DdsZenohAdapter::new(0).unwrap();
-        adapter
-            .transmit("dds/0/SensorData", &[0x01, 0x02])
-            .unwrap();
+        adapter.transmit("dds/0/SensorData", &[0x01, 0x02]).unwrap();
     }
 
     #[test]
     fn test_transmit_ros2_topic() {
         let mut adapter = DdsZenohAdapter::new(0).unwrap();
-        adapter
-            .transmit("dds/0/rt/robot/cmd_vel", &[0x01])
-            .unwrap();
+        adapter.transmit("dds/0/rt/robot/cmd_vel", &[0x01]).unwrap();
     }
 
     #[test]

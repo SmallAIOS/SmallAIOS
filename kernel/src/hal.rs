@@ -137,26 +137,15 @@ pub enum BusConfig {
         fd_data_rate: Option<CanFdDataRate>,
     },
     /// ARINC 429 configuration with channel speed.
-    Arinc429 {
-        speed: Arinc429Speed,
-    },
+    Arinc429 { speed: Arinc429Speed },
     /// ARINC 664 Virtual Link configuration.
-    Arinc664 {
-        max_vl_count: u16,
-    },
+    Arinc664 { max_vl_count: u16 },
     /// MIL-STD-1553 configuration.
-    Mil1553 {
-        mode: Mil1553Mode,
-        rt_address: u8,
-    },
+    Mil1553 { mode: Mil1553Mode, rt_address: u8 },
     /// SpaceWire link configuration.
-    SpaceWire {
-        link_speed_mbps: u16,
-    },
+    SpaceWire { link_speed_mbps: u16 },
     /// CCSDS configuration.
-    Ccsds {
-        max_packet_len: u16,
-    },
+    Ccsds { max_packet_len: u16 },
 }
 
 /// A raw frame received from or to be sent to a bus controller.
@@ -672,7 +661,11 @@ pub mod riscv {
         }
 
         /// Set the priority for an interrupt source.
-        pub fn set_priority(&mut self, source: u32, priority: PlicPriority) -> Result<(), HalError> {
+        pub fn set_priority(
+            &mut self,
+            source: u32,
+            priority: PlicPriority,
+        ) -> Result<(), HalError> {
             if source == 0 || source >= 1024 || !priority.is_valid() {
                 return Err(HalError::InvalidConfig);
             }
@@ -699,7 +692,11 @@ pub mod riscv {
         }
 
         /// Set the priority threshold for a context.
-        pub fn set_threshold(&mut self, _context: PlicContext, threshold: u8) -> Result<(), HalError> {
+        pub fn set_threshold(
+            &mut self,
+            _context: PlicContext,
+            threshold: u8,
+        ) -> Result<(), HalError> {
             if threshold > 7 {
                 return Err(HalError::InvalidConfig);
             }
@@ -893,8 +890,8 @@ pub mod riscv {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::riscv::*;
+    use super::*;
     use alloc::format;
 
     // -- HalError -----------------------------------------------------------
@@ -905,7 +902,10 @@ mod tests {
         assert_eq!(format!("{}", HalError::TxFifoFull), "transmit FIFO full");
         assert_eq!(format!("{}", HalError::RxEmpty), "receive FIFO empty");
         assert_eq!(format!("{}", HalError::BusOff), "bus off");
-        assert_eq!(format!("{}", HalError::InvalidConfig), "invalid configuration");
+        assert_eq!(
+            format!("{}", HalError::InvalidConfig),
+            "invalid configuration"
+        );
         assert_eq!(format!("{}", HalError::Timeout), "timeout");
         assert_eq!(format!("{}", HalError::DmaError), "DMA error");
         assert_eq!(format!("{}", HalError::MmioError), "MMIO error");
@@ -930,7 +930,10 @@ mod tests {
             fd_data_rate: Some(CanFdDataRate::Mbps8),
         };
         match cfg {
-            BusConfig::Can { baud_rate, fd_data_rate } => {
+            BusConfig::Can {
+                baud_rate,
+                fd_data_rate,
+            } => {
                 assert_eq!(baud_rate, CanBaudRate::Mbps1);
                 assert_eq!(fd_data_rate, Some(CanFdDataRate::Mbps8));
             }
@@ -940,7 +943,9 @@ mod tests {
 
     #[test]
     fn test_bus_config_arinc429() {
-        let cfg = BusConfig::Arinc429 { speed: Arinc429Speed::High };
+        let cfg = BusConfig::Arinc429 {
+            speed: Arinc429Speed::High,
+        };
         match cfg {
             BusConfig::Arinc429 { speed } => assert_eq!(speed, Arinc429Speed::High),
             _ => panic!("expected ARINC 429 config"),

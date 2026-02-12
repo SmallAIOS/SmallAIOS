@@ -9,12 +9,12 @@
 //! SEDP (Simple Endpoint Discovery Protocol) — exchange of DataWriter
 //! and DataReader endpoint information for automatic matching.
 
-use alloc::string::String;
-use alloc::vec::Vec;
-use crate::BusError;
 use crate::dds::endpoint::MatchStatus;
 use crate::dds::qos::QosPolicy;
 use crate::dds::types::{DomainId, Guid, GuidPrefix};
+use crate::BusError;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// Default SPDP announcement interval in microseconds (30 seconds / 3 = 10s).
 pub const SPDP_DEFAULT_INTERVAL_US: u64 = 10_000_000;
@@ -210,7 +210,11 @@ impl SpdpDatabase {
         }
 
         // Check if already known
-        if let Some(p) = self.participants.iter_mut().find(|p| p.guid_prefix == data.guid_prefix) {
+        if let Some(p) = self
+            .participants
+            .iter_mut()
+            .find(|p| p.guid_prefix == data.guid_prefix)
+        {
             p.refresh(now_us);
             p.lease_duration_us = data.lease_duration_us;
             return Ok(false); // Already known, just refreshed
@@ -304,12 +308,18 @@ impl SedpDatabase {
 
     /// Returns discovered writers.
     pub fn writers(&self) -> Vec<&DiscoveredEndpoint> {
-        self.endpoints.iter().filter(|e| e.kind == EndpointKind::Writer).collect()
+        self.endpoints
+            .iter()
+            .filter(|e| e.kind == EndpointKind::Writer)
+            .collect()
     }
 
     /// Returns discovered readers.
     pub fn readers(&self) -> Vec<&DiscoveredEndpoint> {
-        self.endpoints.iter().filter(|e| e.kind == EndpointKind::Reader).collect()
+        self.endpoints
+            .iter()
+            .filter(|e| e.kind == EndpointKind::Reader)
+            .collect()
     }
 
     /// Returns the number of discovered endpoints.
@@ -347,11 +357,13 @@ impl SedpDatabase {
     /// Returns a list of (writer_guid, reader_guid) pairs that should be matched.
     pub fn find_matches(&mut self) -> Vec<(Guid, Guid)> {
         let mut matches = Vec::new();
-        let writers: Vec<&DiscoveredEndpoint> = self.endpoints
+        let writers: Vec<&DiscoveredEndpoint> = self
+            .endpoints
             .iter()
             .filter(|e| e.kind == EndpointKind::Writer)
             .collect();
-        let readers: Vec<&DiscoveredEndpoint> = self.endpoints
+        let readers: Vec<&DiscoveredEndpoint> = self
+            .endpoints
             .iter()
             .filter(|e| e.kind == EndpointKind::Reader)
             .collect();
@@ -382,8 +394,14 @@ impl SedpDatabase {
 
     /// Check if a specific writer-reader pair would match.
     pub fn check_pair(&self, writer_guid: &Guid, reader_guid: &Guid) -> MatchStatus {
-        let writer = self.endpoints.iter().find(|e| e.guid == *writer_guid && e.kind == EndpointKind::Writer);
-        let reader = self.endpoints.iter().find(|e| e.guid == *reader_guid && e.kind == EndpointKind::Reader);
+        let writer = self
+            .endpoints
+            .iter()
+            .find(|e| e.guid == *writer_guid && e.kind == EndpointKind::Writer);
+        let reader = self
+            .endpoints
+            .iter()
+            .find(|e| e.guid == *reader_guid && e.kind == EndpointKind::Reader);
         match (writer, reader) {
             (Some(w), Some(r)) => {
                 if w.topic_name != r.topic_name {
@@ -458,7 +476,10 @@ mod tests {
 
     #[test]
     fn test_spdp_data_decode_too_short() {
-        assert_eq!(SpdpData::decode(&[0u8; 5]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            SpdpData::decode(&[0u8; 5]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]

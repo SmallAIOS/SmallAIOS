@@ -119,7 +119,8 @@ mod tests {
     #[test]
     fn test_frame_new_valid() {
         let payload = [0xAA; 100];
-        let frame = AfdxFrame::new(test_mac_dest(), test_mac_src(), 0x0800, &payload, 42, 512).unwrap();
+        let frame =
+            AfdxFrame::new(test_mac_dest(), test_mac_src(), 0x0800, &payload, 42, 512).unwrap();
         assert_eq!(frame.payload.len(), 100);
         assert_eq!(frame.trailer.sequence_number, 42);
         assert_eq!(frame.vl_id(), 0x03E9);
@@ -135,7 +136,8 @@ mod tests {
     #[test]
     fn test_frame_encode_decode_roundtrip() {
         let payload = [0x01, 0x02, 0x03, 0x04];
-        let frame = AfdxFrame::new(test_mac_dest(), test_mac_src(), 0x0800, &payload, 99, 512).unwrap();
+        let frame =
+            AfdxFrame::new(test_mac_dest(), test_mac_src(), 0x0800, &payload, 99, 512).unwrap();
         let mut buf = [0u8; 256];
         let len = frame.encode(&mut buf).unwrap();
         assert_eq!(len, 6 + 6 + 2 + 4 + 1);
@@ -151,13 +153,17 @@ mod tests {
     #[test]
     fn test_frame_decode_too_short() {
         let data = [0u8; 14]; // less than MIN_FRAME_LEN
-        assert_eq!(AfdxFrame::decode(&data).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            AfdxFrame::decode(&data).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]
     fn test_frame_encode_buffer_too_small() {
         let payload = [0xAA; 100];
-        let frame = AfdxFrame::new(test_mac_dest(), test_mac_src(), 0x0800, &payload, 0, 512).unwrap();
+        let frame =
+            AfdxFrame::new(test_mac_dest(), test_mac_src(), 0x0800, &payload, 0, 512).unwrap();
         let mut buf = [0u8; 10];
         assert_eq!(frame.encode(&mut buf).err(), Some(BusError::BufferTooSmall));
     }

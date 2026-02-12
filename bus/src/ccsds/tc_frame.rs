@@ -5,8 +5,8 @@
 //!
 //! A TC frame encapsulates Space Packets for uplink with CRC-16 integrity.
 
-use alloc::vec::Vec;
 use crate::BusError;
+use alloc::vec::Vec;
 
 /// TC frame header size in bytes.
 pub const TC_HEADER_LEN: usize = 5;
@@ -191,12 +191,18 @@ mod tests {
 
     #[test]
     fn test_tc_frame_invalid_scid() {
-        assert_eq!(TcFrame::new(false, false, 0x400, 0, 0, &[0x00]).err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            TcFrame::new(false, false, 0x400, 0, 0, &[0x00]).err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
     fn test_tc_frame_invalid_vcid() {
-        assert_eq!(TcFrame::new(false, false, 0, 64, 0, &[0x00]).err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            TcFrame::new(false, false, 0, 64, 0, &[0x00]).err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
@@ -219,12 +225,18 @@ mod tests {
         let len = frame.encode(&mut buf).unwrap();
         // Corrupt CRC
         buf[len - 1] ^= 0xFF;
-        assert_eq!(TcFrame::decode(&buf[..len]).err(), Some(BusError::CrcMismatch));
+        assert_eq!(
+            TcFrame::decode(&buf[..len]).err(),
+            Some(BusError::CrcMismatch)
+        );
     }
 
     #[test]
     fn test_tc_frame_decode_too_short() {
-        assert_eq!(TcFrame::decode(&[0u8; 6]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            TcFrame::decode(&[0u8; 6]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]

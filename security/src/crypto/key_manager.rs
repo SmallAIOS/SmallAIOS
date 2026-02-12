@@ -68,9 +68,9 @@ impl KeyType {
     /// Maximum key material size for this key type.
     pub fn max_key_size(&self) -> usize {
         match self {
-            Self::MlKem768 => 64,    // Seed/shared secret size
-            Self::MlDsa65 => 64,     // Seed size
-            Self::Aes256 => 32,      // 256-bit key
+            Self::MlKem768 => 64,     // Seed/shared secret size
+            Self::MlDsa65 => 64,      // Seed size
+            Self::Aes256 => 32,       // 256-bit key
             Self::Tls13Session => 48, // Key + IV
             Self::HkdfDerived => 64,  // Up to 512 bits
             Self::CsprngState => 64,  // Internal state
@@ -294,7 +294,9 @@ impl KeyManager {
         let slot = self
             .slots
             .iter_mut()
-            .find(|s| s.key_id == key_id && s.state != KeyState::Empty && s.state != KeyState::Destroyed)
+            .find(|s| {
+                s.key_id == key_id && s.state != KeyState::Empty && s.state != KeyState::Destroyed
+            })
             .ok_or(KeyManagerError::KeyNotFound)?;
 
         slot.zeroize();
@@ -404,10 +406,9 @@ impl KeyManager {
         // NIST test vector: SHA-3-256("") = a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a
         let empty_hash = crate::crypto::sha3::sha3_256(b"");
         let expected_empty: [u8; 32] = [
-            0xa7, 0xff, 0xc6, 0xf8, 0xbf, 0x1e, 0xd7, 0x66,
-            0x51, 0xc1, 0x47, 0x56, 0xa0, 0x61, 0xd6, 0x62,
-            0xf5, 0x80, 0xff, 0x4d, 0xe4, 0x3b, 0x49, 0xfa,
-            0x82, 0xd8, 0x0a, 0x4b, 0x80, 0xf8, 0x43, 0x4a,
+            0xa7, 0xff, 0xc6, 0xf8, 0xbf, 0x1e, 0xd7, 0x66, 0x51, 0xc1, 0x47, 0x56, 0xa0, 0x61,
+            0xd6, 0x62, 0xf5, 0x80, 0xff, 0x4d, 0xe4, 0x3b, 0x49, 0xfa, 0x82, 0xd8, 0x0a, 0x4b,
+            0x80, 0xf8, 0x43, 0x4a,
         ];
         if empty_hash.as_bytes() != &expected_empty {
             self.self_test_passed = false;
@@ -418,10 +419,9 @@ impl KeyManager {
         // NIST test vector: SHA-3-256("abc") = 3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532
         let abc_hash = crate::crypto::sha3::sha3_256(b"abc");
         let expected_abc: [u8; 32] = [
-            0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2,
-            0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3, 0x90, 0xbd,
-            0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b,
-            0x46, 0xbf, 0xe2, 0x45, 0x11, 0x43, 0x15, 0x32,
+            0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2, 0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3,
+            0x90, 0xbd, 0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b, 0x46, 0xbf, 0xe2, 0x45,
+            0x11, 0x43, 0x15, 0x32,
         ];
         if abc_hash.as_bytes() != &expected_abc {
             self.self_test_passed = false;
@@ -495,7 +495,9 @@ mod tests {
     #[test]
     fn usage_tracking() {
         let mut mgr = KeyManager::new();
-        let id = mgr.register_key(KeyType::Aes256, &[0x42; 32], 1000).unwrap();
+        let id = mgr
+            .register_key(KeyType::Aes256, &[0x42; 32], 1000)
+            .unwrap();
 
         // First usage should not trigger rotation
         let needs_rotation = mgr.record_usage(id).unwrap();
@@ -512,7 +514,9 @@ mod tests {
     #[test]
     fn rotation_warning() {
         let mut mgr = KeyManager::new();
-        let id = mgr.register_key(KeyType::Aes256, &[0x42; 32], 1000).unwrap();
+        let id = mgr
+            .register_key(KeyType::Aes256, &[0x42; 32], 1000)
+            .unwrap();
 
         // Directly set usage count near threshold via multiple registrations
         // We can't easily hit 2^32, but we can test the needs_rotation logic
@@ -530,7 +534,9 @@ mod tests {
     #[test]
     fn mark_for_rotation() {
         let mut mgr = KeyManager::new();
-        let id = mgr.register_key(KeyType::MlDsa65, &[0x11; 64], 1000).unwrap();
+        let id = mgr
+            .register_key(KeyType::MlDsa65, &[0x11; 64], 1000)
+            .unwrap();
         mgr.mark_for_rotation(id).unwrap();
         assert_eq!(mgr.key_state(id).unwrap(), KeyState::PendingRotation);
         assert_eq!(mgr.pending_rotation_count(), 1);
@@ -539,9 +545,12 @@ mod tests {
     #[test]
     fn destroy_all() {
         let mut mgr = KeyManager::new();
-        mgr.register_key(KeyType::Aes256, &[0xAA; 32], 1000).unwrap();
-        mgr.register_key(KeyType::MlDsa65, &[0xBB; 64], 2000).unwrap();
-        mgr.register_key(KeyType::Tls13Session, &[0xCC; 48], 3000).unwrap();
+        mgr.register_key(KeyType::Aes256, &[0xAA; 32], 1000)
+            .unwrap();
+        mgr.register_key(KeyType::MlDsa65, &[0xBB; 64], 2000)
+            .unwrap();
+        mgr.register_key(KeyType::Tls13Session, &[0xCC; 48], 3000)
+            .unwrap();
 
         assert_eq!(mgr.active_count(), 3);
         let (count, verified) = mgr.destroy_all();
@@ -564,11 +573,15 @@ mod tests {
     #[test]
     fn reuse_destroyed_slot() {
         let mut mgr = KeyManager::new();
-        let id1 = mgr.register_key(KeyType::Aes256, &[0xAA; 32], 1000).unwrap();
+        let id1 = mgr
+            .register_key(KeyType::Aes256, &[0xAA; 32], 1000)
+            .unwrap();
         mgr.destroy_key(id1).unwrap();
 
         // Should be able to register a new key in the freed slot
-        let id2 = mgr.register_key(KeyType::MlKem768, &[0xBB; 64], 2000).unwrap();
+        let id2 = mgr
+            .register_key(KeyType::MlKem768, &[0xBB; 64], 2000)
+            .unwrap();
         assert_ne!(id1, id2); // Different ID
         assert_eq!(mgr.active_count(), 1);
     }
@@ -591,7 +604,9 @@ mod tests {
     #[test]
     fn usage_on_inactive_key() {
         let mut mgr = KeyManager::new();
-        let id = mgr.register_key(KeyType::Aes256, &[0xAA; 32], 1000).unwrap();
+        let id = mgr
+            .register_key(KeyType::Aes256, &[0xAA; 32], 1000)
+            .unwrap();
         mgr.destroy_key(id).unwrap();
         let result = mgr.record_usage(id);
         assert_eq!(result, Err(KeyManagerError::KeyNotActive));
@@ -654,9 +669,15 @@ mod tests {
     #[test]
     fn multiple_key_types() {
         let mut mgr = KeyManager::new();
-        let id1 = mgr.register_key(KeyType::Aes256, &[0x11; 32], 1000).unwrap();
-        let id2 = mgr.register_key(KeyType::MlKem768, &[0x22; 64], 2000).unwrap();
-        let id3 = mgr.register_key(KeyType::AuditSigning, &[0x33; 64], 3000).unwrap();
+        let id1 = mgr
+            .register_key(KeyType::Aes256, &[0x11; 32], 1000)
+            .unwrap();
+        let id2 = mgr
+            .register_key(KeyType::MlKem768, &[0x22; 64], 2000)
+            .unwrap();
+        let id3 = mgr
+            .register_key(KeyType::AuditSigning, &[0x33; 64], 3000)
+            .unwrap();
 
         assert_eq!(mgr.key_type(id1).unwrap(), KeyType::Aes256);
         assert_eq!(mgr.key_type(id2).unwrap(), KeyType::MlKem768);

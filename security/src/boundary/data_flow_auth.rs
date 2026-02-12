@@ -196,7 +196,11 @@ mod tests {
     #[test]
     fn all_flows_require_integrity() {
         for flow in CROSS_BOUNDARY_FLOWS {
-            assert!(flow.integrity_required, "Flow '{}' should require integrity", flow.description);
+            assert!(
+                flow.integrity_required,
+                "Flow '{}' should require integrity",
+                flow.description
+            );
         }
     }
 
@@ -216,7 +220,10 @@ mod tests {
     fn bus_flows_no_confidentiality() {
         let bus_flows: alloc::vec::Vec<_> = CROSS_BOUNDARY_FLOWS
             .iter()
-            .filter(|f| f.source == TrustBoundary::BusProtocol || f.destination == TrustBoundary::BusProtocol)
+            .filter(|f| {
+                f.source == TrustBoundary::BusProtocol
+                    || f.destination == TrustBoundary::BusProtocol
+            })
             .collect();
         for flow in &bus_flows {
             assert!(!flow.confidentiality_required);
@@ -238,14 +245,20 @@ mod tests {
     #[test]
     fn verify_flow_missing_integrity() {
         let result = verify_flow(0, true, false, true);
-        assert_eq!(result, FlowVerificationResult::MissingIntegrity { flow_index: 0 });
+        assert_eq!(
+            result,
+            FlowVerificationResult::MissingIntegrity { flow_index: 0 }
+        );
     }
 
     #[test]
     fn verify_flow_missing_confidentiality() {
         // Flow 0 requires confidentiality (TLS inference request)
         let result = verify_flow(0, true, true, false);
-        assert_eq!(result, FlowVerificationResult::MissingConfidentiality { flow_index: 0 });
+        assert_eq!(
+            result,
+            FlowVerificationResult::MissingConfidentiality { flow_index: 0 }
+        );
     }
 
     #[test]
@@ -273,7 +286,10 @@ mod tests {
             .collect();
         states[0].2 = false; // Remove confidentiality from flow 0
         let result = verify_all_flows(&states);
-        assert_eq!(result, FlowVerificationResult::MissingConfidentiality { flow_index: 0 });
+        assert_eq!(
+            result,
+            FlowVerificationResult::MissingConfidentiality { flow_index: 0 }
+        );
     }
 
     #[test]

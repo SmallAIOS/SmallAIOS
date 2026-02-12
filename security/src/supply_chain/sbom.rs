@@ -272,11 +272,7 @@ pub enum SbomValidationError {
 ///
 /// Expects lines in format: `name = "<crate_name>", version = "<version>", checksum = "<sha256>"`
 /// This is a simplified parser for the build system integration point.
-pub fn parse_cargo_lock_entry(
-    name: &str,
-    version: &str,
-    checksum: Option<&str>,
-) -> SbomComponent {
+pub fn parse_cargo_lock_entry(name: &str, version: &str, checksum: Option<&str>) -> SbomComponent {
     let mut comp = SbomComponent::new(String::from(name), String::from(version));
     if let Some(hash) = checksum {
         comp = comp.with_hash(HashAlgorithm::Sha256, String::from(hash));
@@ -302,10 +298,7 @@ mod tests {
         let mut sbom = Sbom::new(SbomSpecVersion::V1_5);
         let comp = SbomComponent::new(String::from("serde"), String::from("1.0.200"))
             .with_license(String::from("MIT OR Apache-2.0"))
-            .with_hash(
-                HashAlgorithm::Sha256,
-                String::from("abcdef1234567890"),
-            )
+            .with_hash(HashAlgorithm::Sha256, String::from("abcdef1234567890"))
             .direct();
 
         assert!(sbom.add_component(comp));
@@ -398,7 +391,9 @@ mod tests {
             String::from("1.0.0"),
         ));
         let errors = sbom.validate();
-        assert!(errors.iter().any(|e| matches!(e, SbomValidationError::DuplicatePurl { .. })));
+        assert!(errors
+            .iter()
+            .any(|e| matches!(e, SbomValidationError::DuplicatePurl { .. })));
     }
 
     #[test]

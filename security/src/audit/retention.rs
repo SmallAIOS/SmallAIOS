@@ -90,7 +90,12 @@ impl RetentionPolicy {
     ///
     /// Assumes timestamps are in chronological order (oldest first).
     /// Returns the number of batches from the front that should be pruned.
-    pub fn batches_to_prune(&self, batch_timestamps: &[u64], now_ns: u64, total_count: u64) -> usize {
+    pub fn batches_to_prune(
+        &self,
+        batch_timestamps: &[u64],
+        now_ns: u64,
+        total_count: u64,
+    ) -> usize {
         let mut prune_count = 0;
 
         // Time-based pruning
@@ -153,7 +158,10 @@ mod tests {
     fn deployment_retention_ns() {
         assert_eq!(DeploymentClass::Edge.retention_ns(), 7 * NS_PER_DAY);
         assert_eq!(DeploymentClass::Datacenter.retention_ns(), 90 * NS_PER_DAY);
-        assert_eq!(DeploymentClass::SafetyCritical.retention_ns(), 365 * NS_PER_DAY);
+        assert_eq!(
+            DeploymentClass::SafetyCritical.retention_ns(),
+            365 * NS_PER_DAY
+        );
     }
 
     #[test]
@@ -172,8 +180,7 @@ mod tests {
 
     #[test]
     fn policy_custom_retention() {
-        let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge)
-            .with_retention_days(14);
+        let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge).with_retention_days(14);
         assert_eq!(policy.retention_ns, 14 * NS_PER_DAY);
     }
 
@@ -216,8 +223,7 @@ mod tests {
 
     #[test]
     fn prune_count_based() {
-        let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge)
-            .with_max_batches(3);
+        let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge).with_max_batches(3);
         let now = 5 * NS_PER_DAY;
         // All within retention window, but too many
         let timestamps = [

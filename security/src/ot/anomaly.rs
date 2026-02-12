@@ -245,12 +245,11 @@ impl AnomalyDetector {
     /// Check inference timing bounds.
     ///
     /// Returns an anomaly report if the duration is outside bounds.
-    pub fn check_timing(
-        &mut self,
-        model_id: u32,
-        duration_ns: u64,
-    ) -> Option<AnomalyReport> {
-        let config = self.configs.iter().find(|c| c.active && c.model_id == model_id)?;
+    pub fn check_timing(&mut self, model_id: u32, duration_ns: u64) -> Option<AnomalyReport> {
+        let config = self
+            .configs
+            .iter()
+            .find(|c| c.active && c.model_id == model_id)?;
 
         if config.min_inference_ns > 0 && duration_ns < config.min_inference_ns {
             self.total_anomalies += 1;
@@ -283,7 +282,10 @@ impl AnomalyDetector {
         element_index: u32,
         value: f32,
     ) -> Option<AnomalyReport> {
-        let config = self.configs.iter().find(|c| c.active && c.model_id == model_id)?;
+        let config = self
+            .configs
+            .iter()
+            .find(|c| c.active && c.model_id == model_id)?;
 
         let oi = output_index as usize;
         if oi < config.num_outputs as usize && !config.output_bounds[oi].check(value) {
@@ -308,7 +310,10 @@ impl AnomalyDetector {
         element_index: u32,
         value: f32,
     ) -> Option<AnomalyReport> {
-        let config = self.configs.iter().find(|c| c.active && c.model_id == model_id)?;
+        let config = self
+            .configs
+            .iter()
+            .find(|c| c.active && c.model_id == model_id)?;
 
         if !config.nan_inf_detection {
             return None;
@@ -341,7 +346,10 @@ impl AnomalyDetector {
         model_id: u32,
         actual_shape: &[u32],
     ) -> Option<AnomalyReport> {
-        let config = self.configs.iter().find(|c| c.active && c.model_id == model_id)?;
+        let config = self
+            .configs
+            .iter()
+            .find(|c| c.active && c.model_id == model_id)?;
 
         if !config.expected_input_shape.validate(actual_shape) {
             self.total_anomalies += 1;
@@ -395,7 +403,10 @@ mod tests {
 
     #[test]
     fn anomaly_type_as_str() {
-        assert_eq!(AnomalyType::OutputOutOfRange.as_str(), "output-out-of-range");
+        assert_eq!(
+            AnomalyType::OutputOutOfRange.as_str(),
+            "output-out-of-range"
+        );
         assert_eq!(AnomalyType::InferenceTooFast.as_str(), "inference-too-fast");
         assert_eq!(AnomalyType::InferenceTooSlow.as_str(), "inference-too-slow");
         assert_eq!(AnomalyType::InputNaN.as_str(), "input-nan");

@@ -15,10 +15,10 @@
 //! AFDX uses constant-prefix multicast MACs: `03:00:00:00:VL_HI:VL_LO`
 //! where `VL_HI:VL_LO` is the 16-bit VL ID in big-endian.
 
-use alloc::vec::Vec;
-use crate::BusError;
 use super::frame::AfdxFrame;
 use super::vl::VirtualLink;
+use crate::BusError;
+use alloc::vec::Vec;
 
 /// AFDX multicast MAC prefix (first 4 bytes).
 pub const AFDX_MULTICAST_PREFIX: [u8; 4] = [0x03, 0x00, 0x00, 0x00];
@@ -220,11 +220,7 @@ impl AfdxEthernetBridge {
     /// Encode an AFDX frame into a raw Ethernet byte buffer.
     ///
     /// This produces the raw bytes that would be transmitted on the wire.
-    pub fn encode_to_ethernet(
-        &self,
-        frame: &AfdxFrame,
-        buf: &mut [u8],
-    ) -> Result<usize, BusError> {
+    pub fn encode_to_ethernet(&self, frame: &AfdxFrame, buf: &mut [u8]) -> Result<usize, BusError> {
         frame.encode(buf)
     }
 
@@ -232,10 +228,7 @@ impl AfdxEthernetBridge {
     ///
     /// Validates that the frame is AFDX (multicast prefix match) and
     /// returns the VL ID, IP payload, and sequence number.
-    pub fn decapsulate(
-        &mut self,
-        ethernet_data: &[u8],
-    ) -> Result<(u16, Vec<u8>, u8), BusError> {
+    pub fn decapsulate(&mut self, ethernet_data: &[u8]) -> Result<(u16, Vec<u8>, u8), BusError> {
         let frame = AfdxFrame::decode(ethernet_data)?;
 
         // Verify it's an AFDX multicast frame
@@ -371,7 +364,9 @@ mod tests {
         let vl = test_vl();
         let ip_payload = [0x45, 0x00, 0x00, 0x28, 0xAB, 0xCD, 0x00, 0x00];
 
-        let frame = bridge.encapsulate(&vl, &ip_payload, ETHERTYPE_IPV4).unwrap();
+        let frame = bridge
+            .encapsulate(&vl, &ip_payload, ETHERTYPE_IPV4)
+            .unwrap();
         assert_eq!(frame.dest_mac, vl_to_multicast_mac(1001));
         assert_eq!(frame.src_mac, test_port_a().src_mac);
         assert_eq!(frame.ether_type, ETHERTYPE_IPV4);
@@ -426,7 +421,9 @@ mod tests {
     fn test_encode_to_ethernet() {
         let mut bridge = AfdxEthernetBridge::new(test_port_a());
         let vl = test_vl();
-        let frame = bridge.encapsulate(&vl, &[0x45, 0x00], ETHERTYPE_IPV4).unwrap();
+        let frame = bridge
+            .encapsulate(&vl, &[0x45, 0x00], ETHERTYPE_IPV4)
+            .unwrap();
 
         let mut buf = [0u8; 256];
         let len = bridge.encode_to_ethernet(&frame, &mut buf).unwrap();
@@ -443,7 +440,9 @@ mod tests {
         let vl = test_vl();
 
         // First encapsulate to get valid wire data
-        let frame = bridge.encapsulate(&vl, &[0xAA, 0xBB, 0xCC], ETHERTYPE_IPV4).unwrap();
+        let frame = bridge
+            .encapsulate(&vl, &[0xAA, 0xBB, 0xCC], ETHERTYPE_IPV4)
+            .unwrap();
         let mut buf = [0u8; 256];
         let len = bridge.encode_to_ethernet(&frame, &mut buf).unwrap();
 
@@ -480,7 +479,9 @@ mod tests {
         let mut bridge = AfdxEthernetBridge::new(test_port_a());
         let vl = test_vl();
 
-        let frame = bridge.encapsulate(&vl, &[0xDE, 0xAD], ETHERTYPE_IPV4).unwrap();
+        let frame = bridge
+            .encapsulate(&vl, &[0xDE, 0xAD], ETHERTYPE_IPV4)
+            .unwrap();
         let mut buf = [0u8; 256];
         let len = bridge.encode_to_ethernet(&frame, &mut buf).unwrap();
 
@@ -494,7 +495,9 @@ mod tests {
         let vl_1001 = test_vl();
         let vl_2002 = VirtualLink::new(2002, 4, 512, 1, false).unwrap();
 
-        let frame = bridge.encapsulate(&vl_1001, &[0x01], ETHERTYPE_IPV4).unwrap();
+        let frame = bridge
+            .encapsulate(&vl_1001, &[0x01], ETHERTYPE_IPV4)
+            .unwrap();
         let mut buf = [0u8; 256];
         let len = bridge.encode_to_ethernet(&frame, &mut buf).unwrap();
 
@@ -558,7 +561,9 @@ mod tests {
         let vl = test_vl();
 
         let ipv6_header = [0x60, 0x00, 0x00, 0x00, 0x00, 0x08, 0x11, 0x40];
-        let frame = bridge.encapsulate(&vl, &ipv6_header, ETHERTYPE_IPV6).unwrap();
+        let frame = bridge
+            .encapsulate(&vl, &ipv6_header, ETHERTYPE_IPV6)
+            .unwrap();
         assert_eq!(frame.ether_type, ETHERTYPE_IPV6);
 
         let mut buf = [0u8; 256];

@@ -69,6 +69,7 @@ SECTIONS
         __stacks_start = .;
         . += KERNEL_STACK_SIZE * MAX_HARTS;
         __stacks_end = .;
+        __stack_top = .;
     } > RAM
 
     /* Heap starts after stacks */

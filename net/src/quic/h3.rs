@@ -11,9 +11,9 @@
 //! This is intentionally minimal — SmallAIOS only needs to serve a handful
 //! of management endpoints, not a full HTTP/3 implementation.
 
-use alloc::vec::Vec;
+use super::packet::{decode_var_int, encode_var_int};
 use crate::NetError;
-use super::packet::{encode_var_int, decode_var_int};
+use alloc::vec::Vec;
 
 /// HTTP/3 frame types (RFC 9114 Section 7.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,7 +202,7 @@ impl HttpStatus {
     /// QPACK static table index for :status (only some are indexed).
     pub fn static_index(self) -> Option<u8> {
         match self {
-            HttpStatus::Ok => Some(25),       // :status 200
+            HttpStatus::Ok => Some(25),        // :status 200
             HttpStatus::NoContent => Some(26), // :status 204
             HttpStatus::NotFound => Some(27),  // :status 404
             _ => None,
@@ -645,11 +645,7 @@ mod tests {
     #[test]
     fn test_qpack_encode_get_request() {
         let mut buf = [0u8; 64];
-        let len = QpackEncoder::encode_request(
-            HttpMethod::Get,
-            b"/health",
-            &mut buf,
-        ).unwrap();
+        let len = QpackEncoder::encode_request(HttpMethod::Get, b"/health", &mut buf).unwrap();
         assert!(len > 0);
         // First two bytes are required insert count + delta base
         assert_eq!(buf[0], 0x00);
@@ -659,22 +655,16 @@ mod tests {
     #[test]
     fn test_qpack_encode_post_request() {
         let mut buf = [0u8; 64];
-        let len = QpackEncoder::encode_request(
-            HttpMethod::Post,
-            b"/deploy",
-            &mut buf,
-        ).unwrap();
+        let len = QpackEncoder::encode_request(HttpMethod::Post, b"/deploy", &mut buf).unwrap();
         assert!(len > 0);
     }
 
     #[test]
     fn test_qpack_encode_response_200() {
         let mut buf = [0u8; 64];
-        let len = QpackEncoder::encode_response(
-            HttpStatus::Ok,
-            Some(b"application/json"),
-            &mut buf,
-        ).unwrap();
+        let len =
+            QpackEncoder::encode_response(HttpStatus::Ok, Some(b"application/json"), &mut buf)
+                .unwrap();
         assert!(len > 0);
         assert_eq!(buf[0], 0x00); // Required insert count
     }
@@ -682,22 +672,14 @@ mod tests {
     #[test]
     fn test_qpack_encode_response_no_content_type() {
         let mut buf = [0u8; 32];
-        let len = QpackEncoder::encode_response(
-            HttpStatus::NotFound,
-            None,
-            &mut buf,
-        ).unwrap();
+        let len = QpackEncoder::encode_response(HttpStatus::NotFound, None, &mut buf).unwrap();
         assert!(len > 0);
     }
 
     #[test]
     fn test_qpack_encode_response_non_indexed_status() {
         let mut buf = [0u8; 32];
-        let len = QpackEncoder::encode_response(
-            HttpStatus::BadRequest,
-            None,
-            &mut buf,
-        ).unwrap();
+        let len = QpackEncoder::encode_response(HttpStatus::BadRequest, None, &mut buf).unwrap();
         assert!(len > 0);
     }
 
@@ -714,11 +696,26 @@ mod tests {
 
     #[test]
     fn test_management_path_from_path() {
-        assert_eq!(ManagementPath::from_path(b"/health"), Some(ManagementPath::Health));
-        assert_eq!(ManagementPath::from_path(b"/metrics"), Some(ManagementPath::Metrics));
-        assert_eq!(ManagementPath::from_path(b"/deploy"), Some(ManagementPath::Deploy));
-        assert_eq!(ManagementPath::from_path(b"/undeploy"), Some(ManagementPath::Undeploy));
-        assert_eq!(ManagementPath::from_path(b"/status"), Some(ManagementPath::Status));
+        assert_eq!(
+            ManagementPath::from_path(b"/health"),
+            Some(ManagementPath::Health)
+        );
+        assert_eq!(
+            ManagementPath::from_path(b"/metrics"),
+            Some(ManagementPath::Metrics)
+        );
+        assert_eq!(
+            ManagementPath::from_path(b"/deploy"),
+            Some(ManagementPath::Deploy)
+        );
+        assert_eq!(
+            ManagementPath::from_path(b"/undeploy"),
+            Some(ManagementPath::Undeploy)
+        );
+        assert_eq!(
+            ManagementPath::from_path(b"/status"),
+            Some(ManagementPath::Status)
+        );
         assert_eq!(ManagementPath::from_path(b"/unknown"), None);
     }
 

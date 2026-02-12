@@ -8,9 +8,9 @@
 //! configuration, and error state monitoring. Concrete implementations
 //! target specific hardware (e.g., MCP2515 SPI, AXI CAN FPGA IP).
 
-use crate::BusError;
 use crate::can::frame::CanFrame;
 use crate::can::state::BusState;
+use crate::BusError;
 
 /// CAN controller operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

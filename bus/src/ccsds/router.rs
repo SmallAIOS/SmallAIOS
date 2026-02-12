@@ -6,8 +6,8 @@
 //! Routes received packets to registered handlers based on their APID.
 //! Idle packets (APID 0x7FF) are silently discarded.
 
-use crate::BusError;
 use crate::ccsds::packet::{IDLE_APID, MAX_APID};
+use crate::BusError;
 
 /// Maximum number of registered APID handlers.
 pub const MAX_APID_HANDLERS: usize = 64;
@@ -42,7 +42,10 @@ impl ApidRouter {
     /// Create a new empty router.
     pub fn new() -> Self {
         Self {
-            entries: [ApidEntry { apid: 0, active: false }; MAX_APID_HANDLERS],
+            entries: [ApidEntry {
+                apid: 0,
+                active: false,
+            }; MAX_APID_HANDLERS],
             count: 0,
             discard_count: 0,
             idle_count: 0,
@@ -110,7 +113,10 @@ impl ApidRouter {
 
     /// Returns the number of registered APIDs.
     pub fn registered_count(&self) -> usize {
-        self.entries[..self.count].iter().filter(|e| e.active).count()
+        self.entries[..self.count]
+            .iter()
+            .filter(|e| e.active)
+            .count()
     }
 }
 
@@ -150,7 +156,10 @@ mod tests {
     #[test]
     fn test_register_idle_apid() {
         let mut router = ApidRouter::new();
-        assert_eq!(router.register(IDLE_APID).err(), Some(BusError::InvalidApid));
+        assert_eq!(
+            router.register(IDLE_APID).err(),
+            Some(BusError::InvalidApid)
+        );
     }
 
     #[test]
@@ -195,7 +204,10 @@ mod tests {
         for i in 0..MAX_APID_HANDLERS as u16 {
             router.register(i).unwrap();
         }
-        assert_eq!(router.register(0x7FE).err(), Some(BusError::FilterTableFull));
+        assert_eq!(
+            router.register(0x7FE).err(),
+            Some(BusError::FilterTableFull)
+        );
     }
 
     #[test]

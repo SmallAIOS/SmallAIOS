@@ -20,9 +20,9 @@
 
 extern crate alloc;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 use core::fmt;
 
 /// Benchmark configuration for a single measurement run.
@@ -113,10 +113,13 @@ impl LatencyStats {
 
         // Compute standard deviation
         let variance: u64 = if count > 1 {
-            let sum_sq_diff: u128 = sorted.iter().map(|&s| {
-                let diff = s.abs_diff(mean_us);
-                (diff as u128) * (diff as u128)
-            }).sum();
+            let sum_sq_diff: u128 = sorted
+                .iter()
+                .map(|&s| {
+                    let diff = s.abs_diff(mean_us);
+                    (diff as u128) * (diff as u128)
+                })
+                .sum();
             (sum_sq_diff / (count as u128 - 1)) as u64
         } else {
             0
@@ -580,15 +583,13 @@ mod tests {
 
     #[test]
     fn test_bench_config_with_warmup() {
-        let cfg = BenchConfig::new("test", "m.onnx", 1, 100)
-            .with_warmup(50);
+        let cfg = BenchConfig::new("test", "m.onnx", 1, 100).with_warmup(50);
         assert_eq!(cfg.warmup_iters, 50);
     }
 
     #[test]
     fn test_bench_config_with_platform() {
-        let cfg = BenchConfig::new("test", "m.onnx", 1, 100)
-            .with_platform("DGX Spark");
+        let cfg = BenchConfig::new("test", "m.onnx", 1, 100).with_platform("DGX Spark");
         assert_eq!(cfg.platform, "DGX Spark");
     }
 
@@ -608,8 +609,7 @@ mod tests {
 
     #[test]
     fn test_report_with_timestamp() {
-        let report = BenchmarkReport::new("Test")
-            .with_timestamp("2026-02-10T12:00:00Z");
+        let report = BenchmarkReport::new("Test").with_timestamp("2026-02-10T12:00:00Z");
         assert_eq!(report.timestamp, "2026-02-10T12:00:00Z");
     }
 
@@ -624,8 +624,7 @@ mod tests {
     fn test_report_to_markdown_with_cold_start() {
         let mut report = BenchmarkReport::new("Test");
         report.cold_start.push(ColdStartResult {
-            config: BenchConfig::new("test", "model.onnx", 1, 1)
-                .with_platform("SmallAIOS"),
+            config: BenchConfig::new("test", "model.onnx", 1, 1).with_platform("SmallAIOS"),
             boot_to_inference_us: 50000,
             boot_us: 20000,
             model_load_us: 25000,
@@ -642,8 +641,7 @@ mod tests {
         let mut report = BenchmarkReport::new("Test");
         let latency = LatencyStats::from_samples(&[100, 110, 120, 130, 140]).unwrap();
         report.warm_inference.push(WarmInferenceResult {
-            config: BenchConfig::new("test", "model.onnx", 1, 5)
-                .with_platform("SmallAIOS"),
+            config: BenchConfig::new("test", "model.onnx", 1, 5).with_platform("SmallAIOS"),
             latency,
         });
         let md = report.to_markdown();
@@ -656,8 +654,7 @@ mod tests {
     fn test_report_to_markdown_with_throughput() {
         let mut report = BenchmarkReport::new("Test");
         report.throughput.push(ThroughputResult {
-            config: BenchConfig::new("test", "model.onnx", 4, 100)
-                .with_platform("SmallAIOS"),
+            config: BenchConfig::new("test", "model.onnx", 4, 100).with_platform("SmallAIOS"),
             inferences_per_sec: 5000.0,
             total_us: 80000,
         });
@@ -670,8 +667,7 @@ mod tests {
     fn test_report_to_markdown_with_memory() {
         let mut report = BenchmarkReport::new("Test");
         report.memory.push(MemoryResult {
-            config: BenchConfig::new("test", "model.onnx", 1, 1)
-                .with_platform("SmallAIOS"),
+            config: BenchConfig::new("test", "model.onnx", 1, 1).with_platform("SmallAIOS"),
             peak_rss_bytes: 8 * 1024 * 1024,
             kernel_size_bytes: 4 * 1024 * 1024,
             model_size_bytes: 2 * 1024 * 1024,
@@ -690,8 +686,7 @@ mod tests {
         let mut report = BenchmarkReport::new("Test");
         let latency = LatencyStats::from_samples(&[100, 200, 300]).unwrap();
         report.warm_inference.push(WarmInferenceResult {
-            config: BenchConfig::new("test", "model.onnx", 1, 3)
-                .with_platform("SmallAIOS"),
+            config: BenchConfig::new("test", "model.onnx", 1, 3).with_platform("SmallAIOS"),
             latency,
         });
         let csv = report.warm_inference_to_csv();
@@ -703,8 +698,7 @@ mod tests {
     fn test_throughput_csv() {
         let mut report = BenchmarkReport::new("Test");
         report.throughput.push(ThroughputResult {
-            config: BenchConfig::new("test", "model.onnx", 4, 100)
-                .with_platform("SmallAIOS"),
+            config: BenchConfig::new("test", "model.onnx", 4, 100).with_platform("SmallAIOS"),
             inferences_per_sec: 1234.5,
             total_us: 500000,
         });

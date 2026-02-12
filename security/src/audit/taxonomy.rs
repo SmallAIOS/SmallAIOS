@@ -297,7 +297,10 @@ mod tests {
 
     #[test]
     fn subcategory_category_consistency() {
-        assert_eq!(EventSubcategory::Grant.category(), EventCategory::Capability);
+        assert_eq!(
+            EventSubcategory::Grant.category(),
+            EventCategory::Capability
+        );
         assert_eq!(
             EventSubcategory::Revoke.category(),
             EventCategory::Capability

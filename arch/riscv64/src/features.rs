@@ -21,12 +21,12 @@
 //!   V=21 Vector extension
 
 /// Bitmask for each extension in the misa register.
-pub const EXT_A: u64 = 1 << 0;  // Atomic
-pub const EXT_C: u64 = 1 << 2;  // Compressed
-pub const EXT_D: u64 = 1 << 3;  // Double-precision FP
-pub const EXT_F: u64 = 1 << 5;  // Single-precision FP
-pub const EXT_H: u64 = 1 << 7;  // Hypervisor
-pub const EXT_I: u64 = 1 << 8;  // Base integer
+pub const EXT_A: u64 = 1 << 0; // Atomic
+pub const EXT_C: u64 = 1 << 2; // Compressed
+pub const EXT_D: u64 = 1 << 3; // Double-precision FP
+pub const EXT_F: u64 = 1 << 5; // Single-precision FP
+pub const EXT_H: u64 = 1 << 7; // Hypervisor
+pub const EXT_I: u64 = 1 << 8; // Base integer
 pub const EXT_M: u64 = 1 << 12; // Multiply/divide
 pub const EXT_S: u64 = 1 << 18; // Supervisor mode
 pub const EXT_U: u64 = 1 << 20; // User mode

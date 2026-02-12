@@ -161,11 +161,7 @@ pub struct VendorAssessment {
 
 impl VendorAssessment {
     /// Create a new assessment with required fields.
-    pub fn new(
-        component_name: String,
-        vendor_name: String,
-        category: ComponentCategory,
-    ) -> Self {
+    pub fn new(component_name: String, vendor_name: String, category: ComponentCategory) -> Self {
         Self {
             component_name,
             vendor_name,
@@ -417,10 +413,7 @@ mod tests {
     fn registry_limit() {
         let mut reg = VendorRegistry::new();
         for i in 0..MAX_ASSESSMENTS {
-            assert!(reg.add(sample_assessment(
-                &alloc::format!("comp-{}", i),
-                "vendor",
-            )));
+            assert!(reg.add(sample_assessment(&alloc::format!("comp-{}", i), "vendor",)));
         }
         assert!(!reg.add(sample_assessment("overflow", "vendor")));
         assert_eq!(reg.count(), MAX_ASSESSMENTS);
@@ -429,7 +422,10 @@ mod tests {
     #[test]
     fn component_category_strings() {
         assert_eq!(ComponentCategory::Gpu.as_str(), "GPU");
-        assert_eq!(ComponentCategory::BusTransceiver.as_str(), "Bus Transceiver");
+        assert_eq!(
+            ComponentCategory::BusTransceiver.as_str(),
+            "Bus Transceiver"
+        );
         assert_eq!(ComponentCategory::Fpga.as_str(), "FPGA");
         assert_eq!(ComponentCategory::Soc.as_str(), "SoC");
         assert_eq!(ComponentCategory::Nic.as_str(), "NIC");

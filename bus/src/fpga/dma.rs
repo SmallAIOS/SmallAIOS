@@ -674,11 +674,23 @@ mod tests {
     #[test]
     fn test_dma_error_display() {
         assert_eq!(format!("{}", DmaError::ChannelBusy), "DMA channel busy");
-        assert_eq!(format!("{}", DmaError::InvalidChannel), "invalid DMA channel");
-        assert_eq!(format!("{}", DmaError::InvalidLength), "invalid transfer length");
+        assert_eq!(
+            format!("{}", DmaError::InvalidChannel),
+            "invalid DMA channel"
+        );
+        assert_eq!(
+            format!("{}", DmaError::InvalidLength),
+            "invalid transfer length"
+        );
         assert_eq!(format!("{}", DmaError::InvalidAddress), "invalid address");
-        assert_eq!(format!("{}", DmaError::TooManyDescriptors), "too many SG descriptors");
-        assert_eq!(format!("{}", DmaError::NoDescriptors), "no descriptors provided");
+        assert_eq!(
+            format!("{}", DmaError::TooManyDescriptors),
+            "too many SG descriptors"
+        );
+        assert_eq!(
+            format!("{}", DmaError::NoDescriptors),
+            "no descriptors provided"
+        );
         assert_eq!(
             format!("{}", DmaError::BusError { fault_addr: 0xDEAD }),
             "DMA bus error at 0xdead"
@@ -688,7 +700,10 @@ mod tests {
             "DMA decode error at 0xbeef"
         );
         assert_eq!(format!("{}", DmaError::Timeout), "DMA transfer timeout");
-        assert_eq!(format!("{}", DmaError::InvalidDescriptor), "invalid descriptor");
+        assert_eq!(
+            format!("{}", DmaError::InvalidDescriptor),
+            "invalid descriptor"
+        );
     }
 
     // -- DmaDirection --------------------------------------------------------

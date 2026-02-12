@@ -188,11 +188,7 @@ mod tests {
     fn test_crc17_max_value_range() {
         let data = [0xFF; 64];
         let crc = crc17(&data);
-        assert!(
-            crc <= 0x1FFFF,
-            "CRC-17 exceeded 17-bit range: {:#07x}",
-            crc
-        );
+        assert!(crc <= 0x1FFFF, "CRC-17 exceeded 17-bit range: {:#07x}", crc);
     }
 
     #[test]

@@ -266,7 +266,10 @@ mod tests {
         hw.init().unwrap();
         // Still in Ready state, not Run
         hw.set_state(SpwLinkState::Ready);
-        assert_eq!(hw.transmit_packet(1, &[0x01]).err(), Some(BusError::NotSupported));
+        assert_eq!(
+            hw.transmit_packet(1, &[0x01]).err(),
+            Some(BusError::NotSupported)
+        );
     }
 
     #[test]

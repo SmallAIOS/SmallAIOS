@@ -14,8 +14,8 @@
 //! - Resolution = 180.0 / 262144 = 0.000687 degrees per LSB
 //! - +90.0 degrees = 90.0 / 0.000687 = 131072 = 0x20000
 
-use crate::BusError;
 use super::word::{Arinc429Word, Label, Sdi, Ssm};
+use crate::BusError;
 
 /// Number of magnitude bits in a BNR data field.
 const BNR_MAGNITUDE_BITS: u32 = 18;

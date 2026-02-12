@@ -9,8 +9,8 @@
 //! This is a stub that defines the interface. Full AES-256-GCM and
 //! ChaCha20-Poly1305 implementations will come from the security crate.
 
-use alloc::vec::Vec;
 use crate::NetError;
+use alloc::vec::Vec;
 
 /// AEAD tag length (16 bytes for both AES-GCM and ChaCha20-Poly1305).
 pub const AEAD_TAG_LEN: usize = 16;
@@ -113,10 +113,12 @@ pub fn aead_encrypt(
     let mut tag = [0u8; AEAD_TAG_LEN];
     // Seed tag from key (use rotating XOR with position to avoid cancellation)
     for (i, &byte) in keys.key.iter().enumerate() {
-        tag[i % AEAD_TAG_LEN] = tag[i % AEAD_TAG_LEN].wrapping_add(byte.wrapping_mul((i as u8).wrapping_add(1)));
+        tag[i % AEAD_TAG_LEN] =
+            tag[i % AEAD_TAG_LEN].wrapping_add(byte.wrapping_mul((i as u8).wrapping_add(1)));
     }
     // Mix in nonce, AAD, and ciphertext
-    for (i, &byte) in nonce.iter()
+    for (i, &byte) in nonce
+        .iter()
         .chain(aad.iter())
         .chain(output[..plaintext.len()].iter())
         .enumerate()
@@ -150,10 +152,12 @@ pub fn aead_decrypt(
     let mut expected_tag = [0u8; AEAD_TAG_LEN];
     // Seed from key (same as encrypt)
     for (i, &byte) in keys.key.iter().enumerate() {
-        expected_tag[i % AEAD_TAG_LEN] = expected_tag[i % AEAD_TAG_LEN].wrapping_add(byte.wrapping_mul((i as u8).wrapping_add(1)));
+        expected_tag[i % AEAD_TAG_LEN] = expected_tag[i % AEAD_TAG_LEN]
+            .wrapping_add(byte.wrapping_mul((i as u8).wrapping_add(1)));
     }
     // Mix in nonce, AAD, and ciphertext
-    for (i, &byte) in nonce.iter()
+    for (i, &byte) in nonce
+        .iter()
         .chain(aad.iter())
         .chain(encrypted.iter())
         .enumerate()
@@ -271,7 +275,10 @@ mod tests {
 
         // Decrypt with different keys
         let wrong_keys = PacketProtectionKeys::new(
-            &[0x01; 32], &[0xBB; 12], &[0xCC; 16], CipherSuite::Aes256Gcm,
+            &[0x01; 32],
+            &[0xBB; 12],
+            &[0xCC; 16],
+            CipherSuite::Aes256Gcm,
         );
         let mut decrypted = [0u8; 128];
         assert_eq!(
@@ -305,7 +312,14 @@ mod tests {
 
         let mut decrypted = [0u8; 64];
         assert_eq!(
-            aead_decrypt(&keys, 1, b"wrong aad", &ciphertext[..ct_len], &mut decrypted).err(),
+            aead_decrypt(
+                &keys,
+                1,
+                b"wrong aad",
+                &ciphertext[..ct_len],
+                &mut decrypted
+            )
+            .err(),
             Some(NetError::ChecksumMismatch)
         );
     }

@@ -96,9 +96,9 @@ impl ShutdownConfig {
     /// Default shutdown configuration per spec.
     pub const fn default_config() -> Self {
         Self {
-            total_budget_ns: 100_000_000,      // 100ms
-            audit_flush_budget_ns: 25_000_000,  // 25ms
-            cap_revoke_budget_ns: 25_000_000,   // 25ms
+            total_budget_ns: 100_000_000,         // 100ms
+            audit_flush_budget_ns: 25_000_000,    // 25ms
+            cap_revoke_budget_ns: 25_000_000,     // 25ms
             task_terminate_budget_ns: 25_000_000, // 25ms
         }
     }
@@ -114,13 +114,9 @@ impl Default for ShutdownConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhaseResult {
     /// Phase completed within budget.
-    Completed {
-        elapsed_ns: u64,
-    },
+    Completed { elapsed_ns: u64 },
     /// Phase exceeded its budget and was forced to stop.
-    TimedOut {
-        elapsed_ns: u64,
-    },
+    TimedOut { elapsed_ns: u64 },
     /// Phase was skipped due to overall budget exhaustion.
     Skipped,
 }
@@ -172,7 +168,10 @@ impl ShutdownSequence {
 
     /// Whether shutdown is in progress.
     pub fn is_active(&self) -> bool {
-        !matches!(self.current_phase, ShutdownPhase::Idle | ShutdownPhase::Complete)
+        !matches!(
+            self.current_phase,
+            ShutdownPhase::Idle | ShutdownPhase::Complete
+        )
     }
 
     /// Current phase.
@@ -265,7 +264,9 @@ impl ShutdownSequence {
 
     /// Remaining time in total budget.
     pub fn remaining_budget_ns(&self) -> u64 {
-        self.config.total_budget_ns.saturating_sub(self.total_elapsed_ns)
+        self.config
+            .total_budget_ns
+            .saturating_sub(self.total_elapsed_ns)
     }
 
     /// Whether all phases completed within their budgets.
@@ -289,9 +290,18 @@ mod tests {
     #[test]
     fn phase_sequence() {
         assert_eq!(ShutdownPhase::Idle.next(), ShutdownPhase::AuditFlush);
-        assert_eq!(ShutdownPhase::AuditFlush.next(), ShutdownPhase::CapabilityRevoke);
-        assert_eq!(ShutdownPhase::CapabilityRevoke.next(), ShutdownPhase::TaskTerminate);
-        assert_eq!(ShutdownPhase::TaskTerminate.next(), ShutdownPhase::WatchdogReset);
+        assert_eq!(
+            ShutdownPhase::AuditFlush.next(),
+            ShutdownPhase::CapabilityRevoke
+        );
+        assert_eq!(
+            ShutdownPhase::CapabilityRevoke.next(),
+            ShutdownPhase::TaskTerminate
+        );
+        assert_eq!(
+            ShutdownPhase::TaskTerminate.next(),
+            ShutdownPhase::WatchdogReset
+        );
         assert_eq!(ShutdownPhase::WatchdogReset.next(), ShutdownPhase::Complete);
         assert_eq!(ShutdownPhase::Complete.next(), ShutdownPhase::Complete);
     }
@@ -308,7 +318,10 @@ mod tests {
         assert_eq!(ShutdownReason::OperatorCommand.as_str(), "operator-command");
         assert_eq!(ShutdownReason::WatchdogTimeout.as_str(), "watchdog-timeout");
         assert_eq!(ShutdownReason::CriticalFailure.as_str(), "critical-failure");
-        assert_eq!(ShutdownReason::IntegrityViolation.as_str(), "integrity-violation");
+        assert_eq!(
+            ShutdownReason::IntegrityViolation.as_str(),
+            "integrity-violation"
+        );
     }
 
     #[test]

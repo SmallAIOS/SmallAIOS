@@ -224,8 +224,7 @@ impl TransportRouter {
                     | TransportType::Arinc429
                     | TransportType::Mil1553
                     | TransportType::SpaceWire
-            )
-        {
+            ) {
             alloc::format!("{}/{}", transport_type.prefix(), controller_index)
         } else {
             String::from(transport_type.prefix())
@@ -268,9 +267,7 @@ impl TransportRouter {
         controller_index: u8,
     ) -> bool {
         self.transports.iter().any(|t| {
-            t.active
-                && t.transport_type == transport_type
-                && t.controller_index == controller_index
+            t.active && t.transport_type == transport_type && t.controller_index == controller_index
         })
     }
 
@@ -835,7 +832,12 @@ mod tests {
 
         let payload = [0xFF];
         let routed = router
-            .route_message(&ke("dds/0/BrakeCommand"), &payload, TransportType::Dds, 3000)
+            .route_message(
+                &ke("dds/0/BrakeCommand"),
+                &payload,
+                TransportType::Dds,
+                3000,
+            )
             .unwrap();
         assert_eq!(routed, 1);
     }
@@ -855,12 +857,7 @@ mod tests {
 
         let payload = [0x12, 0x34];
         let routed = router
-            .route_message(
-                &ke("mil1553/A/5/3"),
-                &payload,
-                TransportType::Mil1553,
-                4000,
-            )
+            .route_message(&ke("mil1553/A/5/3"), &payload, TransportType::Mil1553, 4000)
             .unwrap();
         assert_eq!(routed, 1);
 
@@ -1097,22 +1094,12 @@ mod tests {
 
         // Route DDS message -> should go to ARINC 429.
         router
-            .route_message(
-                &ke("dds/0/CommandData"),
-                &[0x02],
-                TransportType::Dds,
-                2000,
-            )
+            .route_message(&ke("dds/0/CommandData"), &[0x02], TransportType::Dds, 2000)
             .unwrap();
 
         // Route MIL-1553 message -> should go to SpaceWire.
         router
-            .route_message(
-                &ke("mil1553/0/5/3"),
-                &[0x03],
-                TransportType::Mil1553,
-                3000,
-            )
+            .route_message(&ke("mil1553/0/5/3"), &[0x03], TransportType::Mil1553, 3000)
             .unwrap();
 
         let messages = router.drain_pending();

@@ -19,8 +19,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::IpcError;
 use crate::key_expr::KeyExpr;
+use crate::IpcError;
 
 /// Maximum number of deployed workloads.
 const MAX_WORKLOADS: usize = 32;
@@ -161,8 +161,8 @@ impl DeployRequest {
         if *pos + len > data.len() {
             return Err(IpcError::PacketTooShort);
         }
-        let s = core::str::from_utf8(&data[*pos..*pos + len])
-            .map_err(|_| IpcError::InvalidHeader)?;
+        let s =
+            core::str::from_utf8(&data[*pos..*pos + len]).map_err(|_| IpcError::InvalidHeader)?;
         *pos += len;
         Ok(String::from(s))
     }
@@ -212,8 +212,8 @@ impl UndeployRequest {
         if pos + len > data.len() {
             return Err(IpcError::PacketTooShort);
         }
-        let workload_id = core::str::from_utf8(&data[pos..pos + len])
-            .map_err(|_| IpcError::InvalidHeader)?;
+        let workload_id =
+            core::str::from_utf8(&data[pos..pos + len]).map_err(|_| IpcError::InvalidHeader)?;
         pos += len;
         if pos >= data.len() {
             return Err(IpcError::PacketTooShort);
@@ -441,7 +441,11 @@ impl ManagementApi {
         }
 
         // Check for duplicate
-        if self.workloads.iter().any(|w| w.workload_id == req.workload_id) {
+        if self
+            .workloads
+            .iter()
+            .any(|w| w.workload_id == req.workload_id)
+        {
             return DeployResponse::Rejected {
                 workload_id: req.workload_id.clone(),
                 reason: String::from("workload already deployed"),
@@ -483,7 +487,10 @@ impl ManagementApi {
 
     /// Handle an undeploy request.
     pub fn handle_undeploy(&mut self, req: &UndeployRequest) -> Result<(), IpcError> {
-        let pos = self.workloads.iter().position(|w| w.workload_id == req.workload_id)
+        let pos = self
+            .workloads
+            .iter()
+            .position(|w| w.workload_id == req.workload_id)
             .ok_or(IpcError::NotFound)?;
         if req.force {
             self.workloads.remove(pos);
@@ -513,7 +520,9 @@ impl ManagementApi {
         phase: WorkloadPhase,
         message: &str,
     ) -> Result<(), IpcError> {
-        let w = self.workloads.iter_mut()
+        let w = self
+            .workloads
+            .iter_mut()
             .find(|w| w.workload_id == workload_id)
             .ok_or(IpcError::NotFound)?;
         w.phase = phase;
@@ -523,7 +532,9 @@ impl ManagementApi {
 
     /// Increment inference count for a workload.
     pub fn record_inference(&mut self, workload_id: &str) -> Result<(), IpcError> {
-        let w = self.workloads.iter_mut()
+        let w = self
+            .workloads
+            .iter_mut()
             .find(|w| w.workload_id == workload_id)
             .ok_or(IpcError::NotFound)?;
         w.inference_count += 1;
@@ -532,7 +543,9 @@ impl ManagementApi {
 
     /// Update workload uptime.
     pub fn update_uptime(&mut self, workload_id: &str, uptime_ms: u64) -> Result<(), IpcError> {
-        let w = self.workloads.iter_mut()
+        let w = self
+            .workloads
+            .iter_mut()
             .find(|w| w.workload_id == workload_id)
             .ok_or(IpcError::NotFound)?;
         w.uptime_ms = uptime_ms;
@@ -542,7 +555,8 @@ impl ManagementApi {
     /// Finalize and remove terminated workloads.
     pub fn cleanup_terminated(&mut self) -> usize {
         let before = self.workloads.len();
-        self.workloads.retain(|w| w.phase != WorkloadPhase::Terminating);
+        self.workloads
+            .retain(|w| w.phase != WorkloadPhase::Terminating);
         before - self.workloads.len()
     }
 
@@ -553,7 +567,10 @@ impl ManagementApi {
 
     /// Returns the number of running workloads.
     pub fn running_count(&self) -> usize {
-        self.workloads.iter().filter(|w| w.phase == WorkloadPhase::Running).count()
+        self.workloads
+            .iter()
+            .filter(|w| w.phase == WorkloadPhase::Running)
+            .count()
     }
 
     /// Returns node resources.
@@ -683,7 +700,12 @@ mod tests {
         let mut api = make_api();
         let req = sample_deploy_req();
         let resp = api.handle_deploy(&req);
-        assert_eq!(resp, DeployResponse::Accepted { workload_id: String::from("pod-uid-123") });
+        assert_eq!(
+            resp,
+            DeployResponse::Accepted {
+                workload_id: String::from("pod-uid-123")
+            }
+        );
         assert_eq!(api.workload_count(), 1);
     }
 
@@ -834,10 +856,18 @@ mod tests {
     fn test_update_phase() {
         let mut api = make_api();
         api.handle_deploy(&sample_deploy_req());
-        api.update_phase("pod-uid-123", WorkloadPhase::Loading, "downloading model").unwrap();
-        assert_eq!(api.query_status("pod-uid-123")[0].phase, WorkloadPhase::Loading);
-        api.update_phase("pod-uid-123", WorkloadPhase::Running, "serving").unwrap();
-        assert_eq!(api.query_status("pod-uid-123")[0].phase, WorkloadPhase::Running);
+        api.update_phase("pod-uid-123", WorkloadPhase::Loading, "downloading model")
+            .unwrap();
+        assert_eq!(
+            api.query_status("pod-uid-123")[0].phase,
+            WorkloadPhase::Loading
+        );
+        api.update_phase("pod-uid-123", WorkloadPhase::Running, "serving")
+            .unwrap();
+        assert_eq!(
+            api.query_status("pod-uid-123")[0].phase,
+            WorkloadPhase::Running
+        );
     }
 
     #[test]
@@ -855,7 +885,8 @@ mod tests {
     fn test_record_inference() {
         let mut api = make_api();
         api.handle_deploy(&sample_deploy_req());
-        api.update_phase("pod-uid-123", WorkloadPhase::Running, "serving").unwrap();
+        api.update_phase("pod-uid-123", WorkloadPhase::Running, "serving")
+            .unwrap();
         for _ in 0..10 {
             api.record_inference("pod-uid-123").unwrap();
         }
@@ -878,7 +909,8 @@ mod tests {
     fn test_cleanup_terminated() {
         let mut api = make_api();
         api.handle_deploy(&sample_deploy_req());
-        api.update_phase("pod-uid-123", WorkloadPhase::Terminating, "shutting down").unwrap();
+        api.update_phase("pod-uid-123", WorkloadPhase::Terminating, "shutting down")
+            .unwrap();
         let cleaned = api.cleanup_terminated();
         assert_eq!(cleaned, 1);
         assert_eq!(api.workload_count(), 0);
@@ -891,7 +923,8 @@ mod tests {
         let mut api = make_api();
         api.handle_deploy(&sample_deploy_req());
         assert_eq!(api.running_count(), 0);
-        api.update_phase("pod-uid-123", WorkloadPhase::Running, "ok").unwrap();
+        api.update_phase("pod-uid-123", WorkloadPhase::Running, "ok")
+            .unwrap();
         assert_eq!(api.running_count(), 1);
     }
 
@@ -958,7 +991,10 @@ mod tests {
 
     #[test]
     fn test_deploy_request_decode_too_short() {
-        assert_eq!(DeployRequest::decode(&[0u8; 2]).err(), Some(IpcError::PacketTooShort));
+        assert_eq!(
+            DeployRequest::decode(&[0u8; 2]).err(),
+            Some(IpcError::PacketTooShort)
+        );
     }
 
     // --- Undeploy request encode/decode ---
@@ -977,7 +1013,10 @@ mod tests {
 
     #[test]
     fn test_undeploy_request_decode_too_short() {
-        assert_eq!(UndeployRequest::decode(&[]).err(), Some(IpcError::PacketTooShort));
+        assert_eq!(
+            UndeployRequest::decode(&[]).err(),
+            Some(IpcError::PacketTooShort)
+        );
     }
 
     // --- WorkloadPhase ---
@@ -1004,7 +1043,8 @@ mod tests {
     fn test_status_json_with_workloads() {
         let mut api = make_api();
         api.handle_deploy(&sample_deploy_req());
-        api.update_phase("pod-uid-123", WorkloadPhase::Running, "ok").unwrap();
+        api.update_phase("pod-uid-123", WorkloadPhase::Running, "ok")
+            .unwrap();
         api.record_inference("pod-uid-123").unwrap();
         let json = api.to_status_json();
         assert!(json.contains("\"id\":\"pod-uid-123\""));

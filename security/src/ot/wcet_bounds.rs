@@ -68,8 +68,8 @@ pub const WCET_BOUNDS: &[WcetBound] = &[
     // Loops: capability table lookup (bounded by MAX_TASKS=256)
     WcetBound {
         path: CriticalPath::SyscallDispatch,
-        bound_ns_x86: 5_000,     // 5 us
-        bound_ns_arm64: 8_000,   // 8 us
+        bound_ns_x86: 5_000,      // 5 us
+        bound_ns_arm64: 8_000,    // 8 us
         max_loop_iterations: 256, // Task table scan
         has_loops: true,
         hw_access: false,
@@ -81,7 +81,7 @@ pub const WCET_BOUNDS: &[WcetBound] = &[
         path: CriticalPath::CapabilityCheck,
         bound_ns_x86: 1_000,     // 1 us
         bound_ns_arm64: 2_000,   // 2 us
-        max_loop_iterations: 32,  // Permission bits
+        max_loop_iterations: 32, // Permission bits
         has_loops: true,
         hw_access: false,
         loop_description: "Permission bitmask check: max 32 bits, bitwise scan",
@@ -92,7 +92,7 @@ pub const WCET_BOUNDS: &[WcetBound] = &[
         path: CriticalPath::BuddyAlloc,
         bound_ns_x86: 3_000,     // 3 us
         bound_ns_arm64: 5_000,   // 5 us
-        max_loop_iterations: 20,  // log2(1MB/4KB) = 8; up to order 20 with safety
+        max_loop_iterations: 20, // log2(1MB/4KB) = 8; up to order 20 with safety
         has_loops: true,
         hw_access: false,
         loop_description: "Buddy split/coalesce: max 20 levels (log2 of max pages)",
@@ -103,7 +103,7 @@ pub const WCET_BOUNDS: &[WcetBound] = &[
         path: CriticalPath::SlabAlloc,
         bound_ns_x86: 500,       // 500 ns
         bound_ns_arm64: 1_000,   // 1 us
-        max_loop_iterations: 64,  // Max objects per slab
+        max_loop_iterations: 64, // Max objects per slab
         has_loops: true,
         hw_access: false,
         loop_description: "Free list walk: max 64 objects per slab, linked list",
@@ -112,8 +112,8 @@ pub const WCET_BOUNDS: &[WcetBound] = &[
     // Loops: run queue priority scan (bounded by MAX_TASKS=256)
     WcetBound {
         path: CriticalPath::TaskSchedule,
-        bound_ns_x86: 2_000,     // 2 us
-        bound_ns_arm64: 4_000,   // 4 us
+        bound_ns_x86: 2_000,      // 2 us
+        bound_ns_arm64: 4_000,    // 4 us
         max_loop_iterations: 256, // Run queue scan
         has_loops: true,
         hw_access: false,
@@ -123,8 +123,8 @@ pub const WCET_BOUNDS: &[WcetBound] = &[
     // No loops: direct dispatch through IDT/GIC vector table
     WcetBound {
         path: CriticalPath::InterruptHandle,
-        bound_ns_x86: 500,       // 500 ns
-        bound_ns_arm64: 1_000,   // 1 us
+        bound_ns_x86: 500,     // 500 ns
+        bound_ns_arm64: 1_000, // 1 us
         max_loop_iterations: 0,
         has_loops: false,
         hw_access: true,
@@ -164,7 +164,10 @@ pub fn verify_no_recursion() -> bool {
 
 /// Total maximum loop iterations across all paths (used for timing analysis).
 pub fn total_max_iterations() -> u64 {
-    WCET_BOUNDS.iter().map(|b| b.max_loop_iterations as u64).sum()
+    WCET_BOUNDS
+        .iter()
+        .map(|b| b.max_loop_iterations as u64)
+        .sum()
 }
 
 #[cfg(test)]
@@ -232,7 +235,11 @@ mod tests {
     #[test]
     fn loop_bounds_are_finite() {
         for b in WCET_BOUNDS {
-            assert!(b.max_loop_iterations < 1_000, "{:?} loop bound too large", b.path);
+            assert!(
+                b.max_loop_iterations < 1_000,
+                "{:?} loop bound too large",
+                b.path
+            );
         }
     }
 

@@ -134,7 +134,12 @@ impl Arinc429Transceiver for MockArinc429Transceiver {
         self.rx_channels
     }
 
-    fn set_label_filter(&mut self, channel: u8, _label: u8, _enabled: bool) -> Result<(), BusError> {
+    fn set_label_filter(
+        &mut self,
+        channel: u8,
+        _label: u8,
+        _enabled: bool,
+    ) -> Result<(), BusError> {
         if channel >= self.rx_channels {
             return Err(BusError::OutOfRange);
         }

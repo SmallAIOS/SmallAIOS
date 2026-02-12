@@ -9,8 +9,8 @@
 //! - Without data word (transmit bit determines direction)
 //! - With data word (one data word follows or precedes the status word)
 
+use crate::mil1553::word::{CommandWord, StatusWord, MODE_CODE_SA_HIGH, MODE_CODE_SA_LOW};
 use crate::BusError;
-use crate::mil1553::word::{CommandWord, StatusWord, MODE_CODE_SA_LOW, MODE_CODE_SA_HIGH};
 
 /// Well-known MIL-STD-1553B mode codes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -298,9 +298,7 @@ impl ModeCodeHandler {
                     ))
                 }
             }
-            ModeCode::Unknown(_) => {
-                Err(BusError::NotSupported)
-            }
+            ModeCode::Unknown(_) => Err(BusError::NotSupported),
         }
     }
 
@@ -329,10 +327,7 @@ mod tests {
             ModeCode::from_code(0b00001, true),
             ModeCode::DynamicBusControl
         );
-        assert_eq!(
-            ModeCode::from_code(0b00001, false),
-            ModeCode::Synchronize
-        );
+        assert_eq!(ModeCode::from_code(0b00001, false), ModeCode::Synchronize);
         assert_eq!(
             ModeCode::from_code(0b00010, true),
             ModeCode::TransmitStatusWord

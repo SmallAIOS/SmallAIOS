@@ -91,10 +91,7 @@ impl ZenohTransport for SpwZenohAdapter {
         Ok(())
     }
 
-    fn receive<'a>(
-        &mut self,
-        buf: &'a mut [u8],
-    ) -> Result<Option<BusSample<'a>>, BusError> {
+    fn receive<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<BusSample<'a>>, BusError> {
         if let Some((key, data)) = self.rx_queue.pop_front() {
             let key_bytes = key.as_bytes();
             let total = key_bytes.len() + 1 + data.len();

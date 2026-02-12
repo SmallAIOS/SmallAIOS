@@ -177,50 +177,131 @@ pub const SR_4: ControlId = ControlId::new(ControlFamily::SupplyChain, 4);
 /// Complete cross-reference table of SmallAIOS mechanisms to NIST 800-53 controls.
 pub const CONTROL_MAPPINGS: &[ControlMapping] = &[
     // Capability system -> Access Control
-    ControlMapping { mechanism: SecurityMechanism::CapabilitySystem, control: AC_3, implementation_status: ImplementationStatus::Implemented },
-    ControlMapping { mechanism: SecurityMechanism::CapabilitySystem, control: AC_6, implementation_status: ImplementationStatus::Implemented },
+    ControlMapping {
+        mechanism: SecurityMechanism::CapabilitySystem,
+        control: AC_3,
+        implementation_status: ImplementationStatus::Implemented,
+    },
+    ControlMapping {
+        mechanism: SecurityMechanism::CapabilitySystem,
+        control: AC_6,
+        implementation_status: ImplementationStatus::Implemented,
+    },
     // Information flow -> AC-4
-    ControlMapping { mechanism: SecurityMechanism::InformationFlow, control: AC_4, implementation_status: ImplementationStatus::Implemented },
+    ControlMapping {
+        mechanism: SecurityMechanism::InformationFlow,
+        control: AC_4,
+        implementation_status: ImplementationStatus::Implemented,
+    },
     // Audit logging -> AU family
-    ControlMapping { mechanism: SecurityMechanism::AuditLogging, control: AU_2, implementation_status: ImplementationStatus::Implemented },
-    ControlMapping { mechanism: SecurityMechanism::AuditLogging, control: AU_3, implementation_status: ImplementationStatus::Implemented },
-    ControlMapping { mechanism: SecurityMechanism::AuditLogging, control: AU_9, implementation_status: ImplementationStatus::Implemented },
-    ControlMapping { mechanism: SecurityMechanism::AuditLogging, control: AU_12, implementation_status: ImplementationStatus::Implemented },
+    ControlMapping {
+        mechanism: SecurityMechanism::AuditLogging,
+        control: AU_2,
+        implementation_status: ImplementationStatus::Implemented,
+    },
+    ControlMapping {
+        mechanism: SecurityMechanism::AuditLogging,
+        control: AU_3,
+        implementation_status: ImplementationStatus::Implemented,
+    },
+    ControlMapping {
+        mechanism: SecurityMechanism::AuditLogging,
+        control: AU_9,
+        implementation_status: ImplementationStatus::Implemented,
+    },
+    ControlMapping {
+        mechanism: SecurityMechanism::AuditLogging,
+        control: AU_12,
+        implementation_status: ImplementationStatus::Implemented,
+    },
     // Monitoring -> CA, SI
-    ControlMapping { mechanism: SecurityMechanism::Monitoring, control: CA_7, implementation_status: ImplementationStatus::Implemented },
-    ControlMapping { mechanism: SecurityMechanism::Monitoring, control: SI_4, implementation_status: ImplementationStatus::Implemented },
+    ControlMapping {
+        mechanism: SecurityMechanism::Monitoring,
+        control: CA_7,
+        implementation_status: ImplementationStatus::Implemented,
+    },
+    ControlMapping {
+        mechanism: SecurityMechanism::Monitoring,
+        control: SI_4,
+        implementation_status: ImplementationStatus::Implemented,
+    },
     // Incident response -> IR
-    ControlMapping { mechanism: SecurityMechanism::IncidentResponse, control: IR_4, implementation_status: ImplementationStatus::Implemented },
-    ControlMapping { mechanism: SecurityMechanism::IncidentResponse, control: IR_5, implementation_status: ImplementationStatus::Implemented },
+    ControlMapping {
+        mechanism: SecurityMechanism::IncidentResponse,
+        control: IR_4,
+        implementation_status: ImplementationStatus::Implemented,
+    },
+    ControlMapping {
+        mechanism: SecurityMechanism::IncidentResponse,
+        control: IR_5,
+        implementation_status: ImplementationStatus::Implemented,
+    },
     // Cryptography -> SC
-    ControlMapping { mechanism: SecurityMechanism::Cryptography, control: SC_13, implementation_status: ImplementationStatus::Partial },
+    ControlMapping {
+        mechanism: SecurityMechanism::Cryptography,
+        control: SC_13,
+        implementation_status: ImplementationStatus::Partial,
+    },
     // Key management -> SC-12
-    ControlMapping { mechanism: SecurityMechanism::KeyManagement, control: SC_12, implementation_status: ImplementationStatus::Implemented },
+    ControlMapping {
+        mechanism: SecurityMechanism::KeyManagement,
+        control: SC_12,
+        implementation_status: ImplementationStatus::Implemented,
+    },
     // Supply chain -> SR
-    ControlMapping { mechanism: SecurityMechanism::SupplyChain, control: SR_3, implementation_status: ImplementationStatus::Implemented },
-    ControlMapping { mechanism: SecurityMechanism::SupplyChain, control: SR_4, implementation_status: ImplementationStatus::Implemented },
+    ControlMapping {
+        mechanism: SecurityMechanism::SupplyChain,
+        control: SR_3,
+        implementation_status: ImplementationStatus::Implemented,
+    },
+    ControlMapping {
+        mechanism: SecurityMechanism::SupplyChain,
+        control: SR_4,
+        implementation_status: ImplementationStatus::Implemented,
+    },
     // OT security -> SI-7 (software integrity)
-    ControlMapping { mechanism: SecurityMechanism::OtSecurity, control: SI_7, implementation_status: ImplementationStatus::Implemented },
+    ControlMapping {
+        mechanism: SecurityMechanism::OtSecurity,
+        control: SI_7,
+        implementation_status: ImplementationStatus::Implemented,
+    },
 ];
 
 /// Look up all controls satisfied by a given mechanism.
-pub fn controls_for_mechanism(mechanism: SecurityMechanism) -> impl Iterator<Item = &'static ControlMapping> {
-    CONTROL_MAPPINGS.iter().filter(move |m| m.mechanism == mechanism)
+pub fn controls_for_mechanism(
+    mechanism: SecurityMechanism,
+) -> impl Iterator<Item = &'static ControlMapping> {
+    CONTROL_MAPPINGS
+        .iter()
+        .filter(move |m| m.mechanism == mechanism)
 }
 
 /// Look up all mechanisms that satisfy a given control.
 pub fn mechanisms_for_control(control: ControlId) -> impl Iterator<Item = &'static ControlMapping> {
-    CONTROL_MAPPINGS.iter().filter(move |m| m.control == control)
+    CONTROL_MAPPINGS
+        .iter()
+        .filter(move |m| m.control == control)
 }
 
 /// Count of implemented controls.
 pub fn implemented_count() -> usize {
-    CONTROL_MAPPINGS.iter().filter(|m| m.implementation_status == ImplementationStatus::Implemented).count()
+    CONTROL_MAPPINGS
+        .iter()
+        .filter(|m| m.implementation_status == ImplementationStatus::Implemented)
+        .count()
 }
 
 /// Count of partial/planned controls.
 pub fn pending_count() -> usize {
-    CONTROL_MAPPINGS.iter().filter(|m| matches!(m.implementation_status, ImplementationStatus::Partial | ImplementationStatus::Planned)).count()
+    CONTROL_MAPPINGS
+        .iter()
+        .filter(|m| {
+            matches!(
+                m.implementation_status,
+                ImplementationStatus::Partial | ImplementationStatus::Planned
+            )
+        })
+        .count()
 }
 
 #[cfg(test)]
@@ -243,33 +324,38 @@ mod tests {
 
     #[test]
     fn capability_maps_to_ac3_ac6() {
-        let caps: alloc::vec::Vec<_> = controls_for_mechanism(SecurityMechanism::CapabilitySystem).collect();
+        let caps: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::CapabilitySystem).collect();
         assert!(caps.iter().any(|m| m.control == AC_3));
         assert!(caps.iter().any(|m| m.control == AC_6));
     }
 
     #[test]
     fn audit_maps_to_au2_au12() {
-        let audits: alloc::vec::Vec<_> = controls_for_mechanism(SecurityMechanism::AuditLogging).collect();
+        let audits: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::AuditLogging).collect();
         assert!(audits.iter().any(|m| m.control == AU_2));
         assert!(audits.iter().any(|m| m.control == AU_12));
     }
 
     #[test]
     fn info_flow_maps_to_ac4() {
-        let flows: alloc::vec::Vec<_> = controls_for_mechanism(SecurityMechanism::InformationFlow).collect();
+        let flows: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::InformationFlow).collect();
         assert!(flows.iter().any(|m| m.control == AC_4));
     }
 
     #[test]
     fn key_management_maps_to_sc12() {
-        let keys: alloc::vec::Vec<_> = controls_for_mechanism(SecurityMechanism::KeyManagement).collect();
+        let keys: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::KeyManagement).collect();
         assert!(keys.iter().any(|m| m.control == SC_12));
     }
 
     #[test]
     fn supply_chain_maps_to_sr() {
-        let sc: alloc::vec::Vec<_> = controls_for_mechanism(SecurityMechanism::SupplyChain).collect();
+        let sc: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::SupplyChain).collect();
         assert!(sc.iter().any(|m| m.control == SR_3));
         assert!(sc.iter().any(|m| m.control == SR_4));
     }
@@ -296,7 +382,10 @@ mod tests {
 
     #[test]
     fn security_mechanism_strings() {
-        assert_eq!(SecurityMechanism::CapabilitySystem.as_str(), "capability-system");
+        assert_eq!(
+            SecurityMechanism::CapabilitySystem.as_str(),
+            "capability-system"
+        );
         assert_eq!(SecurityMechanism::AuditLogging.as_str(), "audit-logging");
         assert_eq!(SecurityMechanism::KeyManagement.as_str(), "key-management");
     }
