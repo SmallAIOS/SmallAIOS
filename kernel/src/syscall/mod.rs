@@ -1122,7 +1122,14 @@ mod tests {
             [usize::MAX, 0, 0, 0, 0, 0],
             [0, usize::MAX, 0, 0, 0, 0],
             [1, 1, 1, 1, 1, 1],
-            [usize::MAX, usize::MAX, usize::MAX, usize::MAX, usize::MAX, usize::MAX],
+            [
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+                usize::MAX,
+            ],
             [usize::MAX / 2, usize::MAX / 2, 0, 0, 0, 0],
             [1, 0, usize::MAX, 0, 0, 0],
         ];
@@ -1131,24 +1138,66 @@ mod tests {
         // Excluded: TENSOR_ALLOC (reads shape_ptr), SYS_INFO (writes buf_ptr),
         // SYS_RANDOM (writes buf_ptr), CAP_LIST (writes buf_ptr in fill mode).
         let safe_registered = [
-            nr::MEM_ALLOC, nr::MEM_FREE, nr::MEM_MAP, nr::MEM_PROTECT,
-            nr::TENSOR_FREE, nr::TENSOR_MAP_GPU, nr::TENSOR_UNMAP_GPU,
-            nr::TASK_SPAWN, nr::TASK_YIELD, nr::TASK_EXIT, nr::TASK_JOIN,
-            nr::TASK_SET_PRIORITY, nr::TASK_SET_CLASS, nr::TASK_CURRENT,
-            nr::IPC_PUBLISH, nr::IPC_SUBSCRIBE, nr::IPC_RECV, nr::IPC_QUERY,
-            nr::IPC_CHANNEL_CREATE, nr::IPC_CHANNEL_SEND, nr::IPC_CHANNEL_RECV,
+            nr::MEM_ALLOC,
+            nr::MEM_FREE,
+            nr::MEM_MAP,
+            nr::MEM_PROTECT,
+            nr::TENSOR_FREE,
+            nr::TENSOR_MAP_GPU,
+            nr::TENSOR_UNMAP_GPU,
+            nr::TASK_SPAWN,
+            nr::TASK_YIELD,
+            nr::TASK_EXIT,
+            nr::TASK_JOIN,
+            nr::TASK_SET_PRIORITY,
+            nr::TASK_SET_CLASS,
+            nr::TASK_CURRENT,
+            nr::IPC_PUBLISH,
+            nr::IPC_SUBSCRIBE,
+            nr::IPC_RECV,
+            nr::IPC_QUERY,
+            nr::IPC_CHANNEL_CREATE,
+            nr::IPC_CHANNEL_SEND,
+            nr::IPC_CHANNEL_RECV,
             nr::IPC_CHANNEL_CLOSE,
-            nr::ONNX_LOAD, nr::ONNX_UNLOAD, nr::ONNX_CREATE_SESSION, nr::ONNX_RUN,
-            nr::ONNX_GET_METADATA, nr::ONNX_LIST_PROVIDERS,
-            nr::DEV_ENUMERATE, nr::DEV_OPEN, nr::DEV_CLOSE, nr::DEV_IOCTL, nr::DEV_DMA_ALLOC,
-            nr::SYS_TIME, nr::SYS_SHUTDOWN, nr::SYS_LOG,
-            nr::SYS_WATCHDOG_PET, nr::SYS_WATCHDOG_REMAINING,
-            nr::CAP_CREATE, nr::CAP_REVOKE, nr::CAP_DELEGATE, nr::CAP_CHECK,
-            nr::POSIX_OPEN, nr::POSIX_CLOSE, nr::POSIX_READ, nr::POSIX_WRITE,
-            nr::POSIX_FSTAT, nr::POSIX_DUP, nr::POSIX_DUP2, nr::POSIX_LSEEK,
-            nr::POSIX_MMAP, nr::POSIX_MUNMAP, nr::POSIX_MPROTECT,
-            nr::POSIX_EPOLL_CREATE, nr::POSIX_EPOLL_CTL, nr::POSIX_EPOLL_WAIT,
-            nr::POSIX_CLOCK_GETTIME, nr::POSIX_NANOSLEEP, nr::POSIX_GETRANDOM, nr::POSIX_SOCKET,
+            nr::ONNX_LOAD,
+            nr::ONNX_UNLOAD,
+            nr::ONNX_CREATE_SESSION,
+            nr::ONNX_RUN,
+            nr::ONNX_GET_METADATA,
+            nr::ONNX_LIST_PROVIDERS,
+            nr::DEV_ENUMERATE,
+            nr::DEV_OPEN,
+            nr::DEV_CLOSE,
+            nr::DEV_IOCTL,
+            nr::DEV_DMA_ALLOC,
+            nr::SYS_TIME,
+            nr::SYS_SHUTDOWN,
+            nr::SYS_LOG,
+            nr::SYS_WATCHDOG_PET,
+            nr::SYS_WATCHDOG_REMAINING,
+            nr::CAP_CREATE,
+            nr::CAP_REVOKE,
+            nr::CAP_DELEGATE,
+            nr::CAP_CHECK,
+            nr::POSIX_OPEN,
+            nr::POSIX_CLOSE,
+            nr::POSIX_READ,
+            nr::POSIX_WRITE,
+            nr::POSIX_FSTAT,
+            nr::POSIX_DUP,
+            nr::POSIX_DUP2,
+            nr::POSIX_LSEEK,
+            nr::POSIX_MMAP,
+            nr::POSIX_MUNMAP,
+            nr::POSIX_MPROTECT,
+            nr::POSIX_EPOLL_CREATE,
+            nr::POSIX_EPOLL_CTL,
+            nr::POSIX_EPOLL_WAIT,
+            nr::POSIX_CLOCK_GETTIME,
+            nr::POSIX_NANOSLEEP,
+            nr::POSIX_GETRANDOM,
+            nr::POSIX_SOCKET,
         ];
 
         for &nr in &safe_registered {
@@ -1312,10 +1361,7 @@ mod tests {
         assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
 
         // sys_log: len exactly at MAX
-        let args = SyscallArgs::new(
-            nr::SYS_LOG,
-            [0, 0x1000, system::MAX_LOG_MSG_LEN, 0, 0, 0],
-        );
+        let args = SyscallArgs::new(nr::SYS_LOG, [0, 0x1000, system::MAX_LOG_MSG_LEN, 0, 0, 0]);
         assert_eq!(dispatch(&args), SyscallError::Success.as_i64());
 
         // sys_log: len one over MAX
@@ -1466,20 +1512,14 @@ mod tests {
         // Valid shape_ptr with real data: ndim=1, shape=[4], dtype=Float32
         // This uses a real pointer so the shape read succeeds.
         let shape: [usize; 1] = [4];
-        let args = SyscallArgs::new(
-            nr::TENSOR_ALLOC,
-            [shape.as_ptr() as usize, 1, 0, 0, 0, 0],
-        );
+        let args = SyscallArgs::new(nr::TENSOR_ALLOC, [shape.as_ptr() as usize, 1, 0, 0, 0, 0]);
         let result = dispatch(&args);
         // Should pass validation, hit capability check or tensor pool alloc
         assert_ne!(result, SyscallError::InvalidArgument.as_i64());
 
         // Valid with ndim=8 (max valid) and real shape data
         let shape8: [usize; 8] = [1, 2, 3, 4, 1, 1, 1, 1];
-        let args = SyscallArgs::new(
-            nr::TENSOR_ALLOC,
-            [shape8.as_ptr() as usize, 8, 0, 0, 0, 0],
-        );
+        let args = SyscallArgs::new(nr::TENSOR_ALLOC, [shape8.as_ptr() as usize, 8, 0, 0, 0, 0]);
         let result = dispatch(&args);
         assert_ne!(result, SyscallError::InvalidArgument.as_i64());
 
@@ -1630,7 +1670,14 @@ mod tests {
         // key valid, data_len > MAX → InvalidArgument
         let args = SyscallArgs::new(
             nr::IPC_QUERY,
-            [0x1000, 10, 0x2000, ipc::MAX_IPC_MESSAGE_SIZE + 1, 0x3000, 256],
+            [
+                0x1000,
+                10,
+                0x2000,
+                ipc::MAX_IPC_MESSAGE_SIZE + 1,
+                0x3000,
+                256,
+            ],
         );
         assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
 
@@ -1980,10 +2027,7 @@ mod tests {
         assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
 
         // Valid delegation with subset permissions
-        let args = SyscallArgs::new(
-            nr::CAP_DELEGATE,
-            [parent_id as usize, 2, 0b0001, 0, 0, 0],
-        );
+        let args = SyscallArgs::new(nr::CAP_DELEGATE, [parent_id as usize, 2, 0b0001, 0, 0, 0]);
         let child_id = dispatch(&args);
         assert!(child_id > 0, "delegation should succeed");
     }
@@ -2200,7 +2244,12 @@ mod tests {
         // clock_id valid (0..3), ts_ptr valid
         for clock_id in 0..=3usize {
             let args = SyscallArgs::new(nr::POSIX_CLOCK_GETTIME, [clock_id, 0x1000, 0, 0, 0, 0]);
-            assert_eq!(dispatch(&args), -38, "clock_id {} should return ENOSYS", clock_id);
+            assert_eq!(
+                dispatch(&args),
+                -38,
+                "clock_id {} should return ENOSYS",
+                clock_id
+            );
         }
 
         // clock_id=4 (invalid) → EINVAL

@@ -206,7 +206,7 @@ fn fuzz_inference_request_with_valid_magic() {
     for _ in 0..5_000 {
         let mut data = vec![0x4F, 0x4E, 0x4E, 0x58]; // "ONNX" magic
         data.push(1); // version
-        // Random remainder
+                      // Random remainder
         let rest = rng.gen_bytes(128);
         data.extend_from_slice(&rest);
         let _ = InferenceRequest::decode(&data);
@@ -299,7 +299,11 @@ fn fuzz_inference_response_truncation() {
 
 #[test]
 fn fuzz_frame_truncation() {
-    let frame = Frame::new(FrameType::Data, 0x42, vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE]);
+    let frame = Frame::new(
+        FrameType::Data,
+        0x42,
+        vec![0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE],
+    );
     let encoded = frame.encode();
 
     for len in 0..encoded.len() {

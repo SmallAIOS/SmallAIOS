@@ -1356,23 +1356,16 @@ mod tests {
         for i in 0..flat_size {
             for j in 0..num_classes {
                 // Each class gets a different weight pattern to produce distinct logits
-                fc_weight_data[i * num_classes + j] =
-                    ((i + j * 7) % 13) as f32 * 0.02 - 0.12;
+                fc_weight_data[i * num_classes + j] = ((i + j * 7) % 13) as f32 * 0.02 - 0.12;
             }
         }
-        let fc_weight = make_f32_tensor(
-            &[flat_size as i64, num_classes as i64],
-            &fc_weight_data,
-        );
+        let fc_weight = make_f32_tensor(&[flat_size as i64, num_classes as i64], &fc_weight_data);
 
         let matmul_out = op_matmul(&reshaped, &fc_weight).unwrap();
         assert_eq!(matmul_out.shape.dims, vec![1, num_classes as i64]);
 
         // Add FC bias
-        let fc_bias = make_f32_tensor(
-            &[1, num_classes as i64],
-            &[0.1, -0.2, 0.3, -0.1, 0.05],
-        );
+        let fc_bias = make_f32_tensor(&[1, num_classes as i64], &[0.1, -0.2, 0.3, -0.1, 0.05]);
         let logits = op_add(&[&matmul_out, &fc_bias]).unwrap();
         assert_eq!(logits.shape.dims, vec![1, num_classes as i64]);
 
@@ -1386,12 +1379,7 @@ mod tests {
         // --- Verification ---
         // 1. All probabilities must be non-negative
         for (i, &p) in prob_vals.iter().enumerate() {
-            assert!(
-                p >= 0.0,
-                "probability[{}] = {} must be non-negative",
-                i,
-                p
-            );
+            assert!(p >= 0.0, "probability[{}] = {} must be non-negative", i, p);
         }
 
         // 2. Probabilities must sum to ~1.0
@@ -1404,28 +1392,19 @@ mod tests {
 
         // 3. Each probability must be in [0, 1]
         for (i, &p) in prob_vals.iter().enumerate() {
-            assert!(
-                p <= 1.0 + 1e-6,
-                "probability[{}] = {} exceeds 1.0",
-                i,
-                p
-            );
+            assert!(p <= 1.0 + 1e-6, "probability[{}] = {} exceeds 1.0", i, p);
         }
 
         // 4. There must be a unique argmax (highest probability class)
-        let max_prob = prob_vals
+        let max_prob = prob_vals.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let argmax = prob_vals
             .iter()
-            .cloned()
-            .fold(f32::NEG_INFINITY, f32::max);
-        let argmax = prob_vals.iter().position(|&p| (p - max_prob).abs() < 1e-7).unwrap();
+            .position(|&p| (p - max_prob).abs() < 1e-7)
+            .unwrap();
 
         // The predicted class is deterministic for these fixed weights
         // (verifies the full pipeline is computing consistently)
-        assert!(
-            argmax < num_classes,
-            "argmax {} out of range",
-            argmax
-        );
+        assert!(argmax < num_classes, "argmax {} out of range", argmax);
     }
 
     #[test]
@@ -1477,11 +1456,7 @@ mod tests {
 
         // Verify valid probability distribution
         let sum: f32 = prob_vals.iter().sum();
-        assert!(
-            (sum - 1.0).abs() < 1e-4,
-            "sum = {}, expected ~1.0",
-            sum
-        );
+        assert!((sum - 1.0).abs() < 1e-4, "sum = {}, expected ~1.0", sum);
         for &p in &prob_vals {
             assert!(p >= 0.0 && p <= 1.0 + 1e-6);
         }

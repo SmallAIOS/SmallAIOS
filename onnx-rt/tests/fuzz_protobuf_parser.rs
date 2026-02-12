@@ -12,9 +12,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use smallaios_onnx_rt::protobuf::{
-    ProtoDecoder, WireType, zigzag_decode_32, zigzag_decode_64,
-};
+use smallaios_onnx_rt::protobuf::{zigzag_decode_32, zigzag_decode_64, ProtoDecoder, WireType};
 
 // ============================================================================
 // Simple xorshift64 PRNG
@@ -187,8 +185,8 @@ fn fuzz_string_valid_utf8_roundtrip() {
         "SmallAIOS",
         "input_0",
         "tensor-data-float32",
-        "\u{00E9}\u{00F1}\u{00FC}",        // accented chars
-        "\u{1F600}",                         // emoji
+        "\u{00E9}\u{00F1}\u{00FC}", // accented chars
+        "\u{1F600}",                // emoji
         "a/b/c",
     ];
 
