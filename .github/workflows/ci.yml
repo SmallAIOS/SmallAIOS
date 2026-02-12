@@ -56,6 +56,8 @@ jobs:
           components: rust-src, llvm-tools
           targets: x86_64-unknown-none
       - run: cargo build --target x86_64-unknown-none -p smallaios-arch-x86_64 $BUILD_STD
+        env:
+          RUSTFLAGS: "-D warnings -C link-arg=-Tarch/x86_64/linker.ld -C code-model=kernel"
 
   build-aarch64:
     name: Build AArch64 Kernel
@@ -68,6 +70,8 @@ jobs:
           components: rust-src, llvm-tools
           targets: aarch64-unknown-none
       - run: cargo build --target aarch64-unknown-none -p smallaios-arch-aarch64 $BUILD_STD
+        env:
+          RUSTFLAGS: "-D warnings -C link-arg=-Tarch/aarch64/linker.ld"
 
   build-riscv64:
     name: Build RISC-V Kernel
@@ -80,6 +84,8 @@ jobs:
           components: rust-src, llvm-tools
           targets: riscv64gc-unknown-none-elf
       - run: cargo build --target riscv64gc-unknown-none-elf -p smallaios-arch-riscv64 $BUILD_STD
+        env:
+          RUSTFLAGS: "-D warnings -C link-arg=-Tarch/riscv64/linker.ld"
 
   test:
     name: Unit Tests
@@ -117,6 +123,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y qemu-system-misc
       - name: Build RISC-V kernel
         run: cargo build --release --target riscv64gc-unknown-none-elf -p smallaios-arch-riscv64 $BUILD_STD
+        env:
+          RUSTFLAGS: "-D warnings -C link-arg=-Tarch/riscv64/linker.ld"
       - name: Boot in QEMU (timeout 30s)
         run: |
           timeout 30 qemu-system-riscv64 \
@@ -141,9 +149,12 @@ jobs:
           targets: x86_64-unknown-none, aarch64-unknown-none, riscv64gc-unknown-none-elf
       - name: Build all release kernels
         run: |
-          cargo build --release --target x86_64-unknown-none -p smallaios-arch-x86_64 $BUILD_STD
-          cargo build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 $BUILD_STD
-          cargo build --release --target riscv64gc-unknown-none-elf -p smallaios-arch-riscv64 $BUILD_STD
+          RUSTFLAGS="-D warnings -C link-arg=-Tarch/x86_64/linker.ld -C code-model=kernel" \
+            cargo build --release --target x86_64-unknown-none -p smallaios-arch-x86_64 $BUILD_STD
+          RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker.ld" \
+            cargo build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 $BUILD_STD
+          RUSTFLAGS="-D warnings -C link-arg=-Tarch/riscv64/linker.ld" \
+            cargo build --release --target riscv64gc-unknown-none-elf -p smallaios-arch-riscv64 $BUILD_STD
       - name: Check binary sizes
         run: |
           MAX=$((15 * 1024 * 1024))
