@@ -16,6 +16,8 @@ members = [
     "container",
     "bus",
     "peripheral",
+    "usb",
+    "sdr",
     "bench",
 ]
 
