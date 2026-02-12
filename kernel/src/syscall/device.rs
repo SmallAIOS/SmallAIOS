@@ -496,15 +496,24 @@ pub fn reset_tables() {
 mod tests {
     use super::*;
 
-    fn setup() {
+    extern crate std;
+    use std::sync::Mutex;
+
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn setup() -> std::sync::MutexGuard<'static, ()> {
+        let guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
         reset_tables();
+        guard
     }
 
     // ── Existing tests ──
 
     #[test]
     fn test_dev_enumerate_query_mode() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x40, [0, 0, 0, 0, 0, 0]);
         // No devices registered → returns 0
         assert_eq!(sys_dev_enumerate(&args), 0);
@@ -512,7 +521,7 @@ mod tests {
 
     #[test]
     fn test_dev_enumerate_null_nonzero() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x40, [0, 256, 0, 0, 0, 0]);
         assert_eq!(
             sys_dev_enumerate(&args),
@@ -522,28 +531,28 @@ mod tests {
 
     #[test]
     fn test_dev_open_not_found() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x41, [0, 0, 0, 0, 0, 0]);
         assert_eq!(sys_dev_open(&args), SyscallError::NotFound.as_i64());
     }
 
     #[test]
     fn test_dev_close_zero_handle() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x42, [0, 0, 0, 0, 0, 0]);
         assert_eq!(sys_dev_close(&args), SyscallError::InvalidHandle.as_i64());
     }
 
     #[test]
     fn test_dev_ioctl_zero_handle() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x43, [0, 1, 0, 0, 0, 0]);
         assert_eq!(sys_dev_ioctl(&args), SyscallError::InvalidHandle.as_i64());
     }
 
     #[test]
     fn test_dev_dma_alloc_zero_size() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x44, [0, 4096, 0, 0, 0, 0]);
         assert_eq!(
             sys_dev_dma_alloc(&args),
@@ -553,7 +562,7 @@ mod tests {
 
     #[test]
     fn test_dev_dma_alloc_too_large() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x44, [MAX_DMA_SIZE + 1, 4096, 0, 0, 0, 0]);
         assert_eq!(
             sys_dev_dma_alloc(&args),
@@ -563,7 +572,7 @@ mod tests {
 
     #[test]
     fn test_dev_dma_alloc_bad_alignment() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x44, [4096, 3, 0, 0, 0, 0]);
         assert_eq!(
             sys_dev_dma_alloc(&args),
@@ -573,7 +582,7 @@ mod tests {
 
     #[test]
     fn test_dev_dma_alloc_valid() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x44, [4096, 4096, 0, 0, 0, 0]);
         assert_eq!(
             sys_dev_dma_alloc(&args),
@@ -621,7 +630,7 @@ mod tests {
 
     #[test]
     fn test_register_device() {
-        setup();
+        let _guard = setup();
         let entry = DeviceEntry {
             device_type: DeviceType::UsbDevice,
             vendor_id: 0x1D50,
@@ -641,7 +650,7 @@ mod tests {
 
     #[test]
     fn test_unregister_device() {
-        setup();
+        let _guard = setup();
         let entry = DeviceEntry {
             device_type: DeviceType::SdrDevice,
             vendor_id: 0x0456,
@@ -659,7 +668,7 @@ mod tests {
 
     #[test]
     fn test_enumerate_with_usb_devices() {
-        setup();
+        let _guard = setup();
         // Register two USB devices
         register_device(DeviceEntry {
             device_type: DeviceType::UsbDevice,
@@ -703,7 +712,7 @@ mod tests {
 
     #[test]
     fn test_open_close_device() {
-        setup();
+        let _guard = setup();
         register_device(DeviceEntry {
             device_type: DeviceType::UsbDevice,
             vendor_id: 0x1D50,
@@ -728,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_get_device_info() {
-        setup();
+        let _guard = setup();
         register_device(DeviceEntry {
             device_type: DeviceType::UsbDevice,
             vendor_id: 0x1D50,
@@ -755,7 +764,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_usb_commands() {
-        setup();
+        let _guard = setup();
         register_device(DeviceEntry {
             device_type: DeviceType::UsbDevice,
             vendor_id: 0x1D50,
@@ -782,7 +791,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_sdr_on_usb_device_rejected() {
-        setup();
+        let _guard = setup();
         register_device(DeviceEntry {
             device_type: DeviceType::UsbDevice,
             vendor_id: 0x1D50,
@@ -801,7 +810,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_sdr_commands() {
-        setup();
+        let _guard = setup();
         register_device(DeviceEntry {
             device_type: DeviceType::SdrDevice,
             vendor_id: 0x0456,
@@ -823,7 +832,7 @@ mod tests {
 
     #[test]
     fn test_ioctl_unknown_command() {
-        setup();
+        let _guard = setup();
         register_device(DeviceEntry {
             device_type: DeviceType::UsbDevice,
             vendor_id: 0x1D50,
@@ -841,7 +850,7 @@ mod tests {
 
     #[test]
     fn test_unregister_closes_handles() {
-        setup();
+        let _guard = setup();
         let idx = register_device(DeviceEntry {
             device_type: DeviceType::UsbDevice,
             vendor_id: 0x1D50,
@@ -864,7 +873,7 @@ mod tests {
 
     #[test]
     fn test_dev_dma_alloc_default_alignment() {
-        setup();
+        let _guard = setup();
         // align=0 should work (defaults to page size)
         let args = SyscallArgs::new(0x44, [4096, 0, 0, 0, 0, 0]);
         assert_eq!(
@@ -875,7 +884,7 @@ mod tests {
 
     #[test]
     fn test_open_nonexistent_device_index() {
-        setup();
+        let _guard = setup();
         let args = SyscallArgs::new(0x41, [MAX_DEVICES + 1, 0, 0, 0, 0, 0]);
         assert_eq!(sys_dev_open(&args), SyscallError::NotFound.as_i64());
     }

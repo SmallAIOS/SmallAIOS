@@ -2426,87 +2426,88 @@ mod tests {
     fn test_i2s_bit_depth_variants() {
         assert_ne!(I2sBitDepth::Bits16, I2sBitDepth::Bits24);
         assert_ne!(I2sBitDepth::Bits24, I2sBitDepth::Bits32);
-        // -- USB types ----------------------------------------------------------
+    }
 
-        #[test]
-        fn test_usb_setup_packet_to_bytes() {
-            let pkt = UsbSetupPacket::new(0x80, 0x06, 0x0100, 0x0000, 18);
-            let bytes = pkt.to_bytes();
-            assert_eq!(bytes[0], 0x80); // bmRequestType
-            assert_eq!(bytes[1], 0x06); // bRequest (GET_DESCRIPTOR)
-            assert_eq!(bytes[2], 0x00); // wValue low (descriptor index)
-            assert_eq!(bytes[3], 0x01); // wValue high (descriptor type = DEVICE)
-            assert_eq!(bytes[4], 0x00);
-            assert_eq!(bytes[5], 0x00);
-            assert_eq!(bytes[6], 18); // wLength low
-            assert_eq!(bytes[7], 0x00);
-        }
+    // -- USB types ----------------------------------------------------------
 
-        #[test]
-        fn test_usb_setup_packet_roundtrip() {
-            let pkt = UsbSetupPacket::new(0xC0, 0x14, 0xABCD, 0x1234, 512);
-            let bytes = pkt.to_bytes();
-            let pkt2 = UsbSetupPacket::from_bytes(&bytes);
-            assert_eq!(pkt, pkt2);
-        }
+    #[test]
+    fn test_usb_setup_packet_to_bytes() {
+        let pkt = UsbSetupPacket::new(0x80, 0x06, 0x0100, 0x0000, 18);
+        let bytes = pkt.to_bytes();
+        assert_eq!(bytes[0], 0x80); // bmRequestType
+        assert_eq!(bytes[1], 0x06); // bRequest (GET_DESCRIPTOR)
+        assert_eq!(bytes[2], 0x00); // wValue low (descriptor index)
+        assert_eq!(bytes[3], 0x01); // wValue high (descriptor type = DEVICE)
+        assert_eq!(bytes[4], 0x00);
+        assert_eq!(bytes[5], 0x00);
+        assert_eq!(bytes[6], 18); // wLength low
+        assert_eq!(bytes[7], 0x00);
+    }
 
-        #[test]
-        fn test_usb_port_status() {
-            let status = UsbPortStatus {
-                connected: true,
-                enabled: true,
-                reset_active: false,
-                speed: UsbSpeed::High,
-                port: 0,
-            };
-            assert!(status.connected);
-            assert_eq!(status.speed, UsbSpeed::High);
-        }
+    #[test]
+    fn test_usb_setup_packet_roundtrip() {
+        let pkt = UsbSetupPacket::new(0xC0, 0x14, 0xABCD, 0x1234, 512);
+        let bytes = pkt.to_bytes();
+        let pkt2 = UsbSetupPacket::from_bytes(&bytes);
+        assert_eq!(pkt, pkt2);
+    }
 
-        #[test]
-        fn test_usb_transfer_result() {
-            let result = UsbTransferResult {
-                bytes_transferred: 64,
-                success: true,
-                stalled: false,
-                token: 1,
-            };
-            assert!(result.success);
-            assert_eq!(result.bytes_transferred, 64);
-        }
+    #[test]
+    fn test_usb_port_status() {
+        let status = UsbPortStatus {
+            connected: true,
+            enabled: true,
+            reset_active: false,
+            speed: UsbSpeed::High,
+            port: 0,
+        };
+        assert!(status.connected);
+        assert_eq!(status.speed, UsbSpeed::High);
+    }
 
-        #[test]
-        fn test_usb_speed_variants() {
-            assert_ne!(UsbSpeed::Full, UsbSpeed::High);
-            assert_ne!(UsbSpeed::Super, UsbSpeed::SuperPlus);
-        }
+    #[test]
+    fn test_usb_transfer_result() {
+        let result = UsbTransferResult {
+            bytes_transferred: 64,
+            success: true,
+            stalled: false,
+            token: 1,
+        };
+        assert!(result.success);
+        assert_eq!(result.bytes_transferred, 64);
+    }
 
-        #[test]
-        fn test_usb_direction_variants() {
-            assert_ne!(UsbDirection::In, UsbDirection::Out);
-        }
+    #[test]
+    fn test_usb_speed_variants() {
+        assert_ne!(UsbSpeed::Full, UsbSpeed::High);
+        assert_ne!(UsbSpeed::Super, UsbSpeed::SuperPlus);
+    }
 
-        #[test]
-        fn test_usb_transfer_type_variants() {
-            assert_ne!(UsbTransferType::Control, UsbTransferType::Bulk);
-            assert_ne!(UsbTransferType::Interrupt, UsbTransferType::Isochronous);
-        }
+    #[test]
+    fn test_usb_direction_variants() {
+        assert_ne!(UsbDirection::In, UsbDirection::Out);
+    }
 
-        #[test]
-        fn test_usb_device_event_none() {
-            let event = UsbDeviceEvent::None;
-            assert_eq!(event, UsbDeviceEvent::None);
-        }
+    #[test]
+    fn test_usb_transfer_type_variants() {
+        assert_ne!(UsbTransferType::Control, UsbTransferType::Bulk);
+        assert_ne!(UsbTransferType::Interrupt, UsbTransferType::Isochronous);
+    }
 
-        #[test]
-        fn test_usb_endpoint_config() {
-            let cfg = UsbEndpointConfig {
-                address: 0x81,
-                transfer_type: UsbTransferType::Bulk,
-                max_packet_size: 512,
-            };
-            assert_eq!(cfg.address, 0x81);
-            assert_eq!(cfg.max_packet_size, 512);
-        }
+    #[test]
+    fn test_usb_device_event_none() {
+        let event = UsbDeviceEvent::None;
+        assert_eq!(event, UsbDeviceEvent::None);
+    }
+
+    #[test]
+    fn test_usb_endpoint_config() {
+        let cfg = UsbEndpointConfig {
+            address: 0x81,
+            transfer_type: UsbTransferType::Bulk,
+            max_packet_size: 512,
+        };
+        assert_eq!(cfg.address, 0x81);
+        assert_eq!(cfg.max_packet_size, 512);
     }
 }
