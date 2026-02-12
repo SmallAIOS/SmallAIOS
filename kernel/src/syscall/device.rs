@@ -493,18 +493,29 @@ pub fn reset_tables() {
 }
 
 #[cfg(test)]
+extern crate std as test_std;
+
+/// Test-only lock to serialize access to static device/handle tables.
+#[cfg(test)]
+pub mod test_sync {
+    use super::test_std;
+    use test_std::sync::Mutex;
+
+    static DEVICE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    pub fn lock_tables() -> test_std::sync::MutexGuard<'static, ()> {
+        DEVICE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e: test_std::sync::PoisonError<_>| e.into_inner())
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    extern crate std;
-    use std::sync::Mutex;
-
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    fn setup() -> std::sync::MutexGuard<'static, ()> {
-        let guard = TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e: std::sync::PoisonError<_>| e.into_inner());
+    fn setup() -> test_std::sync::MutexGuard<'static, ()> {
+        let guard = super::test_sync::lock_tables();
         reset_tables();
         guard
     }

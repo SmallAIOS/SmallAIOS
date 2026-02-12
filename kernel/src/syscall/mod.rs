@@ -811,6 +811,9 @@ mod tests {
 
     #[test]
     fn test_each_syscall_returns_expected_for_zero_args() {
+        // Lock device tables to prevent data races with parallel device tests
+        let _guard = device::test_sync::lock_tables();
+        device::reset_tables();
         // Verify specific expected results for zero-arg dispatches
         // (exercises both valid-path and error-path for each handler)
         assert_eq!(
@@ -993,10 +996,8 @@ mod tests {
             dispatch(&SyscallArgs::zero(nr::CAP_CHECK)),
             SyscallError::InvalidHandle.as_i64()
         );
-        assert_eq!(
-            dispatch(&SyscallArgs::zero(nr::CAP_LIST)),
-            SyscallError::Success.as_i64()
-        );
+        // CAP_LIST returns capability count (>= 0); other tests may have created some
+        assert!(dispatch(&SyscallArgs::zero(nr::CAP_LIST)) >= 0);
 
         // POSIX: all zero-arg dispatches should return an error (not panic)
         let posix_enosys = -38i64;
