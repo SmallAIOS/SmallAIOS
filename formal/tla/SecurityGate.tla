@@ -133,7 +133,7 @@ Next ==
     /\ \/ \E b \in Boundaries : SubmitCrossing(b)
        \/ \E c \in pendingCrossings : CheckCrossing(c)
        \/ \E b \in Boundaries, m \in Modes : SetBoundaryMode(b, m)
-       \/ \E v \in (policyVersion + 1)..(policyVersion + 2) : PolicySwap(v)
+       \/ PolicySwap(policyVersion + 1)
 
 \* Safety specification (no fairness)
 Spec == Init /\ [][Next]_vars

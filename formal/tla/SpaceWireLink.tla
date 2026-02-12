@@ -96,15 +96,19 @@ ErrorLocal ==
     /\ step < MaxSteps
     /\ localState # "ErrorReset"
     /\ localState' = "ErrorReset"
+    \* Peer in Run detects error via missing NULLs and also resets
+    /\ remoteState' = IF remoteState = "Run" THEN "ErrorReset" ELSE remoteState
     /\ step' = step + 1
-    /\ UNCHANGED <<remoteState, localEnabled, remoteEnabled>>
+    /\ UNCHANGED <<localEnabled, remoteEnabled>>
 
 ErrorRemote ==
     /\ step < MaxSteps
     /\ remoteState # "ErrorReset"
     /\ remoteState' = "ErrorReset"
+    \* Peer in Run detects error via missing NULLs and also resets
+    /\ localState' = IF localState = "Run" THEN "ErrorReset" ELSE localState
     /\ step' = step + 1
-    /\ UNCHANGED <<localState, localEnabled, remoteEnabled>>
+    /\ UNCHANGED <<localEnabled, remoteEnabled>>
 
 \* --- Next-State Relation ---
 

@@ -120,6 +120,7 @@ CompleteSystem(t) ==
     /\ step' = step + 1
     /\ watchdogTimer' = WatchdogTimeout  \* Pet the watchdog
     /\ lastPet' = step + 1
+    /\ UNCHANGED runQueue
 
 \* INFERENCE task completes
 CompleteInference(t) ==

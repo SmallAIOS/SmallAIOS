@@ -5,7 +5,7 @@
 \* Models producer/consumer ring buffer with DMA for audio streaming
 \* SPDX-License-Identifier: Apache-2.0
 
-EXTENDS Naturals
+EXTENDS Naturals, FiniteSets
 
 CONSTANTS
     BufSize         \* Number of slots in the ring buffer (4)
@@ -178,6 +178,6 @@ ReadNeverExceedsWrite ==
 
 \* Data eventually flows through the buffer
 EventualProgress ==
-    (written_count > read_count) ~> (read_count > read_count)
+    (written_count > 0) ~> (read_count > 0)
 
 ====
