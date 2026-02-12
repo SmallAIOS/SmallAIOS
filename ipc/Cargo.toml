@@ -7,6 +7,7 @@ description = "SmallAIOS IPC: Zenoh-inspired pub/sub messaging with key-expressi
 
 [features]
 default = []
+formal-gate = ["smallaios-security/formal-gate"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }

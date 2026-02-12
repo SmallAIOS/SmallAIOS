@@ -9,8 +9,8 @@
 
 use alloc::vec::Vec;
 
-use crate::BusError;
 use super::word::{Label, Sdi};
+use crate::BusError;
 
 /// Maximum number of registered label filters.
 pub const MAX_LABEL_FILTERS: usize = 256;
@@ -241,7 +241,10 @@ mod tests {
         let mut filter2 = LabelFilter::new();
         for i in 0..MAX_LABEL_FILTERS {
             filter2
-                .register_with_sdi(Label::new((i % 256) as u8), Sdi::from_raw((i / 256) as u8 % 4).unwrap())
+                .register_with_sdi(
+                    Label::new((i % 256) as u8),
+                    Sdi::from_raw((i / 256) as u8 % 4).unwrap(),
+                )
                 .unwrap();
         }
         assert_eq!(

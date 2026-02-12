@@ -12,6 +12,14 @@
 .DS_Store
 Thumbs.db
 
+# Local artifacts (AI-generated, temp files, not for git)
+.local/
+
+# TLA+ model checker artifacts
+states/
+*_TTrace_*.bin
+*_TTrace_*.tla
+
 # Secrets (should never exist in this repo, but just in case)
 *.pem
 *.key

@@ -36,12 +36,12 @@ pub const SBI_ERR_ALREADY_STOPPED: i64 = -8;
 
 // SBI extension IDs
 pub const EXT_BASE: u64 = 0x10;
-pub const EXT_TIMER: u64 = 0x54494D45;    // "TIME"
-pub const EXT_IPI: u64 = 0x735049;        // "sPI"
-pub const EXT_RFENCE: u64 = 0x52464E43;   // "RFNC"
-pub const EXT_HSM: u64 = 0x48534D;        // "HSM"
-pub const EXT_SRST: u64 = 0x53525354;     // "SRST"
-pub const EXT_DBCN: u64 = 0x4442434E;     // "DBCN"
+pub const EXT_TIMER: u64 = 0x54494D45; // "TIME"
+pub const EXT_IPI: u64 = 0x735049; // "sPI"
+pub const EXT_RFENCE: u64 = 0x52464E43; // "RFNC"
+pub const EXT_HSM: u64 = 0x48534D; // "HSM"
+pub const EXT_SRST: u64 = 0x53525354; // "SRST"
+pub const EXT_DBCN: u64 = 0x4442434E; // "DBCN"
 
 // Legacy extension IDs
 pub const LEGACY_CONSOLE_PUTCHAR: u64 = 1;
@@ -126,10 +126,7 @@ pub fn sbi_remote_fence_i(hart_mask: u64, hart_mask_base: u64) -> SbiResult {
 }
 
 /// Execute SFENCE.VMA on remote harts for all addresses and ASIDs.
-pub fn sbi_remote_sfence_vma(
-    hart_mask: u64,
-    hart_mask_base: u64,
-) -> SbiResult {
+pub fn sbi_remote_sfence_vma(hart_mask: u64, hart_mask_base: u64) -> SbiResult {
     unsafe { sbi_call(EXT_RFENCE, 1, hart_mask, hart_mask_base, 0) }
 }
 
@@ -214,15 +211,7 @@ pub fn sbi_shutdown() -> ! {
 /// Falls back to legacy console_putchar if DBCN is not available.
 pub fn sbi_console_write(bytes: &[u8]) {
     // Try DBCN first: FID=0, a0=num_bytes, a1=base_addr_lo, a2=base_addr_hi
-    let result = unsafe {
-        sbi_call(
-            EXT_DBCN,
-            0,
-            bytes.len() as u64,
-            bytes.as_ptr() as u64,
-            0,
-        )
-    };
+    let result = unsafe { sbi_call(EXT_DBCN, 0, bytes.len() as u64, bytes.as_ptr() as u64, 0) };
 
     if result.error == SBI_ERR_NOT_SUPPORTED {
         // Fallback to legacy putchar.
@@ -254,14 +243,20 @@ mod tests {
 
     #[test]
     fn test_sbi_result_success() {
-        let r = SbiResult { error: 0, value: 42 };
+        let r = SbiResult {
+            error: 0,
+            value: 42,
+        };
         assert!(r.is_success());
         assert_eq!(r.value, 42);
     }
 
     #[test]
     fn test_sbi_result_error() {
-        let r = SbiResult { error: -1, value: 0 };
+        let r = SbiResult {
+            error: -1,
+            value: 0,
+        };
         assert!(!r.is_success());
     }
 

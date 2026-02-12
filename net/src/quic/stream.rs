@@ -9,9 +9,9 @@
 //! - Stream state machine (Ready, Send, DataSent, ResetSent, DataRecvd)
 //! - Concurrent stream limits (MAX_STREAMS)
 
+use crate::NetError;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::NetError;
 
 /// Stream type (direction).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +94,13 @@ pub struct Stream {
 
 impl Stream {
     /// Create a new stream.
-    fn new(id: u64, stream_type: StreamType, is_local: bool, initial_max_send: u64, initial_max_recv: u64) -> Self {
+    fn new(
+        id: u64,
+        stream_type: StreamType,
+        is_local: bool,
+        initial_max_send: u64,
+        initial_max_recv: u64,
+    ) -> Self {
         let (send_state, recv_state) = match stream_type {
             StreamType::Bidirectional => (Some(SendState::Ready), Some(RecvState::Recv)),
             StreamType::Unidirectional => {
@@ -143,7 +149,10 @@ impl Stream {
 
     /// Whether this stream can receive data.
     pub fn can_recv(&self) -> bool {
-        matches!(self.recv_state, Some(RecvState::Recv | RecvState::SizeKnown))
+        matches!(
+            self.recv_state,
+            Some(RecvState::Recv | RecvState::SizeKnown)
+        )
     }
 
     /// Write data to the send buffer.
@@ -265,7 +274,8 @@ impl Stream {
 
         // Clean up fully consumed entries
         let recv_offset = self.recv_offset;
-        self.recv_buf.retain(|&offset, data| offset + data.len() as u64 > recv_offset);
+        self.recv_buf
+            .retain(|&offset, data| offset + data.len() as u64 > recv_offset);
 
         // Check if all data has been read
         if self.recv_fin && Some(self.recv_offset) == self.final_size {
@@ -381,11 +391,7 @@ pub fn stream_id_type(id: u64) -> (StreamInitiator, StreamType) {
 impl StreamManager {
     /// Create a new stream manager.
     pub fn new(is_client: bool, max_remote_bidi: u64, max_remote_uni: u64) -> Self {
-        let (first_bidi, first_uni) = if is_client {
-            (0, 2)
-        } else {
-            (1, 3)
-        };
+        let (first_bidi, first_uni) = if is_client { (0, 2) } else { (1, 3) };
         Self {
             streams: BTreeMap::new(),
             is_client,
@@ -412,12 +418,7 @@ impl StreamManager {
     }
 
     /// Set initial max stream data values.
-    pub fn set_initial_max_stream_data(
-        &mut self,
-        bidi_local: u64,
-        bidi_remote: u64,
-        uni: u64,
-    ) {
+    pub fn set_initial_max_stream_data(&mut self, bidi_local: u64, bidi_remote: u64, uni: u64) {
         self.initial_max_stream_data_bidi_local = bidi_local;
         self.initial_max_stream_data_bidi_remote = bidi_remote;
         self.initial_max_stream_data_uni = uni;
@@ -546,7 +547,10 @@ impl StreamManager {
         for id in finished {
             if let Some(stream) = self.streams.remove(&id) {
                 let (initiator, stype) = stream_id_type(id);
-                let is_local = matches!((self.is_client, initiator), (true, StreamInitiator::Client) | (false, StreamInitiator::Server));
+                let is_local = matches!(
+                    (self.is_client, initiator),
+                    (true, StreamInitiator::Client) | (false, StreamInitiator::Server)
+                );
                 match (is_local, stype) {
                     (true, StreamType::Bidirectional) => {
                         self.open_local_bidi = self.open_local_bidi.saturating_sub(1);
@@ -573,11 +577,26 @@ mod tests {
 
     #[test]
     fn test_stream_id_type() {
-        assert_eq!(stream_id_type(0), (StreamInitiator::Client, StreamType::Bidirectional));
-        assert_eq!(stream_id_type(1), (StreamInitiator::Server, StreamType::Bidirectional));
-        assert_eq!(stream_id_type(2), (StreamInitiator::Client, StreamType::Unidirectional));
-        assert_eq!(stream_id_type(3), (StreamInitiator::Server, StreamType::Unidirectional));
-        assert_eq!(stream_id_type(4), (StreamInitiator::Client, StreamType::Bidirectional));
+        assert_eq!(
+            stream_id_type(0),
+            (StreamInitiator::Client, StreamType::Bidirectional)
+        );
+        assert_eq!(
+            stream_id_type(1),
+            (StreamInitiator::Server, StreamType::Bidirectional)
+        );
+        assert_eq!(
+            stream_id_type(2),
+            (StreamInitiator::Client, StreamType::Unidirectional)
+        );
+        assert_eq!(
+            stream_id_type(3),
+            (StreamInitiator::Server, StreamType::Unidirectional)
+        );
+        assert_eq!(
+            stream_id_type(4),
+            (StreamInitiator::Client, StreamType::Bidirectional)
+        );
     }
 
     #[test]

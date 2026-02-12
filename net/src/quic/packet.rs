@@ -6,8 +6,8 @@
 //! Supports Initial, Handshake, 0-RTT, 1-RTT (short header),
 //! Version Negotiation, and Retry packet types.
 
-use alloc::vec::Vec;
 use crate::NetError;
+use alloc::vec::Vec;
 
 /// QUIC v1 version number.
 pub const QUIC_VERSION_1: u32 = 0x00000001;
@@ -196,8 +196,7 @@ impl LongHeader {
         {
             let pn_bytes = self.packet_number.to_be_bytes();
             let start = 4 - self.pn_length as usize;
-            buf[off..off + self.pn_length as usize]
-                .copy_from_slice(&pn_bytes[start..]);
+            buf[off..off + self.pn_length as usize].copy_from_slice(&pn_bytes[start..]);
             off += self.pn_length as usize;
         }
 
@@ -594,7 +593,12 @@ mod tests {
 
     #[test]
     fn test_long_header_initial_encode_decode() {
-        let mut hdr = LongHeader::new(PacketType::Initial, &[0x01, 0x02, 0x03, 0x04], &[0xAA, 0xBB]).unwrap();
+        let mut hdr = LongHeader::new(
+            PacketType::Initial,
+            &[0x01, 0x02, 0x03, 0x04],
+            &[0xAA, 0xBB],
+        )
+        .unwrap();
         hdr.packet_number = 42;
         hdr.payload_length = 100;
 
@@ -666,12 +670,18 @@ mod tests {
 
     #[test]
     fn test_long_header_decode_too_short() {
-        assert_eq!(LongHeader::decode(&[0x80]).err(), Some(NetError::PacketTooShort));
+        assert_eq!(
+            LongHeader::decode(&[0x80]).err(),
+            Some(NetError::PacketTooShort)
+        );
     }
 
     #[test]
     fn test_long_header_decode_not_long() {
-        assert_eq!(LongHeader::decode(&[0x40, 0, 0, 0, 0, 0]).err(), Some(NetError::InvalidHeader));
+        assert_eq!(
+            LongHeader::decode(&[0x40, 0, 0, 0, 0, 0]).err(),
+            Some(NetError::InvalidHeader)
+        );
     }
 
     #[test]
@@ -679,7 +689,7 @@ mod tests {
         // Build a version negotiation packet manually
         let mut buf = [0u8; 32];
         buf[0] = 0x80 | 0x40; // Long header form + fixed bit
-        // Version = 0
+                              // Version = 0
         buf[1..5].copy_from_slice(&0u32.to_be_bytes());
         // DCID len=2
         buf[5] = 2;
@@ -718,7 +728,10 @@ mod tests {
     #[test]
     fn test_short_header_cid_too_long() {
         let long_cid = vec![0u8; 21];
-        assert_eq!(ShortHeader::new(&long_cid).err(), Some(NetError::InvalidAddress));
+        assert_eq!(
+            ShortHeader::new(&long_cid).err(),
+            Some(NetError::InvalidAddress)
+        );
     }
 
     #[test]
@@ -730,12 +743,18 @@ mod tests {
 
     #[test]
     fn test_short_header_decode_too_short() {
-        assert_eq!(ShortHeader::decode(&[], 4).err(), Some(NetError::PacketTooShort));
+        assert_eq!(
+            ShortHeader::decode(&[], 4).err(),
+            Some(NetError::PacketTooShort)
+        );
     }
 
     #[test]
     fn test_short_header_decode_not_short() {
-        assert_eq!(ShortHeader::decode(&[0xC0], 0).err(), Some(NetError::InvalidHeader));
+        assert_eq!(
+            ShortHeader::decode(&[0xC0], 0).err(),
+            Some(NetError::InvalidHeader)
+        );
     }
 
     #[test]
@@ -762,7 +781,12 @@ mod tests {
 
     #[test]
     fn test_packet_type_roundtrip() {
-        for pt in [PacketType::Initial, PacketType::ZeroRtt, PacketType::Handshake, PacketType::Retry] {
+        for pt in [
+            PacketType::Initial,
+            PacketType::ZeroRtt,
+            PacketType::Handshake,
+            PacketType::Retry,
+        ] {
             let bits = pt.to_type_bits();
             assert_eq!(PacketType::from_type_bits(bits), pt);
         }

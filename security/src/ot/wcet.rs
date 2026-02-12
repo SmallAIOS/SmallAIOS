@@ -308,7 +308,9 @@ impl WcetFramework {
 
     /// Check if all paths have sufficient samples.
     pub fn all_paths_sufficient(&self) -> bool {
-        self.collectors.iter().all(|c| c.active_count() >= MIN_SAMPLES)
+        self.collectors
+            .iter()
+            .all(|c| c.active_count() >= MIN_SAMPLES)
     }
 
     /// Check if any path exceeds its static bound.

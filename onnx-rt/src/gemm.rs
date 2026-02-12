@@ -387,7 +387,13 @@ mod tests {
             gemm_f32(m, n, k, &a, &b, &mut c);
 
             // Benchmark optimized
-            let iterations = if size <= 64 { 100 } else if size <= 128 { 20 } else { 5 };
+            let iterations = if size <= 64 {
+                100
+            } else if size <= 128 {
+                20
+            } else {
+                5
+            };
             let start = std::time::Instant::now();
             for _ in 0..iterations {
                 gemm_f32(m, n, k, &a, &b, &mut c);

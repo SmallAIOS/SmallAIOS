@@ -21,37 +21,40 @@
 //! - Zenoh session transport adapter (quic:// locator)
 //! - Minimal HTTP/3 framing (RFC 9114)
 
-pub mod packet;
-pub mod frame;
+pub mod congestion;
+pub mod connection;
 pub mod connid;
+pub mod endpoint;
+pub mod flow;
+pub mod frame;
+pub mod h3;
+pub mod key_update;
+pub mod migration;
+pub mod packet;
 pub mod pktnum;
 pub mod protection;
-pub mod spaces;
-pub mod connection;
-pub mod stream;
-pub mod flow;
-pub mod congestion;
-pub mod migration;
 pub mod retry;
-pub mod key_update;
-pub mod endpoint;
-pub mod zenoh;
-pub mod h3;
+pub mod spaces;
+pub mod stream;
 pub mod tls;
+pub mod zenoh;
 
-pub use packet::{PacketType, LongHeader, ShortHeader, QuicVersion};
-pub use frame::{FrameType, QuicFrame};
-pub use connid::ConnectionIdManager;
-pub use pktnum::{encode_packet_number, decode_packet_number};
-pub use spaces::{PacketNumberSpace, PacketNumberSpaceState};
-pub use connection::{Connection, ConnectionState, ConnectionRole, TransportParameters};
-pub use stream::{StreamManager, StreamType, StreamInitiator};
-pub use flow::ConnectionFlowControl;
 pub use congestion::{CongestionController, CongestionState, RttEstimator};
-pub use migration::MigrationManager;
-pub use retry::{SessionTicketStore, ReplayFilter, RetryToken};
-pub use key_update::{KeyUpdateManager, KeyUpdateState};
-pub use endpoint::{QuicEndpoint, EndpointConfig, EndpointEvent, ConnectionHandle};
-pub use zenoh::{ZenohQuicTransport, QuicLocator, ZenohMsgType, SessionState};
+pub use connection::{Connection, ConnectionRole, ConnectionState, TransportParameters};
+pub use connid::ConnectionIdManager;
+pub use endpoint::{ConnectionHandle, EndpointConfig, EndpointEvent, QuicEndpoint};
+pub use flow::ConnectionFlowControl;
+pub use frame::{FrameType, QuicFrame};
 pub use h3::{H3Frame, H3FrameType, H3Settings, HttpMethod, HttpStatus, ManagementPath};
-pub use tls::{TlsHandshake, TlsHandshakeState, TlsRole, TlsKeySchedule, HybridKeyShare, HybridServerShare, NAMED_GROUP_X25519_MLKEM768};
+pub use key_update::{KeyUpdateManager, KeyUpdateState};
+pub use migration::MigrationManager;
+pub use packet::{LongHeader, PacketType, QuicVersion, ShortHeader};
+pub use pktnum::{decode_packet_number, encode_packet_number};
+pub use retry::{ReplayFilter, RetryToken, SessionTicketStore};
+pub use spaces::{PacketNumberSpace, PacketNumberSpaceState};
+pub use stream::{StreamInitiator, StreamManager, StreamType};
+pub use tls::{
+    HybridKeyShare, HybridServerShare, TlsHandshake, TlsHandshakeState, TlsKeySchedule, TlsRole,
+    NAMED_GROUP_X25519_MLKEM768,
+};
+pub use zenoh::{QuicLocator, SessionState, ZenohMsgType, ZenohQuicTransport};

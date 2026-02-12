@@ -25,9 +25,9 @@
 
 use alloc::vec::Vec;
 
-use crate::BusError;
 use super::crc::{crc17, crc21};
-use super::frame::{MAX_EXTENDED_ID, MAX_STANDARD_ID, FrameType};
+use super::frame::{FrameType, MAX_EXTENDED_ID, MAX_STANDARD_ID};
+use crate::BusError;
 
 /// Maximum payload size for CAN FD frames.
 pub const MAX_FD_PAYLOAD: usize = 64;

@@ -7,9 +7,9 @@
 //! enforced: DataWriters and DataReaders on the same Topic name must agree
 //! on the type name.
 
-use alloc::string::String;
-use crate::BusError;
 use crate::dds::types::DomainId;
+use crate::BusError;
+use alloc::string::String;
 
 /// Maximum topic name length.
 pub const MAX_TOPIC_NAME_LEN: usize = 256;
@@ -91,12 +91,18 @@ mod tests {
 
     #[test]
     fn test_topic_empty_name() {
-        assert_eq!(Topic::new(0, "", "SensorMsg").err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            Topic::new(0, "", "SensorMsg").err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
     fn test_topic_empty_type() {
-        assert_eq!(Topic::new(0, "SensorData", "").err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            Topic::new(0, "SensorData", "").err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]

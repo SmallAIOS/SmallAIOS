@@ -23,9 +23,9 @@
 //! - Byte 2: Service code
 //! - Byte 3: Message code / data byte 0
 
-use alloc::vec::Vec;
-use crate::BusError;
 use super::frame::CanFrame;
+use crate::BusError;
+use alloc::vec::Vec;
 
 /// Maximum CANaerospace node ID.
 pub const MAX_NODE_ID: u8 = 255;
@@ -362,98 +362,50 @@ mod tests {
 
     #[test]
     fn test_message_type_emergency() {
-        assert_eq!(
-            MessageType::from_can_id(0),
-            Ok(MessageType::Emergency)
-        );
-        assert_eq!(
-            MessageType::from_can_id(127),
-            Ok(MessageType::Emergency)
-        );
+        assert_eq!(MessageType::from_can_id(0), Ok(MessageType::Emergency));
+        assert_eq!(MessageType::from_can_id(127), Ok(MessageType::Emergency));
     }
 
     #[test]
     fn test_message_type_nod_high() {
-        assert_eq!(
-            MessageType::from_can_id(128),
-            Ok(MessageType::NodHigh)
-        );
-        assert_eq!(
-            MessageType::from_can_id(199),
-            Ok(MessageType::NodHigh)
-        );
+        assert_eq!(MessageType::from_can_id(128), Ok(MessageType::NodHigh));
+        assert_eq!(MessageType::from_can_id(199), Ok(MessageType::NodHigh));
     }
 
     #[test]
     fn test_message_type_nod_normal() {
-        assert_eq!(
-            MessageType::from_can_id(200),
-            Ok(MessageType::NodNormal)
-        );
-        assert_eq!(
-            MessageType::from_can_id(299),
-            Ok(MessageType::NodNormal)
-        );
+        assert_eq!(MessageType::from_can_id(200), Ok(MessageType::NodNormal));
+        assert_eq!(MessageType::from_can_id(299), Ok(MessageType::NodNormal));
     }
 
     #[test]
     fn test_message_type_nss_high() {
-        assert_eq!(
-            MessageType::from_can_id(300),
-            Ok(MessageType::NssHigh)
-        );
-        assert_eq!(
-            MessageType::from_can_id(1799),
-            Ok(MessageType::NssHigh)
-        );
+        assert_eq!(MessageType::from_can_id(300), Ok(MessageType::NssHigh));
+        assert_eq!(MessageType::from_can_id(1799), Ok(MessageType::NssHigh));
     }
 
     #[test]
     fn test_message_type_user_defined() {
-        assert_eq!(
-            MessageType::from_can_id(1800),
-            Ok(MessageType::UserDefined)
-        );
-        assert_eq!(
-            MessageType::from_can_id(1899),
-            Ok(MessageType::UserDefined)
-        );
+        assert_eq!(MessageType::from_can_id(1800), Ok(MessageType::UserDefined));
+        assert_eq!(MessageType::from_can_id(1899), Ok(MessageType::UserDefined));
     }
 
     #[test]
     fn test_message_type_nod_low() {
-        assert_eq!(
-            MessageType::from_can_id(1900),
-            Ok(MessageType::NodLow)
-        );
-        assert_eq!(
-            MessageType::from_can_id(1999),
-            Ok(MessageType::NodLow)
-        );
+        assert_eq!(MessageType::from_can_id(1900), Ok(MessageType::NodLow));
+        assert_eq!(MessageType::from_can_id(1999), Ok(MessageType::NodLow));
     }
 
     #[test]
     fn test_message_type_test_service() {
-        assert_eq!(
-            MessageType::from_can_id(2000),
-            Ok(MessageType::TestService)
-        );
-        assert_eq!(
-            MessageType::from_can_id(2031),
-            Ok(MessageType::TestService)
-        );
+        assert_eq!(MessageType::from_can_id(2000), Ok(MessageType::TestService));
+        assert_eq!(MessageType::from_can_id(2031), Ok(MessageType::TestService));
     }
 
     #[test]
     fn test_message_type_invalid() {
-        assert_eq!(
-            MessageType::from_can_id(2032),
-            Err(BusError::InvalidId)
-        );
-        assert_eq!(
-            MessageType::from_can_id(0x7FF),
-            Err(BusError::InvalidId)
-        );
+        assert_eq!(MessageType::from_can_id(2032), Err(BusError::InvalidId));
+        assert_eq!(MessageType::from_can_id(0x7FF), Err(BusError::InvalidId));
     }
 
     // -----------------------------------------------------------------------
@@ -463,10 +415,22 @@ mod tests {
     #[test]
     fn test_data_type_roundtrip() {
         let types = [
-            DataType::NoData, DataType::Error, DataType::Float, DataType::Long,
-            DataType::ULong, DataType::BShort, DataType::BUShort, DataType::Short,
-            DataType::UShort, DataType::BChar, DataType::BUChar, DataType::Short2,
-            DataType::UShort2, DataType::Char4, DataType::Boolean, DataType::MemId,
+            DataType::NoData,
+            DataType::Error,
+            DataType::Float,
+            DataType::Long,
+            DataType::ULong,
+            DataType::BShort,
+            DataType::BUShort,
+            DataType::Short,
+            DataType::UShort,
+            DataType::BChar,
+            DataType::BUChar,
+            DataType::Short2,
+            DataType::UShort2,
+            DataType::Char4,
+            DataType::Boolean,
+            DataType::MemId,
         ];
         for dt in types {
             let raw = dt.raw();
@@ -488,10 +452,14 @@ mod tests {
     #[test]
     fn test_service_code_roundtrip() {
         let codes = [
-            ServiceCode::Identification, ServiceCode::NodeSync,
-            ServiceCode::DataDownload, ServiceCode::DataUpload,
-            ServiceCode::ModuleConfig, ServiceCode::StateTransmission,
-            ServiceCode::FilterSetting, ServiceCode::TestControl,
+            ServiceCode::Identification,
+            ServiceCode::NodeSync,
+            ServiceCode::DataDownload,
+            ServiceCode::DataUpload,
+            ServiceCode::ModuleConfig,
+            ServiceCode::StateTransmission,
+            ServiceCode::FilterSetting,
+            ServiceCode::TestControl,
         ];
         for sc in codes {
             let raw = sc.raw();
@@ -514,12 +482,7 @@ mod tests {
     fn test_new_nod_airspeed() {
         let speed: f32 = 125.5;
         let data = speed.to_be_bytes();
-        let msg = CanaMessage::new_nod(
-            params::AIRSPEED_IAS,
-            1,
-            DataType::Float,
-            &data,
-        ).unwrap();
+        let msg = CanaMessage::new_nod(params::AIRSPEED_IAS, 1, DataType::Float, &data).unwrap();
         assert_eq!(msg.msg_type, MessageType::NodNormal);
         assert_eq!(msg.node_id, 1);
         assert_eq!(msg.as_f32(), Some(125.5));
@@ -529,23 +492,13 @@ mod tests {
     fn test_new_nod_altitude() {
         let alt: f32 = 35000.0;
         let data = alt.to_be_bytes();
-        let msg = CanaMessage::new_nod(
-            params::ALTITUDE_BARO,
-            2,
-            DataType::Float,
-            &data,
-        ).unwrap();
+        let msg = CanaMessage::new_nod(params::ALTITUDE_BARO, 2, DataType::Float, &data).unwrap();
         assert_eq!(msg.as_f32(), Some(35000.0));
     }
 
     #[test]
     fn test_new_nod_emergency() {
-        let msg = CanaMessage::new_nod(
-            0,
-            5,
-            DataType::Error,
-            &[0x00, 0x00, 0x00, 0x01],
-        ).unwrap();
+        let msg = CanaMessage::new_nod(0, 5, DataType::Error, &[0x00, 0x00, 0x00, 0x01]).unwrap();
         assert_eq!(msg.msg_type, MessageType::Emergency);
         assert_eq!(msg.as_u32(), Some(1));
     }
@@ -572,13 +525,7 @@ mod tests {
 
     #[test]
     fn test_new_nss_identification() {
-        let msg = CanaMessage::new_nss(
-            300,
-            10,
-            ServiceCode::Identification,
-            0x00,
-            &[],
-        ).unwrap();
+        let msg = CanaMessage::new_nss(300, 10, ServiceCode::Identification, 0x00, &[]).unwrap();
         assert_eq!(msg.msg_type, MessageType::NssHigh);
         assert_eq!(msg.service_code, ServiceCode::Identification.raw());
     }
@@ -591,7 +538,8 @@ mod tests {
             ServiceCode::DataDownload,
             0x01,
             &[0xAA, 0xBB, 0xCC, 0xDD],
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(msg.service_code, ServiceCode::DataDownload.raw());
         assert_eq!(msg.as_u32(), Some(0xAABBCCDD));
     }
@@ -608,7 +556,8 @@ mod tests {
             1,
             DataType::Float,
             &speed.to_be_bytes(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let frame = msg.to_can_frame().unwrap();
         assert_eq!(frame.id, params::AIRSPEED_TAS);
@@ -622,12 +571,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_nod_short_data() {
-        let msg = CanaMessage::new_nod(
-            params::HEADING,
-            3,
-            DataType::Short,
-            &180i16.to_be_bytes(),
-        ).unwrap();
+        let msg = CanaMessage::new_nod(params::HEADING, 3, DataType::Short, &180i16.to_be_bytes())
+            .unwrap();
 
         let frame = msg.to_can_frame().unwrap();
         let decoded = CanaMessage::from_can_frame(&frame).unwrap();
@@ -636,13 +581,8 @@ mod tests {
 
     #[test]
     fn test_roundtrip_nss() {
-        let msg = CanaMessage::new_nss(
-            400,
-            15,
-            ServiceCode::ModuleConfig,
-            0x42,
-            &[0x01, 0x02],
-        ).unwrap();
+        let msg =
+            CanaMessage::new_nss(400, 15, ServiceCode::ModuleConfig, 0x42, &[0x01, 0x02]).unwrap();
 
         let frame = msg.to_can_frame().unwrap();
         let decoded = CanaMessage::from_can_frame(&frame).unwrap();
@@ -654,12 +594,7 @@ mod tests {
 
     #[test]
     fn test_roundtrip_empty_data() {
-        let msg = CanaMessage::new_nod(
-            params::ROLL,
-            7,
-            DataType::NoData,
-            &[],
-        ).unwrap();
+        let msg = CanaMessage::new_nod(params::ROLL, 7, DataType::NoData, &[]).unwrap();
 
         let frame = msg.to_can_frame().unwrap();
         assert_eq!(frame.dlc(), 4); // 4 header only
@@ -727,9 +662,17 @@ mod tests {
     #[test]
     fn test_standard_params_in_nod_range() {
         let nod_params = [
-            params::AIRSPEED_IAS, params::AIRSPEED_TAS, params::ALTITUDE_BARO,
-            params::ALTITUDE_GPS, params::HEADING, params::PITCH, params::ROLL,
-            params::YAW_RATE, params::ACCEL_X, params::ACCEL_Y, params::ACCEL_Z,
+            params::AIRSPEED_IAS,
+            params::AIRSPEED_TAS,
+            params::ALTITUDE_BARO,
+            params::ALTITUDE_GPS,
+            params::HEADING,
+            params::PITCH,
+            params::ROLL,
+            params::YAW_RATE,
+            params::ACCEL_X,
+            params::ACCEL_Y,
+            params::ACCEL_Z,
         ];
         for &id in &nod_params {
             assert_eq!(MessageType::from_can_id(id), Ok(MessageType::NodNormal));
@@ -738,9 +681,7 @@ mod tests {
 
     #[test]
     fn test_engine_params_in_nss_range() {
-        let engine_params = [
-            params::ENGINE_RPM, params::OIL_PRESSURE, params::OIL_TEMP,
-        ];
+        let engine_params = [params::ENGINE_RPM, params::OIL_PRESSURE, params::OIL_TEMP];
         for &id in &engine_params {
             assert_eq!(MessageType::from_can_id(id), Ok(MessageType::NssHigh));
         }

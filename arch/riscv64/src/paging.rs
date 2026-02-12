@@ -315,7 +315,9 @@ mod tests {
 
     #[test]
     fn test_flags_user_global() {
-        let flags = PageFlags::PRESENT.union(PageFlags::USER).union(PageFlags::GLOBAL);
+        let flags = PageFlags::PRESENT
+            .union(PageFlags::USER)
+            .union(PageFlags::GLOBAL);
         let bits = flags_to_pte_bits(flags);
         assert_ne!(bits & PTE_U, 0);
         assert_ne!(bits & PTE_G, 0);

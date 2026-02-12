@@ -30,8 +30,8 @@
 
 use alloc::vec::Vec;
 
-use crate::BusError;
 use super::crc::crc15;
+use crate::BusError;
 
 /// Maximum payload size for CAN 2.0A/B frames.
 pub const MAX_CLASSIC_PAYLOAD: usize = 8;

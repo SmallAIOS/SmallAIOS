@@ -34,9 +34,9 @@
 //! The actual cryptographic operations delegate to the security crate's
 //! ML-KEM and SHA-3 implementations.
 
-use alloc::vec::Vec;
+use super::protection::{CipherSuite, EncryptionLevel, PacketProtectionKeys};
 use crate::NetError;
-use super::protection::{CipherSuite, PacketProtectionKeys, EncryptionLevel};
+use alloc::vec::Vec;
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -167,25 +167,18 @@ impl TlsKeySchedule {
         // )
         // Simplified: XOR-based derivation for stub.
         for i in 0..SECRET_LEN {
-            self.handshake_secret[i] = self.early_secret[i]
-                ^ shared_secret[i]
-                ^ transcript_hash[i % SECRET_LEN];
+            self.handshake_secret[i] =
+                self.early_secret[i] ^ shared_secret[i] ^ transcript_hash[i % SECRET_LEN];
         }
 
         // Client Handshake Traffic Secret = HKDF-Expand-Label(
         //   handshake_secret, "c hs traffic", transcript_hash, 32)
-        self.client_handshake_secret = hkdf_expand_label(
-            &self.handshake_secret,
-            b"c hs traffic",
-            transcript_hash,
-        );
+        self.client_handshake_secret =
+            hkdf_expand_label(&self.handshake_secret, b"c hs traffic", transcript_hash);
 
         // Server Handshake Traffic Secret
-        self.server_handshake_secret = hkdf_expand_label(
-            &self.handshake_secret,
-            b"s hs traffic",
-            transcript_hash,
-        );
+        self.server_handshake_secret =
+            hkdf_expand_label(&self.handshake_secret, b"s hs traffic", transcript_hash);
 
         self.handshake_derived = true;
     }
@@ -199,24 +192,18 @@ impl TlsKeySchedule {
         //   0
         // )
         for i in 0..SECRET_LEN {
-            self.master_secret[i] = self.handshake_secret[i]
-                ^ transcript_hash[i % SECRET_LEN]
-                ^ 0x5A; // Mixing constant
+            self.master_secret[i] =
+                self.handshake_secret[i] ^ transcript_hash[i % SECRET_LEN] ^ 0x5A;
+            // Mixing constant
         }
 
         // Client Application Traffic Secret 0
-        self.client_app_secret = hkdf_expand_label(
-            &self.master_secret,
-            b"c ap traffic",
-            transcript_hash,
-        );
+        self.client_app_secret =
+            hkdf_expand_label(&self.master_secret, b"c ap traffic", transcript_hash);
 
         // Server Application Traffic Secret 0
-        self.server_app_secret = hkdf_expand_label(
-            &self.master_secret,
-            b"s ap traffic",
-            transcript_hash,
-        );
+        self.server_app_secret =
+            hkdf_expand_label(&self.master_secret, b"s ap traffic", transcript_hash);
 
         self.app_derived = true;
     }
@@ -290,11 +277,11 @@ pub struct HybridKeyShare {
 
 impl HybridKeyShare {
     /// Create a new hybrid key share from components.
-    pub fn new(
-        x25519_pk: [u8; X25519_PK_LEN],
-        ml_kem_pk: [u8; ML_KEM_768_PK_LEN],
-    ) -> Self {
-        Self { x25519_pk, ml_kem_pk }
+    pub fn new(x25519_pk: [u8; X25519_PK_LEN], ml_kem_pk: [u8; ML_KEM_768_PK_LEN]) -> Self {
+        Self {
+            x25519_pk,
+            ml_kem_pk,
+        }
     }
 
     /// Encode the key share into wire format (for ClientHello key_share extension).
@@ -329,7 +316,10 @@ impl HybridKeyShare {
         ml_kem_pk.copy_from_slice(
             &data[offset + X25519_PK_LEN..offset + X25519_PK_LEN + ML_KEM_768_PK_LEN],
         );
-        Ok(Self { x25519_pk, ml_kem_pk })
+        Ok(Self {
+            x25519_pk,
+            ml_kem_pk,
+        })
     }
 
     /// Return the X25519 public key component.
@@ -355,11 +345,11 @@ pub struct HybridServerShare {
 
 impl HybridServerShare {
     /// Create a new server share from components.
-    pub fn new(
-        x25519_pk: [u8; X25519_PK_LEN],
-        ml_kem_ct: [u8; ML_KEM_768_CT_LEN],
-    ) -> Self {
-        Self { x25519_pk, ml_kem_ct }
+    pub fn new(x25519_pk: [u8; X25519_PK_LEN], ml_kem_ct: [u8; ML_KEM_768_CT_LEN]) -> Self {
+        Self {
+            x25519_pk,
+            ml_kem_ct,
+        }
     }
 
     /// Encode the server share into wire format.
@@ -392,7 +382,10 @@ impl HybridServerShare {
         ml_kem_ct.copy_from_slice(
             &data[offset + X25519_PK_LEN..offset + X25519_PK_LEN + ML_KEM_768_CT_LEN],
         );
-        Ok(Self { x25519_pk, ml_kem_ct })
+        Ok(Self {
+            x25519_pk,
+            ml_kem_ct,
+        })
     }
 
     /// Return the X25519 ephemeral public key.
@@ -487,7 +480,9 @@ impl TlsHandshake {
         if self.role != TlsRole::Client || self.state != TlsHandshakeState::Idle {
             return Err(NetError::InvalidProtocol);
         }
-        let key_share = self.our_key_share.as_ref()
+        let key_share = self
+            .our_key_share
+            .as_ref()
             .ok_or(NetError::InvalidProtocol)?;
 
         // Build a minimal ClientHello:
@@ -558,9 +553,7 @@ impl TlsHandshake {
         msg: &[u8],
         shared_secret: [u8; SECRET_LEN],
     ) -> Result<(), NetError> {
-        if self.role != TlsRole::Client
-            || self.state != TlsHandshakeState::WaitingServerHello
-        {
+        if self.role != TlsRole::Client || self.state != TlsHandshakeState::WaitingServerHello {
             return Err(NetError::InvalidProtocol);
         }
 
@@ -652,7 +645,8 @@ impl TlsHandshake {
             return Err(NetError::InvalidProtocol);
         }
         let transcript_hash = compute_transcript_hash(&self.transcript);
-        self.key_schedule.derive_application_secrets(&transcript_hash);
+        self.key_schedule
+            .derive_application_secrets(&transcript_hash);
         self.state = TlsHandshakeState::Complete;
         Ok(())
     }
@@ -699,10 +693,7 @@ fn hkdf_expand_label(
 ) -> [u8; SECRET_LEN] {
     let mut out = [0u8; SECRET_LEN];
     for i in 0..SECRET_LEN {
-        out[i] = secret[i]
-            ^ label[i % label.len()]
-            ^ context[i]
-            ^ (i as u8);
+        out[i] = secret[i] ^ label[i % label.len()] ^ context[i] ^ (i as u8);
     }
     out
 }
@@ -711,9 +702,7 @@ fn hkdf_expand_label(
 fn expand_secret(secret: &[u8; SECRET_LEN], label: &[u8], len: usize) -> Vec<u8> {
     let mut out = Vec::with_capacity(len);
     for i in 0..len {
-        let b = secret[i % SECRET_LEN]
-            ^ label[i % label.len()]
-            ^ (i as u8).wrapping_mul(0x7F);
+        let b = secret[i % SECRET_LEN] ^ label[i % label.len()] ^ (i as u8).wrapping_mul(0x7F);
         out.push(b);
     }
     out
@@ -912,10 +901,18 @@ mod tests {
         ks.derive_handshake_secrets(&shared, &transcript);
 
         let client_keys = ks
-            .protection_keys(EncryptionLevel::Handshake, TlsRole::Client, CipherSuite::Aes256Gcm)
+            .protection_keys(
+                EncryptionLevel::Handshake,
+                TlsRole::Client,
+                CipherSuite::Aes256Gcm,
+            )
             .unwrap();
         let server_keys = ks
-            .protection_keys(EncryptionLevel::Handshake, TlsRole::Server, CipherSuite::Aes256Gcm)
+            .protection_keys(
+                EncryptionLevel::Handshake,
+                TlsRole::Server,
+                CipherSuite::Aes256Gcm,
+            )
             .unwrap();
 
         // Keys should be different for client and server
@@ -932,7 +929,12 @@ mod tests {
     fn key_schedule_protection_keys_not_derived() {
         let ks = TlsKeySchedule::new(None);
         assert_eq!(
-            ks.protection_keys(EncryptionLevel::Handshake, TlsRole::Client, CipherSuite::Aes256Gcm).err(),
+            ks.protection_keys(
+                EncryptionLevel::Handshake,
+                TlsRole::Client,
+                CipherSuite::Aes256Gcm
+            )
+            .err(),
             Some(NetError::InvalidProtocol)
         );
     }
@@ -942,7 +944,12 @@ mod tests {
         let mut ks = TlsKeySchedule::new(None);
         ks.derive_handshake_secrets(&[0; SECRET_LEN], &[0; SECRET_LEN]);
         assert_eq!(
-            ks.protection_keys(EncryptionLevel::OneRtt, TlsRole::Client, CipherSuite::Aes256Gcm).err(),
+            ks.protection_keys(
+                EncryptionLevel::OneRtt,
+                TlsRole::Client,
+                CipherSuite::Aes256Gcm
+            )
+            .err(),
             Some(NetError::InvalidProtocol)
         );
     }
@@ -954,10 +961,18 @@ mod tests {
         ks.derive_application_secrets(&[0xCC; SECRET_LEN]);
 
         let client_keys = ks
-            .protection_keys(EncryptionLevel::OneRtt, TlsRole::Client, CipherSuite::Aes256Gcm)
+            .protection_keys(
+                EncryptionLevel::OneRtt,
+                TlsRole::Client,
+                CipherSuite::Aes256Gcm,
+            )
             .unwrap();
         let server_keys = ks
-            .protection_keys(EncryptionLevel::OneRtt, TlsRole::Server, CipherSuite::Aes256Gcm)
+            .protection_keys(
+                EncryptionLevel::OneRtt,
+                TlsRole::Server,
+                CipherSuite::Aes256Gcm,
+            )
             .unwrap();
         assert_ne!(client_keys.key, server_keys.key);
     }
@@ -968,10 +983,7 @@ mod tests {
     fn full_handshake_client_server() {
         // 1. Client generates ClientHello
         let mut client = TlsHandshake::new(TlsRole::Client, CipherSuite::Aes256Gcm);
-        let client_share = HybridKeyShare::new(
-            [0x11; X25519_PK_LEN],
-            [0x22; ML_KEM_768_PK_LEN],
-        );
+        let client_share = HybridKeyShare::new([0x11; X25519_PK_LEN], [0x22; ML_KEM_768_PK_LEN]);
         client.set_our_key_share(client_share);
         let ch = client.generate_client_hello().unwrap();
         assert_eq!(client.state(), TlsHandshakeState::WaitingServerHello);
@@ -980,10 +992,7 @@ mod tests {
         let mut server = TlsHandshake::new(TlsRole::Server, CipherSuite::Aes256Gcm);
         // Simulate: server processes ClientHello (adds to transcript)
         server.transcript.extend_from_slice(&ch);
-        let server_share = HybridServerShare::new(
-            [0x33; X25519_PK_LEN],
-            [0x44; ML_KEM_768_CT_LEN],
-        );
+        let server_share = HybridServerShare::new([0x33; X25519_PK_LEN], [0x44; ML_KEM_768_CT_LEN]);
         // Both sides compute the same shared secret
         let shared = [0x55; SECRET_LEN];
         let sh = server.generate_server_hello(server_share, shared).unwrap();
@@ -991,7 +1000,10 @@ mod tests {
 
         // 3. Client processes ServerHello
         client.process_server_hello(&sh, shared).unwrap();
-        assert_eq!(client.state(), TlsHandshakeState::WaitingEncryptedExtensions);
+        assert_eq!(
+            client.state(),
+            TlsHandshakeState::WaitingEncryptedExtensions
+        );
 
         // 4. Both sides complete handshake
         client.complete_handshake().unwrap();
@@ -1002,18 +1014,14 @@ mod tests {
         assert!(server.is_complete());
 
         // 5. Verify keys are available and match (client send = server receive)
-        let client_send = client
-            .protection_keys(EncryptionLevel::OneRtt)
-            .unwrap();
+        let client_send = client.protection_keys(EncryptionLevel::OneRtt).unwrap();
         let server_recv = server
             .peer_protection_keys(EncryptionLevel::OneRtt)
             .unwrap();
         assert_eq!(client_send.key, server_recv.key);
         assert_eq!(client_send.iv, server_recv.iv);
 
-        let server_send = server
-            .protection_keys(EncryptionLevel::OneRtt)
-            .unwrap();
+        let server_send = server.protection_keys(EncryptionLevel::OneRtt).unwrap();
         let client_recv = client
             .peer_protection_keys(EncryptionLevel::OneRtt)
             .unwrap();
@@ -1083,10 +1091,18 @@ mod tests {
         ks.derive_application_secrets(&[0xCC; SECRET_LEN]);
 
         let hs_keys = ks
-            .protection_keys(EncryptionLevel::Handshake, TlsRole::Client, CipherSuite::Aes256Gcm)
+            .protection_keys(
+                EncryptionLevel::Handshake,
+                TlsRole::Client,
+                CipherSuite::Aes256Gcm,
+            )
             .unwrap();
         let app_keys = ks
-            .protection_keys(EncryptionLevel::OneRtt, TlsRole::Client, CipherSuite::Aes256Gcm)
+            .protection_keys(
+                EncryptionLevel::OneRtt,
+                TlsRole::Client,
+                CipherSuite::Aes256Gcm,
+            )
             .unwrap();
         assert_ne!(hs_keys.key, app_keys.key);
     }

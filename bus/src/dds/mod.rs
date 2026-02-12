@@ -21,16 +21,16 @@ pub mod topic;
 pub mod types;
 
 pub use adapter::DdsZenohAdapter;
+pub use best_effort::{BestEffortReader, BestEffortReceiveResult, BestEffortWriter};
+pub use cdr::{CdrDeserializer, CdrSerializer, Endianness};
+pub use discovery::{DiscoveredEndpoint, EndpointKind, SedpDatabase, SpdpDatabase};
 pub use endpoint::{DataReader, DataWriter, MatchStatus};
 pub use qos::{
-    DeadlineQos, DurabilityKind, HistoryKind, HistoryQos, LivelinessKind,
-    OwnershipKind, QosPolicy, ReliabilityKind,
+    DeadlineQos, DurabilityKind, HistoryKind, HistoryQos, LivelinessKind, OwnershipKind, QosPolicy,
+    ReliabilityKind,
 };
+pub use reliable::{ReaderAckNack, WriterHeartbeat};
 pub use rtps::{RtpsHeader, RtpsMessage, SubmessageKind};
+pub use security::{AccessControlPlugin, AuthStatus, AuthenticationPlugin};
 pub use topic::Topic;
 pub use types::{DomainId, DomainParticipant, Guid, GuidPrefix};
-pub use reliable::{WriterHeartbeat, ReaderAckNack};
-pub use best_effort::{BestEffortWriter, BestEffortReader, BestEffortReceiveResult};
-pub use cdr::{CdrSerializer, CdrDeserializer, Endianness};
-pub use discovery::{SpdpDatabase, SedpDatabase, DiscoveredEndpoint, EndpointKind};
-pub use security::{AuthStatus, AuthenticationPlugin, AccessControlPlugin};

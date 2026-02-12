@@ -41,11 +41,7 @@ pub fn encode_packet_number(
 /// Decode a truncated packet number using the largest acknowledged PN.
 ///
 /// Implements the algorithm from RFC 9000 Appendix A.
-pub fn decode_packet_number(
-    truncated_pn: u64,
-    pn_length: u8,
-    largest_pn: u64,
-) -> u64 {
+pub fn decode_packet_number(truncated_pn: u64, pn_length: u8, largest_pn: u64) -> u64 {
     let pn_nbits = pn_length as u64 * 8;
     let pn_win = 1u64 << pn_nbits;
     let pn_hwin = pn_win / 2;
@@ -158,7 +154,14 @@ mod tests {
 
     #[test]
     fn test_encode_decode_roundtrip() {
-        for (pn, largest) in [(0, 0), (1, 0), (100, 99), (256, 200), (1000, 500), (70000, 69000)] {
+        for (pn, largest) in [
+            (0, 0),
+            (1, 0),
+            (100, 99),
+            (256, 200),
+            (1000, 500),
+            (70000, 69000),
+        ] {
             let mut buf = [0u8; 4];
             let (_, pn_len) = encode_packet_number(pn, largest, &mut buf).unwrap();
             let truncated = read_packet_number(&buf, pn_len).unwrap();
@@ -172,12 +175,18 @@ mod tests {
         assert_eq!(read_packet_number(&[0x42], 1).unwrap(), 0x42);
         assert_eq!(read_packet_number(&[0x01, 0x00], 2).unwrap(), 256);
         assert_eq!(read_packet_number(&[0x00, 0x01, 0x00], 3).unwrap(), 256);
-        assert_eq!(read_packet_number(&[0x00, 0x00, 0x01, 0x00], 4).unwrap(), 256);
+        assert_eq!(
+            read_packet_number(&[0x00, 0x00, 0x01, 0x00], 4).unwrap(),
+            256
+        );
     }
 
     #[test]
     fn test_read_packet_number_too_short() {
-        assert_eq!(read_packet_number(&[0x42], 2).err(), Some(NetError::PacketTooShort));
+        assert_eq!(
+            read_packet_number(&[0x42], 2).err(),
+            Some(NetError::PacketTooShort)
+        );
     }
 
     #[test]

@@ -210,27 +210,42 @@ mod tests {
 
     #[test]
     fn model_weights_restricted() {
-        assert_eq!(DataType::ModelWeights.classification(), ClassificationLevel::Restricted);
+        assert_eq!(
+            DataType::ModelWeights.classification(),
+            ClassificationLevel::Restricted
+        );
     }
 
     #[test]
     fn crypto_keys_restricted() {
-        assert_eq!(DataType::CryptoKeys.classification(), ClassificationLevel::Restricted);
+        assert_eq!(
+            DataType::CryptoKeys.classification(),
+            ClassificationLevel::Restricted
+        );
     }
 
     #[test]
     fn inference_io_internal() {
-        assert_eq!(DataType::InferenceIO.classification(), ClassificationLevel::Internal);
+        assert_eq!(
+            DataType::InferenceIO.classification(),
+            ClassificationLevel::Internal
+        );
     }
 
     #[test]
     fn audit_logs_internal() {
-        assert_eq!(DataType::AuditLogs.classification(), ClassificationLevel::Internal);
+        assert_eq!(
+            DataType::AuditLogs.classification(),
+            ClassificationLevel::Internal
+        );
     }
 
     #[test]
     fn health_metrics_public() {
-        assert_eq!(DataType::HealthMetrics.classification(), ClassificationLevel::Public);
+        assert_eq!(
+            DataType::HealthMetrics.classification(),
+            ClassificationLevel::Public
+        );
     }
 
     #[test]
@@ -296,9 +311,18 @@ mod tests {
 
     #[test]
     fn classification_from_u8() {
-        assert_eq!(ClassificationLevel::from_u8(0), Some(ClassificationLevel::Public));
-        assert_eq!(ClassificationLevel::from_u8(1), Some(ClassificationLevel::Internal));
-        assert_eq!(ClassificationLevel::from_u8(2), Some(ClassificationLevel::Restricted));
+        assert_eq!(
+            ClassificationLevel::from_u8(0),
+            Some(ClassificationLevel::Public)
+        );
+        assert_eq!(
+            ClassificationLevel::from_u8(1),
+            Some(ClassificationLevel::Internal)
+        );
+        assert_eq!(
+            ClassificationLevel::from_u8(2),
+            Some(ClassificationLevel::Restricted)
+        );
         assert_eq!(ClassificationLevel::from_u8(3), None);
     }
 }

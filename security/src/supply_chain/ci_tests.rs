@@ -159,8 +159,14 @@ mod tests {
     #[test]
     fn category_strings() {
         assert_eq!(CiTestCategory::SbomValidation.as_str(), "sbom-validation");
-        assert_eq!(CiTestCategory::VulnerabilityScan.as_str(), "vulnerability-scan");
-        assert_eq!(CiTestCategory::ReproducibleBuild.as_str(), "reproducible-build");
+        assert_eq!(
+            CiTestCategory::VulnerabilityScan.as_str(),
+            "vulnerability-scan"
+        );
+        assert_eq!(
+            CiTestCategory::ReproducibleBuild.as_str(),
+            "reproducible-build"
+        );
     }
 
     #[test]

@@ -52,9 +52,7 @@ pub fn serialize_batch_header(batch: &SignedAuditBatch, buf: &mut [u8]) -> Optio
 /// Deserialize a batch header from wire format.
 ///
 /// Returns (sequence, batch_hash, previous_hash, entry_count, is_signed, signer_key_id).
-pub fn deserialize_batch_header(
-    buf: &[u8],
-) -> Option<BatchHeaderInfo> {
+pub fn deserialize_batch_header(buf: &[u8]) -> Option<BatchHeaderInfo> {
     if buf.len() < BATCH_HEADER_SIZE {
         return None;
     }
@@ -132,11 +130,11 @@ impl Default for AuditExportStats {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::batch_signing::SignedAuditBatch;
     use super::super::entry::{AuditEntry, AuditResult, Operation};
     use super::super::integrity::IntegrityChain;
     use super::super::taxonomy::AuditEventType;
+    use super::*;
     use alloc::vec;
 
     fn make_entry(ts: u64) -> AuditEntry {

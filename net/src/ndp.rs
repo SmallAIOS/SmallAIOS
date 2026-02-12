@@ -423,18 +423,14 @@ fn parse_ndp_options(mut data: &[u8]) -> Result<Vec<NdpOption>, NetError> {
             1 => {
                 // Source Link-Layer Address
                 if opt_len_bytes >= 8 {
-                    let mac = MacAddress::new(
-                        data[2], data[3], data[4], data[5], data[6], data[7],
-                    );
+                    let mac = MacAddress::new(data[2], data[3], data[4], data[5], data[6], data[7]);
                     options.push(NdpOption::SourceLinkLayerAddress(mac));
                 }
             }
             2 => {
                 // Target Link-Layer Address
                 if opt_len_bytes >= 8 {
-                    let mac = MacAddress::new(
-                        data[2], data[3], data[4], data[5], data[6], data[7],
-                    );
+                    let mac = MacAddress::new(data[2], data[3], data[4], data[5], data[6], data[7]);
                     options.push(NdpOption::TargetLinkLayerAddress(mac));
                 }
             }
@@ -497,10 +493,7 @@ pub struct SlaacAddress {
 /// derived from the given MAC address (RFC 4862 section 5.5.3).
 ///
 /// Returns all generated addresses (one per eligible prefix).
-pub fn slaac_process_ra(
-    ra: &RouterAdvertisement,
-    mac: &MacAddress,
-) -> Vec<SlaacAddress> {
+pub fn slaac_process_ra(ra: &RouterAdvertisement, mac: &MacAddress) -> Vec<SlaacAddress> {
     let mut addresses = Vec::new();
 
     for opt in &ra.options {
@@ -837,11 +830,11 @@ mod tests {
         let mut data = vec![0u8; 48];
         data[0] = 134; // RA type
         data[4] = 64; // cur_hop_limit
-        // Prefix Information option at offset 16
+                      // Prefix Information option at offset 16
         data[16] = 3; // type = Prefix Information
         data[17] = 4; // length = 4 (4*8 = 32 bytes)
         data[18] = 64; // prefix length = /64
-        // valid lifetime at offset 20..24
+                       // valid lifetime at offset 20..24
         data[20..24].copy_from_slice(&3600u32.to_be_bytes());
         // preferred lifetime at offset 24..28
         data[24..28].copy_from_slice(&1800u32.to_be_bytes());
@@ -1034,7 +1027,7 @@ mod tests {
         let mut data = [0u8; 8];
         data[0] = 5; // type = MTU
         data[1] = 1; // length = 1 (8 bytes)
-        // MTU at offset 4..8
+                     // MTU at offset 4..8
         data[4..8].copy_from_slice(&1500u32.to_be_bytes());
         let options = parse_ndp_options(&data).unwrap();
         assert_eq!(options.len(), 1);

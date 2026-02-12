@@ -9,7 +9,6 @@
 //! - BSS clearing and stack setup
 
 #![no_std]
-#![feature(naked_functions)]
 
 pub mod boot;
 pub mod interrupts;

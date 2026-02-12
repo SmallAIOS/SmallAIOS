@@ -15,8 +15,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::ContainerError;
 use crate::image::Architecture;
+use crate::ContainerError;
 
 // ---------------------------------------------------------------------------
 // 25.1 — UEFI Secure Boot Configuration
@@ -668,7 +668,8 @@ mod tests {
 
     #[test]
     fn test_pxe_legacy_config() {
-        let cfg = PxeBootConfig::new_legacy("192.168.1.100", "/tftpboot/smallaios", Architecture::Amd64);
+        let cfg =
+            PxeBootConfig::new_legacy("192.168.1.100", "/tftpboot/smallaios", Architecture::Amd64);
         assert_eq!(cfg.protocol, PxeProtocol::LegacyPxe);
         assert_eq!(cfg.server_address, "192.168.1.100");
         assert!(cfg.verify_signature);
@@ -831,7 +832,8 @@ mod tests {
 
     #[test]
     fn test_multi_arch_single() {
-        let cfg = MultiArchBuildConfig::single_arch("smallaios/test", "latest", Architecture::Amd64);
+        let cfg =
+            MultiArchBuildConfig::single_arch("smallaios/test", "latest", Architecture::Amd64);
         assert_eq!(cfg.arch_count(), 1);
         assert!(!cfg.is_multi_arch());
     }

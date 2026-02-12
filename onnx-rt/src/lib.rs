@@ -21,6 +21,8 @@ extern crate alloc;
 pub mod gemm;
 pub mod graph;
 pub mod memory_planner;
+#[cfg(feature = "formal-gate")]
+pub mod model_policy;
 pub mod onnx_types;
 pub mod operators;
 pub mod optimizer;

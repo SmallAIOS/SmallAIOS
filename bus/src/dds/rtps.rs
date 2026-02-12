@@ -6,9 +6,9 @@
 //! Implements the RTPS message header and submessage encode/decode for
 //! DATA, HEARTBEAT, ACKNACK, and GAP submessages.
 
-use alloc::vec::Vec;
-use crate::BusError;
 use crate::dds::types::GuidPrefix;
+use crate::BusError;
+use alloc::vec::Vec;
 
 /// RTPS protocol identifier: "RTPS".
 pub const RTPS_MAGIC: [u8; 4] = [0x52, 0x54, 0x50, 0x53];
@@ -172,7 +172,14 @@ impl Submessage {
             return Err(BusError::FrameTooShort);
         }
         let payload = Vec::from(&data[SUBMSG_HEADER_LEN..total]);
-        Ok((Self { kind, flags, payload }, total))
+        Ok((
+            Self {
+                kind,
+                flags,
+                payload,
+            },
+            total,
+        ))
     }
 }
 
@@ -221,7 +228,10 @@ impl RtpsMessage {
             submessages.push(submsg);
             offset += consumed;
         }
-        Ok(Self { header, submessages })
+        Ok(Self {
+            header,
+            submessages,
+        })
     }
 }
 
@@ -255,12 +265,18 @@ mod tests {
     fn test_rtps_header_invalid_magic() {
         let mut buf = [0u8; 20];
         buf[0..4].copy_from_slice(b"NOPE");
-        assert_eq!(RtpsHeader::decode(&buf).err(), Some(BusError::InvalidHeader));
+        assert_eq!(
+            RtpsHeader::decode(&buf).err(),
+            Some(BusError::InvalidHeader)
+        );
     }
 
     #[test]
     fn test_rtps_header_too_short() {
-        assert_eq!(RtpsHeader::decode(&[0u8; 10]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            RtpsHeader::decode(&[0u8; 10]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]
@@ -307,7 +323,10 @@ mod tests {
 
     #[test]
     fn test_submessage_too_short() {
-        assert_eq!(Submessage::decode(&[0u8; 2]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            Submessage::decode(&[0u8; 2]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]

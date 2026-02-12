@@ -90,69 +90,228 @@ pub fn format_metrics(snapshot: &MetricsSnapshot) -> String {
     let mut buf = String::with_capacity(MAX_METRICS_BUFFER);
 
     // Capability denial alerts
-    write_help(&mut buf, "smallaios_capability_denial_alerts_total", "Total capability denial threshold alerts");
-    write_type(&mut buf, "smallaios_capability_denial_alerts_total", "counter");
-    write_counter(&mut buf, "smallaios_capability_denial_alerts_total", None, snapshot.cap_denial_total_alerts);
+    write_help(
+        &mut buf,
+        "smallaios_capability_denial_alerts_total",
+        "Total capability denial threshold alerts",
+    );
+    write_type(
+        &mut buf,
+        "smallaios_capability_denial_alerts_total",
+        "counter",
+    );
+    write_counter(
+        &mut buf,
+        "smallaios_capability_denial_alerts_total",
+        None,
+        snapshot.cap_denial_total_alerts,
+    );
 
     // Memory failure counters (per region)
-    write_help(&mut buf, "smallaios_memory_failures_total", "Total memory allocation failures by region");
+    write_help(
+        &mut buf,
+        "smallaios_memory_failures_total",
+        "Total memory allocation failures by region",
+    );
     write_type(&mut buf, "smallaios_memory_failures_total", "counter");
-    write_counter(&mut buf, "smallaios_memory_failures_total", Some("region=\"buddy\""), snapshot.mem_buddy_failures);
-    write_counter(&mut buf, "smallaios_memory_failures_total", Some("region=\"slab\""), snapshot.mem_slab_failures);
-    write_counter(&mut buf, "smallaios_memory_failures_total", Some("region=\"tensor\""), snapshot.mem_tensor_failures);
+    write_counter(
+        &mut buf,
+        "smallaios_memory_failures_total",
+        Some("region=\"buddy\""),
+        snapshot.mem_buddy_failures,
+    );
+    write_counter(
+        &mut buf,
+        "smallaios_memory_failures_total",
+        Some("region=\"slab\""),
+        snapshot.mem_slab_failures,
+    );
+    write_counter(
+        &mut buf,
+        "smallaios_memory_failures_total",
+        Some("region=\"tensor\""),
+        snapshot.mem_tensor_failures,
+    );
 
     // Memory failure alerts
-    write_help(&mut buf, "smallaios_memory_failure_alerts_total", "Total memory failure threshold alerts by region");
+    write_help(
+        &mut buf,
+        "smallaios_memory_failure_alerts_total",
+        "Total memory failure threshold alerts by region",
+    );
     write_type(&mut buf, "smallaios_memory_failure_alerts_total", "counter");
-    write_counter(&mut buf, "smallaios_memory_failure_alerts_total", Some("region=\"buddy\""), snapshot.mem_buddy_alerts);
-    write_counter(&mut buf, "smallaios_memory_failure_alerts_total", Some("region=\"slab\""), snapshot.mem_slab_alerts);
-    write_counter(&mut buf, "smallaios_memory_failure_alerts_total", Some("region=\"tensor\""), snapshot.mem_tensor_alerts);
+    write_counter(
+        &mut buf,
+        "smallaios_memory_failure_alerts_total",
+        Some("region=\"buddy\""),
+        snapshot.mem_buddy_alerts,
+    );
+    write_counter(
+        &mut buf,
+        "smallaios_memory_failure_alerts_total",
+        Some("region=\"slab\""),
+        snapshot.mem_slab_alerts,
+    );
+    write_counter(
+        &mut buf,
+        "smallaios_memory_failure_alerts_total",
+        Some("region=\"tensor\""),
+        snapshot.mem_tensor_alerts,
+    );
 
     // Inference latency gauges
-    write_help(&mut buf, "smallaios_inference_latency_ns", "Inference latency percentiles in nanoseconds");
+    write_help(
+        &mut buf,
+        "smallaios_inference_latency_ns",
+        "Inference latency percentiles in nanoseconds",
+    );
     write_type(&mut buf, "smallaios_inference_latency_ns", "gauge");
-    write_gauge(&mut buf, "smallaios_inference_latency_ns", Some("quantile=\"0.5\""), snapshot.latency_p50_ns);
-    write_gauge(&mut buf, "smallaios_inference_latency_ns", Some("quantile=\"0.99\""), snapshot.latency_p99_ns);
-    write_gauge(&mut buf, "smallaios_inference_latency_ns", Some("quantile=\"0.999\""), snapshot.latency_p999_ns);
+    write_gauge(
+        &mut buf,
+        "smallaios_inference_latency_ns",
+        Some("quantile=\"0.5\""),
+        snapshot.latency_p50_ns,
+    );
+    write_gauge(
+        &mut buf,
+        "smallaios_inference_latency_ns",
+        Some("quantile=\"0.99\""),
+        snapshot.latency_p99_ns,
+    );
+    write_gauge(
+        &mut buf,
+        "smallaios_inference_latency_ns",
+        Some("quantile=\"0.999\""),
+        snapshot.latency_p999_ns,
+    );
 
-    write_help(&mut buf, "smallaios_inference_latency_mean_ns", "Mean inference latency in nanoseconds");
+    write_help(
+        &mut buf,
+        "smallaios_inference_latency_mean_ns",
+        "Mean inference latency in nanoseconds",
+    );
     write_type(&mut buf, "smallaios_inference_latency_mean_ns", "gauge");
-    write_gauge(&mut buf, "smallaios_inference_latency_mean_ns", None, snapshot.latency_mean_ns);
+    write_gauge(
+        &mut buf,
+        "smallaios_inference_latency_mean_ns",
+        None,
+        snapshot.latency_mean_ns,
+    );
 
-    write_help(&mut buf, "smallaios_inference_latency_stddev_ns", "Standard deviation of inference latency");
+    write_help(
+        &mut buf,
+        "smallaios_inference_latency_stddev_ns",
+        "Standard deviation of inference latency",
+    );
     write_type(&mut buf, "smallaios_inference_latency_stddev_ns", "gauge");
-    write_gauge(&mut buf, "smallaios_inference_latency_stddev_ns", None, snapshot.latency_stddev_ns);
+    write_gauge(
+        &mut buf,
+        "smallaios_inference_latency_stddev_ns",
+        None,
+        snapshot.latency_stddev_ns,
+    );
 
     // Inference observation count and anomalies
-    write_help(&mut buf, "smallaios_inference_observations_total", "Total inference latency observations");
-    write_type(&mut buf, "smallaios_inference_observations_total", "counter");
-    write_counter(&mut buf, "smallaios_inference_observations_total", None, snapshot.latency_total_observations);
+    write_help(
+        &mut buf,
+        "smallaios_inference_observations_total",
+        "Total inference latency observations",
+    );
+    write_type(
+        &mut buf,
+        "smallaios_inference_observations_total",
+        "counter",
+    );
+    write_counter(
+        &mut buf,
+        "smallaios_inference_observations_total",
+        None,
+        snapshot.latency_total_observations,
+    );
 
-    write_help(&mut buf, "smallaios_inference_anomalies_total", "Total inference latency anomalies detected");
+    write_help(
+        &mut buf,
+        "smallaios_inference_anomalies_total",
+        "Total inference latency anomalies detected",
+    );
     write_type(&mut buf, "smallaios_inference_anomalies_total", "counter");
-    write_counter(&mut buf, "smallaios_inference_anomalies_total", None, snapshot.latency_anomalies);
+    write_counter(
+        &mut buf,
+        "smallaios_inference_anomalies_total",
+        None,
+        snapshot.latency_anomalies,
+    );
 
     // Watchdog metrics
-    write_help(&mut buf, "smallaios_watchdog_remaining_ns", "Watchdog time remaining in nanoseconds");
+    write_help(
+        &mut buf,
+        "smallaios_watchdog_remaining_ns",
+        "Watchdog time remaining in nanoseconds",
+    );
     write_type(&mut buf, "smallaios_watchdog_remaining_ns", "gauge");
-    write_gauge(&mut buf, "smallaios_watchdog_remaining_ns", None, snapshot.watchdog_remaining_ns);
+    write_gauge(
+        &mut buf,
+        "smallaios_watchdog_remaining_ns",
+        None,
+        snapshot.watchdog_remaining_ns,
+    );
 
-    write_help(&mut buf, "smallaios_watchdog_timeout_ns", "Watchdog timeout period in nanoseconds");
+    write_help(
+        &mut buf,
+        "smallaios_watchdog_timeout_ns",
+        "Watchdog timeout period in nanoseconds",
+    );
     write_type(&mut buf, "smallaios_watchdog_timeout_ns", "gauge");
-    write_gauge(&mut buf, "smallaios_watchdog_timeout_ns", None, snapshot.watchdog_timeout_ns);
+    write_gauge(
+        &mut buf,
+        "smallaios_watchdog_timeout_ns",
+        None,
+        snapshot.watchdog_timeout_ns,
+    );
 
-    write_help(&mut buf, "smallaios_watchdog_warnings_total", "Total watchdog time-pressure warnings");
+    write_help(
+        &mut buf,
+        "smallaios_watchdog_warnings_total",
+        "Total watchdog time-pressure warnings",
+    );
     write_type(&mut buf, "smallaios_watchdog_warnings_total", "counter");
-    write_counter(&mut buf, "smallaios_watchdog_warnings_total", None, snapshot.watchdog_warnings);
+    write_counter(
+        &mut buf,
+        "smallaios_watchdog_warnings_total",
+        None,
+        snapshot.watchdog_warnings,
+    );
 
     // Network connection metrics
-    write_help(&mut buf, "smallaios_network_connections_total", "Total network connections tracked");
+    write_help(
+        &mut buf,
+        "smallaios_network_connections_total",
+        "Total network connections tracked",
+    );
     write_type(&mut buf, "smallaios_network_connections_total", "counter");
-    write_counter(&mut buf, "smallaios_network_connections_total", None, snapshot.net_conn_total);
+    write_counter(
+        &mut buf,
+        "smallaios_network_connections_total",
+        None,
+        snapshot.net_conn_total,
+    );
 
-    write_help(&mut buf, "smallaios_network_connection_alerts_total", "Total SYN flood detection alerts");
-    write_type(&mut buf, "smallaios_network_connection_alerts_total", "counter");
-    write_counter(&mut buf, "smallaios_network_connection_alerts_total", None, snapshot.net_conn_alerts);
+    write_help(
+        &mut buf,
+        "smallaios_network_connection_alerts_total",
+        "Total SYN flood detection alerts",
+    );
+    write_type(
+        &mut buf,
+        "smallaios_network_connection_alerts_total",
+        "counter",
+    );
+    write_counter(
+        &mut buf,
+        "smallaios_network_connection_alerts_total",
+        None,
+        snapshot.net_conn_alerts,
+    );
 
     // OpenMetrics EOF marker
     let _ = writeln!(buf, "# EOF");
@@ -263,11 +422,19 @@ mod tests {
             Some(42)
         );
         assert_eq!(
-            parse_metric_value(&text, "smallaios_memory_failures_total", Some("region=\"buddy\"")),
+            parse_metric_value(
+                &text,
+                "smallaios_memory_failures_total",
+                Some("region=\"buddy\"")
+            ),
             Some(100)
         );
         assert_eq!(
-            parse_metric_value(&text, "smallaios_inference_latency_ns", Some("quantile=\"0.5\"")),
+            parse_metric_value(
+                &text,
+                "smallaios_inference_latency_ns",
+                Some("quantile=\"0.5\"")
+            ),
             Some(5_000_000)
         );
         assert_eq!(
@@ -290,15 +457,27 @@ mod tests {
         let text = format_metrics(&snap);
 
         assert_eq!(
-            parse_metric_value(&text, "smallaios_memory_failures_total", Some("region=\"buddy\"")),
+            parse_metric_value(
+                &text,
+                "smallaios_memory_failures_total",
+                Some("region=\"buddy\"")
+            ),
             Some(10)
         );
         assert_eq!(
-            parse_metric_value(&text, "smallaios_memory_failures_total", Some("region=\"slab\"")),
+            parse_metric_value(
+                &text,
+                "smallaios_memory_failures_total",
+                Some("region=\"slab\"")
+            ),
             Some(20)
         );
         assert_eq!(
-            parse_metric_value(&text, "smallaios_memory_failures_total", Some("region=\"tensor\"")),
+            parse_metric_value(
+                &text,
+                "smallaios_memory_failures_total",
+                Some("region=\"tensor\"")
+            ),
             Some(30)
         );
     }
@@ -313,15 +492,27 @@ mod tests {
         let text = format_metrics(&snap);
 
         assert_eq!(
-            parse_metric_value(&text, "smallaios_inference_latency_ns", Some("quantile=\"0.5\"")),
+            parse_metric_value(
+                &text,
+                "smallaios_inference_latency_ns",
+                Some("quantile=\"0.5\"")
+            ),
             Some(1000)
         );
         assert_eq!(
-            parse_metric_value(&text, "smallaios_inference_latency_ns", Some("quantile=\"0.99\"")),
+            parse_metric_value(
+                &text,
+                "smallaios_inference_latency_ns",
+                Some("quantile=\"0.99\"")
+            ),
             Some(5000)
         );
         assert_eq!(
-            parse_metric_value(&text, "smallaios_inference_latency_ns", Some("quantile=\"0.999\"")),
+            parse_metric_value(
+                &text,
+                "smallaios_inference_latency_ns",
+                Some("quantile=\"0.999\"")
+            ),
             Some(10000)
         );
     }

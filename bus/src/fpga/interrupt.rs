@@ -152,10 +152,14 @@ impl InterruptRouter {
         }
 
         // Check shared handler limit
-        let shared_count = self.routes.iter().filter(|r| {
-            r.as_ref()
-                .is_some_and(|route| route.controller_irq == controller_irq && route.active)
-        }).count();
+        let shared_count = self
+            .routes
+            .iter()
+            .filter(|r| {
+                r.as_ref()
+                    .is_some_and(|route| route.controller_irq == controller_irq && route.active)
+            })
+            .count();
         if shared_count >= MAX_SHARED_HANDLERS {
             return Err(InterruptError::TooManySharedHandlers);
         }
@@ -237,15 +241,21 @@ impl InterruptRouter {
 
     /// Count handlers for a given controller IRQ.
     pub fn handler_count_for_irq(&self, controller_irq: u32) -> usize {
-        self.routes.iter().filter(|r| {
-            r.as_ref()
-                .is_some_and(|route| route.controller_irq == controller_irq && route.active)
-        }).count()
+        self.routes
+            .iter()
+            .filter(|r| {
+                r.as_ref()
+                    .is_some_and(|route| route.controller_irq == controller_irq && route.active)
+            })
+            .count()
     }
 
     /// Get a route by peripheral ID.
     pub fn get_route(&self, peripheral_id: u16) -> Option<&InterruptRoute> {
-        self.routes.iter().filter_map(|r| r.as_ref()).find(|r| r.peripheral_id == peripheral_id)
+        self.routes
+            .iter()
+            .filter_map(|r| r.as_ref())
+            .find(|r| r.peripheral_id == peripheral_id)
     }
 }
 
@@ -379,9 +389,15 @@ mod tests {
     #[test]
     fn test_handler_count_for_irq() {
         let mut router = InterruptRouter::new(InterruptControllerType::Gic);
-        router.register(0, 64, 100, TriggerType::LevelHigh, 1).unwrap();
-        router.register(1, 64, 100, TriggerType::LevelHigh, 2).unwrap();
-        router.register(2, 65, 100, TriggerType::LevelHigh, 3).unwrap();
+        router
+            .register(0, 64, 100, TriggerType::LevelHigh, 1)
+            .unwrap();
+        router
+            .register(1, 64, 100, TriggerType::LevelHigh, 2)
+            .unwrap();
+        router
+            .register(2, 65, 100, TriggerType::LevelHigh, 3)
+            .unwrap();
         assert_eq!(router.handler_count_for_irq(64), 2);
         assert_eq!(router.handler_count_for_irq(65), 1);
         assert_eq!(router.handler_count_for_irq(66), 0);
@@ -421,14 +437,29 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        assert_eq!(format!("{}", InterruptError::TableFull), "interrupt handler table full");
-        assert_eq!(format!("{}", InterruptError::InvalidIrq), "invalid IRQ number");
-        assert_eq!(format!("{}", InterruptError::InvalidPriority), "invalid priority");
+        assert_eq!(
+            format!("{}", InterruptError::TableFull),
+            "interrupt handler table full"
+        );
+        assert_eq!(
+            format!("{}", InterruptError::InvalidIrq),
+            "invalid IRQ number"
+        );
+        assert_eq!(
+            format!("{}", InterruptError::InvalidPriority),
+            "invalid priority"
+        );
         assert_eq!(
             format!("{}", InterruptError::TooManySharedHandlers),
             "too many shared handlers"
         );
-        assert_eq!(format!("{}", InterruptError::HandlerNotFound), "handler not found");
-        assert_eq!(format!("{}", InterruptError::ControllerMismatch), "controller type mismatch");
+        assert_eq!(
+            format!("{}", InterruptError::HandlerNotFound),
+            "handler not found"
+        );
+        assert_eq!(
+            format!("{}", InterruptError::ControllerMismatch),
+            "controller type mismatch"
+        );
     }
 }

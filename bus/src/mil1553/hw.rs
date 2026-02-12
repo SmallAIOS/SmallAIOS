@@ -230,7 +230,10 @@ mod tests {
     fn test_mock_transmit_uninit() {
         let mut hw = MockMil1553Transceiver::new();
         let word = Word1553 { data: 0 };
-        assert_eq!(hw.transmit_command(Bus1553::BusA, word).err(), Some(BusError::NotSupported));
+        assert_eq!(
+            hw.transmit_command(Bus1553::BusA, word).err(),
+            Some(BusError::NotSupported)
+        );
     }
 
     #[test]

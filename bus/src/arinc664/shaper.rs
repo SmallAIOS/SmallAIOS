@@ -6,8 +6,8 @@
 //! Enforces minimum inter-frame spacing per Virtual Link and implements
 //! round-robin sub-VL scheduling.
 
-use crate::BusError;
 use crate::arinc664::vl::VirtualLink;
+use crate::BusError;
 
 /// Per-VL transmit state for BAG enforcement and sequence numbering.
 #[derive(Debug)]

@@ -37,7 +37,7 @@ make docker-build           # Multi-arch container build
 
 ## Workspace Architecture
 
-10-crate Rust workspace (`#![no_std]`, edition 2024). Dependency flow:
+11-crate Rust workspace (`#![no_std]`, edition 2021). Dependency flow:
 
 ```
 kernel (foundation)
@@ -52,6 +52,8 @@ kernel (foundation)
 ├── net (IPv4/IPv6, TCP/UDP native stack)
 ├── posix (minimal POSIX compat layer)
 │   └── uses net
+├── peripheral (I2C, SPI, GPIO, UART, CSI camera, I2S audio)
+│   └── uses kernel, security
 └── container (entry point, config, health, metrics)
     └── orchestrates all crates
 ```
@@ -140,3 +142,4 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` an
 - `container`: `nvidia_gpu`
 - `kernel`: `verbose-boot`
 - `arch/nvidia`: `cc_53` through `cc_100` (CUDA compute capabilities)
+- `peripheral`: `i2c`, `spi`, `gpio`, `uart`, `camera-csi` (requires `i2c`), `audio-i2s` (requires `i2c`). Convenience bundles: `sensor-io`, `vision`, `audio`, `full-peripheral`. All default OFF.

@@ -6,8 +6,8 @@
 //! Implements RMAP read/write commands and replies over SpaceWire links
 //! with CRC-8 integrity checking per ECSS-E-ST-50-52C.
 
-use alloc::vec::Vec;
 use crate::BusError;
+use alloc::vec::Vec;
 
 /// RMAP protocol identifier.
 pub const RMAP_PROTOCOL_ID: u8 = 0x01;
@@ -71,7 +71,13 @@ const CMD_HEADER_LEN: usize = 14;
 
 impl RmapCommand {
     /// Create a new RMAP read command.
-    pub fn read(target_addr: u8, key: u8, transaction_id: u16, memory_addr: u32, length: u32) -> Self {
+    pub fn read(
+        target_addr: u8,
+        key: u8,
+        transaction_id: u16,
+        memory_addr: u32,
+        length: u32,
+    ) -> Self {
         Self {
             target_addr,
             cmd_type: RmapCommandType::Read,
@@ -85,7 +91,14 @@ impl RmapCommand {
     }
 
     /// Create a new RMAP write command.
-    pub fn write(target_addr: u8, key: u8, transaction_id: u16, memory_addr: u32, data: &[u8], reply_requested: bool) -> Self {
+    pub fn write(
+        target_addr: u8,
+        key: u8,
+        transaction_id: u16,
+        memory_addr: u32,
+        data: &[u8],
+        reply_requested: bool,
+    ) -> Self {
         Self {
             target_addr,
             cmd_type: RmapCommandType::Write,
@@ -122,7 +135,11 @@ impl RmapCommand {
 
     /// Encode the command into a byte buffer.
     pub fn encode(&self, buf: &mut [u8]) -> Result<usize, BusError> {
-        let data_section = if !self.data.is_empty() { self.data.len() + 1 } else { 0 };
+        let data_section = if !self.data.is_empty() {
+            self.data.len() + 1
+        } else {
+            0
+        };
         let total = CMD_HEADER_LEN + data_section;
         if buf.len() < total {
             return Err(BusError::BufferTooSmall);
@@ -187,9 +204,7 @@ impl RmapCommand {
             | ((data[7] as u32) << 16)
             | ((data[8] as u32) << 8)
             | data[9] as u32;
-        let data_length = ((data[10] as u32) << 16)
-            | ((data[11] as u32) << 8)
-            | data[12] as u32;
+        let data_length = ((data[10] as u32) << 16) | ((data[11] as u32) << 8) | data[12] as u32;
 
         let payload = if is_write && data.len() > CMD_HEADER_LEN {
             let payload_end = data.len() - 1;
@@ -273,7 +288,11 @@ impl RmapReply {
 
     /// Encode the reply into a byte buffer.
     pub fn encode(&self, buf: &mut [u8]) -> Result<usize, BusError> {
-        let data_section = if !self.data.is_empty() { self.data.len() + 1 } else { 0 };
+        let data_section = if !self.data.is_empty() {
+            self.data.len() + 1
+        } else {
+            0
+        };
         let total = REPLY_HEADER_LEN + data_section;
         if buf.len() < total {
             return Err(BusError::BufferTooSmall);
@@ -410,7 +429,10 @@ mod tests {
         let mut buf = [0u8; 256];
         let len = cmd.encode(&mut buf).unwrap();
         buf[13] ^= 0xFF; // Corrupt header CRC
-        assert_eq!(RmapCommand::decode(&buf[..len]).err(), Some(BusError::CrcMismatch));
+        assert_eq!(
+            RmapCommand::decode(&buf[..len]).err(),
+            Some(BusError::CrcMismatch)
+        );
     }
 
     #[test]
@@ -419,12 +441,18 @@ mod tests {
         let mut buf = [0u8; 256];
         let len = cmd.encode(&mut buf).unwrap();
         buf[len - 1] ^= 0xFF; // Corrupt data CRC
-        assert_eq!(RmapCommand::decode(&buf[..len]).err(), Some(BusError::CrcMismatch));
+        assert_eq!(
+            RmapCommand::decode(&buf[..len]).err(),
+            Some(BusError::CrcMismatch)
+        );
     }
 
     #[test]
     fn test_command_too_short() {
-        assert_eq!(RmapCommand::decode(&[0u8; 10]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            RmapCommand::decode(&[0u8; 10]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]
@@ -476,7 +504,10 @@ mod tests {
         let mut buf = [0u8; 64];
         let len = reply.encode(&mut buf).unwrap();
         buf[9] ^= 0xFF;
-        assert_eq!(RmapReply::decode(&buf[..len]).err(), Some(BusError::CrcMismatch));
+        assert_eq!(
+            RmapReply::decode(&buf[..len]).err(),
+            Some(BusError::CrcMismatch)
+        );
     }
 
     #[test]
@@ -485,11 +516,17 @@ mod tests {
         let mut buf = [0u8; 64];
         let len = reply.encode(&mut buf).unwrap();
         buf[len - 1] ^= 0xFF;
-        assert_eq!(RmapReply::decode(&buf[..len]).err(), Some(BusError::CrcMismatch));
+        assert_eq!(
+            RmapReply::decode(&buf[..len]).err(),
+            Some(BusError::CrcMismatch)
+        );
     }
 
     #[test]
     fn test_reply_too_short() {
-        assert_eq!(RmapReply::decode(&[0u8; 5]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            RmapReply::decode(&[0u8; 5]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 }

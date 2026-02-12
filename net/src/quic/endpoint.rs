@@ -7,17 +7,17 @@
 //! dispatches incoming packets to the correct connection, and handles
 //! connection setup including version negotiation and retry.
 
+use super::congestion::CongestionController;
+use super::connection::{Connection, ConnectionRole, ConnectionState, TransportParameters};
+use super::flow::ConnectionFlowControl;
+use super::key_update::KeyUpdateManager;
+use super::migration::MigrationManager;
+use super::packet::{is_long_header, LongHeader, PacketType};
+use super::retry::{ReplayFilter, SessionTicketStore};
+use super::stream::StreamManager;
+use crate::NetError;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::NetError;
-use super::connection::{Connection, ConnectionRole, ConnectionState, TransportParameters};
-use super::packet::{is_long_header, LongHeader, PacketType};
-use super::congestion::CongestionController;
-use super::flow::ConnectionFlowControl;
-use super::stream::StreamManager;
-use super::migration::MigrationManager;
-use super::retry::{SessionTicketStore, ReplayFilter};
-use super::key_update::KeyUpdateManager;
 
 /// Maximum number of concurrent connections per endpoint.
 const MAX_CONNECTIONS: usize = 256;
@@ -31,11 +31,20 @@ pub enum EndpointEvent {
     /// A new connection was accepted (server) or established (client).
     Connected { handle: ConnectionHandle },
     /// Data is available to read on a stream.
-    StreamReadable { handle: ConnectionHandle, stream_id: u64 },
+    StreamReadable {
+        handle: ConnectionHandle,
+        stream_id: u64,
+    },
     /// A stream is writable (flow control window opened).
-    StreamWritable { handle: ConnectionHandle, stream_id: u64 },
+    StreamWritable {
+        handle: ConnectionHandle,
+        stream_id: u64,
+    },
     /// A stream was finished by the peer (FIN received).
-    StreamFinished { handle: ConnectionHandle, stream_id: u64 },
+    StreamFinished {
+        handle: ConnectionHandle,
+        stream_id: u64,
+    },
     /// Connection was closed.
     ConnectionClosed { handle: ConnectionHandle },
     /// Handshake completed.
@@ -168,10 +177,8 @@ impl QuicEndpoint {
             return Err(NetError::TableFull);
         }
 
-        let mut conn = Connection::new(
-            ConnectionRole::Client,
-            self.config.transport_params.clone(),
-        )?;
+        let mut conn =
+            Connection::new(ConnectionRole::Client, self.config.transport_params.clone())?;
         conn.start_handshake(now_us)?;
 
         let handle = self.next_handle;
@@ -190,7 +197,11 @@ impl QuicEndpoint {
 
         let ec = EndpointConnection {
             conn,
-            streams: StreamManager::new(is_client, params.initial_max_streams_bidi, params.initial_max_streams_uni),
+            streams: StreamManager::new(
+                is_client,
+                params.initial_max_streams_bidi,
+                params.initial_max_streams_uni,
+            ),
             flow: ConnectionFlowControl::new(params.initial_max_data, params.initial_max_data),
             congestion: CongestionController::new(),
             migration,
@@ -249,7 +260,8 @@ impl QuicEndpoint {
                     // Process handshake packet
                     if ec.conn.state() == ConnectionState::Handshaking {
                         ec.conn.complete_handshake(now_us)?;
-                        self.events.push(EndpointEvent::HandshakeComplete { handle });
+                        self.events
+                            .push(EndpointEvent::HandshakeComplete { handle });
                         self.events.push(EndpointEvent::Connected { handle });
                     }
                 }
@@ -290,7 +302,8 @@ impl QuicEndpoint {
 
                 // Check for connection migration
                 if ec.remote_addr != remote_addr || ec.local_addr != local_addr {
-                    ec.migration.on_packet_from_new_address(local_addr, remote_addr);
+                    ec.migration
+                        .on_packet_from_new_address(local_addr, remote_addr);
                 }
             }
             return Ok(());
@@ -311,10 +324,8 @@ impl QuicEndpoint {
             return Err(NetError::TableFull);
         }
 
-        let mut conn = Connection::new(
-            ConnectionRole::Server,
-            self.config.transport_params.clone(),
-        )?;
+        let mut conn =
+            Connection::new(ConnectionRole::Server, self.config.transport_params.clone())?;
         conn.start_handshake(now_us)?;
 
         let handle = self.next_handle;
@@ -333,7 +344,11 @@ impl QuicEndpoint {
 
         let ec = EndpointConnection {
             conn,
-            streams: StreamManager::new(false, params.initial_max_streams_bidi, params.initial_max_streams_uni),
+            streams: StreamManager::new(
+                false,
+                params.initial_max_streams_bidi,
+                params.initial_max_streams_uni,
+            ),
             flow: ConnectionFlowControl::new(params.initial_max_data, params.initial_max_data),
             congestion: CongestionController::new(),
             migration,
@@ -348,7 +363,10 @@ impl QuicEndpoint {
 
     /// Open a bidirectional stream on an established connection.
     pub fn open_stream_bidi(&mut self, handle: ConnectionHandle) -> Result<u64, NetError> {
-        let ec = self.connections.get_mut(&handle).ok_or(NetError::NotFound)?;
+        let ec = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(NetError::NotFound)?;
         if !ec.conn.is_established() {
             return Err(NetError::InvalidProtocol);
         }
@@ -357,7 +375,10 @@ impl QuicEndpoint {
 
     /// Open a unidirectional stream on an established connection.
     pub fn open_stream_uni(&mut self, handle: ConnectionHandle) -> Result<u64, NetError> {
-        let ec = self.connections.get_mut(&handle).ok_or(NetError::NotFound)?;
+        let ec = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(NetError::NotFound)?;
         if !ec.conn.is_established() {
             return Err(NetError::InvalidProtocol);
         }
@@ -371,7 +392,10 @@ impl QuicEndpoint {
         stream_id: u64,
         data: &[u8],
     ) -> Result<usize, NetError> {
-        let ec = self.connections.get_mut(&handle).ok_or(NetError::NotFound)?;
+        let ec = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(NetError::NotFound)?;
         let stream = ec.streams.get_mut(stream_id).ok_or(NetError::NotFound)?;
         stream.write(data)
     }
@@ -383,7 +407,10 @@ impl QuicEndpoint {
         stream_id: u64,
         buf: &mut [u8],
     ) -> Result<usize, NetError> {
-        let ec = self.connections.get_mut(&handle).ok_or(NetError::NotFound)?;
+        let ec = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(NetError::NotFound)?;
         let stream = ec.streams.get_mut(stream_id).ok_or(NetError::NotFound)?;
         stream.read(buf)
     }
@@ -394,7 +421,10 @@ impl QuicEndpoint {
         handle: ConnectionHandle,
         stream_id: u64,
     ) -> Result<(), NetError> {
-        let ec = self.connections.get_mut(&handle).ok_or(NetError::NotFound)?;
+        let ec = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(NetError::NotFound)?;
         let stream = ec.streams.get_mut(stream_id).ok_or(NetError::NotFound)?;
         stream.finish()
     }
@@ -407,7 +437,10 @@ impl QuicEndpoint {
         reason: &[u8],
         now_us: u64,
     ) -> Result<(), NetError> {
-        let ec = self.connections.get_mut(&handle).ok_or(NetError::NotFound)?;
+        let ec = self
+            .connections
+            .get_mut(&handle)
+            .ok_or(NetError::NotFound)?;
         ec.conn.close(
             super::connection::CloseReason::Application {
                 error_code,
@@ -445,10 +478,9 @@ impl QuicEndpoint {
 
         for handle in to_close {
             if let Some(ec) = self.connections.get_mut(&handle) {
-                let _ = ec.conn.close(
-                    super::connection::CloseReason::IdleTimeout,
-                    now_us,
-                );
+                let _ = ec
+                    .conn
+                    .close(super::connection::CloseReason::IdleTimeout, now_us);
                 self.events.push(EndpointEvent::ConnectionClosed { handle });
             }
         }
@@ -591,7 +623,8 @@ mod tests {
             buf[i] = 0;
         }
         let total = hdr_len + 20;
-        ep.receive(&buf[..total], b"local", b"remote", 1000).unwrap();
+        ep.receive(&buf[..total], b"local", b"remote", 1000)
+            .unwrap();
         assert_eq!(ep.connection_count(), 1);
     }
 
@@ -602,16 +635,15 @@ mod tests {
         // Connection is in Handshaking state, which can be closed
         ep.close(handle, 0, b"bye", 2000).unwrap();
         let events = ep.poll_events();
-        assert!(events.iter().any(|e| matches!(e, EndpointEvent::ConnectionClosed { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, EndpointEvent::ConnectionClosed { .. })));
     }
 
     #[test]
     fn test_close_nonexistent() {
         let mut ep = QuicEndpoint::client(default_params());
-        assert_eq!(
-            ep.close(999, 0, b"", 1000).err(),
-            Some(NetError::NotFound)
-        );
+        assert_eq!(ep.close(999, 0, b"", 1000).err(), Some(NetError::NotFound));
     }
 
     #[test]
@@ -647,7 +679,9 @@ mod tests {
         // Default idle timeout is 30s = 30,000,000 us
         ep.handle_timeouts(30_000_001);
         let events = ep.poll_events();
-        assert!(events.iter().any(|e| matches!(e, EndpointEvent::ConnectionClosed { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, EndpointEvent::ConnectionClosed { .. })));
     }
 
     #[test]
@@ -663,22 +697,32 @@ mod tests {
     fn test_ticket_store_access() {
         let mut ep = QuicEndpoint::client(default_params());
         assert_eq!(ep.ticket_store().count(), 0);
-        ep.ticket_store_mut().store(super::super::retry::SessionTicket {
-            data: Vec::from([1u8]),
-            server_name: Vec::from(b"test.com" as &[u8]),
-            issued_at_us: 0,
-            lifetime_us: 1_000_000,
-            max_early_data: 0,
-        });
+        ep.ticket_store_mut()
+            .store(super::super::retry::SessionTicket {
+                data: Vec::from([1u8]),
+                server_name: Vec::from(b"test.com" as &[u8]),
+                issued_at_us: 0,
+                lifetime_us: 1_000_000,
+                max_early_data: 0,
+            });
         assert_eq!(ep.ticket_store().count(), 1);
     }
 
     #[test]
     fn test_endpoint_event_variants() {
         let e1 = EndpointEvent::Connected { handle: 1 };
-        let e2 = EndpointEvent::StreamReadable { handle: 1, stream_id: 0 };
-        let e3 = EndpointEvent::StreamWritable { handle: 1, stream_id: 0 };
-        let e4 = EndpointEvent::StreamFinished { handle: 1, stream_id: 0 };
+        let e2 = EndpointEvent::StreamReadable {
+            handle: 1,
+            stream_id: 0,
+        };
+        let e3 = EndpointEvent::StreamWritable {
+            handle: 1,
+            stream_id: 0,
+        };
+        let e4 = EndpointEvent::StreamFinished {
+            handle: 1,
+            stream_id: 0,
+        };
         let e5 = EndpointEvent::ConnectionClosed { handle: 1 };
         let e6 = EndpointEvent::HandshakeComplete { handle: 1 };
         assert_ne!(e1, e2);

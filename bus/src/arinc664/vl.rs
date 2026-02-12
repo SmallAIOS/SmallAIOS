@@ -115,21 +115,42 @@ mod tests {
 
     #[test]
     fn test_vl_invalid_bag() {
-        assert_eq!(VirtualLink::new(1, 3, 512, 1, false), Err(BusError::OutOfRange));
-        assert_eq!(VirtualLink::new(1, 0, 512, 1, false), Err(BusError::OutOfRange));
-        assert_eq!(VirtualLink::new(1, 256, 512, 1, false), Err(BusError::OutOfRange));
+        assert_eq!(
+            VirtualLink::new(1, 3, 512, 1, false),
+            Err(BusError::OutOfRange)
+        );
+        assert_eq!(
+            VirtualLink::new(1, 0, 512, 1, false),
+            Err(BusError::OutOfRange)
+        );
+        assert_eq!(
+            VirtualLink::new(1, 256, 512, 1, false),
+            Err(BusError::OutOfRange)
+        );
     }
 
     #[test]
     fn test_vl_invalid_lmax() {
-        assert_eq!(VirtualLink::new(1, 32, 63, 1, false), Err(BusError::OutOfRange));
-        assert_eq!(VirtualLink::new(1, 32, 1519, 1, false), Err(BusError::OutOfRange));
+        assert_eq!(
+            VirtualLink::new(1, 32, 63, 1, false),
+            Err(BusError::OutOfRange)
+        );
+        assert_eq!(
+            VirtualLink::new(1, 32, 1519, 1, false),
+            Err(BusError::OutOfRange)
+        );
     }
 
     #[test]
     fn test_vl_invalid_sub_vls() {
-        assert_eq!(VirtualLink::new(1, 32, 512, 0, false), Err(BusError::OutOfRange));
-        assert_eq!(VirtualLink::new(1, 32, 512, 5, false), Err(BusError::OutOfRange));
+        assert_eq!(
+            VirtualLink::new(1, 32, 512, 0, false),
+            Err(BusError::OutOfRange)
+        );
+        assert_eq!(
+            VirtualLink::new(1, 32, 512, 5, false),
+            Err(BusError::OutOfRange)
+        );
     }
 
     #[test]

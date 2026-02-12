@@ -8,9 +8,9 @@
 //! detects gaps (lost samples). Out-of-order samples below the highest
 //! received sequence number are dropped.
 
-use alloc::vec::Vec;
 use crate::dds::endpoint::SequenceNumber;
 use crate::dds::types::Guid;
+use alloc::vec::Vec;
 
 /// Best-effort writer state.
 ///

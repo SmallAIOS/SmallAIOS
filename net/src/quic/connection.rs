@@ -6,10 +6,10 @@
 //! Manages connection lifecycle: Idle -> Handshaking -> Connected -> Draining -> Closed.
 //! Tracks per-space state, connection IDs, transport parameters, and migration.
 
-use alloc::vec::Vec;
-use crate::NetError;
 use super::connid::{ConnectionIdManager, DEFAULT_CID_LEN};
 use super::spaces::{PacketNumberSpace, PacketNumberSpaceState};
+use crate::NetError;
+use alloc::vec::Vec;
 
 /// QUIC connection state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,8 +67,8 @@ impl Default for TransportParameters {
         Self {
             max_idle_timeout_ms: 30_000,
             max_udp_payload_size: 1472,
-            initial_max_data: 1_048_576,            // 1 MB
-            initial_max_stream_data_bidi_local: 262_144,  // 256 KB
+            initial_max_data: 1_048_576,                 // 1 MB
+            initial_max_stream_data_bidi_local: 262_144, // 256 KB
             initial_max_stream_data_bidi_remote: 262_144,
             initial_max_stream_data_uni: 262_144,
             initial_max_streams_bidi: 100,
@@ -86,7 +86,11 @@ pub enum CloseReason {
     /// Application-level close with error code and reason.
     Application { error_code: u64, reason: Vec<u8> },
     /// Transport-level close with error code.
-    Transport { error_code: u64, frame_type: u64, reason: Vec<u8> },
+    Transport {
+        error_code: u64,
+        frame_type: u64,
+        reason: Vec<u8>,
+    },
     /// Idle timeout.
     IdleTimeout,
     /// Stateless reset received.
@@ -425,7 +429,8 @@ mod tests {
 
         // Send in initial space
         conn.space_mut(PacketNumberSpace::Initial).allocate_pn();
-        conn.space_mut(PacketNumberSpace::Initial).on_packet_received(0, 1000);
+        conn.space_mut(PacketNumberSpace::Initial)
+            .on_packet_received(0, 1000);
 
         conn.complete_handshake(2000).unwrap();
 

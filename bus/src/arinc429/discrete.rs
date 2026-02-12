@@ -12,8 +12,8 @@
 //! - Failure Warning: data may be unreliable
 //! - No Computed Data: data is not available
 
-use crate::BusError;
 use super::word::{Arinc429Word, Label, Sdi, Ssm};
+use crate::BusError;
 
 /// Maximum number of discrete bits in the 19-bit data field.
 pub const MAX_DISCRETE_BITS: u8 = 19;

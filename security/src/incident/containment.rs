@@ -127,7 +127,11 @@ impl ContainmentRegistry {
     /// Place a task under containment.
     ///
     /// Returns the list of containment actions that should be executed.
-    pub fn contain_task(&mut self, task_id: u64, timestamp_ns: u64) -> Result<Vec<ContainmentAction>, ContainmentError> {
+    pub fn contain_task(
+        &mut self,
+        task_id: u64,
+        timestamp_ns: u64,
+    ) -> Result<Vec<ContainmentAction>, ContainmentError> {
         if self.is_contained(task_id) {
             return Err(ContainmentError::AlreadyContained);
         }

@@ -10,10 +10,10 @@
 //! FPGA peripherals are treated as standard MMIO devices. No bitstream
 //! programming or partial reconfiguration is supported.
 
-pub mod axi_lite;
 pub mod axi_full;
-pub mod dma;
+pub mod axi_lite;
 pub mod discovery;
+pub mod dma;
 pub mod interrupt;
-pub mod zynq;
 pub mod polarfire;
+pub mod zynq;

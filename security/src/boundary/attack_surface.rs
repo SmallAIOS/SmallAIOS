@@ -302,9 +302,15 @@ mod tests {
 
     #[test]
     fn validation_strings() {
-        assert_eq!(ValidationMechanism::CapabilityCheck.as_str(), "capability-check");
+        assert_eq!(
+            ValidationMechanism::CapabilityCheck.as_str(),
+            "capability-check"
+        );
         assert_eq!(ValidationMechanism::CrcChecksum.as_str(), "crc-checksum");
-        assert_eq!(ValidationMechanism::CapabilityAndBounds.as_str(), "capability-and-bounds");
+        assert_eq!(
+            ValidationMechanism::CapabilityAndBounds.as_str(),
+            "capability-and-bounds"
+        );
     }
 
     #[test]

@@ -677,10 +677,10 @@ mod tests {
     fn fuzz_string_with_invalid_utf8_sequences() {
         // Various invalid UTF-8 sequences
         let invalid_sequences: &[&[u8]] = &[
-            &[0x01, 0x80],             // lone continuation byte
-            &[0x02, 0xC0, 0x80],       // overlong encoding
-            &[0x03, 0xED, 0xA0, 0x80], // surrogate half
-            &[0x02, 0xFE, 0xFF],       // invalid start bytes
+            &[0x01, 0x80],                   // lone continuation byte
+            &[0x02, 0xC0, 0x80],             // overlong encoding
+            &[0x03, 0xED, 0xA0, 0x80],       // surrogate half
+            &[0x02, 0xFE, 0xFF],             // invalid start bytes
             &[0x04, 0xF4, 0x90, 0x80, 0x80], // above U+10FFFF
         ];
         for seq in invalid_sequences {
@@ -699,8 +699,7 @@ mod tests {
             0x08, 0x96, 0x01, // field 1, varint 150
             0x12, 0x03, 0x41, 0x42, 0x43, // field 2, string "ABC"
             0x1D, 0x00, 0x00, 0x80, 0x3F, // field 3, fixed32 1.0f
-            0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0,
-            0x3F, // field 4, fixed64 1.0f64
+            0x21, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xF0, 0x3F, // field 4, fixed64 1.0f64
             0xFF, 0xFF, 0xFF, // trailing garbage
         ];
 

@@ -10,6 +10,8 @@
 //! - Bus framing (CRC/checksum per protocol spec)
 
 use super::trust_boundaries::{AuthMechanism, TrustBoundary};
+#[cfg(feature = "formal-gate")]
+use crate::labels::MessageTypeId;
 
 /// A cross-boundary data flow to be verified.
 #[derive(Debug, Clone, Copy)]
@@ -26,6 +28,9 @@ pub struct DataFlow {
     pub integrity_required: bool,
     /// Whether confidentiality protection is required.
     pub confidentiality_required: bool,
+    /// Expected verified message type for this flow (formal-gate only).
+    #[cfg(feature = "formal-gate")]
+    pub expected_message_type: Option<MessageTypeId>,
 }
 
 /// All defined cross-boundary data flows.
@@ -38,6 +43,8 @@ pub const CROSS_BOUNDARY_FLOWS: &[DataFlow] = &[
         required_auth: AuthMechanism::MutualTls,
         integrity_required: true,
         confidentiality_required: true,
+        #[cfg(feature = "formal-gate")]
+        expected_message_type: Some(MessageTypeId(0x0003)), // InferenceRequest
     },
     // Kernel -> Network: inference response via TLS
     DataFlow {
@@ -47,6 +54,8 @@ pub const CROSS_BOUNDARY_FLOWS: &[DataFlow] = &[
         required_auth: AuthMechanism::MutualTls,
         integrity_required: true,
         confidentiality_required: true,
+        #[cfg(feature = "formal-gate")]
+        expected_message_type: Some(MessageTypeId(0x0004)), // InferenceResponse
     },
     // K8s -> Kernel: pod management commands
     DataFlow {
@@ -56,6 +65,8 @@ pub const CROSS_BOUNDARY_FLOWS: &[DataFlow] = &[
         required_auth: AuthMechanism::MutualTls,
         integrity_required: true,
         confidentiality_required: true,
+        #[cfg(feature = "formal-gate")]
+        expected_message_type: Some(MessageTypeId(0x0020)), // K8sPodCommand
     },
     // Kernel -> K8s: health and metrics
     DataFlow {
@@ -65,6 +76,8 @@ pub const CROSS_BOUNDARY_FLOWS: &[DataFlow] = &[
         required_auth: AuthMechanism::MutualTls,
         integrity_required: true,
         confidentiality_required: false, // Metrics are Public classification
+        #[cfg(feature = "formal-gate")]
+        expected_message_type: Some(MessageTypeId(0x0021)), // K8sHealthMetrics
     },
     // Bus -> Kernel: sensor data ingestion
     DataFlow {
@@ -74,6 +87,8 @@ pub const CROSS_BOUNDARY_FLOWS: &[DataFlow] = &[
         required_auth: AuthMechanism::BusFrameIntegrity,
         integrity_required: true,
         confidentiality_required: false,
+        #[cfg(feature = "formal-gate")]
+        expected_message_type: Some(MessageTypeId(0x0010)), // BusSensorFrame
     },
     // Kernel -> Bus: actuator commands
     DataFlow {
@@ -83,6 +98,8 @@ pub const CROSS_BOUNDARY_FLOWS: &[DataFlow] = &[
         required_auth: AuthMechanism::CapabilityToken,
         integrity_required: true,
         confidentiality_required: false,
+        #[cfg(feature = "formal-gate")]
+        expected_message_type: Some(MessageTypeId(0x0011)), // BusActuatorCommand
     },
     // Kernel <-> GPU: tensor transfers
     DataFlow {
@@ -92,6 +109,8 @@ pub const CROSS_BOUNDARY_FLOWS: &[DataFlow] = &[
         required_auth: AuthMechanism::DmaPermissions,
         integrity_required: true,
         confidentiality_required: false,
+        #[cfg(feature = "formal-gate")]
+        expected_message_type: Some(MessageTypeId(0x0030)), // GpuTensorTransfer
     },
     DataFlow {
         source: TrustBoundary::Gpu,
@@ -100,6 +119,8 @@ pub const CROSS_BOUNDARY_FLOWS: &[DataFlow] = &[
         required_auth: AuthMechanism::DmaPermissions,
         integrity_required: true,
         confidentiality_required: false,
+        #[cfg(feature = "formal-gate")]
+        expected_message_type: Some(MessageTypeId(0x0031)), // GpuInferenceResult
     },
 ];
 
@@ -196,7 +217,11 @@ mod tests {
     #[test]
     fn all_flows_require_integrity() {
         for flow in CROSS_BOUNDARY_FLOWS {
-            assert!(flow.integrity_required, "Flow '{}' should require integrity", flow.description);
+            assert!(
+                flow.integrity_required,
+                "Flow '{}' should require integrity",
+                flow.description
+            );
         }
     }
 
@@ -216,7 +241,10 @@ mod tests {
     fn bus_flows_no_confidentiality() {
         let bus_flows: alloc::vec::Vec<_> = CROSS_BOUNDARY_FLOWS
             .iter()
-            .filter(|f| f.source == TrustBoundary::BusProtocol || f.destination == TrustBoundary::BusProtocol)
+            .filter(|f| {
+                f.source == TrustBoundary::BusProtocol
+                    || f.destination == TrustBoundary::BusProtocol
+            })
             .collect();
         for flow in &bus_flows {
             assert!(!flow.confidentiality_required);
@@ -238,14 +266,20 @@ mod tests {
     #[test]
     fn verify_flow_missing_integrity() {
         let result = verify_flow(0, true, false, true);
-        assert_eq!(result, FlowVerificationResult::MissingIntegrity { flow_index: 0 });
+        assert_eq!(
+            result,
+            FlowVerificationResult::MissingIntegrity { flow_index: 0 }
+        );
     }
 
     #[test]
     fn verify_flow_missing_confidentiality() {
         // Flow 0 requires confidentiality (TLS inference request)
         let result = verify_flow(0, true, true, false);
-        assert_eq!(result, FlowVerificationResult::MissingConfidentiality { flow_index: 0 });
+        assert_eq!(
+            result,
+            FlowVerificationResult::MissingConfidentiality { flow_index: 0 }
+        );
     }
 
     #[test]
@@ -273,7 +307,10 @@ mod tests {
             .collect();
         states[0].2 = false; // Remove confidentiality from flow 0
         let result = verify_all_flows(&states);
-        assert_eq!(result, FlowVerificationResult::MissingConfidentiality { flow_index: 0 });
+        assert_eq!(
+            result,
+            FlowVerificationResult::MissingConfidentiality { flow_index: 0 }
+        );
     }
 
     #[test]

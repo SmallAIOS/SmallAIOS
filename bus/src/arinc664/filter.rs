@@ -8,9 +8,9 @@
 //! not in the filter table are dropped. Destination MAC address is also
 //! validated against the AFDX multicast convention.
 
-use alloc::vec::Vec;
-use crate::BusError;
 use crate::arinc664::frame::AfdxFrame;
+use crate::BusError;
+use alloc::vec::Vec;
 
 /// Maximum number of VL filter entries.
 pub const MAX_FILTER_ENTRIES: usize = 256;
@@ -80,14 +80,7 @@ impl AfdxFilter {
         if self.entries.iter().any(|e| e.vl_id == vl_id) {
             return Ok(()); // Already registered
         }
-        let dest_mac = [
-            0x03,
-            0x00,
-            0x00,
-            0x00,
-            (vl_id >> 8) as u8,
-            vl_id as u8,
-        ];
+        let dest_mac = [0x03, 0x00, 0x00, 0x00, (vl_id >> 8) as u8, vl_id as u8];
         self.entries.push(VlFilterEntry {
             vl_id,
             dest_mac,
@@ -254,7 +247,10 @@ mod tests {
         assert_eq!(filter.filter(&make_frame(100, 10)), FilterResult::Accept);
         assert_eq!(filter.filter(&make_frame(200, 10)), FilterResult::Accept);
         assert_eq!(filter.filter(&make_frame(300, 10)), FilterResult::Accept);
-        assert_eq!(filter.filter(&make_frame(400, 10)), FilterResult::RejectUnknownVl);
+        assert_eq!(
+            filter.filter(&make_frame(400, 10)),
+            FilterResult::RejectUnknownVl
+        );
         assert_eq!(filter.accepted(), 3);
         assert_eq!(filter.rejected(), 1);
     }

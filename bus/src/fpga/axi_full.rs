@@ -64,7 +64,10 @@ impl fmt::Display for AxiFullError {
             AxiFullError::InvalidBaseAddress => write!(f, "invalid base address"),
             AxiFullError::InvalidBurstLength => write!(f, "invalid burst length"),
             AxiFullError::InvalidDataWidth => write!(f, "invalid data width"),
-            AxiFullError::TransferError { response, beat_index } => {
+            AxiFullError::TransferError {
+                response,
+                beat_index,
+            } => {
                 write!(f, "transfer error: {response:?} at beat {beat_index}")
             }
             AxiFullError::BufferSizeMismatch => write!(f, "buffer size mismatch"),
@@ -143,10 +146,7 @@ impl AxiFullDevice {
         if base_addr == 0 {
             return Err(AxiFullError::InvalidBaseAddress);
         }
-        if max_data_width == 0
-            || !max_data_width.is_power_of_two()
-            || max_data_width > 128
-        {
+        if max_data_width == 0 || !max_data_width.is_power_of_two() || max_data_width > 128 {
             return Err(AxiFullError::InvalidDataWidth);
         }
         Ok(Self {
@@ -169,7 +169,11 @@ impl AxiFullDevice {
     ///
     /// Reads `config.burst_len` beats of `config.data_width_bytes` each
     /// starting from `config.address`. The result is written into `buffer`.
-    pub fn burst_read(&self, config: &BurstConfig, buffer: &mut [u8]) -> Result<BurstResult, AxiFullError> {
+    pub fn burst_read(
+        &self,
+        config: &BurstConfig,
+        buffer: &mut [u8],
+    ) -> Result<BurstResult, AxiFullError> {
         config.validate()?;
         if config.data_width_bytes > self.max_data_width {
             return Err(AxiFullError::InvalidDataWidth);
@@ -203,7 +207,11 @@ impl AxiFullDevice {
     ///
     /// Writes `config.burst_len` beats of `config.data_width_bytes` each
     /// to `config.address` from `buffer`.
-    pub fn burst_write(&self, config: &BurstConfig, buffer: &[u8]) -> Result<BurstResult, AxiFullError> {
+    pub fn burst_write(
+        &self,
+        config: &BurstConfig,
+        buffer: &[u8],
+    ) -> Result<BurstResult, AxiFullError> {
         config.validate()?;
         if config.data_width_bytes > self.max_data_width {
             return Err(AxiFullError::InvalidDataWidth);
@@ -427,8 +435,17 @@ mod tests {
             beat_index: 5,
         };
         assert_eq!(format!("{err}"), "transfer error: SlaveError at beat 5");
-        assert_eq!(format!("{}", AxiFullError::InvalidBurstLength), "invalid burst length");
-        assert_eq!(format!("{}", AxiFullError::BufferSizeMismatch), "buffer size mismatch");
-        assert_eq!(format!("{}", AxiFullError::UnalignedAddress), "unaligned address");
+        assert_eq!(
+            format!("{}", AxiFullError::InvalidBurstLength),
+            "invalid burst length"
+        );
+        assert_eq!(
+            format!("{}", AxiFullError::BufferSizeMismatch),
+            "buffer size mismatch"
+        );
+        assert_eq!(
+            format!("{}", AxiFullError::UnalignedAddress),
+            "unaligned address"
+        );
     }
 }

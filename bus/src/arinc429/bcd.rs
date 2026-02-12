@@ -15,8 +15,8 @@
 //! BCD digits are packed MSB-first: the most significant digit occupies
 //! the highest bits of the data field.
 
-use crate::BusError;
 use super::word::{Arinc429Word, Label, Sdi, Ssm};
+use crate::BusError;
 
 /// Maximum number of BCD digits in the 19-bit data field.
 /// 4 digits = 16 bits, leaving 3 bits for sub-digit info.
@@ -293,12 +293,7 @@ mod tests {
     fn test_bcd_word_failure_warning() {
         let codec = BcdCodec::new(4).unwrap();
         let raw = codec
-            .encode_word(
-                Label::new(0o100),
-                Sdi::Zero,
-                0,
-                Ssm::FailureWarning,
-            )
+            .encode_word(Label::new(0o100), Sdi::Zero, 0, Ssm::FailureWarning)
             .unwrap();
         let (_, ssm) = codec.decode_word(raw).unwrap();
         assert_eq!(ssm, Ssm::FailureWarning);

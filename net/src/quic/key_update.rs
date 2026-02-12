@@ -7,7 +7,7 @@
 //! Both peers can initiate a key update; the transition period
 //! allows packets encrypted with either old or new keys.
 
-use super::protection::{PacketProtectionKeys, CipherSuite};
+use super::protection::{CipherSuite, PacketProtectionKeys};
 
 /// Key update state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,11 +112,7 @@ impl KeyUpdateManager {
     }
 
     /// Initialize with the first set of 1-RTT keys.
-    pub fn init(
-        &mut self,
-        send_keys: PacketProtectionKeys,
-        recv_keys: PacketProtectionKeys,
-    ) {
+    pub fn init(&mut self, send_keys: PacketProtectionKeys, recv_keys: PacketProtectionKeys) {
         self.send_keys = Some(DirectionalKeys::new(send_keys));
         self.recv_keys = Some(DirectionalKeys::new(recv_keys));
         self.enabled = true;

@@ -13,11 +13,11 @@
 //! - Each pub/sub key expression gets its own bidirectional stream
 //! - QoS maps to QUIC priority (not yet implemented in base QUIC)
 
+use super::connection::TransportParameters;
+use super::endpoint::{ConnectionHandle, QuicEndpoint};
+use crate::NetError;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use crate::NetError;
-use super::endpoint::{QuicEndpoint, ConnectionHandle};
-use super::connection::TransportParameters;
 
 /// Maximum key expression length.
 const MAX_KEY_EXPR_LEN: usize = 256;
@@ -91,7 +91,9 @@ impl QuicLocator {
         let rest = &locator[prefix.len()..];
 
         // Find the last ':' for port separator
-        let colon_pos = rest.iter().rposition(|&b| b == b':')
+        let colon_pos = rest
+            .iter()
+            .rposition(|&b| b == b':')
             .ok_or(NetError::InvalidAddress)?;
 
         if colon_pos == 0 || colon_pos >= rest.len() - 1 {
@@ -107,7 +109,8 @@ impl QuicLocator {
             if !b.is_ascii_digit() {
                 return Err(NetError::InvalidAddress);
             }
-            port = port.checked_mul(10)
+            port = port
+                .checked_mul(10)
                 .and_then(|p| p.checked_add((b - b'0') as u16))
                 .ok_or(NetError::InvalidAddress)?;
         }
@@ -228,7 +231,9 @@ impl ZenohQuicTransport {
             return Err(NetError::InvalidAddress);
         }
 
-        let streams = self.key_streams.get_mut(&handle)
+        let streams = self
+            .key_streams
+            .get_mut(&handle)
             .ok_or(NetError::NotFound)?;
 
         // Check for duplicate
@@ -244,12 +249,9 @@ impl ZenohQuicTransport {
     }
 
     /// Get the stream ID for a key expression.
-    pub fn stream_for_key(
-        &self,
-        handle: ConnectionHandle,
-        key_expr: &[u8],
-    ) -> Option<u64> {
-        self.key_streams.get(&handle)?
+    pub fn stream_for_key(&self, handle: ConnectionHandle, key_expr: &[u8]) -> Option<u64> {
+        self.key_streams
+            .get(&handle)?
             .iter()
             .find(|s| s.key_expr == key_expr)
             .map(|s| s.stream_id)
@@ -277,8 +279,7 @@ impl ZenohQuicTransport {
         if data.len() < 3 {
             return Err(NetError::PacketTooShort);
         }
-        let msg_type = ZenohMsgType::from_byte(data[0])
-            .ok_or(NetError::InvalidProtocol)?;
+        let msg_type = ZenohMsgType::from_byte(data[0]).ok_or(NetError::InvalidProtocol)?;
         let len = u16::from_be_bytes([data[1], data[2]]) as usize;
         if data.len() < 3 + len {
             return Err(NetError::PacketTooShort);
@@ -287,15 +288,12 @@ impl ZenohQuicTransport {
     }
 
     /// Close a session.
-    pub fn close_session(
-        &mut self,
-        handle: ConnectionHandle,
-        now_us: u64,
-    ) -> Result<(), NetError> {
+    pub fn close_session(&mut self, handle: ConnectionHandle, now_us: u64) -> Result<(), NetError> {
         if let Some(state) = self.sessions.get_mut(&handle) {
             *state = SessionState::Closing;
         }
-        self.endpoint.close(handle, 0, b"zenoh session close", now_us)?;
+        self.endpoint
+            .close(handle, 0, b"zenoh session close", now_us)?;
         if let Some(state) = self.sessions.get_mut(&handle) {
             *state = SessionState::Closed;
         }
@@ -304,7 +302,8 @@ impl ZenohQuicTransport {
 
     /// Number of active sessions.
     pub fn session_count(&self) -> usize {
-        self.sessions.iter()
+        self.sessions
+            .iter()
             .filter(|(_, s)| **s == SessionState::Active || **s == SessionState::Opening)
             .count()
     }
@@ -401,14 +400,12 @@ mod tests {
     fn test_control_msg_encode_decode() {
         let payload = b"hello zenoh";
         let mut buf = [0u8; 32];
-        let len = ZenohQuicTransport::encode_control_msg(
-            ZenohMsgType::Open,
-            payload,
-            &mut buf,
-        ).unwrap();
+        let len =
+            ZenohQuicTransport::encode_control_msg(ZenohMsgType::Open, payload, &mut buf).unwrap();
         assert_eq!(len, 3 + payload.len());
 
-        let (msg_type, decoded_payload) = ZenohQuicTransport::decode_control_msg(&buf[..len]).unwrap();
+        let (msg_type, decoded_payload) =
+            ZenohQuicTransport::decode_control_msg(&buf[..len]).unwrap();
         assert_eq!(msg_type, ZenohMsgType::Open);
         assert_eq!(decoded_payload, payload);
     }
@@ -534,11 +531,8 @@ mod tests {
     #[test]
     fn test_control_msg_keepalive() {
         let mut buf = [0u8; 8];
-        let len = ZenohQuicTransport::encode_control_msg(
-            ZenohMsgType::KeepAlive,
-            &[],
-            &mut buf,
-        ).unwrap();
+        let len =
+            ZenohQuicTransport::encode_control_msg(ZenohMsgType::KeepAlive, &[], &mut buf).unwrap();
         assert_eq!(len, 3); // type + 2-byte length + 0 payload
 
         let (mt, payload) = ZenohQuicTransport::decode_control_msg(&buf[..len]).unwrap();

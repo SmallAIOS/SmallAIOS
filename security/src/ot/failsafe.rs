@@ -150,12 +150,7 @@ impl FailSafeTracker {
     }
 
     /// Record an inference timeout.
-    pub fn record_inference_timeout(
-        &mut self,
-        timestamp_ns: u64,
-        task_id: u64,
-        elapsed_ns: u64,
-    ) {
+    pub fn record_inference_timeout(&mut self, timestamp_ns: u64, task_id: u64, elapsed_ns: u64) {
         self.record_event(FailSafeEvent {
             timestamp_ns,
             state: FailSafeState::InferenceTimeout,
@@ -190,12 +185,7 @@ impl FailSafeTracker {
     }
 
     /// Record a capability violation.
-    pub fn record_capability_violation(
-        &mut self,
-        timestamp_ns: u64,
-        task_id: u64,
-        cap_id: u64,
-    ) {
+    pub fn record_capability_violation(&mut self, timestamp_ns: u64, task_id: u64, cap_id: u64) {
         self.record_event(FailSafeEvent {
             timestamp_ns,
             state: FailSafeState::CapabilityViolation,
@@ -240,10 +230,7 @@ impl FailSafeTracker {
     /// Count events of a specific state type.
     pub fn count_by_state(&self, state: FailSafeState) -> u32 {
         let n = self.event_count as usize;
-        self.events[..n]
-            .iter()
-            .filter(|e| e.state == state)
-            .count() as u32
+        self.events[..n].iter().filter(|e| e.state == state).count() as u32
     }
 }
 
@@ -269,10 +256,19 @@ mod tests {
     #[test]
     fn state_as_str() {
         assert_eq!(FailSafeState::Normal.as_str(), "normal");
-        assert_eq!(FailSafeState::InferenceTimeout.as_str(), "inference-timeout");
-        assert_eq!(FailSafeState::MemoryExhaustion.as_str(), "memory-exhaustion");
+        assert_eq!(
+            FailSafeState::InferenceTimeout.as_str(),
+            "inference-timeout"
+        );
+        assert_eq!(
+            FailSafeState::MemoryExhaustion.as_str(),
+            "memory-exhaustion"
+        );
         assert_eq!(FailSafeState::WatchdogTimeout.as_str(), "watchdog-timeout");
-        assert_eq!(FailSafeState::CapabilityViolation.as_str(), "capability-violation");
+        assert_eq!(
+            FailSafeState::CapabilityViolation.as_str(),
+            "capability-violation"
+        );
     }
 
     #[test]
@@ -289,16 +285,34 @@ mod tests {
         assert_eq!(FailSafeState::Normal.max_transition_ns(), 0);
         assert_eq!(FailSafeState::MemoryExhaustion.max_transition_ns(), 0);
         assert_eq!(FailSafeState::CapabilityViolation.max_transition_ns(), 0);
-        assert_eq!(FailSafeState::WatchdogTimeout.max_transition_ns(), 100_000_000);
+        assert_eq!(
+            FailSafeState::WatchdogTimeout.max_transition_ns(),
+            100_000_000
+        );
     }
 
     #[test]
     fn recovery_actions() {
-        assert_eq!(FailSafeState::Normal.recovery_action(), RecoveryAction::None);
-        assert_eq!(FailSafeState::InferenceTimeout.recovery_action(), RecoveryAction::CallerRetry);
-        assert_eq!(FailSafeState::MemoryExhaustion.recovery_action(), RecoveryAction::FreeResources);
-        assert_eq!(FailSafeState::WatchdogTimeout.recovery_action(), RecoveryAction::SystemReboot);
-        assert_eq!(FailSafeState::CapabilityViolation.recovery_action(), RecoveryAction::RequestCapability);
+        assert_eq!(
+            FailSafeState::Normal.recovery_action(),
+            RecoveryAction::None
+        );
+        assert_eq!(
+            FailSafeState::InferenceTimeout.recovery_action(),
+            RecoveryAction::CallerRetry
+        );
+        assert_eq!(
+            FailSafeState::MemoryExhaustion.recovery_action(),
+            RecoveryAction::FreeResources
+        );
+        assert_eq!(
+            FailSafeState::WatchdogTimeout.recovery_action(),
+            RecoveryAction::SystemReboot
+        );
+        assert_eq!(
+            FailSafeState::CapabilityViolation.recovery_action(),
+            RecoveryAction::RequestCapability
+        );
     }
 
     #[test]

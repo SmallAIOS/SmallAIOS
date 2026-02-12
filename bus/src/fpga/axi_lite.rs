@@ -127,7 +127,12 @@ impl AxiLiteDevice {
     }
 
     /// Read-modify-write: read a register, apply a mask, OR in new bits, write back.
-    pub fn modify32(&self, offset: u32, clear_mask: u32, set_bits: u32) -> Result<(), AxiLiteError> {
+    pub fn modify32(
+        &self,
+        offset: u32,
+        clear_mask: u32,
+        set_bits: u32,
+    ) -> Result<(), AxiLiteError> {
         let val = self.read32(offset)?;
         let new_val = (val & !clear_mask) | set_bits;
         self.write32(offset, new_val)
@@ -273,7 +278,13 @@ mod tests {
 
     #[test]
     fn test_error_eq() {
-        assert_eq!(AxiLiteError::InvalidBaseAddress, AxiLiteError::InvalidBaseAddress);
-        assert_ne!(AxiLiteError::InvalidBaseAddress, AxiLiteError::InvalidAddressSize);
+        assert_eq!(
+            AxiLiteError::InvalidBaseAddress,
+            AxiLiteError::InvalidBaseAddress
+        );
+        assert_ne!(
+            AxiLiteError::InvalidBaseAddress,
+            AxiLiteError::InvalidAddressSize
+        );
     }
 }

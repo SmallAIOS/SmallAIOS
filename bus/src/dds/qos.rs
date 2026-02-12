@@ -270,7 +270,10 @@ mod tests {
     #[test]
     fn test_history_keep_all() {
         let qos = QosPolicy {
-            history: HistoryQos { kind: HistoryKind::KeepAll, depth: 0 },
+            history: HistoryQos {
+                kind: HistoryKind::KeepAll,
+                depth: 0,
+            },
             ..Default::default()
         };
         assert_eq!(qos.history.kind, HistoryKind::KeepAll);

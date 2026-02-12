@@ -6,8 +6,8 @@
 //! An RT listens for command words addressed to its configured RT address,
 //! processes receive/transmit commands, and generates status word responses.
 
-use crate::BusError;
 use crate::mil1553::word::{CommandWord, StatusWord, RT_BROADCAST};
+use crate::BusError;
 
 /// Maximum number of subaddresses (0-31, but 0 and 31 are mode codes).
 pub const NUM_SUBADDRESSES: usize = 32;
@@ -266,7 +266,8 @@ mod tests {
     #[test]
     fn test_rt_process_transmit() {
         let mut rt = RtTerminal::new(5).unwrap();
-        rt.load_subaddress(3, &[0x1111, 0x2222, 0x3333, 0x4444]).unwrap();
+        rt.load_subaddress(3, &[0x1111, 0x2222, 0x3333, 0x4444])
+            .unwrap();
         let cmd = CommandWord::new(5, true, 3, 4).unwrap();
         let (status, data) = rt.process_transmit(&cmd).unwrap().unwrap();
         assert_eq!(status.rt_address, 5);
@@ -277,7 +278,10 @@ mod tests {
     fn test_rt_wrong_address_ignored() {
         let mut rt = RtTerminal::new(5).unwrap();
         let cmd = CommandWord::new(6, false, 1, 1).unwrap();
-        assert_eq!(rt.process_receive(&cmd, &[0x1111]).err(), Some(BusError::InvalidId));
+        assert_eq!(
+            rt.process_receive(&cmd, &[0x1111]).err(),
+            Some(BusError::InvalidId)
+        );
     }
 
     #[test]
@@ -301,7 +305,10 @@ mod tests {
     fn test_rt_load_subaddress_too_large() {
         let mut rt = RtTerminal::new(5).unwrap();
         let data = [0u16; 33];
-        assert_eq!(rt.load_subaddress(1, &data).err(), Some(BusError::PayloadTooLarge));
+        assert_eq!(
+            rt.load_subaddress(1, &data).err(),
+            Some(BusError::PayloadTooLarge)
+        );
     }
 
     #[test]
@@ -344,7 +351,10 @@ mod tests {
         let mut rt = RtTerminal::new(5).unwrap();
         // transmit=true for a receive operation
         let cmd = CommandWord::new(5, true, 1, 1).unwrap();
-        assert_eq!(rt.process_receive(&cmd, &[0x1111]).err(), Some(BusError::InvalidHeader));
+        assert_eq!(
+            rt.process_receive(&cmd, &[0x1111]).err(),
+            Some(BusError::InvalidHeader)
+        );
     }
 
     #[test]
@@ -352,6 +362,9 @@ mod tests {
         let mut rt = RtTerminal::new(5).unwrap();
         // transmit=false for a transmit operation
         let cmd = CommandWord::new(5, false, 1, 1).unwrap();
-        assert_eq!(rt.process_transmit(&cmd).err(), Some(BusError::InvalidHeader));
+        assert_eq!(
+            rt.process_transmit(&cmd).err(),
+            Some(BusError::InvalidHeader)
+        );
     }
 }

@@ -195,7 +195,11 @@ impl AlertTracker {
     /// Record an alert and check if any escalation rule is triggered.
     ///
     /// Returns the escalated severity if a rule matches, otherwise None.
-    pub fn record_alert(&mut self, source: AlertSource, timestamp_ns: u64) -> Option<IncidentSeverity> {
+    pub fn record_alert(
+        &mut self,
+        source: AlertSource,
+        timestamp_ns: u64,
+    ) -> Option<IncidentSeverity> {
         // Record the alert
         self.history[self.head] = (source, timestamp_ns);
         self.head = (self.head + 1) % MAX_HISTORY;
@@ -298,9 +302,18 @@ mod tests {
 
     #[test]
     fn alert_source_strings() {
-        assert_eq!(AlertSource::CapabilityDenialRate.as_str(), "capability-denial-rate");
-        assert_eq!(AlertSource::AuditIntegrityViolation.as_str(), "audit-integrity-violation");
-        assert_eq!(AlertSource::ConfigurationChange.as_str(), "configuration-change");
+        assert_eq!(
+            AlertSource::CapabilityDenialRate.as_str(),
+            "capability-denial-rate"
+        );
+        assert_eq!(
+            AlertSource::AuditIntegrityViolation.as_str(),
+            "audit-integrity-violation"
+        );
+        assert_eq!(
+            AlertSource::ConfigurationChange.as_str(),
+            "configuration-change"
+        );
     }
 
     #[test]

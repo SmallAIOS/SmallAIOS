@@ -49,7 +49,12 @@ pub struct CommandWord {
 
 impl CommandWord {
     /// Create a new command word.
-    pub fn new(rt_address: u8, transmit: bool, subaddress: u8, word_count: u8) -> Result<Self, BusError> {
+    pub fn new(
+        rt_address: u8,
+        transmit: bool,
+        subaddress: u8,
+        word_count: u8,
+    ) -> Result<Self, BusError> {
         if rt_address > RT_BROADCAST {
             return Err(BusError::InvalidId);
         }
@@ -91,7 +96,11 @@ impl CommandWord {
         bits |= if self.transmit { 1 << 10 } else { 0 };
         bits |= (self.subaddress as u16 & 0x1F) << 5;
         bits |= self.word_count as u16 & 0x1F;
-        let parity = if !bits.count_ones().is_multiple_of(2) { 0u32 } else { 1 };
+        let parity = if !bits.count_ones().is_multiple_of(2) {
+            0u32
+        } else {
+            1
+        };
         // Sync: command sync = 0b111 (we use 3-bit field [19:17])
         (0b111u32 << 17) | ((bits as u32) << 1) | parity
     }
@@ -180,16 +189,36 @@ impl StatusWord {
     pub fn encode(&self) -> u32 {
         let mut bits: u16 = 0;
         bits |= (self.rt_address as u16 & 0x1F) << 11;
-        if self.message_error { bits |= 1 << 10; }
-        if self.instrumentation { bits |= 1 << 9; }
-        if self.service_request { bits |= 1 << 8; }
+        if self.message_error {
+            bits |= 1 << 10;
+        }
+        if self.instrumentation {
+            bits |= 1 << 9;
+        }
+        if self.service_request {
+            bits |= 1 << 8;
+        }
         // bits 7,6,5 reserved = 0
-        if self.broadcast_received { bits |= 1 << 4; }
-        if self.busy { bits |= 1 << 3; }
-        if self.subsystem_flag { bits |= 1 << 2; }
-        if self.dbc_accept { bits |= 1 << 1; }
-        if self.terminal_flag { bits |= 1; }
-        let parity = if !bits.count_ones().is_multiple_of(2) { 0u32 } else { 1 };
+        if self.broadcast_received {
+            bits |= 1 << 4;
+        }
+        if self.busy {
+            bits |= 1 << 3;
+        }
+        if self.subsystem_flag {
+            bits |= 1 << 2;
+        }
+        if self.dbc_accept {
+            bits |= 1 << 1;
+        }
+        if self.terminal_flag {
+            bits |= 1;
+        }
+        let parity = if !bits.count_ones().is_multiple_of(2) {
+            0u32
+        } else {
+            1
+        };
         // Data sync = 0b110
         (0b110u32 << 17) | ((bits as u32) << 1) | parity
     }
@@ -243,7 +272,11 @@ impl DataWord {
     /// Encode to a 20-bit value (data sync + 16-bit data + parity).
     pub fn encode(&self) -> u32 {
         let bits = self.data;
-        let parity = if !bits.count_ones().is_multiple_of(2) { 0u32 } else { 1 };
+        let parity = if !bits.count_ones().is_multiple_of(2) {
+            0u32
+        } else {
+            1
+        };
         // Data sync = 0b110
         (0b110u32 << 17) | ((bits as u32) << 1) | parity
     }
@@ -297,17 +330,26 @@ mod tests {
 
     #[test]
     fn test_command_word_invalid_rt() {
-        assert_eq!(CommandWord::new(32, false, 0, 0).err(), Some(BusError::InvalidId));
+        assert_eq!(
+            CommandWord::new(32, false, 0, 0).err(),
+            Some(BusError::InvalidId)
+        );
     }
 
     #[test]
     fn test_command_word_invalid_sa() {
-        assert_eq!(CommandWord::new(0, false, 32, 0).err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            CommandWord::new(0, false, 32, 0).err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
     fn test_command_word_invalid_wc() {
-        assert_eq!(CommandWord::new(0, false, 0, 32).err(), Some(BusError::OutOfRange));
+        assert_eq!(
+            CommandWord::new(0, false, 0, 32).err(),
+            Some(BusError::OutOfRange)
+        );
     }
 
     #[test]
@@ -339,7 +381,10 @@ mod tests {
         let encoded = cmd.encode();
         // Flip the parity bit
         let corrupted = encoded ^ 1;
-        assert_eq!(CommandWord::decode(corrupted).err(), Some(BusError::ParityError));
+        assert_eq!(
+            CommandWord::decode(corrupted).err(),
+            Some(BusError::ParityError)
+        );
     }
 
     #[test]
@@ -348,7 +393,10 @@ mod tests {
         let encoded = cmd.encode();
         // Change sync from command (111) to data (110)
         let wrong_sync = (encoded & 0x1FFFF) | (0b110 << 17);
-        assert_eq!(CommandWord::decode(wrong_sync).err(), Some(BusError::InvalidHeader));
+        assert_eq!(
+            CommandWord::decode(wrong_sync).err(),
+            Some(BusError::InvalidHeader)
+        );
     }
 
     #[test]
@@ -408,7 +456,10 @@ mod tests {
         let sw = StatusWord::new(5).unwrap();
         let encoded = sw.encode();
         let corrupted = encoded ^ 1;
-        assert_eq!(StatusWord::decode(corrupted).err(), Some(BusError::ParityError));
+        assert_eq!(
+            StatusWord::decode(corrupted).err(),
+            Some(BusError::ParityError)
+        );
     }
 
     #[test]
@@ -455,7 +506,10 @@ mod tests {
         let dw = DataWord::new(0x1234);
         let encoded = dw.encode();
         let corrupted = encoded ^ 1;
-        assert_eq!(DataWord::decode(corrupted).err(), Some(BusError::ParityError));
+        assert_eq!(
+            DataWord::decode(corrupted).err(),
+            Some(BusError::ParityError)
+        );
     }
 
     #[test]
@@ -464,13 +518,17 @@ mod tests {
         let encoded = dw.encode();
         // Change sync from data (110) to command (111)
         let wrong_sync = (encoded & 0x1FFFF) | (0b111 << 17);
-        assert_eq!(DataWord::decode(wrong_sync).err(), Some(BusError::InvalidHeader));
+        assert_eq!(
+            DataWord::decode(wrong_sync).err(),
+            Some(BusError::InvalidHeader)
+        );
     }
 
     #[test]
     fn test_data_word_multi_word_sequence() {
         let words: [u16; 4] = [0x1111, 0x2222, 0x3333, 0x4444];
-        let encoded: alloc::vec::Vec<u32> = words.iter().map(|&w| DataWord::new(w).encode()).collect();
+        let encoded: alloc::vec::Vec<u32> =
+            words.iter().map(|&w| DataWord::new(w).encode()).collect();
         for (i, &enc) in encoded.iter().enumerate() {
             let dec = DataWord::decode(enc).unwrap();
             assert_eq!(dec.data, words[i]);

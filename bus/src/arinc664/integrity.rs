@@ -7,8 +7,8 @@
 //! BAG policing (receive-side rate enforcement), Lmax checking,
 //! and VL ID / MAC address filtering.
 
-use crate::BusError;
 use crate::arinc664::vl::VirtualLink;
+use crate::BusError;
 
 /// Jitter tolerance for BAG policing in microseconds.
 const JITTER_TOLERANCE_US: u64 = 500;
@@ -117,7 +117,10 @@ mod tests {
     fn test_filter_rejects_wrong_mac() {
         let mut checker = IntegrityChecker::new(make_vl());
         let mac = [0x03, 0x00, 0x00, 0x00, 0x00, 0x01]; // wrong VL
-        assert_eq!(checker.check_filter(&mac).err(), Some(BusError::InvalidHeader));
+        assert_eq!(
+            checker.check_filter(&mac).err(),
+            Some(BusError::InvalidHeader)
+        );
         assert_eq!(checker.filter_rejects(), 1);
     }
 
@@ -131,7 +134,10 @@ mod tests {
     #[test]
     fn test_lmax_rejects_oversized() {
         let mut checker = IntegrityChecker::new(make_vl());
-        assert_eq!(checker.check_lmax(513).err(), Some(BusError::PayloadTooLarge));
+        assert_eq!(
+            checker.check_lmax(513).err(),
+            Some(BusError::PayloadTooLarge)
+        );
         assert_eq!(checker.lmax_violations(), 1);
     }
 

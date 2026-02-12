@@ -14,10 +14,10 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::transport::{BusSample, ZenohTransport};
-use crate::BusError;
 use super::controller::CanController;
 use super::frame::CanFrame;
+use crate::transport::{BusSample, ZenohTransport};
+use crate::BusError;
 
 /// Maximum number of queued receive frames.
 const MAX_RX_QUEUE: usize = 64;
@@ -59,7 +59,9 @@ impl<C: CanController> CanZenohAdapter<C> {
     ///
     /// Accepts hex format: `0x1A3` or `0x12345678`
     fn parse_frame_id(suffix: &str) -> Result<u32, BusError> {
-        let hex = suffix.strip_prefix("0x").or_else(|| suffix.strip_prefix("0X"));
+        let hex = suffix
+            .strip_prefix("0x")
+            .or_else(|| suffix.strip_prefix("0X"));
         match hex {
             Some(h) => u32::from_str_radix(h, 16).map_err(|_| BusError::InvalidId),
             None => suffix.parse::<u32>().map_err(|_| BusError::InvalidId),
@@ -136,10 +138,7 @@ impl<C: CanController> ZenohTransport for CanZenohAdapter<C> {
         self.controller.transmit(&frame)
     }
 
-    fn receive<'a>(
-        &mut self,
-        buf: &'a mut [u8],
-    ) -> Result<Option<BusSample<'a>>, BusError> {
+    fn receive<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<BusSample<'a>>, BusError> {
         // Try polling the controller first.
         let _ = self.poll_rx();
 
@@ -195,8 +194,14 @@ mod tests {
 
     #[test]
     fn test_parse_frame_id_hex() {
-        assert_eq!(CanZenohAdapter::<MockCanController>::parse_frame_id("0x1A3").unwrap(), 0x1A3);
-        assert_eq!(CanZenohAdapter::<MockCanController>::parse_frame_id("0x7FF").unwrap(), 0x7FF);
+        assert_eq!(
+            CanZenohAdapter::<MockCanController>::parse_frame_id("0x1A3").unwrap(),
+            0x1A3
+        );
+        assert_eq!(
+            CanZenohAdapter::<MockCanController>::parse_frame_id("0x7FF").unwrap(),
+            0x7FF
+        );
         assert_eq!(
             CanZenohAdapter::<MockCanController>::parse_frame_id("0x12345678").unwrap(),
             0x12345678
@@ -205,7 +210,10 @@ mod tests {
 
     #[test]
     fn test_parse_frame_id_decimal() {
-        assert_eq!(CanZenohAdapter::<MockCanController>::parse_frame_id("256").unwrap(), 256);
+        assert_eq!(
+            CanZenohAdapter::<MockCanController>::parse_frame_id("256").unwrap(),
+            256
+        );
     }
 
     #[test]
@@ -230,7 +238,9 @@ mod tests {
     #[test]
     fn test_transmit_raw_payload() {
         let mut adapter = CanZenohAdapter::new(ready_ctrl(), 0);
-        adapter.transmit("can/0/0x100", &[0x01, 0x02, 0x03]).unwrap();
+        adapter
+            .transmit("can/0/0x100", &[0x01, 0x02, 0x03])
+            .unwrap();
         let sent = adapter.controller_mut().drain_tx();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].id, 0x100);

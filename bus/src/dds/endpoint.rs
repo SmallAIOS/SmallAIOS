@@ -6,11 +6,11 @@
 //! DataWriters publish samples; DataReaders subscribe to samples.
 //! Matching is based on Topic name, type consistency, and QoS compatibility.
 
-use alloc::vec::Vec;
-use crate::BusError;
 use crate::dds::qos::QosPolicy;
 use crate::dds::topic::Topic;
 use crate::dds::types::Guid;
+use crate::BusError;
+use alloc::vec::Vec;
 
 /// Sequence number for RTPS samples.
 pub type SequenceNumber = u64;
@@ -258,7 +258,10 @@ mod tests {
     fn test_data_writer_transient_local_retention() {
         let qos = QosPolicy {
             durability: DurabilityKind::TransientLocal,
-            history: HistoryQos { kind: HistoryKind::KeepLast, depth: 3 },
+            history: HistoryQos {
+                kind: HistoryKind::KeepLast,
+                depth: 3,
+            },
             ..Default::default()
         };
         let mut writer = DataWriter::new(test_guid(1), test_topic("S", "M"), qos);
@@ -274,14 +277,13 @@ mod tests {
     #[test]
     fn test_data_reader_receive_and_take() {
         let qos = QosPolicy {
-            history: HistoryQos { kind: HistoryKind::KeepAll, depth: 0 },
+            history: HistoryQos {
+                kind: HistoryKind::KeepAll,
+                depth: 0,
+            },
             ..Default::default()
         };
-        let mut reader = DataReader::new(
-            test_guid(2),
-            test_topic("Sensor", "SensorMsg"),
-            qos,
-        );
+        let mut reader = DataReader::new(test_guid(2), test_topic("Sensor", "SensorMsg"), qos);
         reader.receive(&[0x01], 1);
         reader.receive(&[0x02], 2);
         assert_eq!(reader.sample_count(), 2);
@@ -293,7 +295,10 @@ mod tests {
     #[test]
     fn test_data_reader_history_depth() {
         let qos = QosPolicy {
-            history: HistoryQos { kind: HistoryKind::KeepLast, depth: 2 },
+            history: HistoryQos {
+                kind: HistoryKind::KeepLast,
+                depth: 2,
+            },
             ..Default::default()
         };
         let mut reader = DataReader::new(test_guid(2), test_topic("S", "M"), qos);
@@ -307,10 +312,14 @@ mod tests {
     #[test]
     fn test_check_match_success() {
         let writer = DataWriter::new(
-            test_guid(1), test_topic("Sensor", "SensorMsg"), QosPolicy::default(),
+            test_guid(1),
+            test_topic("Sensor", "SensorMsg"),
+            QosPolicy::default(),
         );
         let reader = DataReader::new(
-            test_guid(2), test_topic("Sensor", "SensorMsg"), QosPolicy::default(),
+            test_guid(2),
+            test_topic("Sensor", "SensorMsg"),
+            QosPolicy::default(),
         );
         assert_eq!(check_match(&writer, &reader), MatchStatus::Matched);
     }
@@ -318,10 +327,14 @@ mod tests {
     #[test]
     fn test_check_match_type_mismatch() {
         let writer = DataWriter::new(
-            test_guid(1), test_topic("Sensor", "SensorMsg"), QosPolicy::default(),
+            test_guid(1),
+            test_topic("Sensor", "SensorMsg"),
+            QosPolicy::default(),
         );
         let reader = DataReader::new(
-            test_guid(2), test_topic("Sensor", "OtherMsg"), QosPolicy::default(),
+            test_guid(2),
+            test_topic("Sensor", "OtherMsg"),
+            QosPolicy::default(),
         );
         assert_eq!(check_match(&writer, &reader), MatchStatus::TypeMismatch);
     }
@@ -344,19 +357,21 @@ mod tests {
     #[test]
     fn test_check_match_different_topic() {
         let writer = DataWriter::new(
-            test_guid(1), test_topic("TopicA", "M"), QosPolicy::default(),
+            test_guid(1),
+            test_topic("TopicA", "M"),
+            QosPolicy::default(),
         );
         let reader = DataReader::new(
-            test_guid(2), test_topic("TopicB", "M"), QosPolicy::default(),
+            test_guid(2),
+            test_topic("TopicB", "M"),
+            QosPolicy::default(),
         );
         assert_eq!(check_match(&writer, &reader), MatchStatus::NotMatched);
     }
 
     #[test]
     fn test_match_count_tracking() {
-        let mut writer = DataWriter::new(
-            test_guid(1), test_topic("S", "M"), QosPolicy::default(),
-        );
+        let mut writer = DataWriter::new(test_guid(1), test_topic("S", "M"), QosPolicy::default());
         assert_eq!(writer.matched_count(), 0);
         writer.add_match();
         assert_eq!(writer.matched_count(), 1);

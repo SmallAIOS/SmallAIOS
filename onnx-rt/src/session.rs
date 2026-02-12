@@ -38,6 +38,9 @@ pub enum SessionError {
     InvalidOutput(String),
     /// The operation is defined but not yet implemented.
     NotImplemented,
+    /// The model failed security policy validation (formal-gate).
+    #[cfg(feature = "formal-gate")]
+    PolicyViolation(String),
 }
 
 impl fmt::Display for SessionError {
@@ -63,6 +66,10 @@ impl fmt::Display for SessionError {
             }
             SessionError::NotImplemented => {
                 write!(f, "session operation not implemented")
+            }
+            #[cfg(feature = "formal-gate")]
+            SessionError::PolicyViolation(msg) => {
+                write!(f, "policy violation: {}", msg)
             }
         }
     }

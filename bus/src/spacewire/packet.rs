@@ -8,8 +8,8 @@
 //! Path addressing: address bytes are consumed at each router hop.
 //! Logical addressing: single byte >= 32, not consumed.
 
-use alloc::vec::Vec;
 use crate::BusError;
+use alloc::vec::Vec;
 
 /// End-of-packet marker type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,7 +147,10 @@ mod tests {
 
     #[test]
     fn test_packet_new_empty_addr() {
-        assert_eq!(SpaceWirePacket::new(&[], &[0xAA]).err(), Some(BusError::InvalidHeader));
+        assert_eq!(
+            SpaceWirePacket::new(&[], &[0xAA]).err(),
+            Some(BusError::InvalidHeader)
+        );
     }
 
     #[test]
@@ -159,7 +162,10 @@ mod tests {
 
     #[test]
     fn test_packet_logical_addr_too_low() {
-        assert_eq!(SpaceWirePacket::new_logical(31, &[]).err(), Some(BusError::InvalidId));
+        assert_eq!(
+            SpaceWirePacket::new_logical(31, &[]).err(),
+            Some(BusError::InvalidId)
+        );
     }
 
     #[test]
@@ -213,13 +219,19 @@ mod tests {
 
     #[test]
     fn test_packet_decode_too_short() {
-        assert_eq!(SpaceWirePacket::decode(&[0x01, 0x42]).err(), Some(BusError::FrameTooShort));
+        assert_eq!(
+            SpaceWirePacket::decode(&[0x01, 0x42]).err(),
+            Some(BusError::FrameTooShort)
+        );
     }
 
     #[test]
     fn test_packet_decode_invalid_marker() {
         let data = [0x01, 42, 0xAA, 0xFF]; // marker = 0xFF is invalid
-        assert_eq!(SpaceWirePacket::decode(&data).err(), Some(BusError::InvalidHeader));
+        assert_eq!(
+            SpaceWirePacket::decode(&data).err(),
+            Some(BusError::InvalidHeader)
+        );
     }
 
     #[test]

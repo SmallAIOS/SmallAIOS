@@ -262,30 +262,63 @@ mod tests {
 
     #[test]
     fn category_strings() {
-        assert_eq!(SecurityTestCategory::CapabilityBypass.as_str(), "capability-bypass");
-        assert_eq!(SecurityTestCategory::CryptoValidation.as_str(), "crypto-validation");
-        assert_eq!(SecurityTestCategory::TimingSideChannel.as_str(), "timing-side-channel");
-        assert_eq!(SecurityTestCategory::ResourceExhaustion.as_str(), "resource-exhaustion");
+        assert_eq!(
+            SecurityTestCategory::CapabilityBypass.as_str(),
+            "capability-bypass"
+        );
+        assert_eq!(
+            SecurityTestCategory::CryptoValidation.as_str(),
+            "crypto-validation"
+        );
+        assert_eq!(
+            SecurityTestCategory::TimingSideChannel.as_str(),
+            "timing-side-channel"
+        );
+        assert_eq!(
+            SecurityTestCategory::ResourceExhaustion.as_str(),
+            "resource-exhaustion"
+        );
     }
 
     #[test]
     fn category_nist_controls() {
-        assert_eq!(SecurityTestCategory::CapabilityBypass.nist_control(), "AC-3, AC-6");
-        assert_eq!(SecurityTestCategory::CryptoValidation.nist_control(), "SC-13");
+        assert_eq!(
+            SecurityTestCategory::CapabilityBypass.nist_control(),
+            "AC-3, AC-6"
+        );
+        assert_eq!(
+            SecurityTestCategory::CryptoValidation.nist_control(),
+            "SC-13"
+        );
         assert_eq!(SecurityTestCategory::InformationFlow.nist_control(), "AC-4");
     }
 
     #[test]
     fn category_methods() {
-        assert_eq!(SecurityTestCategory::CryptoValidation.method(), TestMethod::KnownAnswerTest);
-        assert_eq!(SecurityTestCategory::TimingSideChannel.method(), TestMethod::StatisticalAnalysis);
-        assert_eq!(SecurityTestCategory::InputFuzzing.method(), TestMethod::Fuzz);
-        assert_eq!(SecurityTestCategory::ResourceExhaustion.method(), TestMethod::StressTest);
+        assert_eq!(
+            SecurityTestCategory::CryptoValidation.method(),
+            TestMethod::KnownAnswerTest
+        );
+        assert_eq!(
+            SecurityTestCategory::TimingSideChannel.method(),
+            TestMethod::StatisticalAnalysis
+        );
+        assert_eq!(
+            SecurityTestCategory::InputFuzzing.method(),
+            TestMethod::Fuzz
+        );
+        assert_eq!(
+            SecurityTestCategory::ResourceExhaustion.method(),
+            TestMethod::StressTest
+        );
     }
 
     #[test]
     fn method_strings() {
-        assert_eq!(TestMethod::UnitAndIntegration.as_str(), "unit-and-integration");
+        assert_eq!(
+            TestMethod::UnitAndIntegration.as_str(),
+            "unit-and-integration"
+        );
         assert_eq!(TestMethod::KnownAnswerTest.as_str(), "known-answer-test");
         assert_eq!(TestMethod::Fuzz.as_str(), "fuzz");
     }

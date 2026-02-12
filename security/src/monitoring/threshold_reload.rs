@@ -117,14 +117,22 @@ impl ThresholdManager {
     }
 
     /// Update a single threshold field.
-    pub fn update_cap_denial_threshold(&mut self, value: u32, now_ns: u64) -> ThresholdUpdateResult {
+    pub fn update_cap_denial_threshold(
+        &mut self,
+        value: u32,
+        now_ns: u64,
+    ) -> ThresholdUpdateResult {
         let mut new_config = self.current;
         new_config.cap_denial_threshold = value;
         self.update(new_config, now_ns)
     }
 
     /// Update memory failure threshold.
-    pub fn update_mem_failure_threshold(&mut self, value: u32, now_ns: u64) -> ThresholdUpdateResult {
+    pub fn update_mem_failure_threshold(
+        &mut self,
+        value: u32,
+        now_ns: u64,
+    ) -> ThresholdUpdateResult {
         let mut new_config = self.current;
         new_config.mem_failure_threshold = value;
         self.update(new_config, now_ns)

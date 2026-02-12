@@ -11,8 +11,8 @@
 //! one or more receivers on a twisted-pair wire. This module provides
 //! timing configuration for both speeds.
 
-use crate::BusError;
 use super::scheduler::TxScheduler;
+use crate::BusError;
 
 /// ARINC 429 bus speed selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,11 +142,7 @@ impl ChannelConfig {
 
     /// Validate that a requested transmission rate (Hz) is achievable
     /// given the current number of active labels on the channel.
-    pub fn validate_rate(
-        &self,
-        rate_hz: u32,
-        active_labels: u32,
-    ) -> Result<(), BusError> {
+    pub fn validate_rate(&self, rate_hz: u32, active_labels: u32) -> Result<(), BusError> {
         if rate_hz == 0 {
             return Err(BusError::OutOfRange);
         }
@@ -330,10 +326,7 @@ mod tests {
     fn test_validate_rate_exceeds_bandwidth() {
         let cfg = ChannelConfig::high_speed_tx(0);
         // 500 Hz * 10 labels = 5000 words/s > 2777
-        assert_eq!(
-            cfg.validate_rate(500, 10).err(),
-            Some(BusError::OutOfRange)
-        );
+        assert_eq!(cfg.validate_rate(500, 10).err(), Some(BusError::OutOfRange));
     }
 
     #[test]
@@ -348,10 +341,7 @@ mod tests {
         // 347 words/s max, 1 label at 347 Hz should fit
         cfg.validate_rate(347, 1).unwrap();
         // But 348 should not
-        assert_eq!(
-            cfg.validate_rate(348, 1).err(),
-            Some(BusError::OutOfRange)
-        );
+        assert_eq!(cfg.validate_rate(348, 1).err(), Some(BusError::OutOfRange));
     }
 
     // -----------------------------------------------------------------------

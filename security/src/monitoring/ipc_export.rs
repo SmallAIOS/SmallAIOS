@@ -99,10 +99,7 @@ impl MetricsMessage {
             offset += 8;
         }
 
-        Self {
-            data,
-            timestamp_ns,
-        }
+        Self { data, timestamp_ns }
     }
 
     /// Deserialize a binary message back into a snapshot.

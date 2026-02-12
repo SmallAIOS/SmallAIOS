@@ -13,10 +13,12 @@
 #[cfg(test)]
 mod tests {
     use crate::ccsds::cltu::{
-        bch_parity, bch_verify, cltu_decode, cltu_encode, CLTU_START, CLTU_TAIL, CODE_BLOCK_INFO_LEN,
-        CODE_BLOCK_LEN, FILL_BYTE,
+        bch_parity, bch_verify, cltu_decode, cltu_encode, CLTU_START, CLTU_TAIL,
+        CODE_BLOCK_INFO_LEN, CODE_BLOCK_LEN, FILL_BYTE,
     };
-    use crate::ccsds::packet::{PacketType, SeqFlags, SpacePacket, MAX_APID, MAX_SEQ_COUNT, PRIMARY_HEADER_LEN};
+    use crate::ccsds::packet::{
+        PacketType, SeqFlags, SpacePacket, MAX_APID, MAX_SEQ_COUNT, PRIMARY_HEADER_LEN,
+    };
     use crate::ccsds::tc_frame::{crc16_ccitt, TcFrame, FECF_LEN};
     use crate::ccsds::tm_frame::{TmFrame, FHP_NO_PACKET, TM_HEADER_LEN};
 
@@ -148,10 +150,7 @@ mod tests {
         ];
 
         for (flags, expected_bits) in test_cases {
-            let pkt = SpacePacket::new(
-                PacketType::Telemetry, false, 0, flags, 0, &[0x00],
-            )
-            .unwrap();
+            let pkt = SpacePacket::new(PacketType::Telemetry, false, 0, flags, 0, &[0x00]).unwrap();
 
             let mut buf = [0u8; 64];
             pkt.encode(&mut buf).unwrap();
@@ -176,7 +175,11 @@ mod tests {
     fn test_crc16_ccitt_standard_check_value() {
         let data = b"123456789";
         let crc = crc16_ccitt(data);
-        assert_eq!(crc, 0x29B1, "CRC-16/CCITT check value for '123456789' should be 0x29B1, got 0x{:04X}", crc);
+        assert_eq!(
+            crc, 0x29B1,
+            "CRC-16/CCITT check value for '123456789' should be 0x29B1, got 0x{:04X}",
+            crc
+        );
     }
 
     /// CRC-16/CCITT on empty data should return 0xFFFF (initial value unchanged).
@@ -192,7 +195,11 @@ mod tests {
         let crc = crc16_ccitt(&[0x00]);
         // After processing 0x00: XOR with 0xFF00, then 8 rounds.
         // Known value: 0xE1F0
-        assert_eq!(crc, 0xE1F0, "CRC-16/CCITT for [0x00] should be 0xE1F0, got 0x{:04X}", crc);
+        assert_eq!(
+            crc, 0xE1F0,
+            "CRC-16/CCITT for [0x00] should be 0xE1F0, got 0x{:04X}",
+            crc
+        );
     }
 
     /// CRC-16/CCITT on single 0xFF byte.
@@ -202,7 +209,11 @@ mod tests {
     #[test]
     fn test_crc16_ccitt_single_ff() {
         let crc = crc16_ccitt(&[0xFF]);
-        assert_eq!(crc, 0xFF00, "CRC-16/CCITT for [0xFF] should be 0xFF00, got 0x{:04X}", crc);
+        assert_eq!(
+            crc, 0xFF00,
+            "CRC-16/CCITT for [0xFF] should be 0xFF00, got 0x{:04X}",
+            crc
+        );
     }
 
     /// TC frame encode/decode preserves CRC integrity across the wire.
@@ -296,7 +307,11 @@ mod tests {
         let parity = bch_parity(&info);
         // For all-zeros input, the register stays 0x00 through all 7 bytes,
         // so bch_parity returns !0x00 = 0xFF.
-        assert_eq!(parity, 0xFF, "BCH parity for all-zeros should be 0xFF (complement), got 0x{:02X}", parity);
+        assert_eq!(
+            parity, 0xFF,
+            "BCH parity for all-zeros should be 0xFF (complement), got 0x{:02X}",
+            parity
+        );
     }
 
     /// Verify BCH parity for all-0xFF block.
@@ -352,7 +367,11 @@ mod tests {
             let start = i * CODE_BLOCK_LEN;
             let mut block = [0u8; CODE_BLOCK_LEN];
             block.copy_from_slice(&block_region[start..start + CODE_BLOCK_LEN]);
-            assert!(bch_verify(&block), "BCH verification failed for block {}", i);
+            assert!(
+                bch_verify(&block),
+                "BCH verification failed for block {}",
+                i
+            );
         }
 
         // Decode CLTU back to TC data.

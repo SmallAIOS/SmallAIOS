@@ -59,6 +59,59 @@ impl ResourceType {
     }
 }
 
+/// Peripheral device subtype for fine-grained device capability checks.
+///
+/// Used with `ResourceType::Device` to differentiate peripheral types.
+/// The `instance_id` in `ResourceRef` encodes `(subtype << 8) | instance`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PeripheralCapability {
+    /// I2C bus controller access.
+    I2c = 0x10,
+    /// SPI bus controller access.
+    Spi = 0x11,
+    /// GPIO controller access.
+    Gpio = 0x12,
+    /// UART serial port access.
+    Uart = 0x13,
+    /// MIPI CSI-2 camera access (privacy-sensitive).
+    Camera = 0x14,
+    /// I2S/TDM audio capture access (privacy-sensitive).
+    Audio = 0x15,
+}
+
+impl PeripheralCapability {
+    /// Convert from u8.
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0x10 => Some(Self::I2c),
+            0x11 => Some(Self::Spi),
+            0x12 => Some(Self::Gpio),
+            0x13 => Some(Self::Uart),
+            0x14 => Some(Self::Camera),
+            0x15 => Some(Self::Audio),
+            _ => None,
+        }
+    }
+
+    /// Encode a peripheral capability + instance into a `ResourceRef` instance_id.
+    pub const fn encode_instance_id(self, instance: u8) -> u64 {
+        ((self as u64) << 8) | (instance as u64)
+    }
+
+    /// Decode a `ResourceRef` instance_id into (PeripheralCapability, instance).
+    pub fn decode_instance_id(instance_id: u64) -> Option<(Self, u8)> {
+        let subtype = ((instance_id >> 8) & 0xFF) as u8;
+        let instance = (instance_id & 0xFF) as u8;
+        Self::from_u8(subtype).map(|cap| (cap, instance))
+    }
+
+    /// Create a `ResourceRef` for this peripheral type and instance.
+    pub const fn resource_ref(self, instance: u8) -> ResourceRef {
+        ResourceRef::new(ResourceType::Device, self.encode_instance_id(instance))
+    }
+}
+
 /// Reference to a specific resource instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResourceRef {
@@ -66,7 +119,7 @@ pub struct ResourceRef {
     pub resource_type: ResourceType,
     /// Instance identifier (resource-type-specific).
     /// For tensors: tensor handle. For models: model handle.
-    /// For IPC: key expression hash. For devices: device ID.
+    /// For IPC: key expression hash. For devices: `(subtype << 8) | instance`.
     pub instance_id: u64,
 }
 
@@ -766,5 +819,73 @@ mod tests {
         }
         assert_eq!(reg.total_count(), 10);
         assert_eq!(reg.count_for_task(1), 10);
+    }
+
+    // -- PeripheralCapability -----------------------------------------------
+
+    #[test]
+    fn test_peripheral_capability_from_u8() {
+        assert_eq!(
+            PeripheralCapability::from_u8(0x10),
+            Some(PeripheralCapability::I2c)
+        );
+        assert_eq!(
+            PeripheralCapability::from_u8(0x11),
+            Some(PeripheralCapability::Spi)
+        );
+        assert_eq!(
+            PeripheralCapability::from_u8(0x12),
+            Some(PeripheralCapability::Gpio)
+        );
+        assert_eq!(
+            PeripheralCapability::from_u8(0x13),
+            Some(PeripheralCapability::Uart)
+        );
+        assert_eq!(
+            PeripheralCapability::from_u8(0x14),
+            Some(PeripheralCapability::Camera)
+        );
+        assert_eq!(
+            PeripheralCapability::from_u8(0x15),
+            Some(PeripheralCapability::Audio)
+        );
+        assert_eq!(PeripheralCapability::from_u8(0x00), None);
+        assert_eq!(PeripheralCapability::from_u8(0xFF), None);
+    }
+
+    #[test]
+    fn test_peripheral_capability_encode_decode() {
+        let cap = PeripheralCapability::I2c;
+        let id = cap.encode_instance_id(2);
+        let (decoded_cap, decoded_instance) = PeripheralCapability::decode_instance_id(id).unwrap();
+        assert_eq!(decoded_cap, PeripheralCapability::I2c);
+        assert_eq!(decoded_instance, 2);
+    }
+
+    #[test]
+    fn test_peripheral_capability_resource_ref() {
+        let rref = PeripheralCapability::Camera.resource_ref(0);
+        assert_eq!(rref.resource_type, ResourceType::Device);
+        let (cap, inst) = PeripheralCapability::decode_instance_id(rref.instance_id).unwrap();
+        assert_eq!(cap, PeripheralCapability::Camera);
+        assert_eq!(inst, 0);
+    }
+
+    #[test]
+    fn test_peripheral_capability_check_via_registry() {
+        let mut reg = CapRegistry::new();
+        let res = PeripheralCapability::Uart.resource_ref(1);
+        let cap_id = reg
+            .create(1, res, Permissions::READ.union(Permissions::WRITE), 0)
+            .unwrap();
+        assert!(cap_id > 0);
+        assert!(reg.check(1, &res, Permissions::READ, 0).is_ok());
+        assert!(reg.check(1, &res, Permissions::WRITE, 0).is_ok());
+        // Different instance should fail
+        let res2 = PeripheralCapability::Uart.resource_ref(2);
+        assert_eq!(
+            reg.check(1, &res2, Permissions::READ, 0),
+            Err(CapError::InsufficientPermissions)
+        );
     }
 }

@@ -46,10 +46,7 @@ pub trait ZenohTransport {
     ///
     /// Returns `Ok(Some(sample))` if a frame is available, `Ok(None)` if the
     /// receive queue is empty, or `Err` on bus error.
-    fn receive<'a>(
-        &mut self,
-        buf: &'a mut [u8],
-    ) -> Result<Option<BusSample<'a>>, BusError>;
+    fn receive<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<BusSample<'a>>, BusError>;
 }
 
 #[cfg(test)]

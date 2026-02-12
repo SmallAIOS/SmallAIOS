@@ -7,8 +7,8 @@
 //! with ML-DSA-65 for non-repudiation (NIST AU-10). Signing is
 //! designed to be non-blocking to the inference path.
 
-use crate::crypto::sha3::{Sha3_256, SHA3_256_DIGEST_LEN};
 use super::integrity::AuditBatch;
+use crate::crypto::sha3::{Sha3_256, SHA3_256_DIGEST_LEN};
 
 /// ML-DSA-65 signature size in bytes.
 pub const ML_DSA_65_SIG_SIZE: usize = 3309;

@@ -16,7 +16,7 @@
 //!   - Return value in RAX
 //!   - RCX and R11 are clobbered by syscall/sysret
 
-use core::arch::asm;
+use core::arch::{asm, naked_asm};
 
 /// MSR addresses for syscall configuration.
 const IA32_STAR: u32 = 0xC000_0081;
@@ -96,7 +96,7 @@ pub unsafe fn init() {
 
     // LSTAR: syscall entry point address
     unsafe {
-        wrmsr(IA32_LSTAR, syscall_entry as u64);
+        wrmsr(IA32_LSTAR, syscall_entry as *const () as usize as u64);
     }
 
     // FMASK: clear IF and TF on syscall entry
@@ -123,62 +123,60 @@ pub unsafe fn init() {
 extern "C" fn syscall_entry() {
     // SAFETY: This is a naked function implementing the syscall entry/exit path.
     // All register saves/restores are handled explicitly in assembly.
-    unsafe {
-        naked_asm!(
-            // Save callee-saved registers that the Rust ABI requires us to preserve
-            "push rbx",
-            "push rbp",
-            "push r12",
-            "push r13",
-            "push r14",
-            "push r15",
-            // Save RCX (return RIP) and R11 (return RFLAGS)
-            "push rcx",
-            "push r11",
+    naked_asm!(
+        // Save callee-saved registers that the Rust ABI requires us to preserve
+        "push rbx",
+        "push rbp",
+        "push r12",
+        "push r13",
+        "push r14",
+        "push r15",
+        // Save RCX (return RIP) and R11 (return RFLAGS)
+        "push rcx",
+        "push r11",
 
-            // Build SyscallArgs on the stack:
-            // SyscallArgs { number: usize, args: [usize; 6] }
-            // Push args[5] through args[0], then number
-            "push r9",       // args[5]
-            "push r8",       // args[4]
-            "push r10",      // args[3]
-            "push rdx",      // args[2]
-            "push rsi",      // args[1]
-            "push rdi",      // args[0]
-            "push rax",      // number
+        // Build SyscallArgs on the stack:
+        // SyscallArgs { number: usize, args: [usize; 6] }
+        // Push args[5] through args[0], then number
+        "push r9",       // args[5]
+        "push r8",       // args[4]
+        "push r10",      // args[3]
+        "push rdx",      // args[2]
+        "push rsi",      // args[1]
+        "push rdi",      // args[0]
+        "push rax",      // number
 
-            // Call dispatch with pointer to SyscallArgs on stack
-            // RDI = pointer to SyscallArgs (first arg in SysV ABI)
-            "mov rdi, rsp",
-            "call {dispatch}",
+        // Call dispatch with pointer to SyscallArgs on stack
+        // RDI = pointer to SyscallArgs (first arg in SysV ABI)
+        "mov rdi, rsp",
+        "call {dispatch}",
 
-            // Result is in RAX — leave it there for sysret
+        // Result is in RAX — leave it there for sysret
 
-            // Clean up SyscallArgs from stack (7 * 8 = 56 bytes)
-            "add rsp, 56",
+        // Clean up SyscallArgs from stack (7 * 8 = 56 bytes)
+        "add rsp, 56",
 
-            // Restore RCX and R11 for sysret
-            "pop r11",
-            "pop rcx",
+        // Restore RCX and R11 for sysret
+        "pop r11",
+        "pop rcx",
 
-            // Restore callee-saved registers
-            "pop r15",
-            "pop r14",
-            "pop r13",
-            "pop r12",
-            "pop rbp",
-            "pop rbx",
+        // Restore callee-saved registers
+        "pop r15",
+        "pop r14",
+        "pop r13",
+        "pop r12",
+        "pop rbp",
+        "pop rbx",
 
-            // Return to userspace
-            // sysretq loads RIP from RCX and RFLAGS from R11
-            "sysretq",
+        // Return to userspace
+        // sysretq loads RIP from RCX and RFLAGS from R11
+        "sysretq",
 
-            dispatch = sym smallaios_kernel::syscall::dispatch,
-        );
-    }
+        dispatch = sym smallaios_kernel::syscall::dispatch,
+    );
 }
 
 /// Get the address of the syscall entry point (for testing/diagnostics).
 pub fn entry_address() -> u64 {
-    syscall_entry as u64
+    syscall_entry as *const () as usize as u64
 }

@@ -42,6 +42,16 @@ pub enum HalError {
     OutOfRange,
     /// Hardware reported an internal error.
     HardwareError,
+    /// I2C: target device did not acknowledge (address or data NACK).
+    NackReceived,
+    /// I2C: another master won bus arbitration.
+    ArbitrationLost,
+    /// UART: stop bit not detected at expected position.
+    FramingError,
+    /// UART: received parity bit does not match calculated parity.
+    ParityError,
+    /// UART/I2S: receive FIFO overflow, data lost.
+    Overrun,
 }
 
 impl fmt::Display for HalError {
@@ -59,6 +69,11 @@ impl fmt::Display for HalError {
             HalError::InterruptError => write!(f, "interrupt error"),
             HalError::OutOfRange => write!(f, "address out of range"),
             HalError::HardwareError => write!(f, "hardware error"),
+            HalError::NackReceived => write!(f, "NACK received"),
+            HalError::ArbitrationLost => write!(f, "arbitration lost"),
+            HalError::FramingError => write!(f, "framing error"),
+            HalError::ParityError => write!(f, "parity error"),
+            HalError::Overrun => write!(f, "receive overrun"),
         }
     }
 }
@@ -137,26 +152,15 @@ pub enum BusConfig {
         fd_data_rate: Option<CanFdDataRate>,
     },
     /// ARINC 429 configuration with channel speed.
-    Arinc429 {
-        speed: Arinc429Speed,
-    },
+    Arinc429 { speed: Arinc429Speed },
     /// ARINC 664 Virtual Link configuration.
-    Arinc664 {
-        max_vl_count: u16,
-    },
+    Arinc664 { max_vl_count: u16 },
     /// MIL-STD-1553 configuration.
-    Mil1553 {
-        mode: Mil1553Mode,
-        rt_address: u8,
-    },
+    Mil1553 { mode: Mil1553Mode, rt_address: u8 },
     /// SpaceWire link configuration.
-    SpaceWire {
-        link_speed_mbps: u16,
-    },
+    SpaceWire { link_speed_mbps: u16 },
     /// CCSDS configuration.
-    Ccsds {
-        max_packet_len: u16,
-    },
+    Ccsds { max_packet_len: u16 },
 }
 
 /// A raw frame received from or to be sent to a bus controller.
@@ -319,6 +323,543 @@ pub trait FpgaFabric {
 
     /// Acknowledge a DMA completion interrupt and return the channel number.
     fn dma_irq_ack(&mut self) -> Result<u8, HalError>;
+}
+
+// ---------------------------------------------------------------------------
+// Peripheral HAL — I2C, SPI, GPIO, UART, CSI Camera, I2S Audio
+// ---------------------------------------------------------------------------
+
+/// I2C bus speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I2cSpeed {
+    /// Standard mode: 100 kHz.
+    Standard,
+    /// Fast mode: 400 kHz.
+    Fast,
+    /// Fast mode plus: 1 MHz.
+    FastPlus,
+}
+
+/// I2C addressing mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I2cAddressMode {
+    /// 7-bit addressing (0x00–0x7F).
+    SevenBit,
+    /// 10-bit addressing (0x000–0x3FF).
+    TenBit,
+}
+
+/// I2C controller configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct I2cConfig {
+    /// Bus speed selection.
+    pub speed: I2cSpeed,
+    /// Addressing mode.
+    pub address_mode: I2cAddressMode,
+    /// Enable clock stretching by targets.
+    pub clock_stretching: bool,
+    /// Timeout for a single transaction in microseconds.
+    pub timeout_us: u32,
+}
+
+/// Hardware abstraction trait for I2C controllers.
+pub trait I2cController {
+    /// Initialize the I2C controller with the given configuration.
+    fn init(&mut self, config: I2cConfig) -> Result<(), HalError>;
+
+    /// Write bytes to a target device.
+    fn write(&mut self, addr: u16, data: &[u8]) -> Result<(), HalError>;
+
+    /// Read bytes from a target device.
+    fn read(&mut self, addr: u16, buf: &mut [u8]) -> Result<(), HalError>;
+
+    /// Write then read in a single transaction (repeated START).
+    fn write_read(
+        &mut self,
+        addr: u16,
+        write_data: &[u8],
+        read_buf: &mut [u8],
+    ) -> Result<(), HalError>;
+
+    /// Attempt I2C bus recovery (9 clock pulses + STOP).
+    fn bus_recovery(&mut self) -> Result<(), HalError>;
+
+    /// Reset the I2C controller.
+    fn reset(&mut self) -> Result<(), HalError>;
+}
+
+/// SPI clock polarity and phase mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpiMode {
+    /// CPOL=0, CPHA=0: clock idle low, sample on leading edge.
+    Mode0,
+    /// CPOL=0, CPHA=1: clock idle low, sample on trailing edge.
+    Mode1,
+    /// CPOL=1, CPHA=0: clock idle high, sample on leading edge.
+    Mode2,
+    /// CPOL=1, CPHA=1: clock idle high, sample on trailing edge.
+    Mode3,
+}
+
+/// SPI bit order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpiBitOrder {
+    /// Most significant bit first (default).
+    MsbFirst,
+    /// Least significant bit first.
+    LsbFirst,
+}
+
+/// SPI controller configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SpiConfig {
+    /// Clock polarity/phase mode.
+    pub mode: SpiMode,
+    /// Requested clock frequency in Hz.
+    pub clock_hz: u32,
+    /// Bit order.
+    pub bit_order: SpiBitOrder,
+    /// Bits per word: 8, 16, or 32.
+    pub word_size: u8,
+    /// Chip select polarity (true = active low, default).
+    pub cs_active_low: bool,
+    /// Transaction timeout in microseconds.
+    pub timeout_us: u32,
+}
+
+/// Hardware abstraction trait for SPI controllers.
+pub trait SpiController {
+    /// Initialize the SPI controller.
+    fn init(&mut self, config: SpiConfig) -> Result<(), HalError>;
+
+    /// Full-duplex transfer: simultaneously write `tx_data` and read into `rx_buf`.
+    fn transfer(&mut self, cs: u8, tx_data: &[u8], rx_buf: &mut [u8]) -> Result<(), HalError>;
+
+    /// Write-only transfer (MOSI only, MISO data discarded).
+    fn write(&mut self, cs: u8, data: &[u8]) -> Result<(), HalError>;
+
+    /// Read-only transfer (sends zeros on MOSI, captures MISO).
+    fn read(&mut self, cs: u8, buf: &mut [u8]) -> Result<(), HalError>;
+
+    /// Start a DMA-based transfer for bulk data.
+    fn transfer_dma(
+        &mut self,
+        cs: u8,
+        tx_addr: u64,
+        rx_addr: u64,
+        len: u32,
+    ) -> Result<DmaToken, HalError>;
+
+    /// Manually assert chip select.
+    fn cs_assert(&mut self, cs: u8) -> Result<(), HalError>;
+
+    /// Manually deassert chip select.
+    fn cs_deassert(&mut self, cs: u8) -> Result<(), HalError>;
+
+    /// Reset the SPI controller.
+    fn reset(&mut self) -> Result<(), HalError>;
+}
+
+/// GPIO pin mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpioPinMode {
+    /// High-impedance input.
+    Input,
+    /// Push-pull output.
+    Output,
+    /// Open-drain output.
+    OpenDrain,
+    /// Alternate function (peripheral-controlled).
+    AlternateFunction(u8),
+    /// Analog (disable digital input buffer).
+    Analog,
+}
+
+/// GPIO pull resistor configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpioPull {
+    /// No pull resistor (floating).
+    None,
+    /// Internal pull-up resistor.
+    PullUp,
+    /// Internal pull-down resistor.
+    PullDown,
+}
+
+/// GPIO interrupt edge configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpioInterruptEdge {
+    /// Trigger on rising edge.
+    Rising,
+    /// Trigger on falling edge.
+    Falling,
+    /// Trigger on both edges.
+    Both,
+    /// Trigger while level is high.
+    LevelHigh,
+    /// Trigger while level is low.
+    LevelLow,
+}
+
+/// GPIO pin configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpioConfig {
+    /// Pin mode.
+    pub mode: GpioPinMode,
+    /// Pull resistor.
+    pub pull: GpioPull,
+    /// Interrupt edge (None = no interrupt).
+    pub interrupt: Option<GpioInterruptEdge>,
+    /// Debounce time in microseconds (0 = no debounce).
+    pub debounce_us: u32,
+}
+
+/// Hardware abstraction trait for GPIO controllers.
+pub trait GpioController {
+    /// Configure a single GPIO pin.
+    fn configure(&mut self, pin: u8, config: GpioConfig) -> Result<(), HalError>;
+
+    /// Read the current level of an input pin (true = high).
+    fn read(&self, pin: u8) -> Result<bool, HalError>;
+
+    /// Set an output pin high.
+    fn set_high(&mut self, pin: u8) -> Result<(), HalError>;
+
+    /// Set an output pin low.
+    fn set_low(&mut self, pin: u8) -> Result<(), HalError>;
+
+    /// Toggle an output pin.
+    fn toggle(&mut self, pin: u8) -> Result<(), HalError>;
+
+    /// Atomically set multiple pins using a bitmask.
+    fn set_mask(&mut self, set_mask: u32, clear_mask: u32) -> Result<(), HalError>;
+
+    /// Read all pins as a bitmask (up to 32 pins per controller).
+    fn read_all(&self) -> Result<u32, HalError>;
+
+    /// Enable interrupt for a pin.
+    fn enable_interrupt(&mut self, pin: u8) -> Result<(), HalError>;
+
+    /// Disable interrupt for a pin.
+    fn disable_interrupt(&mut self, pin: u8) -> Result<(), HalError>;
+
+    /// Acknowledge and clear a pending interrupt. Returns the triggering pin.
+    fn irq_handler(&mut self) -> Result<u8, HalError>;
+
+    /// Return the number of GPIO pins on this controller.
+    fn pin_count(&self) -> u8;
+
+    /// Reset all pins to input/floating.
+    fn reset(&mut self) -> Result<(), HalError>;
+}
+
+/// UART parity configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UartParity {
+    /// No parity bit.
+    None,
+    /// Even parity.
+    Even,
+    /// Odd parity.
+    Odd,
+}
+
+/// UART stop bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UartStopBits {
+    /// 1 stop bit.
+    One,
+    /// 2 stop bits.
+    Two,
+}
+
+/// UART flow control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UartFlowControl {
+    /// No flow control.
+    None,
+    /// Hardware flow control using RTS/CTS lines.
+    RtsCts,
+}
+
+/// UART receive mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UartRxMode {
+    /// Interrupt-driven with FIFO threshold.
+    Interrupt { fifo_threshold: u8 },
+    /// DMA ring-buffer mode.
+    Dma { buffer_addr: u64, buffer_size: u32 },
+    /// Polling mode.
+    Polling,
+}
+
+/// UART controller configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UartConfig {
+    /// Baud rate in bits per second.
+    pub baud_rate: u32,
+    /// Data bits: 7 or 8.
+    pub data_bits: u8,
+    /// Parity configuration.
+    pub parity: UartParity,
+    /// Stop bits.
+    pub stop_bits: UartStopBits,
+    /// Flow control.
+    pub flow_control: UartFlowControl,
+    /// Receive mode.
+    pub rx_mode: UartRxMode,
+    /// Read timeout in microseconds (0 = non-blocking).
+    pub timeout_us: u32,
+}
+
+/// UART interrupt source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UartIrqSource {
+    /// RX FIFO reached threshold.
+    RxDataAvailable,
+    /// RX FIFO timeout (partial data sitting in FIFO).
+    RxTimeout,
+    /// TX FIFO empty.
+    TxEmpty,
+    /// Framing error detected.
+    FramingError,
+    /// Parity error detected.
+    ParityError,
+    /// RX FIFO overrun.
+    Overrun,
+    /// Break condition detected.
+    Break,
+}
+
+/// Hardware abstraction trait for UART controllers.
+pub trait UartController {
+    /// Initialize the UART controller.
+    fn init(&mut self, config: UartConfig) -> Result<(), HalError>;
+
+    /// Write bytes to the TX FIFO. Returns number of bytes written.
+    fn write(&mut self, data: &[u8]) -> Result<usize, HalError>;
+
+    /// Write all bytes, blocking until TX FIFO drains as needed.
+    fn write_all(&mut self, data: &[u8]) -> Result<(), HalError>;
+
+    /// Read available bytes from RX FIFO. Returns number of bytes read.
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, HalError>;
+
+    /// Read until `buf` is full or timeout expires.
+    fn read_exact(&mut self, buf: &mut [u8]) -> Result<usize, HalError>;
+
+    /// Read until delimiter byte or buf is full. Returns bytes read including delimiter.
+    fn read_until(&mut self, delimiter: u8, buf: &mut [u8]) -> Result<usize, HalError>;
+
+    /// Flush the TX FIFO (block until all bytes transmitted).
+    fn flush(&mut self) -> Result<(), HalError>;
+
+    /// Return the number of bytes available in RX FIFO.
+    fn rx_available(&self) -> usize;
+
+    /// Handle a UART interrupt.
+    fn irq_handler(&mut self) -> Result<UartIrqSource, HalError>;
+
+    /// Reset the UART controller.
+    fn reset(&mut self) -> Result<(), HalError>;
+}
+
+/// CSI-2 pixel format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsiPixelFormat {
+    /// 8-bit raw Bayer.
+    Raw8,
+    /// 10-bit raw Bayer.
+    Raw10,
+    /// 12-bit raw Bayer.
+    Raw12,
+    /// YUV 4:2:2.
+    Yuv422,
+    /// 24-bit RGB.
+    Rgb888,
+}
+
+/// CSI-2 receiver configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CsiConfig {
+    /// Number of data lanes: 1, 2, or 4.
+    pub lanes: u8,
+    /// Per-lane data rate in Mbps.
+    pub lane_speed_mbps: u16,
+    /// Frame width in pixels.
+    pub width: u16,
+    /// Frame height in pixels.
+    pub height: u16,
+    /// Pixel format.
+    pub pixel_format: CsiPixelFormat,
+    /// Target frame rate.
+    pub fps: u8,
+    /// Number of frame buffers (double/triple buffering).
+    pub num_buffers: u8,
+}
+
+/// A completed CSI frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CsiFrame {
+    /// Buffer index of the completed frame.
+    pub buffer_index: u8,
+    /// Timestamp of frame capture (monotonic microseconds).
+    pub timestamp_us: u64,
+    /// Frame sequence number.
+    pub sequence: u32,
+    /// Actual bytes written.
+    pub bytes_used: u32,
+}
+
+/// CSI interrupt source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CsiIrqSource {
+    /// Frame capture complete (buffer index).
+    FrameComplete(u8),
+    /// Receiver FIFO overflow.
+    Overflow,
+    /// CRC mismatch.
+    CrcError,
+    /// ECC error in packet header.
+    EccError,
+}
+
+/// Hardware abstraction trait for CSI-2 camera receivers.
+pub trait CsiReceiver {
+    /// Initialize the CSI-2 receiver and allocate frame buffers.
+    fn init(&mut self, config: CsiConfig) -> Result<(), HalError>;
+
+    /// Start continuous frame capture.
+    fn start_capture(&mut self) -> Result<(), HalError>;
+
+    /// Stop frame capture.
+    fn stop_capture(&mut self) -> Result<(), HalError>;
+
+    /// Dequeue a completed frame buffer.
+    fn dequeue_frame(&mut self) -> Result<CsiFrame, HalError>;
+
+    /// Return a frame buffer to the capture queue.
+    fn enqueue_frame(&mut self, buffer_index: u8) -> Result<(), HalError>;
+
+    /// Get the physical address of a frame buffer (for zero-copy ONNX input).
+    fn buffer_address(&self, buffer_index: u8) -> Result<u64, HalError>;
+
+    /// Get the byte size of a single frame buffer.
+    fn buffer_size(&self) -> usize;
+
+    /// Handle a CSI interrupt.
+    fn irq_handler(&mut self) -> Result<CsiIrqSource, HalError>;
+
+    /// Reset the CSI receiver and release all buffers.
+    fn reset(&mut self) -> Result<(), HalError>;
+}
+
+/// I2S bus mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I2sMode {
+    /// Standard I2S (Philips) — data delayed by 1 BCLK after WS transition.
+    Standard,
+    /// Left-justified — data starts immediately on WS transition.
+    LeftJustified,
+    /// Right-justified — data is right-aligned within the WS slot.
+    RightJustified,
+    /// TDM — multiple channels time-multiplexed on a single data line.
+    Tdm { num_slots: u8 },
+}
+
+/// I2S controller role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I2sRole {
+    /// Controller generates BCLK and WS.
+    Master,
+    /// Controller receives BCLK and WS from external source.
+    Slave,
+}
+
+/// I2S bit depth.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I2sBitDepth {
+    /// 16-bit samples.
+    Bits16,
+    /// 24-bit samples.
+    Bits24,
+    /// 32-bit samples.
+    Bits32,
+}
+
+/// I2S controller configuration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct I2sConfig {
+    /// I2S bus mode.
+    pub mode: I2sMode,
+    /// Controller role (master/slave).
+    pub role: I2sRole,
+    /// Sample rate in Hz.
+    pub sample_rate_hz: u32,
+    /// Bit depth per sample.
+    pub bit_depth: I2sBitDepth,
+    /// Number of channels (1=mono, 2=stereo, up to 8 for TDM).
+    pub channels: u8,
+    /// Number of audio frames per DMA buffer.
+    pub buffer_frames: u32,
+    /// Number of ring buffers (2-4).
+    pub num_buffers: u8,
+}
+
+/// A completed audio buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioBuffer {
+    /// Buffer index.
+    pub buffer_index: u8,
+    /// Timestamp of first sample (monotonic microseconds).
+    pub timestamp_us: u64,
+    /// Number of samples (frames x channels).
+    pub sample_count: u32,
+    /// Actual bytes in buffer.
+    pub bytes_used: u32,
+}
+
+/// I2S interrupt source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum I2sIrqSource {
+    /// Buffer capture complete (buffer index).
+    BufferComplete(u8),
+    /// DMA overrun (data lost).
+    Overrun,
+    /// DMA underrun.
+    Underrun,
+    /// BCLK/WS clock error.
+    ClockError,
+}
+
+/// Hardware abstraction trait for I2S/TDM audio controllers.
+pub trait I2sController {
+    /// Initialize the I2S controller and allocate DMA ring buffers.
+    fn init(&mut self, config: I2sConfig) -> Result<(), HalError>;
+
+    /// Start audio capture (continuous DMA streaming).
+    fn start_capture(&mut self) -> Result<(), HalError>;
+
+    /// Stop audio capture.
+    fn stop_capture(&mut self) -> Result<(), HalError>;
+
+    /// Dequeue a completed audio buffer.
+    fn dequeue_buffer(&mut self) -> Result<AudioBuffer, HalError>;
+
+    /// Return a buffer to the capture ring.
+    fn enqueue_buffer(&mut self, buffer_index: u8) -> Result<(), HalError>;
+
+    /// Get the physical address of an audio buffer (for zero-copy ONNX input).
+    fn buffer_address(&self, buffer_index: u8) -> Result<u64, HalError>;
+
+    /// Get the byte size of a single audio buffer.
+    fn buffer_size(&self) -> usize;
+
+    /// Handle an I2S interrupt.
+    fn irq_handler(&mut self) -> Result<I2sIrqSource, HalError>;
+
+    /// Reset the I2S controller and release all buffers.
+    fn reset(&mut self) -> Result<(), HalError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -672,7 +1213,11 @@ pub mod riscv {
         }
 
         /// Set the priority for an interrupt source.
-        pub fn set_priority(&mut self, source: u32, priority: PlicPriority) -> Result<(), HalError> {
+        pub fn set_priority(
+            &mut self,
+            source: u32,
+            priority: PlicPriority,
+        ) -> Result<(), HalError> {
             if source == 0 || source >= 1024 || !priority.is_valid() {
                 return Err(HalError::InvalidConfig);
             }
@@ -699,7 +1244,11 @@ pub mod riscv {
         }
 
         /// Set the priority threshold for a context.
-        pub fn set_threshold(&mut self, _context: PlicContext, threshold: u8) -> Result<(), HalError> {
+        pub fn set_threshold(
+            &mut self,
+            _context: PlicContext,
+            threshold: u8,
+        ) -> Result<(), HalError> {
             if threshold > 7 {
                 return Err(HalError::InvalidConfig);
             }
@@ -893,8 +1442,8 @@ pub mod riscv {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::riscv::*;
+    use super::*;
     use alloc::format;
 
     // -- HalError -----------------------------------------------------------
@@ -905,7 +1454,10 @@ mod tests {
         assert_eq!(format!("{}", HalError::TxFifoFull), "transmit FIFO full");
         assert_eq!(format!("{}", HalError::RxEmpty), "receive FIFO empty");
         assert_eq!(format!("{}", HalError::BusOff), "bus off");
-        assert_eq!(format!("{}", HalError::InvalidConfig), "invalid configuration");
+        assert_eq!(
+            format!("{}", HalError::InvalidConfig),
+            "invalid configuration"
+        );
         assert_eq!(format!("{}", HalError::Timeout), "timeout");
         assert_eq!(format!("{}", HalError::DmaError), "DMA error");
         assert_eq!(format!("{}", HalError::MmioError), "MMIO error");
@@ -913,6 +1465,11 @@ mod tests {
         assert_eq!(format!("{}", HalError::InterruptError), "interrupt error");
         assert_eq!(format!("{}", HalError::OutOfRange), "address out of range");
         assert_eq!(format!("{}", HalError::HardwareError), "hardware error");
+        assert_eq!(format!("{}", HalError::NackReceived), "NACK received");
+        assert_eq!(format!("{}", HalError::ArbitrationLost), "arbitration lost");
+        assert_eq!(format!("{}", HalError::FramingError), "framing error");
+        assert_eq!(format!("{}", HalError::ParityError), "parity error");
+        assert_eq!(format!("{}", HalError::Overrun), "receive overrun");
     }
 
     #[test]
@@ -930,7 +1487,10 @@ mod tests {
             fd_data_rate: Some(CanFdDataRate::Mbps8),
         };
         match cfg {
-            BusConfig::Can { baud_rate, fd_data_rate } => {
+            BusConfig::Can {
+                baud_rate,
+                fd_data_rate,
+            } => {
                 assert_eq!(baud_rate, CanBaudRate::Mbps1);
                 assert_eq!(fd_data_rate, Some(CanFdDataRate::Mbps8));
             }
@@ -940,7 +1500,9 @@ mod tests {
 
     #[test]
     fn test_bus_config_arinc429() {
-        let cfg = BusConfig::Arinc429 { speed: Arinc429Speed::High };
+        let cfg = BusConfig::Arinc429 {
+            speed: Arinc429Speed::High,
+        };
         match cfg {
             BusConfig::Arinc429 { speed } => assert_eq!(speed, Arinc429Speed::High),
             _ => panic!("expected ARINC 429 config"),
@@ -1330,5 +1892,245 @@ mod tests {
         assert_ne!(BusProtocol::Can, BusProtocol::Arinc429);
         assert_ne!(BusProtocol::Mil1553, BusProtocol::SpaceWire);
         assert_eq!(BusProtocol::Ccsds, BusProtocol::Ccsds);
+    }
+
+    // -- I2C config ---------------------------------------------------------
+
+    #[test]
+    fn test_i2c_config() {
+        let cfg = I2cConfig {
+            speed: I2cSpeed::Fast,
+            address_mode: I2cAddressMode::SevenBit,
+            clock_stretching: true,
+            timeout_us: 1000,
+        };
+        assert_eq!(cfg.speed, I2cSpeed::Fast);
+        assert_eq!(cfg.address_mode, I2cAddressMode::SevenBit);
+        assert!(cfg.clock_stretching);
+        assert_eq!(cfg.timeout_us, 1000);
+    }
+
+    #[test]
+    fn test_i2c_speed_variants() {
+        assert_ne!(I2cSpeed::Standard, I2cSpeed::Fast);
+        assert_ne!(I2cSpeed::Fast, I2cSpeed::FastPlus);
+    }
+
+    #[test]
+    fn test_i2c_address_mode_variants() {
+        assert_ne!(I2cAddressMode::SevenBit, I2cAddressMode::TenBit);
+    }
+
+    // -- SPI config ---------------------------------------------------------
+
+    #[test]
+    fn test_spi_config() {
+        let cfg = SpiConfig {
+            mode: SpiMode::Mode0,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 8,
+            cs_active_low: true,
+            timeout_us: 5000,
+        };
+        assert_eq!(cfg.mode, SpiMode::Mode0);
+        assert_eq!(cfg.clock_hz, 1_000_000);
+        assert_eq!(cfg.word_size, 8);
+        assert!(cfg.cs_active_low);
+    }
+
+    #[test]
+    fn test_spi_mode_variants() {
+        assert_ne!(SpiMode::Mode0, SpiMode::Mode1);
+        assert_ne!(SpiMode::Mode2, SpiMode::Mode3);
+        assert_eq!(SpiMode::Mode0, SpiMode::Mode0);
+    }
+
+    // -- GPIO config --------------------------------------------------------
+
+    #[test]
+    fn test_gpio_config() {
+        let cfg = GpioConfig {
+            mode: GpioPinMode::Input,
+            pull: GpioPull::PullUp,
+            interrupt: Some(GpioInterruptEdge::Rising),
+            debounce_us: 50,
+        };
+        assert_eq!(cfg.mode, GpioPinMode::Input);
+        assert_eq!(cfg.pull, GpioPull::PullUp);
+        assert_eq!(cfg.interrupt, Some(GpioInterruptEdge::Rising));
+        assert_eq!(cfg.debounce_us, 50);
+    }
+
+    #[test]
+    fn test_gpio_pin_mode_alternate() {
+        let mode = GpioPinMode::AlternateFunction(3);
+        match mode {
+            GpioPinMode::AlternateFunction(n) => assert_eq!(n, 3),
+            _ => panic!("expected AlternateFunction"),
+        }
+    }
+
+    #[test]
+    fn test_gpio_interrupt_edge_variants() {
+        assert_ne!(GpioInterruptEdge::Rising, GpioInterruptEdge::Falling);
+        assert_ne!(GpioInterruptEdge::Both, GpioInterruptEdge::LevelHigh);
+    }
+
+    // -- UART config --------------------------------------------------------
+
+    #[test]
+    fn test_uart_config() {
+        let cfg = UartConfig {
+            baud_rate: 115200,
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: UartFlowControl::None,
+            rx_mode: UartRxMode::Polling,
+            timeout_us: 0,
+        };
+        assert_eq!(cfg.baud_rate, 115200);
+        assert_eq!(cfg.data_bits, 8);
+        assert_eq!(cfg.parity, UartParity::None);
+    }
+
+    #[test]
+    fn test_uart_rx_mode_interrupt() {
+        let mode = UartRxMode::Interrupt { fifo_threshold: 8 };
+        match mode {
+            UartRxMode::Interrupt { fifo_threshold } => assert_eq!(fifo_threshold, 8),
+            _ => panic!("expected Interrupt mode"),
+        }
+    }
+
+    #[test]
+    fn test_uart_rx_mode_dma() {
+        let mode = UartRxMode::Dma {
+            buffer_addr: 0x1000,
+            buffer_size: 4096,
+        };
+        match mode {
+            UartRxMode::Dma {
+                buffer_addr,
+                buffer_size,
+            } => {
+                assert_eq!(buffer_addr, 0x1000);
+                assert_eq!(buffer_size, 4096);
+            }
+            _ => panic!("expected Dma mode"),
+        }
+    }
+
+    #[test]
+    fn test_uart_irq_source_variants() {
+        assert_ne!(UartIrqSource::RxDataAvailable, UartIrqSource::TxEmpty);
+        assert_ne!(UartIrqSource::FramingError, UartIrqSource::ParityError);
+        assert_eq!(UartIrqSource::Overrun, UartIrqSource::Overrun);
+    }
+
+    // -- CSI config ---------------------------------------------------------
+
+    #[test]
+    fn test_csi_config() {
+        let cfg = CsiConfig {
+            lanes: 2,
+            lane_speed_mbps: 1500,
+            width: 1920,
+            height: 1080,
+            pixel_format: CsiPixelFormat::Yuv422,
+            fps: 30,
+            num_buffers: 3,
+        };
+        assert_eq!(cfg.lanes, 2);
+        assert_eq!(cfg.width, 1920);
+        assert_eq!(cfg.height, 1080);
+        assert_eq!(cfg.pixel_format, CsiPixelFormat::Yuv422);
+        assert_eq!(cfg.fps, 30);
+    }
+
+    #[test]
+    fn test_csi_frame() {
+        let frame = CsiFrame {
+            buffer_index: 1,
+            timestamp_us: 123456,
+            sequence: 42,
+            bytes_used: 1920 * 1080 * 2,
+        };
+        assert_eq!(frame.buffer_index, 1);
+        assert_eq!(frame.sequence, 42);
+    }
+
+    #[test]
+    fn test_csi_irq_source() {
+        let src = CsiIrqSource::FrameComplete(2);
+        match src {
+            CsiIrqSource::FrameComplete(idx) => assert_eq!(idx, 2),
+            _ => panic!("expected FrameComplete"),
+        }
+        assert_ne!(CsiIrqSource::Overflow, CsiIrqSource::CrcError);
+    }
+
+    #[test]
+    fn test_csi_pixel_format_variants() {
+        assert_ne!(CsiPixelFormat::Raw8, CsiPixelFormat::Raw10);
+        assert_ne!(CsiPixelFormat::Yuv422, CsiPixelFormat::Rgb888);
+    }
+
+    // -- I2S config ---------------------------------------------------------
+
+    #[test]
+    fn test_i2s_config() {
+        let cfg = I2sConfig {
+            mode: I2sMode::Standard,
+            role: I2sRole::Master,
+            sample_rate_hz: 16000,
+            bit_depth: I2sBitDepth::Bits16,
+            channels: 1,
+            buffer_frames: 1024,
+            num_buffers: 2,
+        };
+        assert_eq!(cfg.mode, I2sMode::Standard);
+        assert_eq!(cfg.role, I2sRole::Master);
+        assert_eq!(cfg.sample_rate_hz, 16000);
+        assert_eq!(cfg.channels, 1);
+    }
+
+    #[test]
+    fn test_i2s_mode_tdm() {
+        let mode = I2sMode::Tdm { num_slots: 8 };
+        match mode {
+            I2sMode::Tdm { num_slots } => assert_eq!(num_slots, 8),
+            _ => panic!("expected TDM mode"),
+        }
+    }
+
+    #[test]
+    fn test_audio_buffer() {
+        let buf = AudioBuffer {
+            buffer_index: 0,
+            timestamp_us: 999,
+            sample_count: 1024,
+            bytes_used: 2048,
+        };
+        assert_eq!(buf.buffer_index, 0);
+        assert_eq!(buf.sample_count, 1024);
+        assert_eq!(buf.bytes_used, 2048);
+    }
+
+    #[test]
+    fn test_i2s_irq_source() {
+        let src = I2sIrqSource::BufferComplete(1);
+        match src {
+            I2sIrqSource::BufferComplete(idx) => assert_eq!(idx, 1),
+            _ => panic!("expected BufferComplete"),
+        }
+        assert_ne!(I2sIrqSource::Overrun, I2sIrqSource::Underrun);
+    }
+
+    #[test]
+    fn test_i2s_bit_depth_variants() {
+        assert_ne!(I2sBitDepth::Bits16, I2sBitDepth::Bits24);
+        assert_ne!(I2sBitDepth::Bits24, I2sBitDepth::Bits32);
     }
 }

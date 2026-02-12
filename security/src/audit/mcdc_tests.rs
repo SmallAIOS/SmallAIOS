@@ -24,10 +24,16 @@
 #[cfg(test)]
 mod tests {
     use crate::audit::accumulator::{BatchAccumulator, BATCH_MAX_ENTRIES, BATCH_TIMEOUT_NS};
-    use crate::audit::batch_signing::{BatchSigningError, BatchSigningQueue, SignedAuditBatch, ML_DSA_65_SIG_SIZE};
+    use crate::audit::batch_signing::{
+        BatchSigningError, BatchSigningQueue, SignedAuditBatch, ML_DSA_65_SIG_SIZE,
+    };
     use crate::audit::entry::{AuditEntry, AuditResult, Operation};
-    use crate::audit::integrity::{verify_batch_hash, verify_chain, IntegrityChain, GENESIS_HASH, AuditBatch};
-    use crate::audit::ipc_export::{serialize_batch_header, deserialize_batch_header, BATCH_HEADER_SIZE};
+    use crate::audit::integrity::{
+        verify_batch_hash, verify_chain, AuditBatch, IntegrityChain, GENESIS_HASH,
+    };
+    use crate::audit::ipc_export::{
+        deserialize_batch_header, serialize_batch_header, BATCH_HEADER_SIZE,
+    };
     use crate::audit::retention::{DeploymentClass, RetentionPolicy};
     use crate::audit::taxonomy::AuditEventType;
     use crate::crypto::sha3::SHA3_256_DIGEST_LEN;
@@ -70,7 +76,10 @@ mod tests {
         for i in 0..(BATCH_MAX_ENTRIES - 1) {
             acc.push(make_entry(i as u64), i as u64);
         }
-        let result = acc.push(make_entry(BATCH_MAX_ENTRIES as u64), BATCH_MAX_ENTRIES as u64);
+        let result = acc.push(
+            make_entry(BATCH_MAX_ENTRIES as u64),
+            BATCH_MAX_ENTRIES as u64,
+        );
         assert!(result.is_some());
         let batch = result.unwrap();
         assert_eq!(batch.entries.len(), BATCH_MAX_ENTRIES);
@@ -296,8 +305,7 @@ mod tests {
     /// C1=false, C2=true: only count-based pruning active
     #[test]
     fn mcdc_prune_count_only() {
-        let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge)
-            .with_max_batches(2);
+        let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge).with_max_batches(2);
         let now = 100; // All timestamps very recent
         let timestamps = [50, 60, 70, 80];
         let prune = policy.batches_to_prune(&timestamps, now, 4);
@@ -317,8 +325,7 @@ mod tests {
     /// C1=true, C2=true: both conditions active, take max
     #[test]
     fn mcdc_prune_both() {
-        let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge)
-            .with_max_batches(1);
+        let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge).with_max_batches(1);
         let now = DeploymentClass::Edge.retention_ns() * 3;
         let timestamps = [0, 1, DeploymentClass::Edge.retention_ns() * 2 + 1];
         let prune = policy.batches_to_prune(&timestamps, now, 3);
@@ -374,7 +381,9 @@ mod tests {
     fn mcdc_sign_success() {
         let mut queue = BatchSigningQueue::new();
         let mut chain = IntegrityChain::new();
-        queue.enqueue(chain.seal_batch(vec![make_entry(0)])).unwrap();
+        queue
+            .enqueue(chain.seal_batch(vec![make_entry(0)]))
+            .unwrap();
         let sig = [0xAA; ML_DSA_65_SIG_SIZE];
         let result = queue.sign_next(&sig, [0x01; 16]);
         assert!(result.is_ok());
@@ -387,7 +396,9 @@ mod tests {
     fn mcdc_sign_wrong_sig_size() {
         let mut queue = BatchSigningQueue::new();
         let mut chain = IntegrityChain::new();
-        queue.enqueue(chain.seal_batch(vec![make_entry(0)])).unwrap();
+        queue
+            .enqueue(chain.seal_batch(vec![make_entry(0)]))
+            .unwrap();
         let sig = [0u8; 100]; // Wrong size
         assert!(matches!(
             queue.sign_next(&sig, [0u8; 16]),
@@ -409,7 +420,10 @@ mod tests {
         let batch = chain.seal_batch(vec![make_entry(0)]);
         let signed = SignedAuditBatch::new(batch);
         let mut buf = [0u8; BATCH_HEADER_SIZE];
-        assert_eq!(serialize_batch_header(&signed, &mut buf), Some(BATCH_HEADER_SIZE));
+        assert_eq!(
+            serialize_batch_header(&signed, &mut buf),
+            Some(BATCH_HEADER_SIZE)
+        );
     }
 
     /// Serialize C1=true: buffer too small -> None

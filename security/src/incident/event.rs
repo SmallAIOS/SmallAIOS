@@ -219,10 +219,7 @@ impl IncidentEvent {
         buf[0..8].copy_from_slice(&self.incident_id.to_be_bytes());
         buf[8..16].copy_from_slice(&self.timestamp_ns.to_be_bytes());
         buf[16] = self.severity as u8;
-        buf[17] = self
-            .previous_severity
-            .map(|s| s as u8)
-            .unwrap_or(0xFF);
+        buf[17] = self.previous_severity.map(|s| s as u8).unwrap_or(0xFF);
         buf[18] = self.incident_type as u8;
         buf[19..27].copy_from_slice(&self.task_id.to_be_bytes());
         buf[27] = self.affected_resources.len().min(255) as u8;
@@ -275,8 +272,20 @@ mod tests {
     #[test]
     fn event_generator_ids() {
         let mut gen = IncidentEventGenerator::new();
-        let e1 = gen.create_event(0, IncidentSeverity::Low, IncidentType::AnomalyDetected, 1, "test");
-        let e2 = gen.create_event(1, IncidentSeverity::High, IncidentType::DenialOfService, 2, "dos");
+        let e1 = gen.create_event(
+            0,
+            IncidentSeverity::Low,
+            IncidentType::AnomalyDetected,
+            1,
+            "test",
+        );
+        let e2 = gen.create_event(
+            1,
+            IncidentSeverity::High,
+            IncidentType::DenialOfService,
+            2,
+            "dos",
+        );
         assert_eq!(e1.incident_id, 1);
         assert_eq!(e2.incident_id, 2);
         assert_eq!(gen.events_generated(), 2);
@@ -285,7 +294,13 @@ mod tests {
     #[test]
     fn event_escalation() {
         let mut gen = IncidentEventGenerator::new();
-        let e1 = gen.create_event(0, IncidentSeverity::Medium, IncidentType::AnomalyDetected, 1, "anomaly");
+        let e1 = gen.create_event(
+            0,
+            IncidentSeverity::Medium,
+            IncidentType::AnomalyDetected,
+            1,
+            "anomaly",
+        );
         let esc = gen.create_escalation(
             100,
             e1.incident_id,
@@ -331,7 +346,10 @@ mod tests {
     #[test]
     fn incident_type_as_str() {
         assert_eq!(IncidentType::AnomalyDetected.as_str(), "anomaly-detected");
-        assert_eq!(IncidentType::ContainmentAction.as_str(), "containment-action");
+        assert_eq!(
+            IncidentType::ContainmentAction.as_str(),
+            "containment-action"
+        );
         assert_eq!(IncidentType::SystemCompromise.as_str(), "system-compromise");
     }
 }
