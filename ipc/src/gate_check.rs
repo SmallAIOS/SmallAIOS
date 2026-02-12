@@ -12,7 +12,7 @@
 use smallaios_security::boundary::trust_boundaries::{DataFlowDirection, TrustBoundary};
 use smallaios_security::capability::{CapRegistry, Permissions, ResourceRef, ResourceType, TaskId};
 use smallaios_security::compliance::classification::ClassificationLevel;
-use smallaios_security::enforcement::{EnforcementMode, GateVerdict};
+use smallaios_security::enforcement::GateVerdict;
 use smallaios_security::gate::{BoundaryCrossing, SecurityGate};
 use smallaios_security::labels::{IntegrityLevel, MessageTypeId, SecurityLabel};
 use smallaios_security::message_types::{MessageMetadata, MessageTypeRegistry, TensorDtype};
@@ -61,7 +61,11 @@ pub fn check_inbound_inference(
         for (i, &dim) in input.shape.iter().enumerate().take(8) {
             meta.dimensions[i] = dim;
         }
-        meta.element_count = input.shape.iter().copied().fold(1u32, |a, d| a.saturating_mul(d));
+        meta.element_count = input
+            .shape
+            .iter()
+            .copied()
+            .fold(1u32, |a, d| a.saturating_mul(d));
         meta.payload_bytes = input.data.len() as u32;
         meta.dtype = match input.data_type {
             crate::inference_proto::TensorDataType::Float32 => TensorDtype::Float32 as u8,
@@ -105,10 +109,11 @@ pub fn check_inbound_inference(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference_proto::{TensorData, TensorDataType};
     use alloc::boxed::Box;
     use alloc::string::String;
     use alloc::vec;
-    use crate::inference_proto::{TensorData, TensorDataType};
+    use smallaios_security::enforcement::EnforcementMode;
     use smallaios_security::message_types::default_registry;
 
     fn setup_cap_registry(task_id: TaskId) -> Box<CapRegistry> {

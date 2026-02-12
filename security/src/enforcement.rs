@@ -146,8 +146,14 @@ mod tests {
 
     #[test]
     fn enforcement_mode_from_u8() {
-        assert_eq!(EnforcementMode::from_u8(0), Some(EnforcementMode::Enforcing));
-        assert_eq!(EnforcementMode::from_u8(1), Some(EnforcementMode::Permissive));
+        assert_eq!(
+            EnforcementMode::from_u8(0),
+            Some(EnforcementMode::Enforcing)
+        );
+        assert_eq!(
+            EnforcementMode::from_u8(1),
+            Some(EnforcementMode::Permissive)
+        );
         assert_eq!(EnforcementMode::from_u8(2), None);
     }
 
@@ -162,12 +168,27 @@ mod tests {
     #[test]
     fn deny_reason_strings() {
         assert_eq!(DenyReason::MissingCapability.as_str(), "missing-capability");
-        assert_eq!(DenyReason::ClassificationViolation.as_str(), "classification-violation");
-        assert_eq!(DenyReason::IntegrityViolation.as_str(), "integrity-violation");
-        assert_eq!(DenyReason::UnknownMessageType.as_str(), "unknown-message-type");
+        assert_eq!(
+            DenyReason::ClassificationViolation.as_str(),
+            "classification-violation"
+        );
+        assert_eq!(
+            DenyReason::IntegrityViolation.as_str(),
+            "integrity-violation"
+        );
+        assert_eq!(
+            DenyReason::UnknownMessageType.as_str(),
+            "unknown-message-type"
+        );
         assert_eq!(DenyReason::InvariantFailed(3).as_str(), "invariant-failed");
-        assert_eq!(DenyReason::ModelNotWhitelisted.as_str(), "model-not-whitelisted");
-        assert_eq!(DenyReason::PolicySignatureInvalid.as_str(), "policy-signature-invalid");
+        assert_eq!(
+            DenyReason::ModelNotWhitelisted.as_str(),
+            "model-not-whitelisted"
+        );
+        assert_eq!(
+            DenyReason::PolicySignatureInvalid.as_str(),
+            "policy-signature-invalid"
+        );
     }
 
     // ── GateVerdict ──
@@ -182,7 +203,10 @@ mod tests {
 
     #[test]
     fn verdict_denied() {
-        let v = GateVerdict::Denied { layer: 3, reason: DenyReason::IntegrityViolation };
+        let v = GateVerdict::Denied {
+            layer: 3,
+            reason: DenyReason::IntegrityViolation,
+        };
         assert!(!v.is_allowed());
         assert!(v.is_denied());
         assert!(!v.is_permissive_pass());
@@ -190,7 +214,10 @@ mod tests {
 
     #[test]
     fn verdict_permissive_pass() {
-        let v = GateVerdict::PermissivePass { layer: 4, reason: DenyReason::UnknownMessageType };
+        let v = GateVerdict::PermissivePass {
+            layer: 4,
+            reason: DenyReason::UnknownMessageType,
+        };
         assert!(v.is_allowed());
         assert!(!v.is_denied());
         assert!(v.is_permissive_pass());
@@ -198,7 +225,10 @@ mod tests {
 
     #[test]
     fn verdict_denied_captures_layer_and_reason() {
-        let v = GateVerdict::Denied { layer: 2, reason: DenyReason::ClassificationViolation };
+        let v = GateVerdict::Denied {
+            layer: 2,
+            reason: DenyReason::ClassificationViolation,
+        };
         if let GateVerdict::Denied { layer, reason } = v {
             assert_eq!(layer, 2);
             assert_eq!(reason, DenyReason::ClassificationViolation);

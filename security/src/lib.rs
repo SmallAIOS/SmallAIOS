@@ -39,7 +39,7 @@ pub mod labels;
 #[cfg(feature = "formal-gate")]
 pub mod message_types;
 pub mod monitoring;
+pub mod ot;
 #[cfg(feature = "formal-gate")]
 pub mod policy;
-pub mod ot;
 pub mod supply_chain;

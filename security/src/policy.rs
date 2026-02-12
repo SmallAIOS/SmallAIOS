@@ -17,9 +17,7 @@
 
 use crate::enforcement::EnforcementMode;
 use crate::labels::MessageTypeId;
-use crate::message_types::{
-    default_registry, MessageTypeRegistry, SchemaHash, VerifiedMessageType, UNVERIFIED_HASH,
-};
+use crate::message_types::{default_registry, MessageTypeRegistry, SchemaHash, UNVERIFIED_HASH};
 
 /// Policy blob magic number: "SPOL" in ASCII.
 pub const POLICY_MAGIC: u32 = 0x5350_4F4C;
@@ -110,13 +108,9 @@ pub enum PolicyError {
     /// Internal consistency check failed.
     InconsistentPolicy,
     /// Attempted to demote a type from Enforcing to Permissive.
-    EnforcementDemotion {
-        type_id: MessageTypeId,
-    },
+    EnforcementDemotion { type_id: MessageTypeId },
     /// Duplicate type IDs in policy.
-    DuplicateTypeId {
-        type_id: MessageTypeId,
-    },
+    DuplicateTypeId { type_id: MessageTypeId },
 }
 
 /// The security policy.
@@ -194,10 +188,7 @@ impl SecurityPolicy {
     ///
     /// Returns the new policy on success. The caller is responsible for
     /// retaining the old policy for rollback.
-    pub fn remote_update(
-        &self,
-        blob: &[u8],
-    ) -> Result<Self, PolicyError> {
+    pub fn remote_update(&self, blob: &[u8]) -> Result<Self, PolicyError> {
         let new_policy = Self::load_from_blob(blob)?;
 
         // Validate: no enforcement demotion
@@ -293,6 +284,7 @@ pub fn revalidate_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message_types::VerifiedMessageType;
 
     // ── ModelWhitelist ──
 

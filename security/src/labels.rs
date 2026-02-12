@@ -233,11 +233,7 @@ mod tests {
 
     #[test]
     fn security_label_untyped() {
-        let label = SecurityLabel::new(
-            ClassificationLevel::Public,
-            IntegrityLevel::Low,
-            None,
-        );
+        let label = SecurityLabel::new(ClassificationLevel::Public, IntegrityLevel::Low, None);
         assert!(!label.is_typed());
     }
 
@@ -259,9 +255,21 @@ mod tests {
 
     #[test]
     fn security_label_equality() {
-        let a = SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Medium, Some(MessageTypeId(1)));
-        let b = SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Medium, Some(MessageTypeId(1)));
-        let c = SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::High, Some(MessageTypeId(1)));
+        let a = SecurityLabel::new(
+            ClassificationLevel::Internal,
+            IntegrityLevel::Medium,
+            Some(MessageTypeId(1)),
+        );
+        let b = SecurityLabel::new(
+            ClassificationLevel::Internal,
+            IntegrityLevel::Medium,
+            Some(MessageTypeId(1)),
+        );
+        let c = SecurityLabel::new(
+            ClassificationLevel::Internal,
+            IntegrityLevel::High,
+            Some(MessageTypeId(1)),
+        );
         assert_eq!(a, b);
         assert_ne!(a, c);
     }

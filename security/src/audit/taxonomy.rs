@@ -462,7 +462,9 @@ mod tests {
 
     #[test]
     fn subcategory_from_u8_all_valid() {
-        let valid = [0, 1, 2, 10, 11, 20, 21, 30, 31, 32, 40, 41, 42, 50, 51, 52, 53];
+        let valid = [
+            0, 1, 2, 10, 11, 20, 21, 30, 31, 32, 40, 41, 42, 50, 51, 52, 53,
+        ];
         for v in valid {
             assert!(
                 EventSubcategory::from_u8(v).is_some(),
@@ -503,7 +505,10 @@ mod tests {
         assert_eq!(EventSubcategory::Watchdog.as_str(), "watchdog");
         assert_eq!(EventSubcategory::GateAllowed.as_str(), "gate-allowed");
         assert_eq!(EventSubcategory::GateDenied.as_str(), "gate-denied");
-        assert_eq!(EventSubcategory::GatePermissivePass.as_str(), "gate-permissive-pass");
+        assert_eq!(
+            EventSubcategory::GatePermissivePass.as_str(),
+            "gate-permissive-pass"
+        );
         assert_eq!(EventSubcategory::PolicyUpdate.as_str(), "policy-update");
     }
 }

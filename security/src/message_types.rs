@@ -150,7 +150,7 @@ struct TypeState {
     type_id: MessageTypeId,
     last_timestamp: u64,
     message_count_in_window: u32,
-    window_start: u64,
+    _window_start: u64,
     active: bool,
 }
 
@@ -160,7 +160,7 @@ impl TypeState {
             type_id: MessageTypeId(0),
             last_timestamp: 0,
             message_count_in_window: 0,
-            window_start: 0,
+            _window_start: 0,
             active: false,
         }
     }
@@ -209,11 +209,7 @@ impl InvariantChecker {
         None
     }
 
-    fn check_single(
-        invariant: &Invariant,
-        metadata: &MessageMetadata,
-        state: &TypeState,
-    ) -> bool {
+    fn check_single(invariant: &Invariant, metadata: &MessageMetadata, state: &TypeState) -> bool {
         match *invariant {
             Invariant::MaxRank(max) => metadata.rank <= max,
             Invariant::MinRank(min) => metadata.rank >= min,
@@ -257,16 +253,12 @@ impl InvariantChecker {
             return idx;
         }
         // Find first empty slot
-        let idx = self
-            .states
-            .iter()
-            .position(|s| !s.active)
-            .unwrap_or(0); // fallback to slot 0 if full
+        let idx = self.states.iter().position(|s| !s.active).unwrap_or(0); // fallback to slot 0 if full
         self.states[idx] = TypeState {
             type_id,
             last_timestamp: 0,
             message_count_in_window: 0,
-            window_start: 0,
+            _window_start: 0,
             active: true,
         };
         idx
@@ -306,11 +298,9 @@ impl MessageTypeRegistry {
     /// Register a new message type. Returns false if registry is full or ID already exists.
     pub fn register(&mut self, msg_type: VerifiedMessageType) -> bool {
         // Check for duplicate ID
-        for slot in self.types.iter() {
-            if let Some(existing) = slot {
-                if existing.type_id == msg_type.type_id {
-                    return false;
-                }
+        for existing in self.types.iter().flatten() {
+            if existing.type_id == msg_type.type_id {
+                return false;
             }
         }
         // Find empty slot
@@ -326,14 +316,7 @@ impl MessageTypeRegistry {
 
     /// Look up a message type by ID.
     pub fn lookup(&self, type_id: MessageTypeId) -> Option<&VerifiedMessageType> {
-        for slot in self.types.iter() {
-            if let Some(mt) = slot {
-                if mt.type_id == type_id {
-                    return Some(mt);
-                }
-            }
-        }
-        None
+        self.types.iter().flatten().find(|mt| mt.type_id == type_id)
     }
 
     /// Number of registered types.
@@ -381,7 +364,7 @@ static TENSOR_OUTPUT_INVARIANTS: &[Invariant] = &[
 
 static INFERENCE_REQUEST_INVARIANTS: &[Invariant] = &[
     Invariant::MaxPayloadBytes(64 * 1024 * 1024), // 64 MB
-    Invariant::EnumMembership(5),                  // InferenceRequestType has 4 variants (1-4)
+    Invariant::EnumMembership(5),                 // InferenceRequestType has 4 variants (1-4)
 ];
 
 static INFERENCE_RESPONSE_INVARIANTS: &[Invariant] = &[
@@ -428,18 +411,14 @@ static IPC_MESSAGE_INVARIANTS: &[Invariant] = &[
 
 // SHA-3-256 of formal/lean4/TensorTypeInvariants.lean (tensor type schema proofs)
 const TENSOR_PROOF_HASH: SchemaHash = [
-    0x2f, 0x99, 0x1c, 0xc6, 0xd2, 0xcf, 0x05, 0x4e,
-    0x69, 0xf0, 0x49, 0x78, 0xdc, 0x3a, 0x92, 0x1f,
-    0x44, 0x68, 0x29, 0xc2, 0xb7, 0xe0, 0x9e, 0xbd,
-    0xb6, 0x18, 0x06, 0x6d, 0x04, 0xda, 0x46, 0x10,
+    0x2f, 0x99, 0x1c, 0xc6, 0xd2, 0xcf, 0x05, 0x4e, 0x69, 0xf0, 0x49, 0x78, 0xdc, 0x3a, 0x92, 0x1f,
+    0x44, 0x68, 0x29, 0xc2, 0xb7, 0xe0, 0x9e, 0xbd, 0xb6, 0x18, 0x06, 0x6d, 0x04, 0xda, 0x46, 0x10,
 ];
 
 // SHA-3-256 of formal/lean4/MessageTypeProperties.lean (registry proofs)
 const REGISTRY_PROOF_HASH: SchemaHash = [
-    0xac, 0xf3, 0x35, 0xef, 0x68, 0x6c, 0xbb, 0x5e,
-    0xef, 0xc7, 0x20, 0x1e, 0x26, 0x59, 0xc4, 0x33,
-    0x7a, 0xce, 0x53, 0x46, 0xa4, 0xb3, 0x25, 0x19,
-    0xcd, 0x3f, 0x1f, 0xcc, 0xed, 0xfa, 0xda, 0x47,
+    0xac, 0xf3, 0x35, 0xef, 0x68, 0x6c, 0xbb, 0x5e, 0xef, 0xc7, 0x20, 0x1e, 0x26, 0x59, 0xc4, 0x33,
+    0x7a, 0xce, 0x53, 0x46, 0xa4, 0xb3, 0x25, 0x19, 0xcd, 0x3f, 0x1f, 0xcc, 0xed, 0xfa, 0xda, 0x47,
 ];
 
 /// Derive a per-type schema hash by XORing the base proof hash with the type ID.
@@ -698,11 +677,9 @@ mod tests {
         for i in 0..DEFAULT_MESSAGE_TYPES.len() {
             for j in (i + 1)..DEFAULT_MESSAGE_TYPES.len() {
                 assert_ne!(
-                    DEFAULT_MESSAGE_TYPES[i].schema_hash,
-                    DEFAULT_MESSAGE_TYPES[j].schema_hash,
+                    DEFAULT_MESSAGE_TYPES[i].schema_hash, DEFAULT_MESSAGE_TYPES[j].schema_hash,
                     "Types '{}' and '{}' should have different hashes",
-                    DEFAULT_MESSAGE_TYPES[i].name,
-                    DEFAULT_MESSAGE_TYPES[j].name,
+                    DEFAULT_MESSAGE_TYPES[i].name, DEFAULT_MESSAGE_TYPES[j].name,
                 );
             }
         }
@@ -890,7 +867,10 @@ mod tests {
             direction: DataFlowDirection::Inbound,
             schema_hash: UNVERIFIED_HASH,
             mode: EnforcementMode::Enforcing,
-            invariants: &[Invariant::ValueRange { min: -100, max: 100 }],
+            invariants: &[Invariant::ValueRange {
+                min: -100,
+                max: 100,
+            }],
         };
         let mut meta = MessageMetadata::empty();
         meta.sample_value = 50;
@@ -1073,9 +1053,9 @@ mod tests {
             schema_hash: UNVERIFIED_HASH,
             mode: EnforcementMode::Enforcing,
             invariants: &[
-                Invariant::MinRank(1),           // index 0
-                Invariant::MaxRank(4),           // index 1
-                Invariant::MaxElements(1000),    // index 2
+                Invariant::MinRank(1),        // index 0
+                Invariant::MaxRank(4),        // index 1
+                Invariant::MaxElements(1000), // index 2
             ],
         };
         let mut meta = MessageMetadata::empty();

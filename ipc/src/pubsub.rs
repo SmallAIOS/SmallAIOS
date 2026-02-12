@@ -335,8 +335,13 @@ mod tests {
     fn subscriber_buffer_full() {
         let mut sub = Subscriber::new(SubscriptionId(4), ke("full"));
         for i in 0..MAX_QUEUED {
-            sub.deliver(test_msg(ke("full"), vec![i as u8], i as u64, PublisherId(0)))
-                .unwrap();
+            sub.deliver(test_msg(
+                ke("full"),
+                vec![i as u8],
+                i as u64,
+                PublisherId(0),
+            ))
+            .unwrap();
         }
         let result = sub.deliver(test_msg(ke("full"), vec![0xFF], 999, PublisherId(0)));
         assert_eq!(result, Err(IpcError::BufferFull));

@@ -141,7 +141,11 @@ impl SecurityGate {
         }
 
         // Layer 3: Integrity check (Biba — no write-up)
-        if !crossing.label.integrity.may_flow_to(crossing.dest_integrity) {
+        if !crossing
+            .label
+            .integrity
+            .may_flow_to(crossing.dest_integrity)
+        {
             return self.make_verdict(crossing, 3, DenyReason::IntegrityViolation, type_registry);
         }
 
@@ -230,12 +234,9 @@ impl SecurityGate {
         let entry = AuditEntry {
             timestamp_ns: crossing.now,
             event_type,
-            task_id: crossing.task_id as u64,
+            task_id: crossing.task_id,
             resource_type: crossing.boundary as u8,
-            resource_instance: crossing
-                .label
-                .message_type
-                .map_or(0, |id| id.0 as u64),
+            resource_instance: crossing.label.message_type.map_or(0, |id| id.0 as u64),
             operation: Operation::new(op_str),
             result,
             capability_id: 0,
@@ -294,9 +295,9 @@ impl Default for SecurityGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::boxed::Box;
     use crate::capability::{CapRegistry, ResourceRef, ResourceType};
     use crate::message_types::{default_registry, MessageMetadata, TensorDtype};
+    use alloc::boxed::Box;
 
     /// Helper: create a cap registry with a pre-granted capability for task 1.
     fn setup_cap_registry() -> Box<CapRegistry> {
@@ -306,7 +307,7 @@ mod tests {
         reg
     }
 
-    fn base_crossing(metadata: &MessageMetadata) -> BoundaryCrossing {
+    fn base_crossing<'a>(metadata: &'a MessageMetadata) -> BoundaryCrossing<'a> {
         BoundaryCrossing {
             boundary: TrustBoundary::Network,
             direction: DataFlowDirection::Inbound,
@@ -354,11 +355,7 @@ mod tests {
         // Task 99 has no capabilities; use untyped so global Enforcing mode applies
         let crossing = BoundaryCrossing {
             task_id: 99,
-            label: SecurityLabel::new(
-                ClassificationLevel::Internal,
-                IntegrityLevel::Medium,
-                None,
-            ),
+            label: SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Medium, None),
             ..base_crossing(&meta)
         };
         let verdict = gate.check(&crossing, &cap_reg, &type_reg);
@@ -411,11 +408,7 @@ mod tests {
 
         // Low integrity to High dest; untyped for Enforcing
         let crossing = BoundaryCrossing {
-            label: SecurityLabel::new(
-                ClassificationLevel::Internal,
-                IntegrityLevel::Low,
-                None,
-            ),
+            label: SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Low, None),
             dest_integrity: IntegrityLevel::High,
             ..base_crossing(&meta)
         };
@@ -512,11 +505,7 @@ mod tests {
 
         // No message type — skips layer 4
         let crossing = BoundaryCrossing {
-            label: SecurityLabel::new(
-                ClassificationLevel::Internal,
-                IntegrityLevel::Medium,
-                None,
-            ),
+            label: SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Medium, None),
             ..base_crossing(&meta)
         };
         let verdict = gate.check(&crossing, &cap_reg, &type_reg);
@@ -621,7 +610,10 @@ mod tests {
 
         assert_eq!(gate.audit_count(), 1);
         let entry = gate.audit_buffer().get(0).unwrap();
-        assert_eq!(entry.event_type, crate::audit::taxonomy::AuditEventType::gate_allowed());
+        assert_eq!(
+            entry.event_type,
+            crate::audit::taxonomy::AuditEventType::gate_allowed()
+        );
         assert_eq!(entry.result, crate::audit::entry::AuditResult::Success);
         assert_eq!(entry.task_id, 1);
         assert_eq!(entry.resource_type, TrustBoundary::Network as u8);
@@ -643,7 +635,10 @@ mod tests {
 
         assert_eq!(gate.audit_count(), 1);
         let entry = gate.audit_buffer().get(0).unwrap();
-        assert_eq!(entry.event_type, crate::audit::taxonomy::AuditEventType::gate_denied());
+        assert_eq!(
+            entry.event_type,
+            crate::audit::taxonomy::AuditEventType::gate_denied()
+        );
         assert_eq!(entry.result, crate::audit::entry::AuditResult::Failure);
         assert_eq!(entry.task_id, 99);
     }
@@ -873,8 +868,18 @@ mod tests {
     fn integration_multi_flow_statistics() {
         let mut cap_reg = Box::new(CapRegistry::new());
         // Grant caps for tasks 1 and 2
-        let _ = cap_reg.create(1, ResourceRef::new(ResourceType::NetworkSocket, 1), Permissions::READ, 0);
-        let _ = cap_reg.create(2, ResourceRef::new(ResourceType::Device, 0), Permissions::READ, 0);
+        let _ = cap_reg.create(
+            1,
+            ResourceRef::new(ResourceType::NetworkSocket, 1),
+            Permissions::READ,
+            0,
+        );
+        let _ = cap_reg.create(
+            2,
+            ResourceRef::new(ResourceType::Device, 0),
+            Permissions::READ,
+            0,
+        );
 
         let type_reg = default_registry();
         let mut gate = SecurityGate::new(EnforcementMode::Permissive);
@@ -993,11 +998,7 @@ mod tests {
             boundary: TrustBoundary::Network,
             direction: DataFlowDirection::Inbound,
             task_id: 1,
-            label: SecurityLabel::new(
-                ClassificationLevel::Internal,
-                IntegrityLevel::Medium,
-                None,
-            ),
+            label: SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Medium, None),
             resource: ResourceRef::new(ResourceType::NetworkSocket, 1),
             required_permissions: Permissions::READ,
             metadata: &meta,
@@ -1038,11 +1039,7 @@ mod tests {
             boundary: TrustBoundary::Network,
             direction: DataFlowDirection::Inbound,
             task_id: 1,
-            label: SecurityLabel::new(
-                ClassificationLevel::Internal,
-                IntegrityLevel::Medium,
-                None,
-            ),
+            label: SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Medium, None),
             resource: ResourceRef::new(ResourceType::NetworkSocket, 1),
             required_permissions: Permissions::READ,
             metadata: &meta,
@@ -1054,11 +1051,7 @@ mod tests {
 
         // Integrity FAIL: Low → High (Biba violation)
         let c2 = BoundaryCrossing {
-            label: SecurityLabel::new(
-                ClassificationLevel::Internal,
-                IntegrityLevel::Low,
-                None,
-            ),
+            label: SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Low, None),
             dest_integrity: IntegrityLevel::High,
             ..c1
         };
@@ -1110,11 +1103,7 @@ mod tests {
             boundary: TrustBoundary::Network,
             direction: DataFlowDirection::Inbound,
             task_id: 1,
-            label: SecurityLabel::new(
-                ClassificationLevel::Internal,
-                IntegrityLevel::Low,
-                None,
-            ),
+            label: SecurityLabel::new(ClassificationLevel::Internal, IntegrityLevel::Low, None),
             resource: ResourceRef::new(ResourceType::NetworkSocket, 1),
             required_permissions: Permissions::READ,
             metadata: &meta,
