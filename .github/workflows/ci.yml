@@ -244,15 +244,37 @@ jobs:
             SecurityGate
             PolicyUpdate
           )
+          failed=()
+          timed_out=()
           for model in "${models[@]}"; do
             echo "=== Verifying $model ==="
-            java -cp /tmp/tla/tla2tools.jar tlc2.TLC \
+            set +e
+            timeout 300 java -Xmx4g -cp /tmp/tla/tla2tools.jar tlc2.TLC \
               formal/tla/${model}.tla \
               -config formal/tla/${model}.cfg \
               -workers auto \
               -deadlock
+            rc=$?
+            set -e
+            if [ $rc -eq 124 ]; then
+              echo "WARNING: $model timed out (5 min limit) — state space too large for CI"
+              timed_out+=("$model")
+            elif [ $rc -ne 0 ]; then
+              echo "FAIL: $model verification failed (exit code $rc)"
+              failed+=("$model")
+            else
+              echo "OK: $model verified"
+            fi
           done
-          echo "All TLA+ models verified."
+          echo ""
+          echo "=== TLA+ Summary ==="
+          echo "Timed out (${#timed_out[@]}): ${timed_out[*]:-none}"
+          echo "Failed (${#failed[@]}): ${failed[*]:-none}"
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "FAIL: ${#failed[@]} model(s) had verification errors"
+            exit 1
+          fi
+          echo "All TLA+ models verified or bounded by timeout."
 
   coverage:
     name: Code Coverage

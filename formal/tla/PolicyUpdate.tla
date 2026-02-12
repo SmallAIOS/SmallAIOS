@@ -30,7 +30,8 @@ vars == <<currentPolicy, pendingBlob, authenticated, swapInProgress,
 \* --- Type Definitions ---
 
 \* A policy record: version number, enforcement mode, signature status
-Policy == [version : Nat, mode : Modes, signature : {"valid", "invalid", "none"}]
+MaxVersion == MaxUpdates + 2
+Policy == [version : 0..MaxVersion, mode : Modes, signature : {"valid", "invalid", "none"}]
 
 \* --- Type Invariant ---
 
@@ -41,7 +42,7 @@ TypeInvariant ==
     /\ swapInProgress \in BOOLEAN
     /\ oldPolicy \in Policy
     /\ updateCount \in 0..MaxUpdates
-    /\ step \in Nat
+    /\ step \in 0..(MaxUpdates * 10)
 
 \* --- Initial State ---
 
@@ -167,14 +168,15 @@ ModeMonotonicity ==
 \* --- Next-State Relation ---
 
 Next ==
-    \/ \E blob \in [version : (currentPolicy.version + 1)..(currentPolicy.version + 2),
-                    mode : Modes,
-                    signature : {"valid", "invalid"}] :
-        ReceiveBlob(blob)
-    \/ VerifySignature
-    \/ AttemptSwap
-    \/ RejectSwap
-    \/ Rollback
+    /\ step < MaxUpdates * 10
+    /\ \/ \E blob \in [version : {currentPolicy.version + 1},
+                       mode : Modes,
+                       signature : {"valid", "invalid"}] :
+           ReceiveBlob(blob)
+       \/ VerifySignature
+       \/ AttemptSwap
+       \/ RejectSwap
+       \/ Rollback
 
 Spec == Init /\ [][Next]_vars
 

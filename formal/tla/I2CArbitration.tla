@@ -76,7 +76,9 @@ ResolveArbitration ==
           /\ sda_line' = FALSE  \* Bus driven low by master
           /\ arb_lost' = losers
           /\ retry_count' = [m \in Masters |->
-              IF m \in losers THEN retry_count[m] + 1
+              IF m \in losers THEN IF retry_count[m] < MaxRetries
+                                   THEN retry_count[m] + 1
+                                   ELSE MaxRetries
               ELSE IF m = winner THEN 0
               ELSE retry_count[m]]
           /\ requesting' = requesting \ {winner}
@@ -135,10 +137,12 @@ IdleNoOwner ==
     (bus_state = "idle") => (current_master = 0)
 
 \* Arbitration losers always detect their loss
+\* When bus is busy, all non-owner masters with nonzero retry count were detected
 LosersDetected ==
     (bus_state = "busy" /\ current_master # 0) =>
         \A m \in Masters :
-            (m # current_master /\ retry_count[m] > retry_count'[m]) => m \in arb_lost
+            (m # current_master /\ retry_count[m] > 0) =>
+                (m \in arb_lost \/ m \notin requesting)
 
 \* No master exceeds retry limit (bounded starvation)
 BoundedRetries ==

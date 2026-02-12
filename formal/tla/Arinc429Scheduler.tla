@@ -43,6 +43,7 @@ Init ==
 \* Advance one tick: increment all counters
 AdvanceTick ==
     /\ step < MaxSteps
+    /\ \A l \in Labels : counter[l] < period[l]  \* All due labels transmitted
     /\ counter' = [l \in Labels |-> counter[l] + 1]
     /\ tick' = tick + 1
     /\ transmitted' = {}

@@ -93,10 +93,10 @@ TypeInvariant ==
 
 \* No two allocated blocks overlap in their page ranges
 NoOverlap ==
-    \A <<a1, o1>>, <<a2, o2>> \in allocated :
-        (<<a1, o1>> /= <<a2, o2>>) =>
-        \/ a1 + BlockSize(o1) <= a2
-        \/ a2 + BlockSize(o2) <= a1
+    \A p1 \in allocated : \A p2 \in allocated :
+        (p1 /= p2) =>
+        \/ p1[1] + BlockSize(p1[2]) <= p2[1]
+        \/ p2[1] + BlockSize(p2[2]) <= p1[1]
 
 \* All addresses are within bounds [0, NumPages)
 InBounds ==
