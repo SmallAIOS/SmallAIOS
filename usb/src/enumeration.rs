@@ -6,8 +6,10 @@
 //! Handles the sequence: port reset → SET_ADDRESS → GET_DESCRIPTOR(Device) →
 //! GET_DESCRIPTOR(Configuration) → SET_CONFIGURATION.
 
-use crate::descriptor::{ConfigDescriptor, DeviceDescriptor, CONFIG_DESCRIPTOR_MIN_LEN, DEVICE_DESCRIPTOR_LEN};
-use crate::{request, request_type, descriptor_type, UsbError};
+use crate::descriptor::{
+    ConfigDescriptor, DeviceDescriptor, CONFIG_DESCRIPTOR_MIN_LEN, DEVICE_DESCRIPTOR_LEN,
+};
+use crate::{descriptor_type, request, request_type, UsbError};
 use smallaios_kernel::hal::{UsbHostController, UsbSetupPacket};
 
 /// Maximum USB device address (7-bit addressing, 1-127).
@@ -88,7 +90,7 @@ impl AddressAllocator {
 
     /// Release an address back to the pool.
     pub fn release(&mut self, addr: u8) {
-        if addr >= 1 && addr <= MAX_USB_ADDRESS {
+        if (1..=MAX_USB_ADDRESS).contains(&addr) {
             let word = (addr / 32) as usize;
             let bit = addr % 32;
             self.used[word] &= !(1 << bit);
@@ -187,7 +189,11 @@ pub fn enumerate_device(
     // Step 4: GET_DESCRIPTOR(Configuration) — first read header for total_length.
     let setup = make_get_config_descriptor(CONFIG_DESCRIPTOR_MIN_LEN as u16);
     let mut config_buf = [0u8; MAX_CONFIG_DESC_SIZE];
-    let result = hc.control_transfer(slot, &setup, Some(&mut config_buf[..CONFIG_DESCRIPTOR_MIN_LEN]))?;
+    let result = hc.control_transfer(
+        slot,
+        &setup,
+        Some(&mut config_buf[..CONFIG_DESCRIPTOR_MIN_LEN]),
+    )?;
     if !result.success || (result.bytes_transferred as usize) < CONFIG_DESCRIPTOR_MIN_LEN {
         return Err(UsbError::TransferError);
     }
@@ -323,7 +329,10 @@ mod tests {
 
     #[test]
     fn test_enumeration_state_variants() {
-        assert_ne!(EnumerationState::WaitingForReset, EnumerationState::Complete);
+        assert_ne!(
+            EnumerationState::WaitingForReset,
+            EnumerationState::Complete
+        );
         assert_eq!(EnumerationState::Failed, EnumerationState::Failed);
     }
 }

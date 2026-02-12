@@ -10,8 +10,8 @@ use super::registers::XhciCapabilities;
 use super::rings::{EventRing, ProducerRing};
 use super::trb::{Trb, TrbType};
 use smallaios_kernel::hal::{
-    HalError, UsbHostController, UsbPortStatus, UsbSetupPacket, UsbSpeed,
-    UsbTransferResult, UsbTransferType,
+    HalError, UsbHostController, UsbPortStatus, UsbSetupPacket, UsbSpeed, UsbTransferResult,
+    UsbTransferType,
 };
 
 /// Maximum number of device slots supported.
@@ -242,7 +242,8 @@ impl UsbHostController for XhciController {
             2u8 // OUT Data Stage
         };
 
-        let _setup_trb = Trb::setup_stage(setup_data, _transfer_type, self.command_ring.cycle_state());
+        let _setup_trb =
+            Trb::setup_stage(setup_data, _transfer_type, self.command_ring.cycle_state());
 
         let bytes = data.as_ref().map_or(0, |d| d.len());
 
@@ -462,7 +463,8 @@ mod tests {
         ctrl.init().unwrap();
         let slot = ctrl.device_attach(0).unwrap();
 
-        ctrl.configure_endpoint(slot, 0x81, UsbTransferType::Bulk, 512).unwrap();
+        ctrl.configure_endpoint(slot, 0x81, UsbTransferType::Bulk, 512)
+            .unwrap();
         assert_eq!(ctrl.slots[0].state, SlotState::Configured);
         assert_eq!(ctrl.slots[0].num_endpoints, 2); // EP0 + one bulk EP
     }

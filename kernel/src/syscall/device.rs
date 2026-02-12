@@ -213,7 +213,8 @@ static HANDLE_GENERATION: AtomicU32 = AtomicU32::new(1);
 pub fn register_device(entry: DeviceEntry) -> Option<usize> {
     // Safety: single-threaded kernel initialization
     unsafe {
-        for (i, slot) in DEVICE_TABLE.iter_mut().enumerate() {
+        let table = &raw mut DEVICE_TABLE;
+        for (i, slot) in (*table).iter_mut().enumerate() {
             if !slot.active {
                 *slot = DeviceEntry {
                     active: true,
@@ -229,10 +230,12 @@ pub fn register_device(entry: DeviceEntry) -> Option<usize> {
 /// Unregisters a device from the global device table.
 pub fn unregister_device(index: usize) -> bool {
     unsafe {
-        if index < MAX_DEVICES && DEVICE_TABLE[index].active {
-            DEVICE_TABLE[index].active = false;
+        let dtable = &raw mut DEVICE_TABLE;
+        if index < MAX_DEVICES && (*dtable)[index].active {
+            (*dtable)[index].active = false;
             // Close all handles pointing to this device
-            for handle in HANDLE_TABLE.iter_mut() {
+            let htable = &raw mut HANDLE_TABLE;
+            for handle in (*htable).iter_mut() {
                 if handle.active && handle.device_index as usize == index {
                     handle.active = false;
                 }
@@ -245,14 +248,18 @@ pub fn unregister_device(index: usize) -> bool {
 
 /// Returns the number of active devices.
 pub fn device_count() -> usize {
-    unsafe { DEVICE_TABLE.iter().filter(|d| d.active).count() }
+    unsafe {
+        let table = &raw const DEVICE_TABLE;
+        (*table).iter().filter(|d| d.active).count()
+    }
 }
 
 /// Returns a device entry by index.
 pub fn get_device(index: usize) -> Option<DeviceEntry> {
     unsafe {
-        if index < MAX_DEVICES && DEVICE_TABLE[index].active {
-            Some(DEVICE_TABLE[index])
+        let dtable = &raw const DEVICE_TABLE;
+        if index < MAX_DEVICES && (*dtable)[index].active {
+            Some((*dtable)[index])
         } else {
             None
         }
@@ -289,7 +296,8 @@ pub fn sys_dev_enumerate(args: &SyscallArgs) -> SyscallResult {
 
     unsafe {
         let buf = core::slice::from_raw_parts_mut(buf_ptr as *mut u8, buf_len);
-        for dev in DEVICE_TABLE.iter() {
+        let dtable = &raw const DEVICE_TABLE;
+        for dev in (*dtable).iter() {
             if !dev.active {
                 continue;
             }
@@ -324,12 +332,14 @@ pub fn sys_dev_open(args: &SyscallArgs) -> SyscallResult {
     }
 
     unsafe {
-        if !DEVICE_TABLE[device_index].active {
+        let dtable = &raw const DEVICE_TABLE;
+        if !(*dtable)[device_index].active {
             return SyscallError::NotFound.as_i64();
         }
 
         // Allocate a handle
-        for (i, handle) in HANDLE_TABLE.iter_mut().enumerate() {
+        let htable = &raw mut HANDLE_TABLE;
+        for (i, handle) in (*htable).iter_mut().enumerate() {
             if !handle.active {
                 handle.device_index = device_index as u16;
                 handle.active = true;
@@ -359,10 +369,11 @@ pub fn sys_dev_close(args: &SyscallArgs) -> SyscallResult {
     }
 
     unsafe {
-        if !HANDLE_TABLE[idx].active {
+        let htable = &raw mut HANDLE_TABLE;
+        if !(*htable)[idx].active {
             return SyscallError::InvalidHandle.as_i64();
         }
-        HANDLE_TABLE[idx].active = false;
+        (*htable)[idx].active = false;
     }
 
     SyscallError::Success.as_i64()
@@ -387,14 +398,16 @@ pub fn sys_dev_ioctl(args: &SyscallArgs) -> SyscallResult {
     }
 
     let device_entry = unsafe {
-        if !HANDLE_TABLE[idx].active {
+        let htable = &raw const HANDLE_TABLE;
+        let dtable = &raw const DEVICE_TABLE;
+        if !(*htable)[idx].active {
             return SyscallError::InvalidHandle.as_i64();
         }
-        let dev_idx = HANDLE_TABLE[idx].device_index as usize;
-        if dev_idx >= MAX_DEVICES || !DEVICE_TABLE[dev_idx].active {
+        let dev_idx = (*htable)[idx].device_index as usize;
+        if dev_idx >= MAX_DEVICES || !(*dtable)[dev_idx].active {
             return SyscallError::DeviceError.as_i64();
         }
-        DEVICE_TABLE[dev_idx]
+        (*dtable)[dev_idx]
     };
 
     // Dispatch based on command
@@ -467,10 +480,12 @@ pub fn sys_dev_dma_alloc(args: &SyscallArgs) -> SyscallResult {
 #[cfg(test)]
 pub fn reset_tables() {
     unsafe {
-        for d in DEVICE_TABLE.iter_mut() {
+        let dtable = &raw mut DEVICE_TABLE;
+        for d in (*dtable).iter_mut() {
             *d = DeviceEntry::empty();
         }
-        for h in HANDLE_TABLE.iter_mut() {
+        let htable = &raw mut HANDLE_TABLE;
+        for h in (*htable).iter_mut() {
             *h = HandleEntry::empty();
         }
     }
@@ -600,6 +615,8 @@ mod tests {
         assert_eq!(UART_SET_CONFIG, 0x130);
         assert_eq!(CSI_SET_CONFIG, 0x140);
         assert_eq!(I2S_SET_CONFIG, 0x150);
+    }
+
     // ── USB device management tests ──
 
     #[test]

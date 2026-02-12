@@ -88,15 +88,11 @@ impl IqRingBuffer {
         let w = self.write_idx.load(Ordering::Acquire) as usize;
         let mut r = self.read_idx.load(Ordering::Relaxed) as usize;
 
-        let avail = if w >= r {
-            w - r
-        } else {
-            self.capacity - r + w
-        };
+        let avail = if w >= r { w - r } else { self.capacity - r + w };
 
         let to_read = count.min(avail).min(output.len());
-        for i in 0..to_read {
-            output[i] = unsafe {
+        for out in output.iter_mut().take(to_read) {
+            *out = unsafe {
                 let ptr = self.buffer.as_ptr();
                 core::ptr::read(ptr.add(r))
             };
@@ -128,10 +124,10 @@ pub fn apply_hann_window(samples: &mut [(f32, f32)]) {
         return;
     }
     let n_minus_1 = (n - 1) as f32;
-    for i in 0..n {
+    for (i, sample) in samples.iter_mut().enumerate() {
         let w = 0.5 * (1.0 - cos_approx(2.0 * core::f32::consts::PI * i as f32 / n_minus_1));
-        samples[i].0 *= w;
-        samples[i].1 *= w;
+        sample.0 *= w;
+        sample.1 *= w;
     }
 }
 
@@ -143,10 +139,10 @@ pub fn apply_hamming_window(samples: &mut [(f32, f32)]) {
         return;
     }
     let n_minus_1 = (n - 1) as f32;
-    for i in 0..n {
+    for (i, sample) in samples.iter_mut().enumerate() {
         let w = 0.54 - 0.46 * cos_approx(2.0 * core::f32::consts::PI * i as f32 / n_minus_1);
-        samples[i].0 *= w;
-        samples[i].1 *= w;
+        sample.0 *= w;
+        sample.1 *= w;
     }
 }
 
@@ -176,7 +172,11 @@ pub fn apply_window(samples: &mut [(f32, f32)], window: WindowFunction) {
 /// overlap_fraction: 0.0 (no overlap) to <1.0 (nearly full overlap).
 pub fn compute_stride(window_size: usize, overlap_fraction: f32) -> usize {
     let stride = (window_size as f32 * (1.0 - overlap_fraction)) as usize;
-    if stride == 0 { 1 } else { stride }
+    if stride == 0 {
+        1
+    } else {
+        stride
+    }
 }
 
 // ────────────── FFT ──────────────
@@ -477,6 +477,12 @@ pub struct PipelineManager {
     active_count: usize,
 }
 
+impl Default for PipelineManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PipelineManager {
     /// Creates a new empty pipeline manager.
     pub const fn new() -> Self {
@@ -701,10 +707,10 @@ mod tests {
 
     #[test]
     fn test_stride_computation() {
-        assert_eq!(compute_stride(1024, 0.5), 512);  // 50% overlap
+        assert_eq!(compute_stride(1024, 0.5), 512); // 50% overlap
         assert_eq!(compute_stride(1024, 0.0), 1024); // No overlap
-        assert_eq!(compute_stride(1024, 0.75), 256);  // 75% overlap
-        assert_eq!(compute_stride(1, 0.99), 1);      // Min stride is 1
+        assert_eq!(compute_stride(1024, 0.75), 256); // 75% overlap
+        assert_eq!(compute_stride(1, 0.99), 1); // Min stride is 1
     }
 
     // ── FFT Tests ──

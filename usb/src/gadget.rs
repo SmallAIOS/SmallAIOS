@@ -7,11 +7,8 @@
 //! and EP0 standard request handling for presenting SmallAIOS as a
 //! USB peripheral device.
 
-use crate::{descriptor_type, request, request_type, UsbError};
-use smallaios_kernel::hal::{
-    UsbDeviceController, UsbDeviceEvent, UsbEndpointConfig, UsbSetupPacket, UsbSpeed,
-    UsbTransferType,
-};
+use crate::{descriptor_type, request, UsbError};
+use smallaios_kernel::hal::UsbSetupPacket;
 
 /// Maximum number of gadget functions that can be registered.
 pub const MAX_GADGET_FUNCTIONS: usize = 4;
@@ -94,7 +91,8 @@ pub fn compose_device_descriptor(config: &GadgetDeviceConfig) -> [u8; 18] {
     let mut d = [0u8; 18];
     d[0] = 18;
     d[1] = descriptor_type::DEVICE;
-    d[2] = 0x00; d[3] = 0x02; // USB 2.0
+    d[2] = 0x00;
+    d[3] = 0x02; // USB 2.0
     d[4] = config.device_class;
     d[5] = config.device_sub_class;
     d[6] = config.device_protocol;
@@ -308,14 +306,16 @@ mod tests {
         ep_in[1] = descriptor_type::ENDPOINT;
         ep_in[2] = 0x81;
         ep_in[3] = 0x02;
-        ep_in[4] = 0x00; ep_in[5] = 0x02; // 512
+        ep_in[4] = 0x00;
+        ep_in[5] = 0x02; // 512
 
         let mut ep_out = [0u8; 7];
         ep_out[0] = 7;
         ep_out[1] = descriptor_type::ENDPOINT;
         ep_out[2] = 0x02;
         ep_out[3] = 0x02;
-        ep_out[4] = 0x00; ep_out[5] = 0x02;
+        ep_out[4] = 0x00;
+        ep_out[5] = 0x02;
 
         let func = GadgetFunctionDescriptors {
             interfaces: [iface, [0u8; 9]],
@@ -365,7 +365,8 @@ mod tests {
         let mut response = [0u8; 64];
 
         let setup = UsbSetupPacket::new(0x80, request::GET_DESCRIPTOR, 0x0100, 0, 18);
-        let len = handle_standard_request(&setup, &device_desc, &config_desc, 9, &mut response).unwrap();
+        let len =
+            handle_standard_request(&setup, &device_desc, &config_desc, 9, &mut response).unwrap();
         assert_eq!(len, 18);
         assert_eq!(response[0], 18);
         assert_eq!(response[1], descriptor_type::DEVICE);
@@ -382,7 +383,8 @@ mod tests {
         let mut response = [0u8; 64];
 
         let setup = UsbSetupPacket::new(0x80, request::GET_DESCRIPTOR, 0x0200, 0, 9);
-        let len = handle_standard_request(&setup, &device_desc, &config_desc, 9, &mut response).unwrap();
+        let len =
+            handle_standard_request(&setup, &device_desc, &config_desc, 9, &mut response).unwrap();
         assert_eq!(len, 9);
     }
 
@@ -394,7 +396,8 @@ mod tests {
         let mut response = [0u8; 64];
 
         let setup = UsbSetupPacket::new(0x00, request::SET_ADDRESS, 5, 0, 0);
-        let len = handle_standard_request(&setup, &device_desc, &config_desc, 9, &mut response).unwrap();
+        let len =
+            handle_standard_request(&setup, &device_desc, &config_desc, 9, &mut response).unwrap();
         assert_eq!(len, 0);
     }
 

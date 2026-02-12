@@ -933,10 +933,7 @@ mod tests {
         );
 
         // DEV_ENUMERATE with zero args = query mode, returns device count (0 when no devices)
-        assert_eq!(
-            dispatch(&SyscallArgs::zero(nr::DEV_ENUMERATE)),
-            0
-        );
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::DEV_ENUMERATE)), 0);
         // DEV_OPEN with zero args = open device at index 0, returns NotFound
         assert_eq!(
             dispatch(&SyscallArgs::zero(nr::DEV_OPEN)),

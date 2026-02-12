@@ -228,6 +228,12 @@ pub struct HackRfDevice {
     board_id: u8,
 }
 
+impl Default for HackRfDevice {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HackRfDevice {
     /// Creates a new HackRF device instance.
     pub fn new() -> Self {
@@ -528,7 +534,10 @@ mod tests {
         assert!(!dev.is_streaming());
 
         // Can't start RX without configuring
-        assert_eq!(dev.set_mode(TransceiverMode::Rx), Err(SdrError::NotConfigured));
+        assert_eq!(
+            dev.set_mode(TransceiverMode::Rx),
+            Err(SdrError::NotConfigured)
+        );
 
         // Configure
         dev.set_config(SdrConfig {
@@ -544,7 +553,10 @@ mod tests {
         assert!(dev.is_streaming());
 
         // Half-duplex: can't switch to TX while in RX
-        assert_eq!(dev.set_mode(TransceiverMode::Tx), Err(SdrError::HalfDuplexViolation));
+        assert_eq!(
+            dev.set_mode(TransceiverMode::Tx),
+            Err(SdrError::HalfDuplexViolation)
+        );
 
         // Stop streaming first
         dev.stop_streaming();

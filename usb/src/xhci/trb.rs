@@ -211,7 +211,7 @@ impl Trb {
     /// `cycle`: current producer cycle state.
     pub fn setup_stage(setup_data: u64, transfer_type: u8, cycle: bool) -> Self {
         let flags = (transfer_type as u32 & 0x3) << 16; // TRT field
-        // IDT (Immediate Data) bit = bit 6
+                                                        // IDT (Immediate Data) bit = bit 6
         let flags = flags | (1 << 6);
         Self {
             parameter: setup_data,
@@ -325,11 +325,7 @@ impl Trb {
     }
 
     /// Create a Configure Endpoint Command TRB.
-    pub fn configure_endpoint_command(
-        input_context_ptr: u64,
-        slot_id: u8,
-        cycle: bool,
-    ) -> Self {
+    pub fn configure_endpoint_command(input_context_ptr: u64, slot_id: u8, cycle: bool) -> Self {
         let flags = (slot_id as u32) << 24;
         Self {
             parameter: input_context_ptr,

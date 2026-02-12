@@ -17,8 +17,8 @@ use core::fmt;
 
 pub mod descriptor;
 pub mod enumeration;
-pub mod transfer;
 pub mod registry;
+pub mod transfer;
 
 #[cfg(feature = "xhci")]
 pub mod xhci;
@@ -153,7 +153,10 @@ mod tests {
 
     #[test]
     fn test_usb_error_display() {
-        assert_eq!(format!("{}", UsbError::DescriptorTooShort), "descriptor too short");
+        assert_eq!(
+            format!("{}", UsbError::DescriptorTooShort),
+            "descriptor too short"
+        );
         assert_eq!(format!("{}", UsbError::Stall), "endpoint stall");
         assert_eq!(format!("{}", UsbError::TooManyDevices), "too many devices");
     }
@@ -162,13 +165,22 @@ mod tests {
     fn test_usb_error_from_hal() {
         let hal_err = smallaios_kernel::hal::HalError::Timeout;
         let usb_err: UsbError = hal_err.into();
-        assert_eq!(usb_err, UsbError::HalError(smallaios_kernel::hal::HalError::Timeout));
+        assert_eq!(
+            usb_err,
+            UsbError::HalError(smallaios_kernel::hal::HalError::Timeout)
+        );
     }
 
     #[test]
     fn test_request_type_constants() {
-        assert_eq!(request_type::DIR_IN | request_type::TYPE_STANDARD | request_type::RECIP_DEVICE, 0x80);
-        assert_eq!(request_type::DIR_OUT | request_type::TYPE_VENDOR | request_type::RECIP_DEVICE, 0x40);
+        assert_eq!(
+            request_type::DIR_IN | request_type::TYPE_STANDARD | request_type::RECIP_DEVICE,
+            0x80
+        );
+        assert_eq!(
+            request_type::DIR_OUT | request_type::TYPE_VENDOR | request_type::RECIP_DEVICE,
+            0x40
+        );
     }
 
     #[test]

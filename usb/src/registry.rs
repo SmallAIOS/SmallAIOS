@@ -26,7 +26,7 @@ pub enum DeviceMatch {
 }
 
 /// Information about an enumerated USB device.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DeviceEntry {
     /// Host controller slot ID.
     pub slot: u8,
@@ -42,20 +42,6 @@ pub struct DeviceEntry {
     pub claimed_interfaces: u8,
     /// Whether this entry is active (device connected).
     pub active: bool,
-}
-
-impl Default for DeviceEntry {
-    fn default() -> Self {
-        Self {
-            slot: 0,
-            port: 0,
-            vendor_id: 0,
-            product_id: 0,
-            device_class: 0,
-            claimed_interfaces: 0,
-            active: false,
-        }
-    }
 }
 
 /// USB device registry.
@@ -123,9 +109,9 @@ impl DeviceRegistry {
 
     /// Find a device by VID/PID match.
     pub fn find_by_vid_pid(&self, vendor_id: u16, product_id: u16) -> Option<&DeviceEntry> {
-        self.devices.iter().find(|d| {
-            d.active && d.vendor_id == vendor_id && d.product_id == product_id
-        })
+        self.devices
+            .iter()
+            .find(|d| d.active && d.vendor_id == vendor_id && d.product_id == product_id)
     }
 
     /// Find a device by slot ID.
@@ -172,9 +158,10 @@ impl DeviceRegistry {
     /// Check if a device matches the given criteria.
     pub fn matches(entry: &DeviceEntry, criteria: &DeviceMatch) -> bool {
         match criteria {
-            DeviceMatch::VidPid { vendor_id, product_id } => {
-                entry.vendor_id == *vendor_id && entry.product_id == *product_id
-            }
+            DeviceMatch::VidPid {
+                vendor_id,
+                product_id,
+            } => entry.vendor_id == *vendor_id && entry.product_id == *product_id,
             DeviceMatch::InterfaceClass { class, .. } => {
                 // Device-level class check; interface-level matching requires
                 // looking at the configuration descriptor.
@@ -249,7 +236,10 @@ mod tests {
 
         reg.claim_interface(1, 0).unwrap();
         // Double claim should fail.
-        assert_eq!(reg.claim_interface(1, 0), Err(UsbError::InterfaceAlreadyClaimed));
+        assert_eq!(
+            reg.claim_interface(1, 0),
+            Err(UsbError::InterfaceAlreadyClaimed)
+        );
     }
 
     #[test]
@@ -295,13 +285,24 @@ mod tests {
     #[test]
     fn test_device_match_vid_pid() {
         let entry = DeviceEntry {
-            slot: 1, port: 0, vendor_id: 0x1D50, product_id: 0x6089,
-            device_class: 0xFF, claimed_interfaces: 0, active: true,
+            slot: 1,
+            port: 0,
+            vendor_id: 0x1D50,
+            product_id: 0x6089,
+            device_class: 0xFF,
+            claimed_interfaces: 0,
+            active: true,
         };
-        let m = DeviceMatch::VidPid { vendor_id: 0x1D50, product_id: 0x6089 };
+        let m = DeviceMatch::VidPid {
+            vendor_id: 0x1D50,
+            product_id: 0x6089,
+        };
         assert!(DeviceRegistry::matches(&entry, &m));
 
-        let m2 = DeviceMatch::VidPid { vendor_id: 0x0456, product_id: 0xb673 };
+        let m2 = DeviceMatch::VidPid {
+            vendor_id: 0x0456,
+            product_id: 0xb673,
+        };
         assert!(!DeviceRegistry::matches(&entry, &m2));
     }
 }

@@ -387,11 +387,10 @@ pub fn find_interfaces(
                 if iface.interface_class == class
                     && iface.interface_sub_class == subclass
                     && iface.interface_protocol == protocol
+                    && count < out.len()
                 {
-                    if count < out.len() {
-                        out[count] = iface;
-                        count += 1;
-                    }
+                    out[count] = iface;
+                    count += 1;
                 }
             }
         }
@@ -413,7 +412,11 @@ pub fn find_endpoints_for_interface(
     let mut in_target_interface = false;
 
     for desc_bytes in DescriptorIter::new(config_data) {
-        let desc_type = if desc_bytes.len() >= 2 { desc_bytes[1] } else { continue };
+        let desc_type = if desc_bytes.len() >= 2 {
+            desc_bytes[1]
+        } else {
+            continue;
+        };
 
         if desc_type == crate::descriptor_type::INTERFACE {
             if let Ok(iface) = InterfaceDescriptor::parse(desc_bytes) {
@@ -446,12 +449,16 @@ mod tests {
         let mut d = [0u8; 18];
         d[0] = 18; // bLength
         d[1] = crate::descriptor_type::DEVICE;
-        d[2] = 0x00; d[3] = 0x02; // bcdUSB = 2.0
+        d[2] = 0x00;
+        d[3] = 0x02; // bcdUSB = 2.0
         d[4] = class;
         d[7] = 64; // bMaxPacketSize0
-        d[8] = (vid & 0xFF) as u8; d[9] = (vid >> 8) as u8;
-        d[10] = (pid & 0xFF) as u8; d[11] = (pid >> 8) as u8;
-        d[12] = 0x00; d[13] = 0x01; // bcdDevice = 1.0
+        d[8] = (vid & 0xFF) as u8;
+        d[9] = (vid >> 8) as u8;
+        d[10] = (pid & 0xFF) as u8;
+        d[11] = (pid >> 8) as u8;
+        d[12] = 0x00;
+        d[13] = 0x01; // bcdDevice = 1.0
         d[14] = 1; // iManufacturer
         d[15] = 2; // iProduct
         d[16] = 3; // iSerialNumber
@@ -475,21 +482,30 @@ mod tests {
     #[test]
     fn test_parse_device_descriptor_truncated() {
         let data = [0u8; 10];
-        assert_eq!(DeviceDescriptor::parse(&data), Err(UsbError::DescriptorTooShort));
+        assert_eq!(
+            DeviceDescriptor::parse(&data),
+            Err(UsbError::DescriptorTooShort)
+        );
     }
 
     #[test]
     fn test_parse_device_descriptor_bad_length() {
         let mut data = make_device_desc(0, 0, 0);
         data[0] = 12; // Wrong bLength
-        assert_eq!(DeviceDescriptor::parse(&data), Err(UsbError::InvalidDescriptorLength));
+        assert_eq!(
+            DeviceDescriptor::parse(&data),
+            Err(UsbError::InvalidDescriptorLength)
+        );
     }
 
     #[test]
     fn test_parse_device_descriptor_bad_type() {
         let mut data = make_device_desc(0, 0, 0);
         data[1] = 0x02; // Configuration instead of Device
-        assert_eq!(DeviceDescriptor::parse(&data), Err(UsbError::InvalidDescriptorType));
+        assert_eq!(
+            DeviceDescriptor::parse(&data),
+            Err(UsbError::InvalidDescriptorType)
+        );
     }
 
     #[test]
@@ -505,7 +521,8 @@ mod tests {
         let mut d = [0u8; 9];
         d[0] = 9;
         d[1] = crate::descriptor_type::CONFIGURATION;
-        d[2] = (total_len & 0xFF) as u8; d[3] = (total_len >> 8) as u8;
+        d[2] = (total_len & 0xFF) as u8;
+        d[3] = (total_len >> 8) as u8;
         d[4] = num_ifaces;
         d[5] = 1; // bConfigurationValue
         d[8] = 250; // MaxPower = 500mA
@@ -525,7 +542,10 @@ mod tests {
     #[test]
     fn test_parse_config_descriptor_truncated() {
         let data = [0u8; 5];
-        assert_eq!(ConfigDescriptor::parse(&data), Err(UsbError::DescriptorTooShort));
+        assert_eq!(
+            ConfigDescriptor::parse(&data),
+            Err(UsbError::DescriptorTooShort)
+        );
     }
 
     // -- Interface Descriptor -----------------------------------------------
@@ -557,7 +577,10 @@ mod tests {
     #[test]
     fn test_parse_interface_descriptor_truncated() {
         let data = [0u8; 5];
-        assert_eq!(InterfaceDescriptor::parse(&data), Err(UsbError::DescriptorTooShort));
+        assert_eq!(
+            InterfaceDescriptor::parse(&data),
+            Err(UsbError::DescriptorTooShort)
+        );
     }
 
     // -- Endpoint Descriptor ------------------------------------------------
@@ -568,7 +591,8 @@ mod tests {
         d[1] = crate::descriptor_type::ENDPOINT;
         d[2] = addr;
         d[3] = attrs;
-        d[4] = (max_pkt & 0xFF) as u8; d[5] = (max_pkt >> 8) as u8;
+        d[4] = (max_pkt & 0xFF) as u8;
+        d[5] = (max_pkt >> 8) as u8;
         d[6] = 0; // interval
         d
     }
@@ -582,7 +606,10 @@ mod tests {
         assert!(!desc.is_out());
         assert_eq!(desc.number(), 1);
         assert_eq!(desc.max_packet_size, 512);
-        assert_eq!(desc.transfer_type(), smallaios_kernel::hal::UsbTransferType::Bulk);
+        assert_eq!(
+            desc.transfer_type(),
+            smallaios_kernel::hal::UsbTransferType::Bulk
+        );
     }
 
     #[test]
@@ -598,13 +625,19 @@ mod tests {
     fn test_parse_endpoint_descriptor_interrupt() {
         let data = make_endpoint_desc(0x83, 0x03, 8);
         let desc = EndpointDescriptor::parse(&data).unwrap();
-        assert_eq!(desc.transfer_type(), smallaios_kernel::hal::UsbTransferType::Interrupt);
+        assert_eq!(
+            desc.transfer_type(),
+            smallaios_kernel::hal::UsbTransferType::Interrupt
+        );
     }
 
     #[test]
     fn test_parse_endpoint_descriptor_truncated() {
         let data = [0u8; 4];
-        assert_eq!(EndpointDescriptor::parse(&data), Err(UsbError::DescriptorTooShort));
+        assert_eq!(
+            EndpointDescriptor::parse(&data),
+            Err(UsbError::DescriptorTooShort)
+        );
     }
 
     // -- String Descriptor --------------------------------------------------
@@ -631,14 +664,20 @@ mod tests {
     fn test_parse_string_descriptor_truncated() {
         let data = [1];
         let mut out = [0u8; 32];
-        assert_eq!(parse_string_descriptor(&data, &mut out), Err(UsbError::DescriptorTooShort));
+        assert_eq!(
+            parse_string_descriptor(&data, &mut out),
+            Err(UsbError::DescriptorTooShort)
+        );
     }
 
     #[test]
     fn test_parse_string_descriptor_bad_type() {
         let data = [4, 0x01, 0x48, 0x00]; // type = DEVICE instead of STRING
         let mut out = [0u8; 32];
-        assert_eq!(parse_string_descriptor(&data, &mut out), Err(UsbError::InvalidDescriptorType));
+        assert_eq!(
+            parse_string_descriptor(&data, &mut out),
+            Err(UsbError::InvalidDescriptorType)
+        );
     }
 
     // -- Descriptor Iterator ------------------------------------------------
@@ -648,18 +687,32 @@ mod tests {
         // Config(9) + Interface(9) + Endpoint(7) + Endpoint(7) = 32 bytes total
         let mut data = [0u8; 32];
         // Config header
-        data[0] = 9; data[1] = crate::descriptor_type::CONFIGURATION;
-        data[2] = 32; data[3] = 0; // total length
-        data[4] = 1; data[5] = 1;
+        data[0] = 9;
+        data[1] = crate::descriptor_type::CONFIGURATION;
+        data[2] = 32;
+        data[3] = 0; // total length
+        data[4] = 1;
+        data[5] = 1;
         // Interface
-        data[9] = 9; data[10] = crate::descriptor_type::INTERFACE;
-        data[11] = 0; data[13] = 2; data[14] = 0xFF;
+        data[9] = 9;
+        data[10] = crate::descriptor_type::INTERFACE;
+        data[11] = 0;
+        data[13] = 2;
+        data[14] = 0xFF;
         // Endpoint 1 (bulk IN)
-        data[18] = 7; data[19] = crate::descriptor_type::ENDPOINT;
-        data[20] = 0x81; data[21] = 0x02; data[22] = 0x00; data[23] = 0x02;
+        data[18] = 7;
+        data[19] = crate::descriptor_type::ENDPOINT;
+        data[20] = 0x81;
+        data[21] = 0x02;
+        data[22] = 0x00;
+        data[23] = 0x02;
         // Endpoint 2 (bulk OUT)
-        data[25] = 7; data[26] = crate::descriptor_type::ENDPOINT;
-        data[27] = 0x02; data[28] = 0x02; data[29] = 0x00; data[30] = 0x02;
+        data[25] = 7;
+        data[26] = crate::descriptor_type::ENDPOINT;
+        data[27] = 0x02;
+        data[28] = 0x02;
+        data[29] = 0x00;
+        data[30] = 0x02;
 
         let descs: alloc::vec::Vec<&[u8]> = DescriptorIter::new(&data).collect();
         assert_eq!(descs.len(), 3); // interface + 2 endpoints
@@ -674,18 +727,30 @@ mod tests {
     fn test_find_interfaces() {
         let mut data = [0u8; 27];
         // Config header
-        data[0] = 9; data[1] = crate::descriptor_type::CONFIGURATION;
-        data[2] = 27; data[4] = 2;
+        data[0] = 9;
+        data[1] = crate::descriptor_type::CONFIGURATION;
+        data[2] = 27;
+        data[4] = 2;
         // Interface 0: class 0xFF
-        data[9] = 9; data[10] = crate::descriptor_type::INTERFACE;
-        data[11] = 0; data[14] = 0xFF; data[15] = 0x01; data[16] = 0x02;
+        data[9] = 9;
+        data[10] = crate::descriptor_type::INTERFACE;
+        data[11] = 0;
+        data[14] = 0xFF;
+        data[15] = 0x01;
+        data[16] = 0x02;
         // Interface 1: class 0x02 (CDC)
-        data[18] = 9; data[19] = crate::descriptor_type::INTERFACE;
-        data[20] = 1; data[23] = 0x02;
+        data[18] = 9;
+        data[19] = crate::descriptor_type::INTERFACE;
+        data[20] = 1;
+        data[23] = 0x02;
 
         let mut out = [InterfaceDescriptor {
-            interface_number: 0, alternate_setting: 0, num_endpoints: 0,
-            interface_class: 0, interface_sub_class: 0, interface_protocol: 0,
+            interface_number: 0,
+            alternate_setting: 0,
+            num_endpoints: 0,
+            interface_class: 0,
+            interface_sub_class: 0,
+            interface_protocol: 0,
             interface_index: 0,
         }; 4];
         let count = find_interfaces(&data, 0xFF, 0x01, 0x02, &mut out);
@@ -697,20 +762,34 @@ mod tests {
     fn test_find_endpoints_for_interface() {
         let mut data = [0u8; 32];
         // Config header
-        data[0] = 9; data[1] = crate::descriptor_type::CONFIGURATION;
+        data[0] = 9;
+        data[1] = crate::descriptor_type::CONFIGURATION;
         data[2] = 32;
         // Interface 0
-        data[9] = 9; data[10] = crate::descriptor_type::INTERFACE;
-        data[11] = 0; data[13] = 2;
+        data[9] = 9;
+        data[10] = crate::descriptor_type::INTERFACE;
+        data[11] = 0;
+        data[13] = 2;
         // EP 0x81 bulk IN
-        data[18] = 7; data[19] = crate::descriptor_type::ENDPOINT;
-        data[20] = 0x81; data[21] = 0x02; data[22] = 0x00; data[23] = 0x02;
+        data[18] = 7;
+        data[19] = crate::descriptor_type::ENDPOINT;
+        data[20] = 0x81;
+        data[21] = 0x02;
+        data[22] = 0x00;
+        data[23] = 0x02;
         // EP 0x02 bulk OUT
-        data[25] = 7; data[26] = crate::descriptor_type::ENDPOINT;
-        data[27] = 0x02; data[28] = 0x02; data[29] = 0x00; data[30] = 0x02;
+        data[25] = 7;
+        data[26] = crate::descriptor_type::ENDPOINT;
+        data[27] = 0x02;
+        data[28] = 0x02;
+        data[29] = 0x00;
+        data[30] = 0x02;
 
         let mut out = [EndpointDescriptor {
-            endpoint_address: 0, attributes: 0, max_packet_size: 0, interval: 0,
+            endpoint_address: 0,
+            attributes: 0,
+            max_packet_size: 0,
+            interval: 0,
         }; 4];
         let count = find_endpoints_for_interface(&data, 0, &mut out);
         assert_eq!(count, 2);

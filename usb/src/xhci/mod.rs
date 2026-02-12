@@ -7,7 +7,7 @@
 //! controllers. Handles device context management, command/transfer/event
 //! rings, and port management.
 
-pub mod trb;
-pub mod rings;
-pub mod registers;
 pub mod controller;
+pub mod registers;
+pub mod rings;
+pub mod trb;

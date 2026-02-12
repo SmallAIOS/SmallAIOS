@@ -192,7 +192,7 @@ impl XhciCapabilities {
             max_intrs,
             max_ports,
             scratchpad_bufs,
-            doorbell_offset: dboff & !0x3, // Must be 4-byte aligned
+            doorbell_offset: dboff & !0x3,  // Must be 4-byte aligned
             runtime_offset: rtsoff & !0x1F, // Must be 32-byte aligned
             context_size_64,
         }
@@ -218,7 +218,12 @@ mod tests {
         let rtsoff = 0x3000;
 
         let caps = XhciCapabilities::parse(
-            caplength_hciversion, hcsparams1, hcsparams2, hccparams1, dboff, rtsoff,
+            caplength_hciversion,
+            hcsparams1,
+            hcsparams2,
+            hccparams1,
+            dboff,
+            rtsoff,
         );
 
         assert_eq!(caps.op_reg_offset, 0x20);
@@ -235,7 +240,7 @@ mod tests {
     #[test]
     fn test_parse_capabilities_64bit_context() {
         let caps = XhciCapabilities::parse(
-            0x0110_0020, // version 1.1
+            0x0110_0020,      // version 1.1
             0x0200_0100 | 32, // 2 ports, 1 intr, 32 slots
             0,
             0x04, // CSZ bit set

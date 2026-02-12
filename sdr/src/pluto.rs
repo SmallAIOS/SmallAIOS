@@ -261,11 +261,7 @@ pub fn encode_readbuf(buf: &mut [u8], device: &str, byte_count: u32) -> Result<u
 
 /// Encodes an IIOD WRITEBUF command.
 /// Format: "WRITEBUF <device> <bytes>\n<data>"
-pub fn encode_writebuf(
-    buf: &mut [u8],
-    device: &str,
-    data: &[u8],
-) -> Result<usize, SdrError> {
+pub fn encode_writebuf(buf: &mut [u8], device: &str, data: &[u8]) -> Result<usize, SdrError> {
     let mut pos = 0;
     let parts: &[&[u8]] = &[b"WRITEBUF ", device.as_bytes(), b" "];
     for part in parts {
@@ -345,7 +341,7 @@ pub fn parse_response(data: &[u8]) -> Result<(i32, usize), SdrError> {
 
     let mut value: i32 = 0;
     for &b in &line[start..] {
-        if b < b'0' || b > b'9' {
+        if !b.is_ascii_digit() {
             return Err(SdrError::ProtocolError);
         }
         value = value.wrapping_mul(10).wrapping_add((b - b'0') as i32);
@@ -377,7 +373,7 @@ pub fn map_iiod_error(code: i32) -> SdrError {
 
 /// Validates AD9363 frequency range.
 pub fn validate_frequency(freq_hz: u64) -> Result<(), SdrError> {
-    if freq_hz < AD9363_FREQ_MIN_HZ || freq_hz > AD9363_FREQ_MAX_HZ {
+    if !(AD9363_FREQ_MIN_HZ..=AD9363_FREQ_MAX_HZ).contains(&freq_hz) {
         return Err(SdrError::InvalidParameter);
     }
     Ok(())
@@ -385,7 +381,7 @@ pub fn validate_frequency(freq_hz: u64) -> Result<(), SdrError> {
 
 /// Validates AD9363 hardware gain range.
 pub fn validate_gain(gain_db: i32) -> Result<(), SdrError> {
-    if gain_db < AD9363_GAIN_MIN_DB || gain_db > AD9363_GAIN_MAX_DB {
+    if !(AD9363_GAIN_MIN_DB..=AD9363_GAIN_MAX_DB).contains(&gain_db) {
         return Err(SdrError::InvalidParameter);
     }
     Ok(())

@@ -197,8 +197,8 @@ impl EventRing {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::trb::TrbType;
+    use super::*;
 
     #[test]
     fn test_producer_ring_new() {

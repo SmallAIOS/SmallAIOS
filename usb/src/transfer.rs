@@ -22,7 +22,9 @@ pub fn vendor_control_out(
     data: &[u8],
 ) -> Result<UsbTransferResult, UsbError> {
     let setup = UsbSetupPacket::new(
-        crate::request_type::DIR_OUT | crate::request_type::TYPE_VENDOR | crate::request_type::RECIP_DEVICE,
+        crate::request_type::DIR_OUT
+            | crate::request_type::TYPE_VENDOR
+            | crate::request_type::RECIP_DEVICE,
         request,
         value,
         index,
@@ -50,7 +52,9 @@ pub fn vendor_control_in(
     buf: &mut [u8],
 ) -> Result<UsbTransferResult, UsbError> {
     let setup = UsbSetupPacket::new(
-        crate::request_type::DIR_IN | crate::request_type::TYPE_VENDOR | crate::request_type::RECIP_DEVICE,
+        crate::request_type::DIR_IN
+            | crate::request_type::TYPE_VENDOR
+            | crate::request_type::RECIP_DEVICE,
         request,
         value,
         index,

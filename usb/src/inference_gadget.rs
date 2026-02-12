@@ -24,7 +24,7 @@ pub const MAX_OUTSTANDING_REQUESTS: usize = 4;
 
 /// Inference gadget USB endpoint addresses.
 pub const EP_BULK_OUT: u8 = 0x02; // Host → SmallAIOS (requests)
-pub const EP_BULK_IN: u8 = 0x81;  // SmallAIOS → Host (responses)
+pub const EP_BULK_IN: u8 = 0x81; // SmallAIOS → Host (responses)
 
 /// Inference gadget interface class (vendor-specific).
 pub const INTERFACE_CLASS: u8 = 0xFF;
@@ -256,7 +256,10 @@ mod tests {
     #[test]
     fn test_parse_request_too_short() {
         let data = [0u8; 5];
-        assert!(matches!(InferenceRequest::parse(&data), Err(UsbError::BufferTooSmall)));
+        assert!(matches!(
+            InferenceRequest::parse(&data),
+            Err(UsbError::BufferTooSmall)
+        ));
     }
 
     #[test]
@@ -270,16 +273,25 @@ mod tests {
     #[test]
     fn test_format_response_header() {
         let header = format_response_header(42, InferenceStatus::Ok, 256);
-        assert_eq!(u32::from_le_bytes([header[0], header[1], header[2], header[3]]), 42);
+        assert_eq!(
+            u32::from_le_bytes([header[0], header[1], header[2], header[3]]),
+            42
+        );
         assert_eq!(u16::from_le_bytes([header[4], header[5]]), 0x0000);
-        assert_eq!(u32::from_le_bytes([header[6], header[7], header[8], header[9]]), 256);
+        assert_eq!(
+            u32::from_le_bytes([header[6], header[7], header[8], header[9]]),
+            256
+        );
     }
 
     #[test]
     fn test_format_response_error() {
         let header = format_response_header(7, InferenceStatus::ModelNotFound, 0);
         assert_eq!(u16::from_le_bytes([header[4], header[5]]), 0x0002);
-        assert_eq!(u32::from_le_bytes([header[6], header[7], header[8], header[9]]), 0);
+        assert_eq!(
+            u32::from_le_bytes([header[6], header[7], header[8], header[9]]),
+            0
+        );
     }
 
     #[test]
@@ -305,10 +317,7 @@ mod tests {
         for i in 1..=MAX_OUTSTANDING_REQUESTS as u32 {
             tracker.add(i).unwrap();
         }
-        assert_eq!(
-            tracker.add(100),
-            Err(InferenceStatus::Busy)
-        );
+        assert_eq!(tracker.add(100), Err(InferenceStatus::Busy));
     }
 
     #[test]
@@ -320,10 +329,19 @@ mod tests {
     #[test]
     fn test_inference_status_from_u16() {
         assert_eq!(InferenceStatus::from_u16(0), InferenceStatus::Ok);
-        assert_eq!(InferenceStatus::from_u16(1), InferenceStatus::InvalidRequest);
+        assert_eq!(
+            InferenceStatus::from_u16(1),
+            InferenceStatus::InvalidRequest
+        );
         assert_eq!(InferenceStatus::from_u16(2), InferenceStatus::ModelNotFound);
-        assert_eq!(InferenceStatus::from_u16(3), InferenceStatus::InferenceError);
+        assert_eq!(
+            InferenceStatus::from_u16(3),
+            InferenceStatus::InferenceError
+        );
         assert_eq!(InferenceStatus::from_u16(4), InferenceStatus::Busy);
-        assert_eq!(InferenceStatus::from_u16(99), InferenceStatus::InferenceError);
+        assert_eq!(
+            InferenceStatus::from_u16(99),
+            InferenceStatus::InferenceError
+        );
     }
 }
