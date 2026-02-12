@@ -1,0 +1,16 @@
+[package]
+name = "smallaios-sdr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SmallAIOS SDR drivers: HackRF One, ADALM-PLUTO, IQ-to-ONNX inference pipeline"
+
+[features]
+default = ["hackrf", "pluto"]
+hackrf = []
+pluto = []
+iq-pipeline = []
+
+[dependencies]
+smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
+smallaios-usb = { path = "../usb" }

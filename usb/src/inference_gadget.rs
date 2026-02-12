@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn test_parse_request_too_short() {
         let data = [0u8; 5];
-        assert_eq!(InferenceRequest::parse(&data), Err(UsbError::BufferTooSmall));
+        assert!(matches!(InferenceRequest::parse(&data), Err(UsbError::BufferTooSmall)));
     }
 
     #[test]
