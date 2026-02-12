@@ -932,13 +932,12 @@ mod tests {
             SyscallError::NotSupported.as_i64()
         );
 
-        assert_eq!(
-            dispatch(&SyscallArgs::zero(nr::DEV_ENUMERATE)),
-            SyscallError::NotSupported.as_i64()
-        );
+        // DEV_ENUMERATE with zero args = query mode, returns device count (0 when no devices)
+        assert_eq!(dispatch(&SyscallArgs::zero(nr::DEV_ENUMERATE)), 0);
+        // DEV_OPEN with zero args = open device at index 0, returns NotFound
         assert_eq!(
             dispatch(&SyscallArgs::zero(nr::DEV_OPEN)),
-            SyscallError::NotSupported.as_i64()
+            SyscallError::NotFound.as_i64()
         );
         assert_eq!(
             dispatch(&SyscallArgs::zero(nr::DEV_CLOSE)),
@@ -1787,17 +1786,13 @@ mod tests {
 
     #[test]
     fn test_mcdc_dev_enumerate_branches() {
-        // buf_ptr=0, buf_len=0 → NotSupported (query size mode)
+        // buf_ptr=0, buf_len=0 → returns device count (0 = no devices registered)
         let args = SyscallArgs::new(nr::DEV_ENUMERATE, [0, 0, 0, 0, 0, 0]);
-        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+        assert_eq!(dispatch(&args), 0);
 
         // buf_ptr=0, buf_len=non-zero → InvalidArgument
         let args = SyscallArgs::new(nr::DEV_ENUMERATE, [0, 256, 0, 0, 0, 0]);
         assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
-
-        // buf_ptr=valid → NotSupported
-        let args = SyscallArgs::new(nr::DEV_ENUMERATE, [0x1000, 256, 0, 0, 0, 0]);
-        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
     }
 
     #[test]
@@ -1832,9 +1827,9 @@ mod tests {
         let args = SyscallArgs::new(nr::DEV_IOCTL, [0, 1, 0, 0, 0, 0]);
         assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
 
-        // handle=valid → NotSupported
+        // handle=1 with no open device → InvalidHandle (handle not active)
         let args = SyscallArgs::new(nr::DEV_IOCTL, [1, 1, 0, 0, 0, 0]);
-        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
     }
 
     #[test]
@@ -1843,9 +1838,9 @@ mod tests {
         let args = SyscallArgs::new(nr::DEV_CLOSE, [0, 0, 0, 0, 0, 0]);
         assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
 
-        // handle=valid → NotSupported
+        // handle=1 with no open device → InvalidHandle (handle not active)
         let args = SyscallArgs::new(nr::DEV_CLOSE, [1, 0, 0, 0, 0, 0]);
-        assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
+        assert_eq!(dispatch(&args), SyscallError::InvalidHandle.as_i64());
     }
 
     // --- System MC/DC ---

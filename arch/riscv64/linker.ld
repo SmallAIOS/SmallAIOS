@@ -51,8 +51,8 @@ SECTIONS
         __data_end = .;
     } > RAM
 
-    /* BSS (uninitialized data) */
-    .bss ALIGN(4K) :
+    /* BSS (uninitialized data) — NOLOAD keeps zero-init data out of the ELF file */
+    .bss (NOLOAD) : ALIGN(4K)
     {
         __bss_start = .;
         *(.bss .bss.*)
@@ -63,8 +63,8 @@ SECTIONS
 
     . = ALIGN(4K);
 
-    /* Per-hart kernel stacks */
-    .stacks :
+    /* Per-hart kernel stacks — NOLOAD since boot code zeroes BSS anyway */
+    .stacks (NOLOAD) :
     {
         __stacks_start = .;
         . += KERNEL_STACK_SIZE * MAX_HARTS;

@@ -119,5 +119,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallaios-sdr"
+version = "0.1.0"
+dependencies = [
+ "smallaios-kernel",
+ "smallaios-usb",
+]
+
+[[package]]
 name = "smallaios-security"
 version = "0.1.0"
+
+[[package]]
+name = "smallaios-usb"
+version = "0.1.0"
+dependencies = [
+ "smallaios-kernel",
+]

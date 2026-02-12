@@ -52,6 +52,14 @@ pub enum HalError {
     ParityError,
     /// UART/I2S: receive FIFO overflow, data lost.
     Overrun,
+    /// USB transfer failed (CRC, timeout, babble, etc.).
+    UsbTransferError,
+    /// USB endpoint returned STALL handshake.
+    UsbStall,
+    /// USB device not found at the specified address or slot.
+    UsbDeviceNotFound,
+    /// USB endpoint is in the halted state.
+    UsbEndpointHalted,
 }
 
 impl fmt::Display for HalError {
@@ -74,6 +82,10 @@ impl fmt::Display for HalError {
             HalError::FramingError => write!(f, "framing error"),
             HalError::ParityError => write!(f, "parity error"),
             HalError::Overrun => write!(f, "receive overrun"),
+            HalError::UsbTransferError => write!(f, "USB transfer error"),
+            HalError::UsbStall => write!(f, "USB endpoint stall"),
+            HalError::UsbDeviceNotFound => write!(f, "USB device not found"),
+            HalError::UsbEndpointHalted => write!(f, "USB endpoint halted"),
         }
     }
 }
@@ -863,6 +875,275 @@ pub trait I2sController {
 }
 
 // ---------------------------------------------------------------------------
+// USB Host Controller HAL — Section 27.4
+// ---------------------------------------------------------------------------
+
+/// USB transfer type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbTransferType {
+    /// Control transfers (endpoint 0).
+    Control,
+    /// Bulk transfers (large data, error-checked).
+    Bulk,
+    /// Interrupt transfers (small, periodic, guaranteed latency).
+    Interrupt,
+    /// Isochronous transfers (streaming, no error recovery).
+    Isochronous,
+}
+
+/// USB device speed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbSpeed {
+    /// Full Speed (12 Mbps, USB 1.1).
+    Full,
+    /// High Speed (480 Mbps, USB 2.0).
+    High,
+    /// SuperSpeed (5 Gbps, USB 3.0).
+    Super,
+    /// SuperSpeedPlus (10+ Gbps, USB 3.1+).
+    SuperPlus,
+}
+
+/// USB endpoint direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbDirection {
+    /// Host to device.
+    Out,
+    /// Device to host.
+    In,
+}
+
+/// USB port status reported by the host controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbPortStatus {
+    /// A device is connected to this port.
+    pub connected: bool,
+    /// The port is enabled and ready for transfers.
+    pub enabled: bool,
+    /// The port is currently being reset.
+    pub reset_active: bool,
+    /// Detected speed of the attached device.
+    pub speed: UsbSpeed,
+    /// Port number (0-based).
+    pub port: u8,
+}
+
+/// USB transfer completion status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbTransferResult {
+    /// Number of bytes actually transferred.
+    pub bytes_transferred: u32,
+    /// Transfer completed successfully.
+    pub success: bool,
+    /// Transfer was stalled by the device.
+    pub stalled: bool,
+    /// Transfer token for matching completions to submissions.
+    pub token: u32,
+}
+
+/// Setup packet for USB control transfers (8 bytes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbSetupPacket {
+    /// Request type (direction, type, recipient).
+    pub bm_request_type: u8,
+    /// Specific request code.
+    pub b_request: u8,
+    /// Value parameter.
+    pub w_value: u16,
+    /// Index parameter.
+    pub w_index: u16,
+    /// Number of bytes to transfer in the data phase.
+    pub w_length: u16,
+}
+
+impl UsbSetupPacket {
+    /// Create a new setup packet.
+    pub fn new(
+        bm_request_type: u8,
+        b_request: u8,
+        w_value: u16,
+        w_index: u16,
+        w_length: u16,
+    ) -> Self {
+        Self {
+            bm_request_type,
+            b_request,
+            w_value,
+            w_index,
+            w_length,
+        }
+    }
+
+    /// Encode setup packet to 8-byte array (little-endian).
+    pub fn to_bytes(&self) -> [u8; 8] {
+        let mut buf = [0u8; 8];
+        buf[0] = self.bm_request_type;
+        buf[1] = self.b_request;
+        buf[2] = (self.w_value & 0xFF) as u8;
+        buf[3] = (self.w_value >> 8) as u8;
+        buf[4] = (self.w_index & 0xFF) as u8;
+        buf[5] = (self.w_index >> 8) as u8;
+        buf[6] = (self.w_length & 0xFF) as u8;
+        buf[7] = (self.w_length >> 8) as u8;
+        buf
+    }
+
+    /// Decode setup packet from 8-byte array (little-endian).
+    pub fn from_bytes(buf: &[u8; 8]) -> Self {
+        Self {
+            bm_request_type: buf[0],
+            b_request: buf[1],
+            w_value: u16::from_le_bytes([buf[2], buf[3]]),
+            w_index: u16::from_le_bytes([buf[4], buf[5]]),
+            w_length: u16::from_le_bytes([buf[6], buf[7]]),
+        }
+    }
+}
+
+/// Hardware abstraction trait for USB host controllers (e.g., xHCI).
+///
+/// Provides port management, device attachment, and transfer submission.
+/// Concrete implementations live in the architecture crates.
+pub trait UsbHostController {
+    /// Initialize the host controller hardware.
+    fn init(&mut self) -> Result<(), HalError>;
+
+    /// Return the number of root hub ports.
+    fn port_count(&self) -> u8;
+
+    /// Query the status of a root hub port.
+    fn port_status(&self, port: u8) -> Result<UsbPortStatus, HalError>;
+
+    /// Reset a root hub port to initiate device attachment.
+    fn port_reset(&mut self, port: u8) -> Result<(), HalError>;
+
+    /// Allocate a device slot and assign a USB address after port reset.
+    ///
+    /// Returns the assigned slot ID (1-based).
+    fn device_attach(&mut self, port: u8) -> Result<u8, HalError>;
+
+    /// Release a device slot on disconnection.
+    fn device_detach(&mut self, slot: u8) -> Result<(), HalError>;
+
+    /// Submit a control transfer (SETUP + optional DATA + STATUS).
+    ///
+    /// `slot`: device slot ID.
+    /// `setup`: the 8-byte setup packet.
+    /// `data`: optional data buffer (direction determined by setup packet).
+    ///
+    /// Returns transfer result with actual bytes transferred.
+    fn control_transfer(
+        &mut self,
+        slot: u8,
+        setup: &UsbSetupPacket,
+        data: Option<&mut [u8]>,
+    ) -> Result<UsbTransferResult, HalError>;
+
+    /// Submit a bulk transfer.
+    ///
+    /// `slot`: device slot ID.
+    /// `endpoint`: endpoint address (bit 7 = direction: 1=IN, 0=OUT).
+    /// `data`: data buffer to send (OUT) or fill (IN).
+    ///
+    /// Returns transfer result with actual bytes transferred.
+    fn bulk_transfer(
+        &mut self,
+        slot: u8,
+        endpoint: u8,
+        data: &mut [u8],
+    ) -> Result<UsbTransferResult, HalError>;
+
+    /// Configure a bulk endpoint for a device slot.
+    ///
+    /// Must be called after SET_CONFIGURATION to set up transfer rings.
+    fn configure_endpoint(
+        &mut self,
+        slot: u8,
+        endpoint: u8,
+        transfer_type: UsbTransferType,
+        max_packet_size: u16,
+    ) -> Result<(), HalError>;
+
+    /// Poll for completed transfers and port status changes.
+    ///
+    /// Returns true if any events were processed.
+    fn poll_events(&mut self) -> Result<bool, HalError>;
+}
+
+// ---------------------------------------------------------------------------
+// USB Device Controller HAL — Section 27.5
+// ---------------------------------------------------------------------------
+
+/// USB device event from the device controller.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UsbDeviceEvent {
+    /// No event pending.
+    None,
+    /// USB bus reset received from host.
+    BusReset,
+    /// Speed negotiation completed.
+    SpeedNegotiated(UsbSpeed),
+    /// SETUP packet received on EP0.
+    SetupReceived(UsbSetupPacket),
+    /// OUT transfer completed on an endpoint.
+    OutComplete { endpoint: u8, bytes: u32 },
+    /// IN transfer completed (host read the data).
+    InComplete { endpoint: u8 },
+    /// Host sent suspend signal.
+    Suspend,
+    /// Host sent resume signal.
+    Resume,
+}
+
+/// Endpoint configuration for USB device mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsbEndpointConfig {
+    /// Endpoint address (0x01-0x0F for OUT, 0x81-0x8F for IN).
+    pub address: u8,
+    /// Transfer type.
+    pub transfer_type: UsbTransferType,
+    /// Maximum packet size in bytes.
+    pub max_packet_size: u16,
+}
+
+/// Hardware abstraction trait for USB device/gadget controllers (e.g., DWC3).
+///
+/// Provides device-mode operations: address assignment, endpoint configuration,
+/// and data transfer for presenting SmallAIOS as a USB peripheral.
+pub trait UsbDeviceController {
+    /// Initialize the device controller hardware.
+    fn init(&mut self) -> Result<(), HalError>;
+
+    /// Set the USB device address (called in response to SET_ADDRESS from host).
+    fn set_address(&mut self, addr: u8) -> Result<(), HalError>;
+
+    /// Configure an endpoint for data transfer.
+    fn configure_endpoint(&mut self, config: &UsbEndpointConfig) -> Result<(), HalError>;
+
+    /// Set the STALL condition on an endpoint.
+    fn stall_endpoint(&mut self, endpoint: u8) -> Result<(), HalError>;
+
+    /// Clear the STALL condition on an endpoint.
+    fn clear_stall(&mut self, endpoint: u8) -> Result<(), HalError>;
+
+    /// Write data to an IN endpoint (device → host).
+    ///
+    /// Returns the number of bytes queued for transmission.
+    fn write_endpoint(&mut self, endpoint: u8, data: &[u8]) -> Result<usize, HalError>;
+
+    /// Read data from an OUT endpoint (host → device).
+    ///
+    /// Returns the number of bytes read.
+    fn read_endpoint(&mut self, endpoint: u8, buf: &mut [u8]) -> Result<usize, HalError>;
+
+    /// Poll for device events (bus reset, setup packets, completions).
+    fn poll_events(&mut self) -> UsbDeviceEvent;
+
+    /// Report the maximum number of endpoints supported.
+    fn max_endpoints(&self) -> u8;
+}
+
+// ---------------------------------------------------------------------------
 // RISC-V HAL stubs — Section 27.3
 // ---------------------------------------------------------------------------
 
@@ -1470,6 +1751,19 @@ mod tests {
         assert_eq!(format!("{}", HalError::FramingError), "framing error");
         assert_eq!(format!("{}", HalError::ParityError), "parity error");
         assert_eq!(format!("{}", HalError::Overrun), "receive overrun");
+        assert_eq!(
+            format!("{}", HalError::UsbTransferError),
+            "USB transfer error"
+        );
+        assert_eq!(format!("{}", HalError::UsbStall), "USB endpoint stall");
+        assert_eq!(
+            format!("{}", HalError::UsbDeviceNotFound),
+            "USB device not found"
+        );
+        assert_eq!(
+            format!("{}", HalError::UsbEndpointHalted),
+            "USB endpoint halted"
+        );
     }
 
     #[test]
@@ -2132,5 +2426,88 @@ mod tests {
     fn test_i2s_bit_depth_variants() {
         assert_ne!(I2sBitDepth::Bits16, I2sBitDepth::Bits24);
         assert_ne!(I2sBitDepth::Bits24, I2sBitDepth::Bits32);
+    }
+
+    // -- USB types ----------------------------------------------------------
+
+    #[test]
+    fn test_usb_setup_packet_to_bytes() {
+        let pkt = UsbSetupPacket::new(0x80, 0x06, 0x0100, 0x0000, 18);
+        let bytes = pkt.to_bytes();
+        assert_eq!(bytes[0], 0x80); // bmRequestType
+        assert_eq!(bytes[1], 0x06); // bRequest (GET_DESCRIPTOR)
+        assert_eq!(bytes[2], 0x00); // wValue low (descriptor index)
+        assert_eq!(bytes[3], 0x01); // wValue high (descriptor type = DEVICE)
+        assert_eq!(bytes[4], 0x00);
+        assert_eq!(bytes[5], 0x00);
+        assert_eq!(bytes[6], 18); // wLength low
+        assert_eq!(bytes[7], 0x00);
+    }
+
+    #[test]
+    fn test_usb_setup_packet_roundtrip() {
+        let pkt = UsbSetupPacket::new(0xC0, 0x14, 0xABCD, 0x1234, 512);
+        let bytes = pkt.to_bytes();
+        let pkt2 = UsbSetupPacket::from_bytes(&bytes);
+        assert_eq!(pkt, pkt2);
+    }
+
+    #[test]
+    fn test_usb_port_status() {
+        let status = UsbPortStatus {
+            connected: true,
+            enabled: true,
+            reset_active: false,
+            speed: UsbSpeed::High,
+            port: 0,
+        };
+        assert!(status.connected);
+        assert_eq!(status.speed, UsbSpeed::High);
+    }
+
+    #[test]
+    fn test_usb_transfer_result() {
+        let result = UsbTransferResult {
+            bytes_transferred: 64,
+            success: true,
+            stalled: false,
+            token: 1,
+        };
+        assert!(result.success);
+        assert_eq!(result.bytes_transferred, 64);
+    }
+
+    #[test]
+    fn test_usb_speed_variants() {
+        assert_ne!(UsbSpeed::Full, UsbSpeed::High);
+        assert_ne!(UsbSpeed::Super, UsbSpeed::SuperPlus);
+    }
+
+    #[test]
+    fn test_usb_direction_variants() {
+        assert_ne!(UsbDirection::In, UsbDirection::Out);
+    }
+
+    #[test]
+    fn test_usb_transfer_type_variants() {
+        assert_ne!(UsbTransferType::Control, UsbTransferType::Bulk);
+        assert_ne!(UsbTransferType::Interrupt, UsbTransferType::Isochronous);
+    }
+
+    #[test]
+    fn test_usb_device_event_none() {
+        let event = UsbDeviceEvent::None;
+        assert_eq!(event, UsbDeviceEvent::None);
+    }
+
+    #[test]
+    fn test_usb_endpoint_config() {
+        let cfg = UsbEndpointConfig {
+            address: 0x81,
+            transfer_type: UsbTransferType::Bulk,
+            max_packet_size: 512,
+        };
+        assert_eq!(cfg.address, 0x81);
+        assert_eq!(cfg.max_packet_size, 512);
     }
 }
