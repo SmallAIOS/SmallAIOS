@@ -3,7 +3,8 @@ name = "smallaios-kernel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS kernel core: memory management, scheduler, syscall interface"
+repository.workspace = true
+description = "SmallAIOS core kernel: scheduler, memory management, syscalls, HAL"
 
 [features]
 default = []

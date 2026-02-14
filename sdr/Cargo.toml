@@ -3,7 +3,8 @@ name = "smallaios-sdr"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS SDR drivers: HackRF One, ADALM-PLUTO, IQ-to-ONNX inference pipeline"
+repository.workspace = true
+description = "SmallAIOS SDR drivers: HackRF One, ADALM-Pluto, IQ processing pipeline"
 
 [features]
 default = ["hackrf", "pluto"]

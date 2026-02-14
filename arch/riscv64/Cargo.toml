@@ -3,7 +3,8 @@ name = "smallaios-arch-riscv64"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS RISC-V RV64GC HAL: boot, SV48, PLIC, CLINT, SBI, UART"
+repository.workspace = true
+description = "SmallAIOS RISC-V 64 architecture HAL: boot, PLIC, CLINT, SBI"
 
 [lib]
 name = "smallaios_arch_riscv64"

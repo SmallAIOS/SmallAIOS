@@ -3,7 +3,8 @@ name = "smallaios-usb"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS USB stack: core protocol, xHCI host controller, gadget framework, inference gadget"
+repository.workspace = true
+description = "SmallAIOS USB stack: xHCI host controller, descriptors, gadget framework"
 
 [features]
 default = ["xhci"]

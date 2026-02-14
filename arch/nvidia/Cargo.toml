@@ -3,7 +3,8 @@ name = "smallaios-arch-nvidia"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS NVIDIA GPU HAL: PCIe, GPU init, memory, compute, DMA"
+repository.workspace = true
+description = "SmallAIOS NVIDIA GPU HAL: PCIe, memory, DMA, compute, PTX"
 
 [features]
 default = []

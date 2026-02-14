@@ -3,7 +3,8 @@ name = "smallaios-bench"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS benchmark infrastructure: cold start, warm inference, throughput, jitter, memory"
+repository.workspace = true
+description = "SmallAIOS benchmarks and performance testing utilities"
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }

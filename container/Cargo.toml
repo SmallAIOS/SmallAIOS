@@ -3,7 +3,8 @@ name = "smallaios-container"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS container interface: entry point, config, health, metrics"
+repository.workspace = true
+description = "SmallAIOS container interface: health checks, metrics, orchestration"
 
 [features]
 default = []

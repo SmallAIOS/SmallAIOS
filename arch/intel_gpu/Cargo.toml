@@ -3,7 +3,8 @@ name = "smallaios-arch-intel-gpu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS Intel GPU HAL: PCIe, GPU init, memory, compute, DMA"
+repository.workspace = true
+description = "SmallAIOS Intel GPU HAL: Xe-LP/HPG/HPC, EU compute, SPIR-V"
 
 [features]
 default = []
