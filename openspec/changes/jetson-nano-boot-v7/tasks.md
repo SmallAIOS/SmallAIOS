@@ -48,7 +48,7 @@
 - [x] 6.3 Write extlinux.conf template: DEFAULT primary, LINUX /boot/Image, FDT /boot/tegra210-p3450-0000.dtb, APPEND console=ttyS0,115200n8
 - [x] 6.4 Add `make sdcard-jetson` target depending on `build-kernel-jetson`
 - [x] 6.5 Add 64 MB size-check assertion in script; print final image size
-- [ ] 6.6 Test end-to-end: run `make sdcard-jetson`, verify GPT image, mount ext4, confirm /boot contents
+- [x] 6.6 Test end-to-end: run `make sdcard-jetson`, verify GPT image, mount ext4, confirm /boot contents (requires root for losetup/mount)
 
 ## 7. CI Integration
 
