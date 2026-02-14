@@ -1501,13 +1501,13 @@ mod tests {
     fn test_tx_config_default() {
         // IFG bits should be at bits 25:24.
         assert_ne!(TX_CONFIG_DEFAULT, 0);
-        assert!((TX_CONFIG_DEFAULT & (0x03 << 24)) != 0);
+        assert_ne!(TX_CONFIG_DEFAULT & (0x03 << 24), 0);
     }
 
     #[test]
     fn test_rx_config_default() {
         // Should accept broadcast (bit 0), multicast (bit 1), physical (bit 2).
-        assert!((RX_CONFIG_DEFAULT & 0x07) == 0x07);
+        assert_eq!(RX_CONFIG_DEFAULT & 0x07, 0x07);
     }
 
     // -- Stress: fill and drain TX ring multiple times ----------------------
@@ -1564,7 +1564,7 @@ mod tests {
     #[test]
     fn test_max_frame_size() {
         assert_eq!(MAX_FRAME_SIZE, 1536);
-        assert!(MAX_FRAME_SIZE >= 1514); // standard Ethernet
+        const { assert!(MAX_FRAME_SIZE >= 1514) }; // standard Ethernet
     }
 
     // -- TX enqueue copies data correctly -----------------------------------

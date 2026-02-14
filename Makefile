@@ -167,7 +167,8 @@ clippy:
 TLA_DIR = formal/tla
 TLA_MODELS = CanArbitration Arinc429Scheduler AfdxVirtualLink Mil1553Protocol \
              SpaceWireLink DdsReliableDelivery DdsDiscovery QuicFlowControl \
-             QuicMigration BuddyAllocator Scheduler
+             QuicMigration BuddyAllocator Scheduler USBEnumeration \
+             XhciTransferRing IQRingBuffer
 
 .PHONY: tla-verify
 tla-verify:

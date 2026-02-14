@@ -619,9 +619,7 @@ mod tests {
         let mut buf = [0u8; 128];
         let hdr_len = hdr.encode(&mut buf).unwrap();
         // Add minimal payload
-        for i in hdr_len..hdr_len + 20 {
-            buf[i] = 0;
-        }
+        buf[hdr_len..hdr_len + 20].fill(0);
         let total = hdr_len + 20;
         ep.receive(&buf[..total], b"local", b"remote", 1000)
             .unwrap();

@@ -611,7 +611,12 @@ mod tests {
     #[test]
     fn test_ring_buffer_write_read() {
         let mut storage = vec![(0.0f32, 0.0f32); 16];
-        let buf = unsafe { IqRingBuffer::new(core::mem::transmute(storage.as_mut_slice())) };
+        let buf = unsafe {
+            IqRingBuffer::new(core::mem::transmute::<
+                &mut [(f32, f32)],
+                &'static mut [(f32, f32)],
+            >(storage.as_mut_slice()))
+        };
 
         let samples = [(1.0, 2.0), (3.0, 4.0), (5.0, 6.0)];
         let written = buf.write(&samples);
@@ -629,7 +634,12 @@ mod tests {
     #[test]
     fn test_ring_buffer_overflow() {
         let mut storage = vec![(0.0f32, 0.0f32); 4]; // capacity 4, usable 3
-        let buf = unsafe { IqRingBuffer::new(core::mem::transmute(storage.as_mut_slice())) };
+        let buf = unsafe {
+            IqRingBuffer::new(core::mem::transmute::<
+                &mut [(f32, f32)],
+                &'static mut [(f32, f32)],
+            >(storage.as_mut_slice()))
+        };
 
         // Write 5 samples into buffer of effective capacity 3
         let samples: [(f32, f32); 5] = [(1.0, 1.0), (2.0, 2.0), (3.0, 3.0), (4.0, 4.0), (5.0, 5.0)];
@@ -647,7 +657,12 @@ mod tests {
     #[test]
     fn test_ring_buffer_empty_read() {
         let mut storage = vec![(0.0f32, 0.0f32); 8];
-        let buf = unsafe { IqRingBuffer::new(core::mem::transmute(storage.as_mut_slice())) };
+        let buf = unsafe {
+            IqRingBuffer::new(core::mem::transmute::<
+                &mut [(f32, f32)],
+                &'static mut [(f32, f32)],
+            >(storage.as_mut_slice()))
+        };
 
         let mut out = [(0.0f32, 0.0f32); 4];
         let read = buf.read(&mut out, 4);
@@ -726,9 +741,9 @@ mod tests {
         assert!(data[0].1.abs() < 0.1);
 
         // All other bins should be approximately 0
-        for i in 1..8 {
-            assert!(data[i].0.abs() < 0.1, "bin {} re = {}", i, data[i].0);
-            assert!(data[i].1.abs() < 0.1, "bin {} im = {}", i, data[i].1);
+        for (i, d) in data[1..8].iter().enumerate() {
+            assert!(d.0.abs() < 0.1, "bin {} re = {}", i + 1, d.0);
+            assert!(d.1.abs() < 0.1, "bin {} im = {}", i + 1, d.1);
         }
     }
 
@@ -737,9 +752,9 @@ mod tests {
         // Single tone at bin 1: x[n] = exp(j*2*pi*n/N) = (cos, sin)
         let n = 8;
         let mut data = [(0.0f32, 0.0f32); 8];
-        for i in 0..n {
+        for (i, d) in data[..n].iter_mut().enumerate() {
             let angle = 2.0 * core::f32::consts::PI * i as f32 / n as f32;
-            data[i] = (cos_approx(angle), sin_approx(angle));
+            *d = (cos_approx(angle), sin_approx(angle));
         }
         fft_radix2(&mut data).unwrap();
 

@@ -264,6 +264,9 @@ jobs:
             I2SRingBuffer
             SecurityGate
             PolicyUpdate
+            USBEnumeration
+            XhciTransferRing
+            IQRingBuffer
           )
           failed=()
           timed_out=()

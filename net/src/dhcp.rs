@@ -1427,8 +1427,10 @@ mod tests {
 
     #[test]
     fn test_end_option_overflow() {
-        let mut msg = DhcpMessage::default();
-        msg.options_len = MAX_OPTIONS_LEN;
+        let mut msg = DhcpMessage {
+            options_len: MAX_OPTIONS_LEN,
+            ..DhcpMessage::default()
+        };
         let result = msg.add_end_option();
         assert_eq!(result, Err(DhcpError::OptionsOverflow));
     }

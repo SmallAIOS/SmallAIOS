@@ -30,10 +30,12 @@ fn test_dhcp_full_handshake() {
     assert_eq!(discover.hlen, 6);
 
     // 2. Simulate OFFER
-    let mut offer = DhcpMessage::default();
-    offer.op = 2;
-    offer.xid = discover.xid;
-    offer.yiaddr = [192, 168, 1, 100];
+    let mut offer = DhcpMessage {
+        op: 2,
+        xid: discover.xid,
+        yiaddr: [192, 168, 1, 100],
+        ..DhcpMessage::default()
+    };
     offer.add_option(53, &[MSG_TYPE_OFFER]).unwrap();
     offer.add_option(54, &[192, 168, 1, 1]).unwrap();
     offer.add_option(1, &[255, 255, 255, 0]).unwrap();
@@ -46,10 +48,12 @@ fn test_dhcp_full_handshake() {
     assert!(request.is_some());
 
     // 3. Simulate ACK
-    let mut ack = DhcpMessage::default();
-    ack.op = 2;
-    ack.xid = discover.xid;
-    ack.yiaddr = [192, 168, 1, 100];
+    let mut ack = DhcpMessage {
+        op: 2,
+        xid: discover.xid,
+        yiaddr: [192, 168, 1, 100],
+        ..DhcpMessage::default()
+    };
     ack.add_option(53, &[MSG_TYPE_ACK]).unwrap();
     ack.add_option(54, &[192, 168, 1, 1]).unwrap();
     ack.add_option(1, &[255, 255, 255, 0]).unwrap();
