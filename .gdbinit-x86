@@ -1,0 +1,5 @@
+# SmallAIOS x86-64 GDB initialization
+# Usage: gdb -x .gdbinit-x86 target/x86_64-unknown-none/debug/smallaios-x86_64
+target remote :1234
+break kernel_main
+continue
