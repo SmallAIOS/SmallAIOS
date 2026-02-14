@@ -120,6 +120,7 @@ impl Aarch64PageTable {
 
     /// Get a mutable reference to a page table at a physical address.
     /// Assumes identity mapping.
+    #[allow(clippy::mut_from_ref)]
     unsafe fn table_at(&self, addr: PhysAddr) -> &mut PageTable {
         &mut *(addr.as_usize() as *mut PageTable)
     }
@@ -186,6 +187,9 @@ impl Aarch64PageTable {
     }
 
     /// Unmap a 4 KiB virtual page.
+    ///
+    /// # Safety
+    /// The virtual address must have been previously mapped.
     pub unsafe fn unmap_page(&mut self, virt: VirtAddr) -> Result<PhysAddr, MemError> {
         let levels = [PageLevel::L4, PageLevel::L3, PageLevel::L2];
         let mut table_addr = self.l0_addr;
@@ -268,7 +272,8 @@ pub unsafe fn configure_tcr() {
     // SH0 = 0b11 (Inner Shareable)
     // ORGN0 = 0b01 (WB RA WA)
     // IRGN0 = 0b01 (WB RA WA)
-    let tcr: u64 = (16 << 0)    // T0SZ
+    #[allow(clippy::identity_op)]
+    let tcr: u64 = (16 << 0)    // T0SZ (bits 5:0)
         | (0b00 << 14)          // TG0: 4 KiB
         | (0b11 << 12)          // SH0: Inner Shareable
         | (0b01 << 10)          // ORGN0: WB RA WA

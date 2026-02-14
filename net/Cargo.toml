@@ -11,6 +11,10 @@ default = ["ipv4", "ipv6", "quic"]
 ipv4 = []
 ipv6 = []
 quic = []
+rtl8169 = []
+dhcp = []
+static-ip = []
+tegra-net = ["rtl8169", "dhcp", "static-ip"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }

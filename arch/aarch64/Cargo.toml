@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "SmallAIOS AArch64 architecture HAL: boot, GICv3, paging, SVE"
+description = "SmallAIOS AArch64 architecture HAL: boot, GICv2/v3, paging, SVE, Tegra X1"
 
 [lib]
 name = "smallaios_arch_aarch64"
@@ -15,7 +15,9 @@ name = "smallaios-aarch64"
 path = "src/main.rs"
 
 [features]
-default = []
+default = ["qemu-virt"]
+qemu-virt = []
+tegra-x1 = []
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }

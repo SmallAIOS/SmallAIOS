@@ -31,7 +31,42 @@ pub mod virtio_net;
 #[cfg(feature = "quic")]
 pub mod quic;
 
+#[cfg(feature = "rtl8169")]
+pub mod rtl8169;
+
+#[cfg(feature = "dhcp")]
+pub mod dhcp;
+
+#[cfg(feature = "static-ip")]
+pub mod static_ip;
+
 use core::fmt;
+
+/// Link speed for network devices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkSpeed {
+    Mbps10,
+    Mbps100,
+    Mbps1000,
+}
+
+/// Trait for network device drivers.
+///
+/// Implementations provide raw Ethernet frame send/receive.
+pub trait NetworkDevice {
+    /// Send an Ethernet frame.
+    fn send(&mut self, frame: &[u8]) -> Result<(), NetError>;
+
+    /// Receive an Ethernet frame into the provided buffer.
+    /// Returns the number of bytes received.
+    fn receive(&mut self, buf: &mut [u8]) -> Result<usize, NetError>;
+
+    /// Get the device MAC address.
+    fn mac_address(&self) -> [u8; 6];
+
+    /// Get the current link speed, or None if link is down.
+    fn link_status(&self) -> Option<LinkSpeed>;
+}
 
 /// Network stack error type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +91,12 @@ pub enum NetError {
     NotImplemented,
     /// Operation timed out.
     Timeout,
+    /// Device has not been initialized.
+    DeviceNotReady,
+    /// Descriptor ring is full; no free entries available.
+    RingFull,
+    /// No data available for the requested operation.
+    NoData,
 }
 
 impl fmt::Display for NetError {
@@ -71,6 +112,9 @@ impl fmt::Display for NetError {
             NetError::NotFound => write!(f, "not found"),
             NetError::NotImplemented => write!(f, "not implemented"),
             NetError::Timeout => write!(f, "timeout"),
+            NetError::DeviceNotReady => write!(f, "device not ready"),
+            NetError::RingFull => write!(f, "ring full"),
+            NetError::NoData => write!(f, "no data"),
         }
     }
 }
