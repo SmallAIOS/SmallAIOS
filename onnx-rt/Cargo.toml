@@ -3,7 +3,8 @@ name = "smallaios-onnx-rt"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS ONNX runtime: model parser, graph optimizer, execution providers"
+repository.workspace = true
+description = "SmallAIOS ONNX runtime: protobuf parser, graph optimizer, operators"
 
 [features]
 default = ["cpu"]

@@ -25,6 +25,11 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
+repository = "https://github.com/SmallAIOS/SmallAIOS"
+homepage = "https://github.com/SmallAIOS/SmallAIOS"
+description = "Minimal, secure OS kernel for AI inference workloads"
+keywords = ["os", "kernel", "onnx", "inference", "unikernel"]
+categories = ["os", "no-std", "embedded"]
 
 [profile.release]
 opt-level = "z"

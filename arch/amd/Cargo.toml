@@ -3,7 +3,8 @@ name = "smallaios-arch-amd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS AMD GPU HAL: PCIe, GPU init, memory, compute, DMA"
+repository.workspace = true
+description = "SmallAIOS AMD GPU HAL: RDNA/CDNA, wavefront compute, HIP"
 
 [features]
 default = []

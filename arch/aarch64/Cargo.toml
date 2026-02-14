@@ -3,7 +3,8 @@ name = "smallaios-arch-aarch64"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS ARM64 HAL: boot, PL011 UART, entry point"
+repository.workspace = true
+description = "SmallAIOS AArch64 architecture HAL: boot, GICv3, paging, SVE"
 
 [lib]
 name = "smallaios_arch_aarch64"

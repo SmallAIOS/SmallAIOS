@@ -3,7 +3,8 @@ name = "smallaios-posix"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "SmallAIOS POSIX compatibility layer: minimal subset for AI runtime operations"
+repository.workspace = true
+description = "SmallAIOS POSIX compatibility layer for AI runtime operations"
 
 [features]
 default = []

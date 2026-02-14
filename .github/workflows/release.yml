@@ -1,0 +1,113 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+  BUILD_STD: "-Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem"
+
+jobs:
+  build-kernels:
+    name: Build Release Kernels
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-none
+            package: smallaios-arch-x86_64
+            binary: smallaios-x86_64
+            rustflags: "-D warnings -C link-arg=-Tarch/x86_64/linker.ld -C code-model=kernel"
+          - target: aarch64-unknown-none
+            package: smallaios-arch-aarch64
+            binary: smallaios-aarch64
+            rustflags: "-D warnings -C link-arg=-Tarch/aarch64/linker.ld"
+          - target: riscv64gc-unknown-none-elf
+            package: smallaios-arch-riscv64
+            binary: smallaios-riscv64
+            rustflags: "-D warnings -C link-arg=-Tarch/riscv64/linker.ld"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools
+          targets: ${{ matrix.target }}
+      - name: Build release kernel
+        run: cargo build --release --target ${{ matrix.target }} -p ${{ matrix.package }} $BUILD_STD
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.binary }}
+          path: target/${{ matrix.target }}/release/${{ matrix.binary }}
+
+  test:
+    name: Pre-release Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - run: >-
+          cargo test
+          -p smallaios-kernel
+          -p smallaios-security
+          -p smallaios-onnx-rt
+          -p smallaios-ipc
+          -p smallaios-net
+          -p smallaios-posix
+          -p smallaios-container
+          -p smallaios-bus
+          -p smallaios-peripheral --features smallaios-peripheral/full-peripheral
+          -p smallaios-usb
+          -p smallaios-sdr
+          -p smallaios-bench
+
+  release:
+    name: Create GitHub Release
+    needs: [build-kernels, test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          for arch in x86_64 aarch64 riscv64; do
+            bin="artifacts/smallaios-${arch}/smallaios-${arch}"
+            if [ -f "$bin" ]; then
+              size=$(stat --format=%s "$bin")
+              kb=$((size / 1024))
+              echo "smallaios-${arch}: ${kb} KB"
+              cp "$bin" "release/smallaios-${arch}"
+            fi
+          done
+          ls -la release/
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          # Extract section for this version from CHANGELOG.md
+          awk "/^## \[${tag}\]/{found=1; next} /^## \[/{if(found) exit} found{print}" CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "Release ${GITHUB_REF_NAME}" > release_notes.md
+          fi
+          cat release_notes.md
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release_notes.md
+          files: release/*
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'rc') }}

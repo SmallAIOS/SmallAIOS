@@ -3,6 +3,7 @@ name = "smallaios-peripheral"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "SmallAIOS peripheral drivers: I2C, SPI, GPIO, UART, CSI camera, I2S audio"
 
 [features]
