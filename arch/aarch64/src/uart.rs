@@ -1,85 +1,116 @@
 // Copyright 2026 SmallAIOS Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! PL011 UART driver for AArch64 (QEMU virt @ 0x0900_0000).
+//! UART driver for AArch64 platforms.
 //!
-//! Provides early boot diagnostics output. This is a polled
-//! (non-interrupt) driver suitable for boot and panic output.
+//! - **QEMU virt** (`qemu-virt`): PL011 UART @ 0x0900_0000
+//! - **Tegra X1** (`tegra-x1`): NS16550A UART-A @ 0x7000_6000 (reg-shift=2)
 //!
-//! QEMU's PL011 emulation auto-configures baud rate, so we
-//! just need to enable TX/RX and the UART itself.
+//! On Tegra X1, U-Boot pre-initializes UART-A at 115200 8N1.
+//! The `init()` function is a no-op — only polled TX is needed.
 
-/// PL011 UART base address for QEMU virt machine.
-const UART_BASE: usize = 0x0900_0000;
+use crate::platform;
 
-// PL011 register offsets
-const UARTDR: usize = 0x000; // Data register
-const UARTFR: usize = 0x018; // Flag register
-const UARTIBRD: usize = 0x024; // Integer baud rate divisor
-const UARTFBRD: usize = 0x028; // Fractional baud rate divisor
-const UARTLCR_H: usize = 0x02C; // Line control register
-const UARTCR: usize = 0x030; // Control register
-const UARTIMSC: usize = 0x038; // Interrupt mask set/clear
+// ─── PL011 (QEMU virt) ──────────────────────────────────────────────────────
 
-// Flag register bits
-const FR_TXFF: u32 = 1 << 5; // Transmit FIFO full
+#[cfg(feature = "qemu-virt")]
+mod pl011 {
+    use super::platform;
 
-/// Write a 32-bit value to a UART register.
-#[inline(always)]
-unsafe fn write_reg(offset: usize, val: u32) {
-    let ptr = (UART_BASE + offset) as *mut u32;
-    core::ptr::write_volatile(ptr, val);
-}
+    const UARTDR: usize = 0x000;
+    const UARTFR: usize = 0x018;
+    const UARTIBRD: usize = 0x024;
+    const UARTFBRD: usize = 0x028;
+    const UARTLCR_H: usize = 0x02C;
+    const UARTCR: usize = 0x030;
+    const UARTIMSC: usize = 0x038;
 
-/// Read a 32-bit value from a UART register.
-#[inline(always)]
-unsafe fn read_reg(offset: usize) -> u32 {
-    let ptr = (UART_BASE + offset) as *const u32;
-    core::ptr::read_volatile(ptr)
-}
+    const FR_TXFF: u32 = 1 << 5;
 
-/// Initialize PL011 UART.
-///
-/// QEMU's PL011 is largely pre-configured, but we perform a
-/// proper init sequence for bare-metal correctness:
-/// 1. Disable UART
-/// 2. Set baud rate (115200 @ 24MHz UARTCLK)
-/// 3. Configure 8N1, enable FIFOs
-/// 4. Enable TX, RX, and UART
-pub fn init() {
-    unsafe {
-        // Disable UART during configuration
-        write_reg(UARTCR, 0);
-
-        // Mask all interrupts (we use polling)
-        write_reg(UARTIMSC, 0);
-
-        // Set baud rate: 115200 with 24MHz clock
-        // Divisor = 24_000_000 / (16 * 115200) = 13.0208...
-        // Integer part = 13, Fractional part = round(0.0208 * 64) = 1
-        write_reg(UARTIBRD, 13);
-        write_reg(UARTFBRD, 1);
-
-        // 8 bits, no parity, 1 stop bit, enable FIFOs
-        write_reg(UARTLCR_H, (0b11 << 5) | (1 << 4)); // WLEN=8bit | FEN
-
-        // Enable UART, TX, RX
-        write_reg(UARTCR, (1 << 0) | (1 << 8) | (1 << 9)); // UARTEN | TXE | RXE
+    #[inline(always)]
+    unsafe fn write_reg(offset: usize, val: u32) {
+        let ptr = (platform::UART_BASE + offset) as *mut u32;
+        core::ptr::write_volatile(ptr, val);
     }
-}
 
-/// Wait until TX FIFO has space, then send a byte.
-pub fn putc(byte: u8) {
-    unsafe {
-        // Wait while TX FIFO is full
-        while (read_reg(UARTFR) & FR_TXFF) != 0 {
-            core::hint::spin_loop();
+    #[inline(always)]
+    unsafe fn read_reg(offset: usize) -> u32 {
+        let ptr = (platform::UART_BASE + offset) as *const u32;
+        core::ptr::read_volatile(ptr)
+    }
+
+    pub fn init() {
+        unsafe {
+            write_reg(UARTCR, 0);
+            write_reg(UARTIMSC, 0);
+            // 115200 baud @ 24 MHz: divisor = 13.0208
+            write_reg(UARTIBRD, 13);
+            write_reg(UARTFBRD, 1);
+            // 8N1, FIFO enabled
+            write_reg(UARTLCR_H, (0b11 << 5) | (1 << 4));
+            // Enable UART, TX, RX
+            write_reg(UARTCR, (1 << 0) | (1 << 8) | (1 << 9));
         }
-        write_reg(UARTDR, byte as u32);
+    }
+
+    pub fn putc(byte: u8) {
+        unsafe {
+            while (read_reg(UARTFR) & FR_TXFF) != 0 {
+                core::hint::spin_loop();
+            }
+            write_reg(UARTDR, byte as u32);
+        }
     }
 }
 
-/// Write a string to UART.
+// ─── NS16550A (Tegra X1) ────────────────────────────────────────────────────
+
+#[cfg(feature = "tegra-x1")]
+mod ns16550a {
+    use super::platform;
+
+    /// Transmit Holding Register (offset 0 × 4 = 0x00).
+    pub(crate) const THR: usize = 0x00;
+    /// Line Status Register (offset 5 × 4 = 0x14, reg-shift=2).
+    pub(crate) const LSR: usize = 0x14;
+    /// Transmitter Holding Register Empty bit.
+    pub(crate) const LSR_THRE: u32 = 1 << 5;
+
+    /// No-op: U-Boot pre-configures UART-A at 115200 8N1.
+    pub fn init() {}
+
+    /// Polled character output. Spin-waits on LSR THRE, then writes to THR.
+    pub fn putc(byte: u8) {
+        unsafe {
+            let lsr_ptr = (platform::UART_BASE + LSR) as *const u32;
+            let thr_ptr = (platform::UART_BASE + THR) as *mut u32;
+            while core::ptr::read_volatile(lsr_ptr) & LSR_THRE == 0 {
+                core::hint::spin_loop();
+            }
+            core::ptr::write_volatile(thr_ptr, byte as u32);
+        }
+    }
+}
+
+// ─── Public API (platform-independent) ───────────────────────────────────────
+
+/// Initialize the UART. No-op on Tegra (U-Boot pre-inits).
+pub fn init() {
+    #[cfg(feature = "qemu-virt")]
+    pl011::init();
+    #[cfg(feature = "tegra-x1")]
+    ns16550a::init();
+}
+
+/// Write a single byte to UART.
+pub fn putc(byte: u8) {
+    #[cfg(feature = "qemu-virt")]
+    pl011::putc(byte);
+    #[cfg(feature = "tegra-x1")]
+    ns16550a::putc(byte);
+}
+
+/// Write a string to UART, converting `\n` to `\r\n`.
 pub fn puts(s: &str) {
     for byte in s.bytes() {
         if byte == b'\n' {
@@ -109,6 +140,15 @@ pub fn put_hex(val: u64) {
     }
 }
 
+/// Write a 16-bit value as zero-padded 4-digit hex (e.g. `10EC`).
+pub fn put_hex16(val: u16) {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+    for i in (0..4).rev() {
+        let nibble = ((val >> (i * 4)) & 0xF) as usize;
+        putc(HEX[nibble]);
+    }
+}
+
 /// Write a 64-bit value as decimal.
 pub fn put_dec(val: u64) {
     if val == 0 {
@@ -116,7 +156,7 @@ pub fn put_dec(val: u64) {
         return;
     }
 
-    let mut buf = [0u8; 20]; // max 20 digits for u64
+    let mut buf = [0u8; 20];
     let mut pos = 0;
     let mut v = val;
 
@@ -126,8 +166,21 @@ pub fn put_dec(val: u64) {
         pos += 1;
     }
 
-    // Print in reverse
     for i in (0..pos).rev() {
         putc(buf[i]);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "tegra-x1")]
+    #[test]
+    fn test_ns16550a_register_offsets() {
+        // THR at offset 0 (register 0 << 2)
+        assert_eq!(super::ns16550a::THR, 0x00);
+        // LSR at offset 5 × 4 = 0x14 (register 5 << 2)
+        assert_eq!(super::ns16550a::LSR, 0x14);
+        // LSR THRE is bit 5
+        assert_eq!(super::ns16550a::LSR_THRE, 0x20);
     }
 }

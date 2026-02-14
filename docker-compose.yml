@@ -1,0 +1,43 @@
+# SmallAIOS Local Development
+# CPU:  docker compose up --build
+# GPU:  docker compose --profile gpu up --build
+
+services:
+  smallaios:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "/smallaios", "--health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  smallaios-gpu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ENABLE_GPU: "1"
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    profiles:
+      - gpu
+    healthcheck:
+      test: ["CMD", "/smallaios", "--health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

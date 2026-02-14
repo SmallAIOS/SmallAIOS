@@ -55,9 +55,12 @@ build-kernel-riscv-debug:
 
 .PHONY: run-x86
 run-x86: build-kernel-x86
+	@mkdir -p build
 	$(QEMU_X86) -machine q35 -cpu max -m 512M -nographic \
 		-kernel target/x86_64-unknown-none/release/smallaios-x86_64 \
-		-serial stdio
+		-serial stdio -serial file:build/serial.log \
+		-monitor telnet:localhost:4444,server,nowait
+	@echo "QEMU monitor: telnet localhost 4444"
 
 .PHONY: run-arm
 run-arm: build-kernel-arm
@@ -72,6 +75,38 @@ run-riscv: build-kernel-riscv
 		-kernel target/riscv64gc-unknown-none-elf/release/smallaios-riscv64 \
 		-serial stdio
 
+# === QEMU Development Targets ===
+
+.PHONY: debug-x86
+debug-x86: build-kernel-x86-debug
+	@mkdir -p build
+	@echo "Starting QEMU with GDB stub on port 1234 (paused)..."
+	@echo "Connect GDB: gdb -x .gdbinit-x86 target/x86_64-unknown-none/debug/smallaios-x86_64"
+	@echo "QEMU monitor: telnet localhost 4444"
+	$(QEMU_X86) -machine q35 -cpu max -m 512M -nographic \
+		-s -S \
+		-kernel target/x86_64-unknown-none/debug/smallaios-x86_64 \
+		-serial stdio -serial file:build/serial-debug.log \
+		-monitor telnet:localhost:4444,server,nowait
+
+.PHONY: run-x86-net
+run-x86-net: build-kernel-x86
+	@mkdir -p build
+	@echo "Starting QEMU with virtio-net (port 8080 forwarded)..."
+	@echo "QEMU monitor: telnet localhost 4444"
+	$(QEMU_X86) -machine q35 -cpu max -m 512M -nographic \
+		-kernel target/x86_64-unknown-none/release/smallaios-x86_64 \
+		-device virtio-net-pci,netdev=net0 \
+		-netdev user,id=net0,hostfwd=tcp::8080-:8080 \
+		-serial stdio -serial file:build/serial-net.log \
+		-monitor telnet:localhost:4444,server,nowait
+
+# === VMware ===
+
+.PHONY: vmware-x86
+vmware-x86: build-kernel-x86
+	./scripts/make-vmware-x86.sh
+
 # === Docker ===
 
 .PHONY: docker-build
@@ -83,6 +118,20 @@ docker-build:
 docker-push:
 	$(DOCKER) buildx build --platform linux/amd64,linux/arm64 \
 		-t smallaios/runtime:latest --push .
+
+# === Docker Local Development ===
+
+.PHONY: docker-local
+docker-local:
+	docker compose up --build
+
+.PHONY: docker-local-gpu
+docker-local-gpu:
+	docker compose --profile gpu up --build
+
+.PHONY: docker-local-clean
+docker-local-clean:
+	docker compose down --rmi local --volumes
 
 # === Testing ===
 
@@ -118,7 +167,8 @@ clippy:
 TLA_DIR = formal/tla
 TLA_MODELS = CanArbitration Arinc429Scheduler AfdxVirtualLink Mil1553Protocol \
              SpaceWireLink DdsReliableDelivery DdsDiscovery QuicFlowControl \
-             QuicMigration BuddyAllocator Scheduler
+             QuicMigration BuddyAllocator Scheduler USBEnumeration \
+             XhciTransferRing IQRingBuffer
 
 .PHONY: tla-verify
 tla-verify:
@@ -217,6 +267,35 @@ check-size-riscv: build-kernel-riscv
 
 .PHONY: check-size
 check-size: check-size-x86 check-size-arm check-size-riscv
+
+# === Jetson Nano (Tegra X1) ===
+
+.PHONY: build-kernel-jetson
+build-kernel-jetson:
+	RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker-tegra.ld" \
+	$(CARGO) build --release --target aarch64-unknown-none \
+		-p smallaios-arch-aarch64 --no-default-features --features tegra-x1 \
+		$(BUILD_STD)
+	$(or $(shell which rust-objcopy 2>/dev/null),$(shell which llvm-objcopy 2>/dev/null),$(shell ls /usr/bin/llvm-objcopy-* 2>/dev/null | head -1),llvm-objcopy) \
+		-O binary \
+		target/aarch64-unknown-none/release/smallaios-aarch64 \
+		target/aarch64-unknown-none/release/Image
+
+.PHONY: check-size-jetson
+check-size-jetson: build-kernel-jetson
+	@size=$$(stat --format=%s target/aarch64-unknown-none/release/Image 2>/dev/null || \
+		stat -f%z target/aarch64-unknown-none/release/Image); \
+	max=$$(($(MAX_KERNEL_SIZE_MB) * 1024 * 1024)); \
+	echo "Jetson Image: $$size bytes ($$(( size / 1024 )) KB)"; \
+	if [ "$$size" -gt "$$max" ]; then \
+		echo "FAIL: exceeds $(MAX_KERNEL_SIZE_MB) MB limit"; exit 1; \
+	else \
+		echo "PASS: within $(MAX_KERNEL_SIZE_MB) MB limit"; \
+	fi
+
+.PHONY: sdcard-jetson
+sdcard-jetson: build-kernel-jetson
+	./scripts/make-sdcard-jetson.sh
 
 # === Clean ===
 

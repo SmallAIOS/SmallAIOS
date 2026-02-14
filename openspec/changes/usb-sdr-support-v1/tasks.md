@@ -12,7 +12,7 @@
 - [x] 1.10 Implement USB device registry (VID/PID matching, interface class matching, driver binding)
 - [x] 1.11 Unit tests for descriptor parsers (100% coverage on valid/invalid/truncated descriptors)
 - [x] 1.12 Unit tests for enumeration state machine (success, timeout, stall scenarios)
-- [ ] 1.13 Write TLA+ model for USB enumeration state machine
+- [x] 1.13 Write TLA+ model for USB enumeration state machine
 
 ## 2. xHCI Host Controller Driver
 
@@ -32,8 +32,8 @@
 - [x] 2.14 Implement device disconnection handling (Disable Slot, resource cleanup)
 - [x] 2.15 Unit tests for TRB encoding/decoding (all TRB types: Normal, Setup, Data, Status, Link, Command, Event)
 - [x] 2.16 Unit tests for ring management (enqueue, dequeue, wrap-around, cycle bit)
-- [ ] 2.17 Integration test: xHCI init → enumerate USB device → bulk transfer (mock or QEMU)
-- [ ] 2.18 Write TLA+ model for xHCI transfer ring producer/consumer
+- [x] 2.17 Integration test: xHCI init → enumerate USB device → bulk transfer (mock or QEMU)
+- [x] 2.18 Write TLA+ model for xHCI transfer ring producer/consumer
 
 ## 3. USB Device/Gadget Controller Framework
 
@@ -59,7 +59,7 @@
 - [x] 4.7 Implement concurrent request tracking (up to 4 outstanding requests by request_id)
 - [x] 4.8 Implement DMA integration for zero-copy tensor transfer (tensors > 4096 bytes)
 - [x] 4.9 Unit tests for request/response protocol (valid, malformed, unknown model, concurrent)
-- [ ] 4.10 Integration test: host submits inference request over USB → ONNX result returned
+- [x] 4.10 Integration test: host submits inference request over USB → ONNX result returned
 
 ## 5. HackRF One SDR Driver
 
@@ -79,7 +79,7 @@
 - [x] 5.14 Unit tests for all vendor request encoding (verify bmRequestType, bRequest, wValue for each command)
 - [x] 5.15 Unit tests for IQ data format parsing (8-bit signed interleaved I/Q)
 - [x] 5.16 Unit tests for gain range validation (reject out-of-range values)
-- [ ] 5.17 Integration test: configure HackRF → start RX → receive IQ samples (mock USB)
+- [x] 5.17 Integration test: configure HackRF → start RX → receive IQ samples (mock USB)
 
 ## 6. ADALM-PLUTO SDR Driver
 
@@ -100,7 +100,7 @@
 - [x] 6.15 Unit tests for IIOD protocol encoder/decoder (all command types, error responses)
 - [x] 6.16 Unit tests for AD9363 attribute formatting (frequency, gain, sample rate value encoding)
 - [x] 6.17 Unit tests for IQ data format parsing (16-bit signed interleaved I/Q)
-- [ ] 6.18 Integration test: configure PlutoSDR → open buffer → stream IQ samples (mock USB)
+- [x] 6.18 Integration test: configure PlutoSDR → open buffer → stream IQ samples (mock USB)
 
 ## 7. SDR-to-ONNX Inference Pipeline
 
@@ -124,8 +124,8 @@
 - [x] 7.18 Unit tests for window functions (known-good reference values)
 - [x] 7.19 Unit tests for FFT (known-good reference: single tone, DC, Nyquist)
 - [x] 7.20 Unit tests for tensor formatting (shape validation, value correctness)
-- [ ] 7.21 Integration test: SDR mock → ring buffer → FFT → ONNX inference → Zenoh publish
-- [ ] 7.22 Write TLA+ model for ring buffer overflow protection
+- [x] 7.21 Integration test: SDR mock → ring buffer → FFT → ONNX inference → Zenoh publish
+- [x] 7.22 Write TLA+ model for ring buffer overflow protection
 
 ## 8. HAL and Syscall Integration
 

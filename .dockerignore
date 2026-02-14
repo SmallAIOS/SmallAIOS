@@ -1,0 +1,12 @@
+target/
+.git/
+build/
+states/
+*.vmdk
+*.vmx
+*.img
+*.log
+docs/
+formal/
+openspec/
+kubelet/
