@@ -77,6 +77,28 @@ kernel (foundation: memory, scheduler, syscall interface)
 - **Release profile:** `opt-level = "z"`, LTO enabled, single codegen unit (size-optimized)
 - **Linker scripts:** Custom per bare-metal target (see `.cargo/config.toml`)
 
+## Versioning
+
+**Semantic versioning** with conventional commits for PR titles.
+
+- All workspace crates share a single version in `Cargo.toml` `[workspace.package]`
+- PR titles must follow: `<type>[optional scope][!]: <description>`
+- CI validates PR titles and auto-labels with `semver:major`, `semver:minor`, `semver:patch`, or `semver:none`
+
+**Allowed types:** `feat`, `fix`, `docs`, `chore`, `ci`, `test`, `refactor`, `style`, `perf`, `build`, `revert`
+
+**Bump rules (pre-1.0):**
+| PR Title Pattern | Bump Level |
+|-----------------|------------|
+| `feat!:` or `fix!:` (breaking) | minor |
+| `feat:` or `feat(scope):` | minor |
+| `fix:`, `perf:`, `revert:` | patch |
+| `docs:`, `chore:`, `ci:`, `test:`, `refactor:`, `style:`, `build:` | none |
+
+**Scripts:**
+- `./scripts/check-pr-semver.sh "<title>"` — validate and print bump level
+- `./scripts/bump-version.sh <major|minor|patch|X.Y.Z>` — bump workspace version
+
 ## Git Workflow
 
 **Gitflow branching model:** feature branches -> `develop` -> `main`

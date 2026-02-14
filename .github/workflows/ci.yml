@@ -367,10 +367,61 @@ jobs:
           fi
           echo "PASS: Docker image within 15 MB limit"
 
+  semver-check:
+    name: Semver PR Title Check
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate PR title follows conventional commits
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          bump=$(./scripts/check-pr-semver.sh "$PR_TITLE")
+          echo "PR title: $PR_TITLE"
+          echo "Semver bump: $bump"
+          echo "bump=$bump" >> "$GITHUB_OUTPUT"
+      - name: Add semver label
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = context.payload.pull_request.title;
+            const labels = ['semver:major', 'semver:minor', 'semver:patch', 'semver:none'];
+            // Remove old semver labels
+            for (const label of labels) {
+              try {
+                await github.rest.issues.removeLabel({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  name: label,
+                });
+              } catch (e) { /* label not present */ }
+            }
+            // Determine bump from title
+            const breakingRe = /^(feat|fix|docs|chore|ci|test|refactor|style|perf|build|revert)(\([a-z0-9_/ -]+\))?!:/;
+            const typeRe = /^(feat|fix|docs|chore|ci|test|refactor|style|perf|build|revert)/;
+            const match = title.match(typeRe);
+            if (!match) return;
+            const type = match[1];
+            const breaking = breakingRe.test(title);
+            let bump;
+            if (breaking) bump = 'minor'; // pre-1.0: breaking = minor
+            else if (type === 'feat') bump = 'minor';
+            else if (['fix', 'perf', 'revert'].includes(type)) bump = 'patch';
+            else bump = 'none';
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: [`semver:${bump}`],
+            });
+
   change-gates:
     name: Change Gates
     runs-on: ubuntu-latest
-    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local]
+    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check]
     if: github.event_name == 'pull_request'
     steps:
       - name: All gates passed
