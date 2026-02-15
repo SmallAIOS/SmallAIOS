@@ -29,6 +29,9 @@ pub mod memory;
 pub mod pcie;
 pub mod ptx;
 
+#[cfg(feature = "tegra")]
+pub mod tegra;
+
 /// GPU error type used throughout the NVIDIA crate.
 #[derive(Clone, Debug, PartialEq)]
 pub enum GpuError {
@@ -54,4 +57,16 @@ pub enum GpuError {
     InvalidConfig,
     /// Transfer exceeds maximum allowed size.
     TransferTooLarge,
+    /// Firmware loading failed (Falcon DMA, ACR, or signature).
+    FirmwareLoadFailed,
+    /// Falcon microcontroller timed out during boot or operation.
+    FalconTimeout,
+    /// GPCPLL failed to achieve frequency lock.
+    GpcpllLockFailed,
+    /// GPU power partition failed to reach target state.
+    PowerPartitionTimeout,
+    /// FIFO channel or runlist error.
+    FifoError,
+    /// GPU MMU page table or TLB error.
+    GmmuError,
 }

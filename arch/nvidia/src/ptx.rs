@@ -117,6 +117,12 @@ pub struct PtxRegistry {
     next_id: u64,
 }
 
+impl Default for PtxRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PtxRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {

@@ -92,6 +92,22 @@ pub const FRAMEBUFFER_BASE: usize = 0x8F00_0000;
 #[cfg(feature = "tegra-x1")]
 pub const FRAMEBUFFER_SIZE: usize = 8 * 1024 * 1024;
 
+/// GPU BAR0 base address (GM20B control registers, 16 MiB).
+#[cfg(feature = "tegra-x1")]
+pub const GPU_BAR0_BASE: usize = 0x5700_0000;
+
+/// GPU BAR1 base address (GPU memory/FIFO, 16 MiB).
+#[cfg(feature = "tegra-x1")]
+pub const GPU_BAR1_BASE: usize = 0x5800_0000;
+
+/// GPU stall interrupt (GIC SPI 157, IRQ 189). Engine faults, semaphore, errors.
+#[cfg(feature = "tegra-x1")]
+pub const GPU_IRQ_STALL: u32 = 189;
+
+/// GPU non-stall interrupt (GIC SPI 158, IRQ 190). Completion notifications.
+#[cfg(feature = "tegra-x1")]
+pub const GPU_IRQ_NONSTALL: u32 = 190;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +172,14 @@ mod tests {
         assert!(FRAMEBUFFER_BASE >= DRAM_BASE);
         // Framebuffer end must not wrap around
         assert!(FRAMEBUFFER_BASE.checked_add(FRAMEBUFFER_SIZE).is_some());
+    }
+
+    #[cfg(feature = "tegra-x1")]
+    #[test]
+    fn test_tegra_x1_gpu_constants() {
+        assert_eq!(GPU_BAR0_BASE, 0x5700_0000);
+        assert_eq!(GPU_BAR1_BASE, 0x5800_0000);
+        assert_eq!(GPU_IRQ_STALL, 189);
+        assert_eq!(GPU_IRQ_NONSTALL, 190);
     }
 }
