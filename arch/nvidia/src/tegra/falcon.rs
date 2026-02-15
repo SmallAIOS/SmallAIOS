@@ -167,10 +167,7 @@ impl FalconEngine {
             mmio.write32(base + u64::from(FALCON_DMATRFFBOFFS), offset);
 
             // WRITE only (no IMEM flag => targets DMEM).
-            mmio.write32(
-                base + u64::from(FALCON_DMATRFCMD),
-                FALCON_DMATRFCMD_WRITE,
-            );
+            mmio.write32(base + u64::from(FALCON_DMATRFCMD), FALCON_DMATRFCMD_WRITE);
         }
 
         self.state = FalconState::Loading;
@@ -194,10 +191,7 @@ impl FalconEngine {
         mmio.write32(base + u64::from(FALCON_BOOTVEC), boot_vector);
 
         // Start the CPU.
-        mmio.write32(
-            base + u64::from(FALCON_CPUCTL),
-            FALCON_CPUCTL_STARTCPU,
-        );
+        mmio.write32(base + u64::from(FALCON_CPUCTL), FALCON_CPUCTL_STARTCPU);
 
         self.state = FalconState::Running;
         Ok(())
@@ -283,9 +277,7 @@ impl AcrBootloader {
         self.state = AcrState::PmuRunning;
 
         // Poll the mailbox register for ACR completion.
-        let mailbox_addr = bar0_base
-            + u64::from(FALCON_PMU_BASE)
-            + u64::from(FALCON_MAILBOX0);
+        let mailbox_addr = bar0_base + u64::from(FALCON_PMU_BASE) + u64::from(FALCON_MAILBOX0);
         let value = mmio.read32(mailbox_addr);
 
         if value == ACR_COMPLETION_VALUE {
@@ -391,8 +383,13 @@ impl FirmwareLoader {
         }
 
         // Step 1: Boot ACR via PMU.
-        self.acr
-            .boot(bar0_base, mmio, firmware.acr_ucode, firmware.pmu_bl, dma_base)?;
+        self.acr.boot(
+            bar0_base,
+            mmio,
+            firmware.acr_ucode,
+            firmware.pmu_bl,
+            dma_base,
+        )?;
 
         if !self.acr.is_complete() {
             self.state = FirmwareState::Error;
@@ -402,9 +399,7 @@ impl FirmwareLoader {
 
         // Step 2: After ACR completes, FECS firmware is authenticated and loaded
         // by the PMU. Verify FECS readiness by checking its CPUCTL register.
-        let fecs_cpuctl = bar0_base
-            + u64::from(FALCON_FECS_BASE)
-            + u64::from(FALCON_CPUCTL);
+        let fecs_cpuctl = bar0_base + u64::from(FALCON_FECS_BASE) + u64::from(FALCON_CPUCTL);
         let _fecs_status = mmio.read32(fecs_cpuctl);
         // In a real driver we would check status bits; for the HAL stub we
         // trust the ACR to have done its job.
@@ -412,9 +407,7 @@ impl FirmwareLoader {
         self.state = FirmwareState::FecsReady;
 
         // Step 3: Verify GPCCS readiness.
-        let gpccs_cpuctl = bar0_base
-            + u64::from(FALCON_GPCCS_BASE)
-            + u64::from(FALCON_CPUCTL);
+        let gpccs_cpuctl = bar0_base + u64::from(FALCON_GPCCS_BASE) + u64::from(FALCON_CPUCTL);
         let _gpccs_status = mmio.read32(gpccs_cpuctl);
         self.gpccs.state = FalconState::Running;
         self.state = FirmwareState::GpccsReady;
@@ -583,9 +576,7 @@ mod tests {
         // Find the CMD write and verify no IMEM flag.
         let cmd_writes: alloc::vec::Vec<_> = writes
             .iter()
-            .filter(|w| {
-                w.addr == BAR0 + u64::from(FALCON_FECS_BASE) + u64::from(FALCON_DMATRFCMD)
-            })
+            .filter(|w| w.addr == BAR0 + u64::from(FALCON_FECS_BASE) + u64::from(FALCON_DMATRFCMD))
             .collect();
 
         assert_eq!(cmd_writes.len(), 1);
@@ -650,8 +641,7 @@ mod tests {
         let mmio = MockMmio::new();
 
         // Pre-set mailbox to completion value.
-        let mailbox_addr =
-            BAR0 + u64::from(FALCON_PMU_BASE) + u64::from(FALCON_MAILBOX0);
+        let mailbox_addr = BAR0 + u64::from(FALCON_PMU_BASE) + u64::from(FALCON_MAILBOX0);
         mmio.set_read_value(mailbox_addr, ACR_COMPLETION_VALUE);
 
         let mut acr = AcrBootloader::new();
@@ -705,17 +695,14 @@ mod tests {
         let mmio = MockMmio::new();
 
         // Set up mailbox for ACR completion.
-        let mailbox_addr =
-            BAR0 + u64::from(FALCON_PMU_BASE) + u64::from(FALCON_MAILBOX0);
+        let mailbox_addr = BAR0 + u64::from(FALCON_PMU_BASE) + u64::from(FALCON_MAILBOX0);
         mmio.set_read_value(mailbox_addr, ACR_COMPLETION_VALUE);
 
         // Set up FECS and GPCCS CPUCTL reads.
-        let fecs_cpuctl =
-            BAR0 + u64::from(FALCON_FECS_BASE) + u64::from(FALCON_CPUCTL);
+        let fecs_cpuctl = BAR0 + u64::from(FALCON_FECS_BASE) + u64::from(FALCON_CPUCTL);
         mmio.set_read_value(fecs_cpuctl, FALCON_CPUCTL_STARTCPU);
 
-        let gpccs_cpuctl =
-            BAR0 + u64::from(FALCON_GPCCS_BASE) + u64::from(FALCON_CPUCTL);
+        let gpccs_cpuctl = BAR0 + u64::from(FALCON_GPCCS_BASE) + u64::from(FALCON_CPUCTL);
         mmio.set_read_value(gpccs_cpuctl, FALCON_CPUCTL_STARTCPU);
 
         let mut loader = FirmwareLoader::new();
