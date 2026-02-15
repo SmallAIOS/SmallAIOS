@@ -10,6 +10,7 @@ description = "SmallAIOS ONNX runtime: protobuf parser, graph optimizer, operato
 default = ["cpu"]
 cpu = []
 cuda = ["smallaios-arch-nvidia"]
+tegra = ["cuda", "smallaios-arch-nvidia/tegra"]
 formal-gate = ["dep:smallaios-security", "smallaios-security/formal-gate"]
 
 [dependencies]

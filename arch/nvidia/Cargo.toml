@@ -8,6 +8,7 @@ description = "SmallAIOS NVIDIA GPU HAL: PCIe, memory, DMA, compute, PTX"
 
 [features]
 default = []
+tegra = ["cc_53"]  # Tegra T210 SoC-integrated GM20B GPU
 cc_53 = []    # Maxwell (Jetson Nano)
 cc_70 = []    # Volta (V100)
 cc_75 = []    # Turing (T4)

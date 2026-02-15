@@ -128,6 +128,12 @@ pub struct ComputeEngine {
     failed_count: u64,
 }
 
+impl Default for ComputeEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ComputeEngine {
     /// Create a new, empty compute engine.
     pub fn new() -> Self {

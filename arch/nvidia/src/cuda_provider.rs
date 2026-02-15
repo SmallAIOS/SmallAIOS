@@ -232,7 +232,7 @@ impl CudaProvider {
 
         // 3. Build launch config: block = 256, grid = ceil(elements / 256).
         let block_size: u32 = 256;
-        let grid_size = (elements + block_size - 1) / block_size;
+        let grid_size = elements.div_ceil(block_size);
 
         let config = LaunchConfig {
             grid: Dim3::linear(grid_size),

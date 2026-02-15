@@ -83,9 +83,8 @@ pub struct InitConfig {
     pub power_state: PowerState,
 }
 
-impl InitConfig {
-    /// Sensible defaults: everything enabled, full power.
-    pub fn default() -> Self {
+impl Default for InitConfig {
+    fn default() -> Self {
         Self {
             enable_compute: true,
             enable_copy: true,
