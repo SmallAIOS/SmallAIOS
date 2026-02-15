@@ -23,13 +23,13 @@
 
 #![allow(dead_code)]
 
-pub mod regs;
-pub mod power;
 pub mod clock;
 pub mod falcon;
-pub mod gr;
 pub mod fifo;
 pub mod gmmu;
+pub mod gr;
+pub mod power;
+pub mod regs;
 
 /// Top-level Tegra GPU state machine.
 #[derive(Clone, Copy, Debug, PartialEq)]

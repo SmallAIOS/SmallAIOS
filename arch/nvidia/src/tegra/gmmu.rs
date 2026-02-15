@@ -10,8 +10,8 @@
 #![allow(dead_code)]
 
 extern crate alloc;
-use alloc::vec::Vec;
 use crate::GpuError;
+use alloc::vec::Vec;
 
 const GMMU_PAGE_SIZE_SMALL: usize = 4096;
 const GMMU_PAGE_SIZE_BIG: usize = 65536;
@@ -102,11 +102,7 @@ impl GmmuPageTable {
     /// Create an identity mapping (GPU VA == physical address).
     ///
     /// The mapping covers `[phys_start, phys_start + size)`.
-    pub fn create_identity_map(
-        &mut self,
-        phys_start: u64,
-        size: u64,
-    ) -> Result<(), GpuError> {
+    pub fn create_identity_map(&mut self, phys_start: u64, size: u64) -> Result<(), GpuError> {
         if size == 0 {
             return Err(GpuError::InvalidConfig);
         }
@@ -127,11 +123,7 @@ impl GmmuPageTable {
     }
 
     /// Activate the page table by writing the PDB base to GPU registers.
-    pub fn activate(
-        &mut self,
-        bar0_base: u64,
-        mmio: &impl MmioAccess,
-    ) -> Result<(), GpuError> {
+    pub fn activate(&mut self, bar0_base: u64, mmio: &impl MmioAccess) -> Result<(), GpuError> {
         if self.state != GmmuState::PageTablesCreated {
             return Err(GpuError::InvalidState);
         }
