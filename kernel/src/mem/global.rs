@@ -100,6 +100,55 @@ impl KernelAllocator {
     }
 }
 
+/// Attempt a slab allocation for the given size, growing the slab from the buddy
+/// allocator if the initial allocation fails.
+///
+/// # Safety
+/// `inner` must be a valid, exclusively-accessed `KernelAllocatorInner`.
+unsafe fn try_slab_alloc(inner: &mut KernelAllocatorInner, size: usize) -> Option<*mut u8> {
+    if let Ok(ptr) = inner.slab.allocate(size) {
+        return Some(ptr);
+    }
+
+    // Try to grow the slab by allocating a new page from buddy
+    let class_idx = slab::size_class_index(size)?;
+    let page = inner.buddy.allocate_page().ok()?;
+    if !inner.slab.add_slab_page(class_idx, page) {
+        return None;
+    }
+    inner.slab.allocate(size).ok()
+}
+
+/// Attempt a buddy allocation for the given size and alignment.
+///
+/// # Safety
+/// `inner` must be a valid, exclusively-accessed `KernelAllocatorInner`.
+unsafe fn try_buddy_alloc(inner: &mut KernelAllocatorInner, size: usize, align: usize) -> *mut u8 {
+    let alloc_size = if align > PAGE_SIZE_4K {
+        // Need extra pages for alignment
+        size + align
+    } else {
+        size
+    };
+
+    let pages_needed = alloc_size.div_ceil(PAGE_SIZE_4K);
+    let order = pages_needed.next_power_of_two().trailing_zeros() as usize;
+
+    match inner.buddy.allocate(order) {
+        Ok(addr) => {
+            let ptr = addr.as_usize() as *mut u8;
+            if align > PAGE_SIZE_4K {
+                // Align within the allocation
+                let aligned = ((ptr as usize) + align - 1) & !(align - 1);
+                aligned as *mut u8
+            } else {
+                ptr
+            }
+        }
+        Err(_) => ptr::null_mut(),
+    }
+}
+
 unsafe impl GlobalAlloc for KernelAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let inner = &mut *self.inner.get();
@@ -113,48 +162,13 @@ unsafe impl GlobalAlloc for KernelAllocator {
         // For small allocations that fit in slab classes, use slab allocator.
         // Slab guarantees at least 16-byte alignment which covers most cases.
         if size <= 2048 && align <= size.max(16) {
-            match inner.slab.allocate(size) {
-                Ok(ptr) => return ptr,
-                Err(_) => {
-                    // Try to grow the slab by allocating a new page from buddy
-                    if let Some(class_idx) = slab::size_class_index(size) {
-                        if let Ok(page) = inner.buddy.allocate_page() {
-                            if inner.slab.add_slab_page(class_idx, page) {
-                                if let Ok(ptr) = inner.slab.allocate(size) {
-                                    return ptr;
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(ptr) = try_slab_alloc(inner, size) {
+                return ptr;
             }
         }
 
         // For large allocations or high-alignment requests, use buddy allocator.
-        // Round up to pages.
-        let alloc_size = if align > PAGE_SIZE_4K {
-            // Need extra pages for alignment
-            size + align
-        } else {
-            size
-        };
-
-        let pages_needed = alloc_size.div_ceil(PAGE_SIZE_4K);
-        let order = pages_needed.next_power_of_two().trailing_zeros() as usize;
-
-        match inner.buddy.allocate(order) {
-            Ok(addr) => {
-                let ptr = addr.as_usize() as *mut u8;
-                if align > PAGE_SIZE_4K {
-                    // Align within the allocation
-                    let aligned = ((ptr as usize) + align - 1) & !(align - 1);
-                    aligned as *mut u8
-                } else {
-                    ptr
-                }
-            }
-            Err(_) => ptr::null_mut(),
-        }
+        try_buddy_alloc(inner, size, align)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {

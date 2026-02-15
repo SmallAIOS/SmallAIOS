@@ -190,29 +190,38 @@ impl VfsTree {
             if component.is_empty() {
                 continue;
             }
-            // Current node must be a directory
             if current_node.kind != VfsNodeKind::Directory {
                 return Err(Errno::ENOENT);
             }
-            // Search children
-            let mut found = false;
-            for i in 0..current_node.num_children {
-                if let Some(child_idx) = current_node.children[i] {
-                    if let Some(child) = &self.nodes[child_idx] {
-                        if child.name == component {
-                            current_node = child;
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if !found {
-                return Err(Errno::ENOENT);
-            }
+            current_node = self.resolve_child(current_node, component)?;
         }
 
         Ok(current_node)
+    }
+
+    /// Resolve a single path component within a directory node.
+    ///
+    /// Searches the directory's children for a node whose name matches
+    /// `component`. Returns `ENOENT` if no match is found.
+    fn resolve_child<'a>(
+        &'a self,
+        parent: &'a VfsNode,
+        component: &str,
+    ) -> Result<&'a VfsNode, Errno> {
+        for i in 0..parent.num_children {
+            let child_idx = match parent.children[i] {
+                Some(idx) => idx,
+                None => continue,
+            };
+            let child = match &self.nodes[child_idx] {
+                Some(node) => node,
+                None => continue,
+            };
+            if child.name == component {
+                return Ok(child);
+            }
+        }
+        Err(Errno::ENOENT)
     }
 
     /// Stat a file by its absolute path.

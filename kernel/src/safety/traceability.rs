@@ -252,51 +252,60 @@ impl TraceMatrix {
         };
 
         match artifact.artifact_type {
-            ArtifactType::Requirement => {
-                if artifact.links.is_empty() {
-                    return TraceStatus::Untraced;
-                }
-                let has_spec = artifact
-                    .links
-                    .iter()
-                    .any(|l| self.linked_type(l) == Some(ArtifactType::Specification));
-                let has_impl = artifact
-                    .links
-                    .iter()
-                    .any(|l| self.linked_type(l) == Some(ArtifactType::Implementation));
-                let has_test = artifact
-                    .links
-                    .iter()
-                    .any(|l| self.linked_type(l) == Some(ArtifactType::Test));
-
-                if has_spec && has_impl && has_test {
-                    TraceStatus::Traced
-                } else {
-                    TraceStatus::Partial
-                }
-            }
-            ArtifactType::Test => {
-                if artifact.links.is_empty() {
-                    return TraceStatus::Orphan;
-                }
-                let has_req = artifact
-                    .links
-                    .iter()
-                    .any(|l| self.linked_type(l) == Some(ArtifactType::Requirement));
-                if has_req {
-                    TraceStatus::Traced
-                } else {
-                    TraceStatus::Orphan
-                }
-            }
-            _ => {
-                if artifact.links.is_empty() {
-                    TraceStatus::Untraced
-                } else {
-                    TraceStatus::Traced
-                }
-            }
+            ArtifactType::Requirement => self.requirement_status(artifact),
+            ArtifactType::Test => self.test_status(artifact),
+            _ => self.generic_status(artifact),
         }
+    }
+
+    /// Determine trace status for a Requirement artifact.
+    ///
+    /// Fully traced when linked to Specification, Implementation, and Test.
+    /// Partial when some links exist. Untraced when no links at all.
+    fn requirement_status(&self, artifact: &Artifact) -> TraceStatus {
+        if artifact.links.is_empty() {
+            return TraceStatus::Untraced;
+        }
+
+        let has_all = self.has_linked_type(artifact, ArtifactType::Specification)
+            && self.has_linked_type(artifact, ArtifactType::Implementation)
+            && self.has_linked_type(artifact, ArtifactType::Test);
+
+        if has_all {
+            TraceStatus::Traced
+        } else {
+            TraceStatus::Partial
+        }
+    }
+
+    /// Determine trace status for a Test artifact.
+    ///
+    /// Traced when linked to a Requirement, Orphan otherwise.
+    fn test_status(&self, artifact: &Artifact) -> TraceStatus {
+        if self.has_linked_type(artifact, ArtifactType::Requirement) {
+            TraceStatus::Traced
+        } else {
+            TraceStatus::Orphan
+        }
+    }
+
+    /// Determine trace status for Specification, Implementation, or Verification artifacts.
+    ///
+    /// Traced when any links exist, Untraced otherwise.
+    fn generic_status(&self, artifact: &Artifact) -> TraceStatus {
+        if artifact.links.is_empty() {
+            TraceStatus::Untraced
+        } else {
+            TraceStatus::Traced
+        }
+    }
+
+    /// Check whether an artifact has at least one link to the given artifact type.
+    fn has_linked_type(&self, artifact: &Artifact, target: ArtifactType) -> bool {
+        artifact
+            .links
+            .iter()
+            .any(|l| self.linked_type(l) == Some(target))
     }
 
     /// Generates a coverage report for all requirements in the matrix.
