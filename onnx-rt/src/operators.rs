@@ -345,6 +345,57 @@ fn compute_strides(shape: &[i64]) -> Vec<usize> {
     strides
 }
 
+// ---------------------------------------------------------------------------
+// Broadcast iteration helpers
+// ---------------------------------------------------------------------------
+
+/// Advances a coordinate vector by one step in row-major order for the given
+/// output shape. The coordinate is updated in-place.
+///
+/// This is the shared "next coordinate" step used by all broadcast-based
+/// element-wise operators (Add, Softmax, etc.).
+#[inline]
+fn next_coord(coord: &mut [usize], out_dims: &[i64]) {
+    let ndim = coord.len();
+    let mut carry = true;
+    for d in (0..ndim).rev() {
+        if carry {
+            coord[d] += 1;
+            if coord[d] >= out_dims[d] as usize {
+                coord[d] = 0;
+            } else {
+                carry = false;
+            }
+        }
+    }
+}
+
+/// Computes the linear index into a tensor's flat data buffer for a given
+/// coordinate in the broadcast output space.
+///
+/// `tensor_dims` and `tensor_strides` describe the input tensor, and
+/// `dim_offset` is `out_ndim - tensor_ndim` (the left-padding for
+/// broadcasting alignment).
+#[inline]
+fn broadcast_linear_index(
+    coord: &[usize],
+    tensor_dims: &[i64],
+    tensor_strides: &[usize],
+    dim_offset: usize,
+) -> usize {
+    tensor_dims
+        .iter()
+        .enumerate()
+        .zip(tensor_strides.iter())
+        .fold(0usize, |acc, ((d, &dim), &stride)| {
+            if dim as usize != 1 {
+                acc + coord[d + dim_offset] * stride
+            } else {
+                acc
+            }
+        })
+}
+
 /// Element-wise addition of two input tensors with broadcasting.
 ///
 /// Supports ONNX NumPy-style broadcasting. Both inputs must be Float type.
@@ -375,43 +426,12 @@ pub fn op_add(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     // Iterate over every element in the output shape
     let mut coord = alloc::vec![0usize; ndim];
     for i in 0..total {
-        // Convert linear index to coordinate
         if i > 0 {
-            let mut carry = true;
-            for d in (0..ndim).rev() {
-                if carry {
-                    coord[d] += 1;
-                    if coord[d] >= out_shape.dims[d] as usize {
-                        coord[d] = 0;
-                    } else {
-                        carry = false;
-                    }
-                }
-            }
+            next_coord(&mut coord, &out_shape.dims);
         }
 
-        // Compute broadcast indices for a and b
-        let a_idx = a.shape.dims.iter().enumerate().zip(a_strides.iter()).fold(
-            0usize,
-            |acc, ((d, &dim), &stride)| {
-                if dim as usize != 1 {
-                    acc + coord[d + a_dim_offset] * stride
-                } else {
-                    acc
-                }
-            },
-        );
-
-        let b_idx = b.shape.dims.iter().enumerate().zip(b_strides.iter()).fold(
-            0usize,
-            |acc, ((d, &dim), &stride)| {
-                if dim as usize != 1 {
-                    acc + coord[d + b_dim_offset] * stride
-                } else {
-                    acc
-                }
-            },
-        );
+        let a_idx = broadcast_linear_index(&coord, &a.shape.dims, &a_strides, a_dim_offset);
+        let b_idx = broadcast_linear_index(&coord, &b.shape.dims, &b_strides, b_dim_offset);
 
         let va = read_f32(&a.raw_data, a_idx);
         let vb = read_f32(&b.raw_data, b_idx);
@@ -500,6 +520,48 @@ pub fn op_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
     })
 }
 
+/// Computes softmax normalization for a single 1-D slice along the axis.
+///
+/// Given the input data, output buffer, axis size, inner stride, and base
+/// offset, this performs the three-pass softmax (find max, compute exp, normalize)
+/// in-place into `out_data`.
+fn softmax_slice(
+    in_data: &[u8],
+    out_data: &mut [u8],
+    axis_size: usize,
+    inner_size: usize,
+    base_offset: usize,
+) {
+    // Pass 1: find max for numerical stability
+    let mut max_val = f32::NEG_INFINITY;
+    for a in 0..axis_size {
+        let idx = base_offset + a * inner_size;
+        let val = read_f32(in_data, idx);
+        if val > max_val {
+            max_val = val;
+        }
+    }
+
+    // Pass 2: compute exp(x - max) and accumulate sum
+    let mut sum = 0.0f32;
+    for a in 0..axis_size {
+        let idx = base_offset + a * inner_size;
+        let val = read_f32(in_data, idx);
+        let exp_val = expf_approx(val - max_val);
+        write_f32(out_data, idx, exp_val);
+        sum += exp_val;
+    }
+
+    // Pass 3: normalize
+    if sum > 0.0 {
+        for a in 0..axis_size {
+            let idx = base_offset + a * inner_size;
+            let val = read_f32(out_data, idx);
+            write_f32(out_data, idx, val / sum);
+        }
+    }
+}
+
 /// Softmax normalization along the specified axis.
 ///
 /// Computes `exp(x_i - max(x)) / sum(exp(x_j - max(x)))` along `axis`
@@ -549,34 +611,14 @@ pub fn op_softmax(input: &Tensor, axis: i64) -> Result<Tensor, OpError> {
 
     for outer in 0..outer_size {
         for inner in 0..inner_size {
-            // Find max for numerical stability
-            let mut max_val = f32::NEG_INFINITY;
-            for a in 0..axis_size {
-                let idx = outer * axis_size * inner_size + a * inner_size + inner;
-                let val = read_f32(&input.raw_data, idx);
-                if val > max_val {
-                    max_val = val;
-                }
-            }
-
-            // Compute exp(x - max) and sum
-            let mut sum = 0.0f32;
-            for a in 0..axis_size {
-                let idx = outer * axis_size * inner_size + a * inner_size + inner;
-                let val = read_f32(&input.raw_data, idx);
-                let exp_val = expf_approx(val - max_val);
-                write_f32(&mut raw_data, idx, exp_val);
-                sum += exp_val;
-            }
-
-            // Normalize
-            if sum > 0.0 {
-                for a in 0..axis_size {
-                    let idx = outer * axis_size * inner_size + a * inner_size + inner;
-                    let val = read_f32(&raw_data, idx);
-                    write_f32(&mut raw_data, idx, val / sum);
-                }
-            }
+            let base_offset = outer * axis_size * inner_size + inner;
+            softmax_slice(
+                &input.raw_data,
+                &mut raw_data,
+                axis_size,
+                inner_size,
+                base_offset,
+            );
         }
     }
 
@@ -588,31 +630,44 @@ pub fn op_softmax(input: &Tensor, axis: i64) -> Result<Tensor, OpError> {
     })
 }
 
-/// Reshape a tensor to the specified shape.
+/// Resolves a single dimension value in a reshape target shape.
 ///
-/// Follows ONNX Reshape semantics: `-1` indicates an inferred
-/// dimension, and `0` means copy from the original shape.
-pub fn op_reshape(input: &Tensor, shape: &[i64]) -> Result<Tensor, OpError> {
-    let total = input.shape.total_elements();
+/// Returns the resolved dimension value and whether it is the inferred (-1)
+/// placeholder. A value of `0` copies from the original shape at position `i`.
+fn resolve_reshape_dim(d: i64, i: usize, input_dims: &[i64]) -> Result<(i64, bool), OpError> {
+    if d == 0 {
+        if i < input_dims.len() {
+            Ok((input_dims[i], false))
+        } else {
+            Err(OpError::ShapeMismatch(String::from(
+                "Reshape: 0 dim index out of range",
+            )))
+        }
+    } else if d == -1 {
+        Ok((-1, true))
+    } else if d > 0 {
+        Ok((d, false))
+    } else {
+        Err(OpError::ShapeMismatch(String::from(
+            "Reshape: invalid dimension value",
+        )))
+    }
+}
 
-    // Resolve 0 dims (copy from original) and find -1 position
+/// Infers the final output shape for a reshape operation, resolving `0`
+/// (copy) and `-1` (infer) dimension values.
+fn infer_reshape_dims(
+    shape: &[i64],
+    input_dims: &[i64],
+    total: usize,
+) -> Result<Vec<i64>, OpError> {
     let mut new_dims: Vec<i64> = Vec::with_capacity(shape.len());
     let mut neg_one_idx: Option<usize> = None;
     let mut known_product: usize = 1;
 
     for (i, &d) in shape.iter().enumerate() {
-        if d == 0 {
-            // Copy from input shape
-            if i < input.shape.dims.len() {
-                let orig = input.shape.dims[i];
-                new_dims.push(orig);
-                known_product *= orig as usize;
-            } else {
-                return Err(OpError::ShapeMismatch(String::from(
-                    "Reshape: 0 dim index out of range",
-                )));
-            }
-        } else if d == -1 {
+        let (resolved, is_inferred) = resolve_reshape_dim(d, i, input_dims)?;
+        if is_inferred {
             if neg_one_idx.is_some() {
                 return Err(OpError::ShapeMismatch(String::from(
                     "Reshape: only one -1 dimension allowed",
@@ -620,17 +675,13 @@ pub fn op_reshape(input: &Tensor, shape: &[i64]) -> Result<Tensor, OpError> {
             }
             neg_one_idx = Some(i);
             new_dims.push(-1);
-        } else if d > 0 {
-            new_dims.push(d);
-            known_product *= d as usize;
         } else {
-            return Err(OpError::ShapeMismatch(String::from(
-                "Reshape: invalid dimension value",
-            )));
+            new_dims.push(resolved);
+            known_product *= resolved as usize;
         }
     }
 
-    // Resolve -1 dimension
+    // Resolve the -1 dimension if present
     if let Some(idx) = neg_one_idx {
         if known_product == 0 {
             return Err(OpError::ShapeMismatch(String::from(
@@ -650,12 +701,65 @@ pub fn op_reshape(input: &Tensor, shape: &[i64]) -> Result<Tensor, OpError> {
         )));
     }
 
+    Ok(new_dims)
+}
+
+/// Reshape a tensor to the specified shape.
+///
+/// Follows ONNX Reshape semantics: `-1` indicates an inferred
+/// dimension, and `0` means copy from the original shape.
+pub fn op_reshape(input: &Tensor, shape: &[i64]) -> Result<Tensor, OpError> {
+    let total = input.shape.total_elements();
+    let new_dims = infer_reshape_dims(shape, &input.shape.dims, total)?;
+
     Ok(Tensor {
         data_type: input.data_type,
         shape: TensorShape::new(new_dims),
         name: String::new(),
         raw_data: input.raw_data.clone(),
     })
+}
+
+/// Dimensions for a 2D convolution operation, used to reduce the number
+/// of arguments passed to the inner convolution helper.
+struct ConvDims {
+    c_in: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+}
+
+/// Computes the convolution sum for a single output pixel at position
+/// `(oy, ox)` over all input channels and kernel positions.
+///
+/// Returns the accumulated dot product of the input patch and the weight
+/// kernel for the given batch, output channel, and spatial position.
+#[inline]
+fn convolve_at(
+    input_data: &[u8],
+    weight_data: &[u8],
+    batch: usize,
+    co: usize,
+    oy: usize,
+    ox: usize,
+    dims: &ConvDims,
+) -> f32 {
+    let mut sum = 0.0f32;
+    for ci in 0..dims.c_in {
+        for ky in 0..dims.kh {
+            for kx in 0..dims.kw {
+                let iy = oy + ky;
+                let ix = ox + kx;
+                let in_idx =
+                    batch * dims.c_in * dims.h * dims.w + ci * dims.h * dims.w + iy * dims.w + ix;
+                let w_idx =
+                    co * dims.c_in * dims.kh * dims.kw + ci * dims.kh * dims.kw + ky * dims.kw + kx;
+                sum += read_f32(input_data, in_idx) * read_f32(weight_data, w_idx);
+            }
+        }
+    }
+    sum
 }
 
 /// 2D convolution with optional bias, stride=1, no padding, dilation=1.
@@ -701,24 +805,14 @@ pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result
     let ow = w - kw + 1;
     let out_total = n * c_out * oh * ow;
     let mut raw_data = alloc::vec![0u8; out_total * 4];
+    let dims = ConvDims { c_in, h, w, kh, kw };
 
     for batch in 0..n {
         for co in 0..c_out {
             for oy in 0..oh {
                 for ox in 0..ow {
-                    let mut sum = 0.0f32;
-                    for ci in 0..c_in {
-                        for ky in 0..kh {
-                            for kx in 0..kw {
-                                let iy = oy + ky;
-                                let ix = ox + kx;
-                                let in_idx = batch * c_in * h * w + ci * h * w + iy * w + ix;
-                                let w_idx = co * c_in_w * kh * kw + ci * kh * kw + ky * kw + kx;
-                                sum += read_f32(&input.raw_data, in_idx)
-                                    * read_f32(&weight.raw_data, w_idx);
-                            }
-                        }
-                    }
+                    let mut sum =
+                        convolve_at(&input.raw_data, &weight.raw_data, batch, co, oy, ox, &dims);
                     if let Some(b) = bias {
                         sum += read_f32(&b.raw_data, co);
                     }

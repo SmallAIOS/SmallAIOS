@@ -123,45 +123,62 @@ impl KeccakState {
         Self { lanes: [0u64; 25] }
     }
 
+    /// theta step: compute column parities and XOR into the state.
+    #[inline]
+    fn theta(a: &mut [u64; 25]) {
+        let mut c = [0u64; 5];
+        for x in 0..5 {
+            c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20];
+        }
+        let mut d = [0u64; 5];
+        for x in 0..5 {
+            d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
+        }
+        for x in 0..5 {
+            for y in 0..5 {
+                a[x + 5 * y] ^= d[x];
+            }
+        }
+    }
+
+    /// rho and pi steps combined: rotate lanes and rearrange into buffer b.
+    #[inline]
+    fn rho_pi(a: &[u64; 25]) -> [u64; 25] {
+        let mut b = [0u64; 25];
+        for x in 0..5 {
+            for y in 0..5 {
+                let lane = a[x + 5 * y].rotate_left(ROTATIONS[x][y]);
+                b[y + 5 * ((2 * x + 3 * y) % 5)] = lane;
+            }
+        }
+        b
+    }
+
+    /// chi step: non-linear mixing of lanes.
+    #[inline]
+    fn chi(a: &mut [u64; 25], b: &[u64; 25]) {
+        for x in 0..5 {
+            for y in 0..5 {
+                a[x + 5 * y] = b[x + 5 * y] ^ ((!b[(x + 1) % 5 + 5 * y]) & b[(x + 2) % 5 + 5 * y]);
+            }
+        }
+    }
+
+    /// iota step: XOR round constant into lane (0,0).
+    #[inline]
+    fn iota(a: &mut [u64; 25], rc: u64) {
+        a[0] ^= rc;
+    }
+
     /// Apply the Keccak-f[1600] permutation (24 rounds).
     fn permute(&mut self) {
         let a = &mut self.lanes;
 
         for rc in &RC {
-            // θ (theta) step
-            let mut c = [0u64; 5];
-            for x in 0..5 {
-                c[x] = a[x] ^ a[x + 5] ^ a[x + 10] ^ a[x + 15] ^ a[x + 20];
-            }
-            let mut d = [0u64; 5];
-            for x in 0..5 {
-                d[x] = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
-            }
-            for x in 0..5 {
-                for y in 0..5 {
-                    a[x + 5 * y] ^= d[x];
-                }
-            }
-
-            // ρ (rho) and π (pi) steps combined
-            let mut b = [0u64; 25];
-            for x in 0..5 {
-                for y in 0..5 {
-                    let lane = a[x + 5 * y].rotate_left(ROTATIONS[x][y]);
-                    b[y + 5 * ((2 * x + 3 * y) % 5)] = lane;
-                }
-            }
-
-            // χ (chi) step
-            for x in 0..5 {
-                for y in 0..5 {
-                    a[x + 5 * y] =
-                        b[x + 5 * y] ^ ((!b[(x + 1) % 5 + 5 * y]) & b[(x + 2) % 5 + 5 * y]);
-                }
-            }
-
-            // ι (iota) step
-            a[0] ^= *rc;
+            Self::theta(a);
+            let b = Self::rho_pi(a);
+            Self::chi(a, &b);
+            Self::iota(a, *rc);
         }
     }
 

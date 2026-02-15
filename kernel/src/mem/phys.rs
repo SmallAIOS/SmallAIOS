@@ -284,109 +284,120 @@ unsafe fn cstr_len(ptr: *const u8) -> usize {
     len
 }
 
-/// Parse a Flattened Device Tree (FDT) blob to extract `/memory` regions.
-///
-/// # Safety
-/// `dtb_addr` must point to a valid FDT blob.
-pub unsafe fn parse_dtb(dtb_addr: usize, map: &mut PhysMemoryMap) {
-    let base = dtb_addr as *const u8;
+/// State tracked while walking the FDT structure block.
+struct DtbParseState {
+    in_memory_node: bool,
+    depth: usize,
+    memory_depth: usize,
+    address_cells: u32,
+    size_cells: u32,
+}
 
-    // Validate magic
-    let magic = read_be32(base);
-    if magic != FDT_MAGIC {
-        return;
-    }
-
-    let total_size = read_be32(base.add(4)) as usize;
-    let off_dt_struct = read_be32(base.add(8)) as usize;
-    let off_dt_strings = read_be32(base.add(12)) as usize;
-    let _version = read_be32(base.add(20));
-
-    let struct_base = base.add(off_dt_struct);
-    let strings_base = base.add(off_dt_strings);
-
-    let mut pos: usize = 0;
-    let struct_end = total_size - off_dt_struct;
-
-    // State: track if we're inside a /memory node
-    let mut in_memory_node = false;
-    let mut depth: usize = 0;
-    let mut memory_depth: usize = 0;
-    // Root address-cells and size-cells (default 2 each for ARM64)
-    let mut address_cells: u32 = 2;
-    let mut size_cells: u32 = 2;
-
-    while pos < struct_end {
-        let token = read_be32(struct_base.add(pos));
-        pos += 4;
-
-        match token {
-            FDT_BEGIN_NODE => {
-                let name_ptr = struct_base.add(pos);
-                let name_len = cstr_len(name_ptr);
-
-                // Check if node name starts with "memory"
-                if depth == 1
-                    && name_len >= 6
-                    && (cstr_eq(name_ptr, "memory") || (name_len > 7 && *name_ptr.add(6) == b'@'))
-                {
-                    // Check for "memory@..." pattern
-                    let is_memory = cstr_eq(name_ptr, "memory") || {
-                        let prefix = core::slice::from_raw_parts(name_ptr, 6);
-                        prefix == b"memory" && *name_ptr.add(6) == b'@'
-                    };
-                    if is_memory {
-                        in_memory_node = true;
-                        memory_depth = depth + 1;
-                    }
-                }
-
-                depth += 1;
-                // Advance past the null-terminated name, 4-byte aligned
-                pos += (name_len + 1 + 3) & !3;
-            }
-            FDT_END_NODE => {
-                if in_memory_node && depth == memory_depth {
-                    in_memory_node = false;
-                }
-                depth = depth.saturating_sub(1);
-            }
-            FDT_PROP => {
-                let prop_len = read_be32(struct_base.add(pos)) as usize;
-                let name_off = read_be32(struct_base.add(pos + 4)) as usize;
-                pos += 8;
-
-                let prop_name = strings_base.add(name_off);
-                let prop_data = struct_base.add(pos);
-
-                // Parse root-level #address-cells and #size-cells
-                if depth == 1 && cstr_eq(prop_name, "#address-cells") && prop_len == 4 {
-                    address_cells = read_be32(prop_data);
-                }
-                if depth == 1 && cstr_eq(prop_name, "#size-cells") && prop_len == 4 {
-                    size_cells = read_be32(prop_data);
-                }
-
-                // Parse "reg" property inside memory nodes
-                if in_memory_node && cstr_eq(prop_name, "reg") {
-                    parse_dtb_reg_property(prop_data, prop_len, address_cells, size_cells, map);
-                }
-
-                // Advance past property data, 4-byte aligned
-                pos += (prop_len + 3) & !3;
-            }
-            FDT_NOP => {}
-            FDT_END => break,
-            _ => break,
+impl DtbParseState {
+    fn new() -> Self {
+        Self {
+            in_memory_node: false,
+            depth: 0,
+            memory_depth: 0,
+            // Defaults for ARM64
+            address_cells: 2,
+            size_cells: 2,
         }
     }
+}
+
+/// Check whether a node name represents a `/memory` node.
+///
+/// A memory node is named exactly "memory" or "memory@<unit-address>".
+///
+/// # Safety
+/// `name_ptr` must point to a valid, null-terminated C string of `name_len` bytes
+/// (excluding the null terminator).
+unsafe fn is_memory_node(name_ptr: *const u8, name_len: usize) -> bool {
+    if name_len == 6 {
+        return cstr_eq(name_ptr, "memory");
+    }
+    if name_len > 7 {
+        let prefix = core::slice::from_raw_parts(name_ptr, 6);
+        return prefix == b"memory" && *name_ptr.add(6) == b'@';
+    }
+    false
+}
+
+/// Process an FDT_BEGIN_NODE token, updating parse state and advancing `pos`.
+///
+/// # Safety
+/// `struct_base.add(pos)` must point to the node name within a valid FDT structure block.
+unsafe fn handle_begin_node(struct_base: *const u8, pos: &mut usize, state: &mut DtbParseState) {
+    let name_ptr = struct_base.add(*pos);
+    let name_len = cstr_len(name_ptr);
+
+    if state.depth == 1 && name_len >= 6 && is_memory_node(name_ptr, name_len) {
+        state.in_memory_node = true;
+        state.memory_depth = state.depth + 1;
+    }
+
+    state.depth += 1;
+    // Advance past the null-terminated name, 4-byte aligned
+    *pos += (name_len + 1 + 3) & !3;
+}
+
+/// Process an FDT_END_NODE token, updating parse state.
+fn handle_end_node(state: &mut DtbParseState) {
+    if state.in_memory_node && state.depth == state.memory_depth {
+        state.in_memory_node = false;
+    }
+    state.depth = state.depth.saturating_sub(1);
+}
+
+/// Process an FDT_PROP token, updating cell sizes and extracting memory regions.
+///
+/// # Safety
+/// `struct_base.add(pos)` must point to the property length field within a valid FDT
+/// structure block. `strings_base` must point to the FDT strings block.
+unsafe fn handle_prop(
+    struct_base: *const u8,
+    strings_base: *const u8,
+    pos: &mut usize,
+    state: &mut DtbParseState,
+    map: &mut PhysMemoryMap,
+) {
+    let prop_len = read_be32(struct_base.add(*pos)) as usize;
+    let name_off = read_be32(struct_base.add(*pos + 4)) as usize;
+    *pos += 8;
+
+    let prop_name = strings_base.add(name_off);
+    let prop_data = struct_base.add(*pos);
+
+    // Parse root-level #address-cells and #size-cells
+    if state.depth == 1 && prop_len == 4 {
+        if cstr_eq(prop_name, "#address-cells") {
+            state.address_cells = read_be32(prop_data);
+        } else if cstr_eq(prop_name, "#size-cells") {
+            state.size_cells = read_be32(prop_data);
+        }
+    }
+
+    // Parse "reg" property inside memory nodes
+    if state.in_memory_node && cstr_eq(prop_name, "reg") {
+        parse_reg_property(
+            prop_data,
+            prop_len,
+            state.address_cells,
+            state.size_cells,
+            map,
+        );
+    }
+
+    // Advance past property data, 4-byte aligned
+    *pos += (prop_len + 3) & !3;
 }
 
 /// Parse a DTB "reg" property into memory regions.
 ///
 /// # Safety
 /// `data` must point to valid property data of `len` bytes.
-unsafe fn parse_dtb_reg_property(
+unsafe fn parse_reg_property(
     data: *const u8,
     len: usize,
     address_cells: u32,
@@ -418,6 +429,46 @@ unsafe fn parse_dtb_reg_property(
         }
 
         off += entry_size;
+    }
+}
+
+/// Parse a Flattened Device Tree (FDT) blob to extract `/memory` regions.
+///
+/// # Safety
+/// `dtb_addr` must point to a valid FDT blob.
+pub unsafe fn parse_dtb(dtb_addr: usize, map: &mut PhysMemoryMap) {
+    let base = dtb_addr as *const u8;
+
+    // Validate magic
+    let magic = read_be32(base);
+    if magic != FDT_MAGIC {
+        return;
+    }
+
+    let total_size = read_be32(base.add(4)) as usize;
+    let off_dt_struct = read_be32(base.add(8)) as usize;
+    let off_dt_strings = read_be32(base.add(12)) as usize;
+    let _version = read_be32(base.add(20));
+
+    let struct_base = base.add(off_dt_struct);
+    let strings_base = base.add(off_dt_strings);
+
+    let mut pos: usize = 0;
+    let struct_end = total_size - off_dt_struct;
+    let mut state = DtbParseState::new();
+
+    while pos < struct_end {
+        let token = read_be32(struct_base.add(pos));
+        pos += 4;
+
+        match token {
+            FDT_BEGIN_NODE => handle_begin_node(struct_base, &mut pos, &mut state),
+            FDT_END_NODE => handle_end_node(&mut state),
+            FDT_PROP => handle_prop(struct_base, strings_base, &mut pos, &mut state, map),
+            FDT_NOP => {}
+            FDT_END => break,
+            _ => break,
+        }
     }
 }
 

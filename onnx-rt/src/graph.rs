@@ -146,6 +146,72 @@ impl ExecutionGraph {
     }
 }
 
+/// Creates execution nodes from ONNX NodeProto entries.
+fn create_execution_nodes(graph: &GraphProto) -> Vec<ExecutionNode> {
+    graph
+        .node
+        .iter()
+        .enumerate()
+        .map(|(i, node_proto)| ExecutionNode {
+            node_index: NodeIndex::new(i),
+            op_type: node_proto.op_type.clone(),
+            name: node_proto.name.clone(),
+            inputs: node_proto.input.clone(),
+            outputs: node_proto.output.clone(),
+            dependencies: Vec::new(),
+        })
+        .collect()
+}
+
+/// Builds the output-tensor-name to producing-node-index mapping.
+fn build_output_producer_map(nodes: &[ExecutionNode]) -> Vec<(String, NodeIndex)> {
+    let mut output_producers: Vec<(String, NodeIndex)> = Vec::new();
+    for node in nodes {
+        for output_name in &node.outputs {
+            output_producers.push((output_name.clone(), node.node_index));
+        }
+    }
+    output_producers
+}
+
+/// Resolves data dependencies for each node by matching inputs to
+/// producing nodes. Returns per-node dependency lists.
+fn resolve_dependencies(
+    nodes: &[ExecutionNode],
+    input_names: &[String],
+    output_producers: &[(String, NodeIndex)],
+) -> Result<Vec<Vec<NodeIndex>>, GraphError> {
+    let num_nodes = nodes.len();
+    let mut deps_per_node: Vec<Vec<NodeIndex>> = Vec::with_capacity(num_nodes);
+    for _ in 0..num_nodes {
+        deps_per_node.push(Vec::new());
+    }
+
+    for (node_idx, deps) in deps_per_node.iter_mut().enumerate() {
+        let inputs = &nodes[node_idx].inputs;
+        for input_name in inputs {
+            if input_names.iter().any(|n| n == input_name) {
+                continue;
+            }
+            let producer = output_producers.iter().find(|(name, _)| name == input_name);
+            match producer {
+                Some((_, prod_idx)) => {
+                    if !deps.iter().any(|d| d.index() == prod_idx.index()) {
+                        deps.push(*prod_idx);
+                    }
+                }
+                None => {
+                    if !input_name.is_empty() {
+                        return Err(GraphError::MissingInput(input_name.clone()));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(deps_per_node)
+}
+
 /// Builds an `ExecutionGraph` from an ONNX `GraphProto`.
 ///
 /// This function:
@@ -161,68 +227,18 @@ pub fn build_execution_graph(graph: &GraphProto) -> Result<ExecutionGraph, Graph
     exec_graph.input_names = graph.input.iter().map(|vi| vi.name.clone()).collect();
     exec_graph.output_names = graph.output.iter().map(|vi| vi.name.clone()).collect();
 
-    // Phase 1: Create execution nodes from NodeProto entries.
-    for (i, node_proto) in graph.node.iter().enumerate() {
-        let exec_node = ExecutionNode {
-            node_index: NodeIndex::new(i),
-            op_type: node_proto.op_type.clone(),
-            name: node_proto.name.clone(),
-            inputs: node_proto.input.clone(),
-            outputs: node_proto.output.clone(),
-            dependencies: Vec::new(),
-        };
-        exec_graph.nodes.push(exec_node);
-    }
-
-    // Build a map from output tensor name to producing node index.
-    // We use a simple linear scan since graphs are typically small.
-    let mut output_producers: Vec<(String, NodeIndex)> = Vec::new();
-    for node in &exec_graph.nodes {
-        for output_name in &node.outputs {
-            output_producers.push((output_name.clone(), node.node_index));
-        }
-    }
+    // Phase 1: Create execution nodes.
+    exec_graph.nodes = create_execution_nodes(graph);
 
     // Phase 2: Resolve dependencies.
-    // For each node, find which other nodes produce its inputs.
-    let num_nodes = exec_graph.nodes.len();
-    let mut dependencies_per_node: Vec<Vec<NodeIndex>> = Vec::with_capacity(num_nodes);
-    for _ in 0..num_nodes {
-        dependencies_per_node.push(Vec::new());
-    }
+    let output_producers = build_output_producer_map(&exec_graph.nodes);
+    let deps_per_node = resolve_dependencies(
+        &exec_graph.nodes,
+        &exec_graph.input_names,
+        &output_producers,
+    )?;
 
-    for (node_idx, deps) in dependencies_per_node.iter_mut().enumerate() {
-        let inputs = exec_graph.nodes[node_idx].inputs.clone();
-        for input_name in &inputs {
-            // Check if this input is a graph-level input (external).
-            let is_graph_input = exec_graph.input_names.iter().any(|n| n == input_name);
-            if is_graph_input {
-                continue;
-            }
-
-            // Find the producing node.
-            let producer = output_producers.iter().find(|(name, _)| name == input_name);
-
-            match producer {
-                Some((_, prod_idx)) => {
-                    // Avoid duplicate dependencies.
-                    if !deps.iter().any(|d| d.index() == prod_idx.index()) {
-                        deps.push(*prod_idx);
-                    }
-                }
-                None => {
-                    // Input has no producer and is not a graph input.
-                    // Allow empty input names (optional inputs in ONNX).
-                    if !input_name.is_empty() {
-                        return Err(GraphError::MissingInput(input_name.clone()));
-                    }
-                }
-            }
-        }
-    }
-
-    // Apply resolved dependencies.
-    for (i, deps) in dependencies_per_node.into_iter().enumerate() {
+    for (i, deps) in deps_per_node.into_iter().enumerate() {
         exec_graph.nodes[i].dependencies = deps;
     }
 
@@ -230,6 +246,48 @@ pub fn build_execution_graph(graph: &GraphProto) -> Result<ExecutionGraph, Graph
     exec_graph.topological_order = topological_sort(&exec_graph.nodes)?;
 
     Ok(exec_graph)
+}
+
+/// Computes the in-degree (number of dependencies) for each node and returns
+/// the initial set of nodes with zero in-degree.
+fn compute_in_degrees(nodes: &[ExecutionNode]) -> (Vec<usize>, Vec<NodeIndex>) {
+    let num_nodes = nodes.len();
+    let mut in_degree: Vec<usize> = alloc::vec![0; num_nodes];
+
+    for node in nodes {
+        in_degree[node.node_index.index()] = node.dependencies.len();
+    }
+
+    let zero_degree_nodes: Vec<NodeIndex> = in_degree
+        .iter()
+        .enumerate()
+        .filter(|(_, &deg)| deg == 0)
+        .map(|(i, _)| NodeIndex::new(i))
+        .collect();
+
+    (in_degree, zero_degree_nodes)
+}
+
+/// Processes a single node from the BFS queue during topological sort,
+/// decrementing in-degrees of dependent nodes and enqueuing newly ready ones.
+fn process_dependents(
+    nodes: &[ExecutionNode],
+    current: NodeIndex,
+    in_degree: &mut [usize],
+    queue: &mut Vec<NodeIndex>,
+) {
+    for node in nodes {
+        let depends_on_current = node
+            .dependencies
+            .iter()
+            .any(|dep| dep.index() == current.index());
+        if depends_on_current {
+            in_degree[node.node_index.index()] -= 1;
+            if in_degree[node.node_index.index()] == 0 {
+                queue.push(node.node_index);
+            }
+        }
+    }
 }
 
 /// Performs a topological sort of the execution nodes using Kahn's algorithm.
@@ -242,46 +300,18 @@ pub fn topological_sort(nodes: &[ExecutionNode]) -> Result<Vec<NodeIndex>, Graph
         return Ok(Vec::new());
     }
 
-    // Compute in-degree for each node.
-    let mut in_degree: Vec<usize> = alloc::vec![0; num_nodes];
-
-    for node in nodes {
-        in_degree[node.node_index.index()] = node.dependencies.len();
-    }
-
-    // Enqueue all nodes with zero in-degree.
-    let mut queue: Vec<NodeIndex> = Vec::new();
-    for (i, &degree) in in_degree.iter().enumerate() {
-        if degree == 0 {
-            queue.push(NodeIndex::new(i));
-        }
-    }
-
+    let (mut in_degree, initial_queue) = compute_in_degrees(nodes);
+    let mut queue = initial_queue;
     let mut sorted: Vec<NodeIndex> = Vec::with_capacity(num_nodes);
     let mut head = 0;
 
-    // Process the queue (BFS-style using an index cursor).
     while head < queue.len() {
         let current = queue[head];
         head += 1;
         sorted.push(current);
-
-        // For each node that depends on the current node, decrement in-degree.
-        for node in nodes {
-            if node
-                .dependencies
-                .iter()
-                .any(|dep| dep.index() == current.index())
-            {
-                in_degree[node.node_index.index()] -= 1;
-                if in_degree[node.node_index.index()] == 0 {
-                    queue.push(node.node_index);
-                }
-            }
-        }
+        process_dependents(nodes, current, &mut in_degree, &mut queue);
     }
 
-    // If we didn't visit all nodes, there's a cycle.
     if sorted.len() != num_nodes {
         return Err(GraphError::CyclicGraph);
     }

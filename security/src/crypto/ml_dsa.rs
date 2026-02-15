@@ -1124,17 +1124,15 @@ pub fn ml_dsa_65_keygen(seed: &[u8; 32]) -> Result<MlDsaKeyPair, MlDsaError> {
     })
 }
 
-/// Sign a message using ML-DSA-65.
+/// Compute NTT forward transforms for the secret key vectors and matrix A.
 ///
-/// Uses hedged signing with the provided random seed for side-channel resistance.
-pub fn ml_dsa_65_sign(
-    sk: &MlDsaSecretKey,
-    message: &[u8],
-    random_seed: &[u8; 32],
-) -> Result<MlDsaSignature, MlDsaError> {
-    let (rho, key, tr, s1, s2, t0) = unpack_sk(sk.as_bytes());
-
-    // NTT(s1), NTT(s2), NTT(t0)
+/// Returns (s1_hat, s2_hat, t0_hat, a_hat) all in NTT domain.
+fn prepare_ntt_vectors(
+    rho: &[u8; 32],
+    s1: &[Poly; L],
+    s2: &[Poly; K],
+    t0: &[Poly; K],
+) -> ([Poly; L], [Poly; K], [Poly; K], [[Poly; L]; K]) {
     let mut s1_hat = [Poly::zero(); L];
     for i in 0..L {
         s1_hat[i] = s1[i];
@@ -1151,14 +1149,178 @@ pub fn ml_dsa_65_sign(
         t0_hat[i].ntt();
     }
 
-    // Generate matrix A from rho and convert to NTT domain
     let mut a_hat = [[Poly::zero(); L]; K];
     for i in 0..K {
         for j in 0..L {
-            a_hat[i][j] = sample_uniform(&rho, (i * 256 + j) as u16);
+            a_hat[i][j] = sample_uniform(rho, (i * 256 + j) as u16);
             a_hat[i][j].ntt();
         }
     }
+
+    (s1_hat, s2_hat, t0_hat, a_hat)
+}
+
+/// Compute w = A * NTT(y), extract w1 = HighBits(w), and compute the challenge hash.
+///
+/// Returns (w, c_tilde, c_hat) where c_hat is the challenge polynomial in NTT domain.
+fn compute_challenge(
+    a_hat: &[[Poly; L]; K],
+    y: &[Poly; L],
+    mu: &[u8; 64],
+) -> ([Poly; K], [u8; 32], Poly) {
+    // w = A * NTT(y)
+    let mut y_hat = [Poly::zero(); L];
+    for i in 0..L {
+        y_hat[i] = y[i];
+        y_hat[i].ntt();
+    }
+
+    let mut w = [Poly::zero(); K];
+    for i in 0..K {
+        for j in 0..L {
+            let prod = a_hat[i][j].pointwise_mul(&y_hat[j]);
+            w[i] = w[i].add(&prod);
+        }
+        w[i].inv_ntt();
+        w[i].reduce();
+    }
+
+    // w1 = HighBits(w)
+    let mut w1 = [Poly::zero(); K];
+    for i in 0..K {
+        w1[i] = w[i].high_bits();
+    }
+
+    // c_tilde = H(mu || encode(w1))
+    let c_tilde = {
+        let mut xof = Shake256::new();
+        xof.absorb(mu).expect("absorb mu");
+        // Encode w1 (simplified: hash the coefficients directly)
+        for i in 0..K {
+            for j in 0..N {
+                let val = w1[i].coeffs[j] as u32;
+                xof.absorb(&val.to_le_bytes()).expect("absorb w1");
+            }
+        }
+        let mut out = [0u8; 32];
+        xof.squeeze(&mut out).expect("squeeze");
+        out
+    };
+
+    let c_poly = sample_challenge(&c_tilde);
+    let mut c_hat = c_poly;
+    c_hat.ntt();
+
+    (w, c_tilde, c_hat)
+}
+
+/// Check signature rejection criteria: z norm, low_bits of (w - c*s2), and c*t0 norm.
+///
+/// Returns `true` if the signature should be accepted (all checks pass), along with
+/// the intermediate values (z, w_minus_cs2, ct0) needed for hint computation.
+/// Returns `false` (with dummy values) if any check fails and the attempt should be rejected.
+fn check_signature_norms(
+    y: &[Poly; L],
+    w: &[Poly; K],
+    c_hat: &Poly,
+    s1_hat: &[Poly; L],
+    s2_hat: &[Poly; K],
+    t0_hat: &[Poly; K],
+) -> (bool, [Poly; L], [Poly; K], [Poly; K]) {
+    // z = y + c*s1
+    let mut z = [Poly::zero(); L];
+    for i in 0..L {
+        let cs1 = c_hat.pointwise_mul(&s1_hat[i]);
+        let mut cs1_time = cs1;
+        cs1_time.inv_ntt();
+        z[i] = y[i].add(&cs1_time);
+        z[i].reduce();
+    }
+
+    // Check ||z||_inf < gamma1 - beta
+    let bound = GAMMA1 - BETA as i32;
+    for i in 0..L {
+        if !z[i].check_norm(bound) {
+            return (false, z, [Poly::zero(); K], [Poly::zero(); K]);
+        }
+    }
+
+    // r0 = LowBits(w - c*s2)
+    let mut cs2 = [Poly::zero(); K];
+    for i in 0..K {
+        let t = c_hat.pointwise_mul(&s2_hat[i]);
+        cs2[i] = t;
+        cs2[i].inv_ntt();
+        cs2[i].reduce();
+    }
+
+    let mut w_minus_cs2 = [Poly::zero(); K];
+    for i in 0..K {
+        w_minus_cs2[i] = w[i].sub(&cs2[i]);
+        w_minus_cs2[i].reduce();
+    }
+
+    // Check ||LowBits(w - c*s2)||_inf < gamma2 - beta
+    let low_bound = GAMMA2 - BETA as i32;
+    for i in 0..K {
+        let r0 = w_minus_cs2[i].low_bits();
+        if !r0.check_norm(low_bound) {
+            return (false, z, w_minus_cs2, [Poly::zero(); K]);
+        }
+    }
+
+    // Compute c*t0
+    let mut ct0 = [Poly::zero(); K];
+    for i in 0..K {
+        let t = c_hat.pointwise_mul(&t0_hat[i]);
+        ct0[i] = t;
+        ct0[i].inv_ntt();
+        ct0[i].reduce();
+    }
+
+    // Check ||c*t0||_inf < gamma2
+    for i in 0..K {
+        if !ct0[i].check_norm(GAMMA2) {
+            return (false, z, w_minus_cs2, ct0);
+        }
+    }
+
+    (true, z, w_minus_cs2, ct0)
+}
+
+/// Pack the final ML-DSA signature from its components: c_tilde, z, and h.
+fn pack_ml_dsa_signature(
+    c_tilde: &[u8; 32],
+    z: &[Poly; L],
+    h: &[Poly; K],
+) -> [u8; ML_DSA_65_SIG_LEN] {
+    let mut sig = [0u8; ML_DSA_65_SIG_LEN];
+    sig[..32].copy_from_slice(c_tilde);
+    let mut offset = 32;
+    // z encoding: 20 bits per coeff, 640 bytes per poly, L polys
+    for i in 0..L {
+        let mut z_bytes = [0u8; 640];
+        encode_z(&z[i], &mut z_bytes);
+        sig[offset..offset + 640].copy_from_slice(&z_bytes);
+        offset += 640;
+    }
+    // Hint encoding: OMEGA + K bytes
+    encode_hint(h, &mut sig[offset..offset + OMEGA + K]);
+    sig
+}
+
+/// Sign a message using ML-DSA-65.
+///
+/// Uses hedged signing with the provided random seed for side-channel resistance.
+pub fn ml_dsa_65_sign(
+    sk: &MlDsaSecretKey,
+    message: &[u8],
+    random_seed: &[u8; 32],
+) -> Result<MlDsaSignature, MlDsaError> {
+    let (rho, key, tr, s1, s2, t0) = unpack_sk(sk.as_bytes());
+
+    // NTT forward transforms for secret key vectors and matrix A
+    let (s1_hat, s2_hat, t0_hat, a_hat) = prepare_ntt_vectors(&rho, &s1, &s2, &t0);
 
     // mu = CRH(tr || msg)
     let mut mu_input = [0u8; 64];
@@ -1193,119 +1355,13 @@ pub fn ml_dsa_65_sign(
         }
         kappa += L as u16;
 
-        // w = A * NTT(y)
-        let mut y_hat = [Poly::zero(); L];
-        for i in 0..L {
-            y_hat[i] = y[i];
-            y_hat[i].ntt();
-        }
+        // Compute w, challenge hash, and challenge polynomial
+        let (w, c_tilde, c_hat) = compute_challenge(&a_hat, &y, &mu);
 
-        let mut w = [Poly::zero(); K];
-        for i in 0..K {
-            for j in 0..L {
-                let prod = a_hat[i][j].pointwise_mul(&y_hat[j]);
-                w[i] = w[i].add(&prod);
-            }
-            w[i].inv_ntt();
-            w[i].reduce();
-        }
-
-        // w1 = HighBits(w)
-        let mut w1 = [Poly::zero(); K];
-        for i in 0..K {
-            w1[i] = w[i].high_bits();
-        }
-
-        // c_tilde = H(mu || encode(w1))
-        let c_tilde = {
-            let mut xof = Shake256::new();
-            xof.absorb(&mu).expect("absorb mu");
-            // Encode w1 (simplified: hash the coefficients directly)
-            for i in 0..K {
-                for j in 0..N {
-                    let val = w1[i].coeffs[j] as u32;
-                    xof.absorb(&val.to_le_bytes()).expect("absorb w1");
-                }
-            }
-            let mut out = [0u8; 32];
-            xof.squeeze(&mut out).expect("squeeze");
-            out
-        };
-
-        let c_poly = sample_challenge(&c_tilde);
-        let mut c_hat = c_poly;
-        c_hat.ntt();
-
-        // z = y + c*s1
-        let mut z = [Poly::zero(); L];
-        for i in 0..L {
-            let cs1 = c_hat.pointwise_mul(&s1_hat[i]);
-            let mut cs1_time = cs1;
-            cs1_time.inv_ntt();
-            z[i] = y[i].add(&cs1_time);
-            z[i].reduce();
-        }
-
-        // Check ||z||_inf < gamma1 - beta
-        let bound = GAMMA1 - BETA as i32;
-        let mut reject = false;
-        for i in 0..L {
-            if !z[i].check_norm(bound) {
-                reject = true;
-                break;
-            }
-        }
-        if reject {
-            continue;
-        }
-
-        // r0 = LowBits(w - c*s2)
-        let mut cs2 = [Poly::zero(); K];
-        for i in 0..K {
-            let t = c_hat.pointwise_mul(&s2_hat[i]);
-            cs2[i] = t;
-            cs2[i].inv_ntt();
-            cs2[i].reduce();
-        }
-
-        let mut w_minus_cs2 = [Poly::zero(); K];
-        for i in 0..K {
-            w_minus_cs2[i] = w[i].sub(&cs2[i]);
-            w_minus_cs2[i].reduce();
-        }
-
-        // Check ||LowBits(w - c*s2)||_inf < gamma2 - beta
-        let low_bound = GAMMA2 - BETA as i32;
-        let mut low_reject = false;
-        for i in 0..K {
-            let r0 = w_minus_cs2[i].low_bits();
-            if !r0.check_norm(low_bound) {
-                low_reject = true;
-                break;
-            }
-        }
-        if low_reject {
-            continue;
-        }
-
-        // Compute hint
-        let mut ct0 = [Poly::zero(); K];
-        for i in 0..K {
-            let t = c_hat.pointwise_mul(&t0_hat[i]);
-            ct0[i] = t;
-            ct0[i].inv_ntt();
-            ct0[i].reduce();
-        }
-
-        // Check ||c*t0||_inf < gamma2
-        let mut ct0_reject = false;
-        for i in 0..K {
-            if !ct0[i].check_norm(GAMMA2) {
-                ct0_reject = true;
-                break;
-            }
-        }
-        if ct0_reject {
+        // Check all signature norms (z, low_bits, ct0)
+        let (accepted, z, w_minus_cs2, ct0) =
+            check_signature_norms(&y, &w, &c_hat, &s1_hat, &s2_hat, &t0_hat);
+        if !accepted {
             continue;
         }
 
@@ -1324,24 +1380,81 @@ pub fn ml_dsa_65_sign(
             continue;
         }
 
-        // Pack signature: sig = c_tilde || z || h
-        let mut sig = [0u8; ML_DSA_65_SIG_LEN];
-        sig[..32].copy_from_slice(&c_tilde);
-        let mut offset = 32;
-        // z encoding: 20 bits per coeff, 640 bytes per poly, L polys
-        for i in 0..L {
-            let mut z_bytes = [0u8; 640];
-            encode_z(&z[i], &mut z_bytes);
-            sig[offset..offset + 640].copy_from_slice(&z_bytes);
-            offset += 640;
-        }
-        // Hint encoding: OMEGA + K bytes
-        encode_hint(&h, &mut sig[offset..offset + OMEGA + K]);
-
+        // Pack and return signature
+        let sig = pack_ml_dsa_signature(&c_tilde, &z, &h);
         return Ok(MlDsaSignature::from_bytes(sig));
     }
 
     Err(MlDsaError::SigningFailed)
+}
+
+/// Reconstruct w1' from signature components and check against the challenge hash.
+///
+/// Computes w'_approx = A*NTT(z) - c*NTT(t1*2^d), applies the hint to recover w1',
+/// then hashes mu || encode(w1') and compares with the original c_tilde.
+/// Returns `true` if the reconstructed challenge matches c_tilde.
+fn reconstruct_and_check(
+    a_hat: &[[Poly; L]; K],
+    z: &[Poly; L],
+    t1: &[Poly; K],
+    h: &[Poly; K],
+    c_tilde: &[u8; 32],
+    mu: &[u8; 64],
+) -> bool {
+    // c = SampleInBall(c_tilde)
+    let c_poly = sample_challenge(c_tilde);
+    let mut c_hat = c_poly;
+    c_hat.ntt();
+
+    // w'_approx = A*NTT(z) - c*NTT(t1*2^d)
+    let mut z_hat = [Poly::zero(); L];
+    for i in 0..L {
+        z_hat[i] = z[i];
+        z_hat[i].ntt();
+    }
+
+    let mut t1_shifted = [Poly::zero(); K];
+    for i in 0..K {
+        t1_shifted[i] = t1[i].shift_left();
+        t1_shifted[i].ntt();
+    }
+
+    let mut w_prime = [Poly::zero(); K];
+    for i in 0..K {
+        // A*z
+        for j in 0..L {
+            let prod = a_hat[i][j].pointwise_mul(&z_hat[j]);
+            w_prime[i] = w_prime[i].add(&prod);
+        }
+        // - c * t1 * 2^d
+        let ct1 = c_hat.pointwise_mul(&t1_shifted[i]);
+        w_prime[i] = w_prime[i].sub(&ct1);
+        w_prime[i].inv_ntt();
+        w_prime[i].reduce();
+    }
+
+    // UseHint to get w1'
+    let mut w1_prime = [Poly::zero(); K];
+    for i in 0..K {
+        w1_prime[i] = w_prime[i].use_hint(&h[i]);
+    }
+
+    // c_tilde' = H(mu || encode(w1'))
+    let c_tilde_verify = {
+        let mut xof = Shake256::new();
+        xof.absorb(mu).expect("absorb mu");
+        for i in 0..K {
+            for j in 0..N {
+                let val = w1_prime[i].coeffs[j] as u32;
+                xof.absorb(&val.to_le_bytes()).expect("absorb w1");
+            }
+        }
+        let mut out = [0u8; 32];
+        xof.squeeze(&mut out).expect("squeeze");
+        out
+    };
+
+    *c_tilde == c_tilde_verify
 }
 
 /// Verify an ML-DSA-65 signature.
@@ -1400,61 +1513,8 @@ pub fn ml_dsa_65_verify(
         out
     };
 
-    // c = SampleInBall(c_tilde)
-    let c_poly = sample_challenge(&c_tilde);
-    let mut c_hat = c_poly;
-    c_hat.ntt();
-
-    // w'_approx = A*NTT(z) - c*NTT(t1*2^d)
-    let mut z_hat = [Poly::zero(); L];
-    for i in 0..L {
-        z_hat[i] = z[i];
-        z_hat[i].ntt();
-    }
-
-    let mut t1_shifted = [Poly::zero(); K];
-    for i in 0..K {
-        t1_shifted[i] = t1[i].shift_left();
-        t1_shifted[i].ntt();
-    }
-
-    let mut w_prime = [Poly::zero(); K];
-    for i in 0..K {
-        // A*z
-        for j in 0..L {
-            let prod = a_hat[i][j].pointwise_mul(&z_hat[j]);
-            w_prime[i] = w_prime[i].add(&prod);
-        }
-        // - c * t1 * 2^d
-        let ct1 = c_hat.pointwise_mul(&t1_shifted[i]);
-        w_prime[i] = w_prime[i].sub(&ct1);
-        w_prime[i].inv_ntt();
-        w_prime[i].reduce();
-    }
-
-    // UseHint to get w1'
-    let mut w1_prime = [Poly::zero(); K];
-    for i in 0..K {
-        w1_prime[i] = w_prime[i].use_hint(&h[i]);
-    }
-
-    // c_tilde' = H(mu || encode(w1'))
-    let c_tilde_verify = {
-        let mut xof = Shake256::new();
-        xof.absorb(&mu).expect("absorb mu");
-        for i in 0..K {
-            for j in 0..N {
-                let val = w1_prime[i].coeffs[j] as u32;
-                xof.absorb(&val.to_le_bytes()).expect("absorb w1");
-            }
-        }
-        let mut out = [0u8; 32];
-        xof.squeeze(&mut out).expect("squeeze");
-        out
-    };
-
-    // Verify
-    if c_tilde == c_tilde_verify {
+    // Reconstruct w1' and verify challenge hash matches
+    if reconstruct_and_check(&a_hat, &z, &t1, &h, &c_tilde, &mu) {
         Ok(())
     } else {
         Err(MlDsaError::VerificationFailed)

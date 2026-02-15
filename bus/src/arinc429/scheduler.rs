@@ -150,19 +150,29 @@ impl TxScheduler {
     ///
     /// When a word is returned, its `last_tx_us` is updated to `now_us`.
     pub fn poll(&mut self, now_us: u64) -> Option<u32> {
-        // Check inter-word gap (skip on first-ever transmission)
-        if self.has_transmitted && now_us < self.last_any_tx_us + self.min_gap_us {
+        if !self.gap_elapsed(now_us) {
             return None;
         }
 
-        // Find the most overdue entry (entries pending first TX are always due)
+        let idx = self.find_most_overdue(now_us)?;
+        Some(self.commit_transmission(idx, now_us))
+    }
+
+    /// Returns `true` when the minimum inter-word gap has elapsed (or no
+    /// word has been transmitted yet).
+    fn gap_elapsed(&self, now_us: u64) -> bool {
+        !self.has_transmitted || now_us >= self.last_any_tx_us + self.min_gap_us
+    }
+
+    /// Scan entries and return the index of the most overdue entry, if any.
+    /// Entries pending their first transmission are always preferred.
+    fn find_most_overdue(&self, now_us: u64) -> Option<usize> {
         let mut best_idx: Option<usize> = None;
         let mut best_overdue: u64 = 0;
         let mut best_is_first: bool = false;
 
         for (i, entry) in self.entries.iter().enumerate() {
             if entry.first_tx_pending {
-                // First TX is always immediately due; prefer over periodic
                 if !best_is_first {
                     best_idx = Some(i);
                     best_overdue = u64::MAX;
@@ -180,16 +190,17 @@ impl TxScheduler {
             }
         }
 
-        if let Some(idx) = best_idx {
-            let entry = &mut self.entries[idx];
-            entry.last_tx_us = now_us;
-            entry.first_tx_pending = false;
-            self.last_any_tx_us = now_us;
-            self.has_transmitted = true;
-            Some(entry.current_word)
-        } else {
-            None
-        }
+        best_idx
+    }
+
+    /// Mark entry `idx` as transmitted at `now_us` and return its word.
+    fn commit_transmission(&mut self, idx: usize, now_us: u64) -> u32 {
+        let entry = &mut self.entries[idx];
+        entry.last_tx_us = now_us;
+        entry.first_tx_pending = false;
+        self.last_any_tx_us = now_us;
+        self.has_transmitted = true;
+        entry.current_word
     }
 
     /// Returns the minimum inter-word gap in microseconds.

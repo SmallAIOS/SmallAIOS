@@ -225,104 +225,122 @@ impl LongHeader {
 
         // Check for Version Negotiation (version == 0)
         if version == QUIC_VERSION_NEGOTIATION {
-            // DCID
-            if off >= data.len() {
-                return Err(NetError::PacketTooShort);
-            }
-            let dcid_len = data[off] as usize;
-            off += 1;
-            if off + dcid_len > data.len() || dcid_len > MAX_CID_LEN {
-                return Err(NetError::PacketTooShort);
-            }
-            let dcid = Vec::from(&data[off..off + dcid_len]);
-            off += dcid_len;
-
-            // SCID
-            if off >= data.len() {
-                return Err(NetError::PacketTooShort);
-            }
-            let scid_len = data[off] as usize;
-            off += 1;
-            if off + scid_len > data.len() || scid_len > MAX_CID_LEN {
-                return Err(NetError::PacketTooShort);
-            }
-            let scid = Vec::from(&data[off..off + scid_len]);
-            off += scid_len;
-
-            return Ok((
-                LongHeader {
-                    packet_type: PacketType::VersionNegotiation,
-                    version: QuicVersion(version),
-                    dcid,
-                    scid,
-                    packet_number: 0,
-                    pn_length: 0,
-                    token: Vec::new(),
-                    payload_length: data.len() - off,
-                },
-                off,
-            ));
+            return Self::decode_version_negotiation(data, off);
         }
 
         let type_bits = (first_byte >> 4) & 0x03;
         let pn_length = (first_byte & 0x03) + 1;
         let packet_type = PacketType::from_type_bits(type_bits);
 
-        // DCID
-        if off >= data.len() {
-            return Err(NetError::PacketTooShort);
-        }
-        let dcid_len = data[off] as usize;
-        off += 1;
-        if dcid_len > MAX_CID_LEN || off + dcid_len > data.len() {
-            return Err(NetError::PacketTooShort);
-        }
-        let dcid = Vec::from(&data[off..off + dcid_len]);
-        off += dcid_len;
+        // DCID + SCID
+        let (dcid, scid, off) = decode_cid_pair(data, off)?;
 
-        // SCID
-        if off >= data.len() {
-            return Err(NetError::PacketTooShort);
-        }
-        let scid_len = data[off] as usize;
-        off += 1;
-        if scid_len > MAX_CID_LEN || off + scid_len > data.len() {
-            return Err(NetError::PacketTooShort);
-        }
-        let scid = Vec::from(&data[off..off + scid_len]);
-        off += scid_len;
-
-        // Token (Initial only)
-        let mut token = Vec::new();
-        if packet_type == PacketType::Initial {
-            let (token_len, consumed) = decode_var_int(&data[off..])?;
-            off += consumed;
-            if off + token_len as usize > data.len() {
-                return Err(NetError::PacketTooShort);
+        match packet_type {
+            PacketType::Initial => Self::decode_initial(data, off, version, pn_length, dcid, scid),
+            PacketType::Retry => Self::decode_retry(off, version, dcid, scid),
+            _ => {
+                // Handshake, ZeroRtt — have payload length + packet number
+                Self::decode_pn_packet(data, off, packet_type, version, pn_length, dcid, scid)
             }
-            token = Vec::from(&data[off..off + token_len as usize]);
-            off += token_len as usize;
         }
+    }
 
-        // Payload length (not Retry)
-        let mut payload_length = 0;
-        if packet_type != PacketType::Retry {
-            let (pl, consumed) = decode_var_int(&data[off..])?;
-            payload_length = pl as usize;
-            off += consumed;
+    /// Decode a Version Negotiation packet (version == 0).
+    fn decode_version_negotiation(data: &[u8], off: usize) -> Result<(Self, usize), NetError> {
+        let (dcid, scid, off) = decode_cid_pair(data, off)?;
+        Ok((
+            LongHeader {
+                packet_type: PacketType::VersionNegotiation,
+                version: QuicVersion(QUIC_VERSION_NEGOTIATION),
+                dcid,
+                scid,
+                packet_number: 0,
+                pn_length: 0,
+                token: Vec::new(),
+                payload_length: data.len() - off,
+            },
+            off,
+        ))
+    }
+
+    /// Decode an Initial packet (has token + payload length + packet number).
+    fn decode_initial(
+        data: &[u8],
+        mut off: usize,
+        version: u32,
+        pn_length: u8,
+        dcid: Vec<u8>,
+        scid: Vec<u8>,
+    ) -> Result<(Self, usize), NetError> {
+        // Token
+        let (token_len, consumed) = decode_var_int(&data[off..])?;
+        off += consumed;
+        if off + token_len as usize > data.len() {
+            return Err(NetError::PacketTooShort);
         }
+        let token = Vec::from(&data[off..off + token_len as usize]);
+        off += token_len as usize;
+
+        // Payload length
+        let (pl, consumed) = decode_var_int(&data[off..])?;
+        off += consumed;
 
         // Packet number
-        let mut packet_number = 0u32;
-        if packet_type != PacketType::Retry {
-            if off + pn_length as usize > data.len() {
-                return Err(NetError::PacketTooShort);
-            }
-            for i in 0..pn_length as usize {
-                packet_number = (packet_number << 8) | data[off + i] as u32;
-            }
-            off += pn_length as usize;
-        }
+        let (packet_number, off) = decode_packet_number(data, off, pn_length)?;
+
+        Ok((
+            LongHeader {
+                packet_type: PacketType::Initial,
+                version: QuicVersion(version),
+                dcid,
+                scid,
+                packet_number,
+                pn_length,
+                token,
+                payload_length: pl as usize,
+            },
+            off,
+        ))
+    }
+
+    /// Decode a Retry packet (no payload length or packet number).
+    fn decode_retry(
+        off: usize,
+        version: u32,
+        dcid: Vec<u8>,
+        scid: Vec<u8>,
+    ) -> Result<(Self, usize), NetError> {
+        Ok((
+            LongHeader {
+                packet_type: PacketType::Retry,
+                version: QuicVersion(version),
+                dcid,
+                scid,
+                packet_number: 0,
+                pn_length: 0,
+                token: Vec::new(),
+                payload_length: 0,
+            },
+            off,
+        ))
+    }
+
+    /// Decode a packet with payload length and packet number (Handshake, 0-RTT).
+    fn decode_pn_packet(
+        data: &[u8],
+        mut off: usize,
+        packet_type: PacketType,
+        version: u32,
+        pn_length: u8,
+        dcid: Vec<u8>,
+        scid: Vec<u8>,
+    ) -> Result<(Self, usize), NetError> {
+        // Payload length
+        let (pl, consumed) = decode_var_int(&data[off..])?;
+        off += consumed;
+
+        // Packet number
+        let (packet_number, off) = decode_packet_number(data, off, pn_length)?;
 
         Ok((
             LongHeader {
@@ -332,12 +350,57 @@ impl LongHeader {
                 scid,
                 packet_number,
                 pn_length,
-                token,
-                payload_length,
+                token: Vec::new(),
+                payload_length: pl as usize,
             },
             off,
         ))
     }
+}
+
+/// Decode a DCID and SCID pair from `data` starting at `off`.
+///
+/// Returns `(dcid, scid, new_offset)`.
+fn decode_cid_pair(data: &[u8], mut off: usize) -> Result<(Vec<u8>, Vec<u8>, usize), NetError> {
+    // DCID
+    if off >= data.len() {
+        return Err(NetError::PacketTooShort);
+    }
+    let dcid_len = data[off] as usize;
+    off += 1;
+    if dcid_len > MAX_CID_LEN || off + dcid_len > data.len() {
+        return Err(NetError::PacketTooShort);
+    }
+    let dcid = Vec::from(&data[off..off + dcid_len]);
+    off += dcid_len;
+
+    // SCID
+    if off >= data.len() {
+        return Err(NetError::PacketTooShort);
+    }
+    let scid_len = data[off] as usize;
+    off += 1;
+    if scid_len > MAX_CID_LEN || off + scid_len > data.len() {
+        return Err(NetError::PacketTooShort);
+    }
+    let scid = Vec::from(&data[off..off + scid_len]);
+    off += scid_len;
+
+    Ok((dcid, scid, off))
+}
+
+/// Decode a packet number of `pn_length` bytes from `data` starting at `off`.
+///
+/// Returns `(packet_number, new_offset)`.
+fn decode_packet_number(data: &[u8], off: usize, pn_length: u8) -> Result<(u32, usize), NetError> {
+    if off + pn_length as usize > data.len() {
+        return Err(NetError::PacketTooShort);
+    }
+    let mut pn = 0u32;
+    for i in 0..pn_length as usize {
+        pn = (pn << 8) | data[off + i] as u32;
+    }
+    Ok((pn, off + pn_length as usize))
 }
 
 /// QUIC short header (1-RTT).

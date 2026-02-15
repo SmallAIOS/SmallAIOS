@@ -191,6 +191,77 @@ fn align_up(size: usize, alignment: usize) -> usize {
     (size + mask) & !mask
 }
 
+/// Allocates buffers with first-fit reuse for non-overlapping lifetimes.
+fn plan_with_reuse(
+    lifetimes: &[TensorLifetime],
+    alignment: usize,
+) -> (Vec<BufferAllocation>, usize, usize, usize) {
+    let mut allocations: Vec<BufferAllocation> = Vec::with_capacity(lifetimes.len());
+    let mut reuse_count: usize = 0;
+
+    // Track active buffers: (buffer_id, offset, size, last_use)
+    let mut buffers: Vec<(usize, usize, usize, usize)> = Vec::new();
+    let mut next_buffer_id: usize = 0;
+    let mut current_offset: usize = 0;
+
+    for lifetime in lifetimes {
+        let aligned_size = align_up(lifetime.size_bytes, alignment);
+
+        let reused_buf = buffers
+            .iter_mut()
+            .find(|buf| buf.3 < lifetime.first_use && buf.2 >= aligned_size);
+
+        if let Some(buf) = reused_buf {
+            allocations.push(BufferAllocation {
+                buffer_id: buf.0,
+                offset: buf.1,
+                size: buf.2,
+                tensor_name: lifetime.tensor_name.clone(),
+            });
+            buf.3 = lifetime.last_use;
+            reuse_count += 1;
+        } else {
+            let buf_id = next_buffer_id;
+            next_buffer_id += 1;
+            let offset = current_offset;
+            current_offset += aligned_size;
+
+            allocations.push(BufferAllocation {
+                buffer_id: buf_id,
+                offset,
+                size: aligned_size,
+                tensor_name: lifetime.tensor_name.clone(),
+            });
+
+            buffers.push((buf_id, offset, aligned_size, lifetime.last_use));
+        }
+    }
+
+    (allocations, current_offset, next_buffer_id, reuse_count)
+}
+
+/// Allocates buffers sequentially without reuse.
+fn plan_sequential(
+    lifetimes: &[TensorLifetime],
+    alignment: usize,
+) -> (Vec<BufferAllocation>, usize) {
+    let mut allocations: Vec<BufferAllocation> = Vec::with_capacity(lifetimes.len());
+    let mut current_offset: usize = 0;
+
+    for (i, lifetime) in lifetimes.iter().enumerate() {
+        let aligned_size = align_up(lifetime.size_bytes, alignment);
+        allocations.push(BufferAllocation {
+            buffer_id: i,
+            offset: current_offset,
+            size: aligned_size,
+            tensor_name: lifetime.tensor_name.clone(),
+        });
+        current_offset += aligned_size;
+    }
+
+    (allocations, current_offset)
+}
+
 /// Produces a memory plan from a set of tensor lifetimes.
 ///
 /// When `enable_buffer_reuse` is true, uses first-fit reuse: a new tensor
@@ -203,58 +274,9 @@ pub fn plan_memory(lifetimes: &[TensorLifetime], config: &PlannerConfig) -> Memo
         return MemoryPlan::empty();
     }
 
-    let mut allocations: Vec<BufferAllocation> = Vec::with_capacity(lifetimes.len());
-    let mut reuse_count: usize = 0;
-
     if config.enable_buffer_reuse {
-        // Track active buffers: (buffer_id, offset, size, last_use)
-        let mut buffers: Vec<(usize, usize, usize, usize)> = Vec::new();
-        let mut next_buffer_id: usize = 0;
-        let mut current_offset: usize = 0;
-
-        for lifetime in lifetimes {
-            let aligned_size = align_up(lifetime.size_bytes, config.alignment);
-
-            // Try to find a reusable buffer: non-overlapping and large enough
-            let mut reused = false;
-            for buf in &mut buffers {
-                let (buf_id, buf_offset, buf_size, buf_last_use) = *buf;
-                // Buffer is free if its last_use is before this tensor's first_use
-                if buf_last_use < lifetime.first_use && buf_size >= aligned_size {
-                    allocations.push(BufferAllocation {
-                        buffer_id: buf_id,
-                        offset: buf_offset,
-                        size: buf_size,
-                        tensor_name: lifetime.tensor_name.clone(),
-                    });
-                    // Update the buffer's last_use
-                    buf.3 = lifetime.last_use;
-                    reuse_count += 1;
-                    reused = true;
-                    break;
-                }
-            }
-
-            if !reused {
-                let buf_id = next_buffer_id;
-                next_buffer_id += 1;
-                let offset = current_offset;
-                current_offset += aligned_size;
-
-                allocations.push(BufferAllocation {
-                    buffer_id: buf_id,
-                    offset,
-                    size: aligned_size,
-                    tensor_name: lifetime.tensor_name.clone(),
-                });
-
-                buffers.push((buf_id, offset, aligned_size, lifetime.last_use));
-            }
-        }
-
-        let peak_memory = current_offset;
-        let buffer_count = next_buffer_id;
-
+        let (allocations, peak_memory, buffer_count, reuse_count) =
+            plan_with_reuse(lifetimes, config.alignment);
         MemoryPlan {
             allocations,
             peak_memory,
@@ -262,22 +284,8 @@ pub fn plan_memory(lifetimes: &[TensorLifetime], config: &PlannerConfig) -> Memo
             reuse_count,
         }
     } else {
-        // No reuse: sequential allocation
-        let mut current_offset: usize = 0;
-        for (i, lifetime) in lifetimes.iter().enumerate() {
-            let aligned_size = align_up(lifetime.size_bytes, config.alignment);
-            allocations.push(BufferAllocation {
-                buffer_id: i,
-                offset: current_offset,
-                size: aligned_size,
-                tensor_name: lifetime.tensor_name.clone(),
-            });
-            current_offset += aligned_size;
-        }
-
-        let peak_memory = current_offset;
+        let (allocations, peak_memory) = plan_sequential(lifetimes, config.alignment);
         let buffer_count = allocations.len();
-
         MemoryPlan {
             allocations,
             peak_memory,

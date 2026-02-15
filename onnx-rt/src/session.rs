@@ -188,44 +188,25 @@ const MAX_OPSET_VERSION: i64 = 21;
 // Model validation
 // ---------------------------------------------------------------------------
 
-/// Validates a parsed ONNX model for structural correctness.
-///
-/// Checks:
-/// - IR version is supported
-/// - Opset version is within range
-/// - Graph is present and non-empty
-/// - All operators are in the operator registry
-/// - All nodes have at least one output
-/// - No duplicate output tensor names
-pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
-    // Check IR version
+/// Validates IR version and opset imports.
+fn validate_model_version(model: &ModelProto) -> Result<(), SessionError> {
     if model.ir_version > CURRENT_IR_VERSION && model.ir_version != 0 {
         return Err(SessionError::InvalidModel(String::from(
             "unsupported IR version",
         )));
     }
-
-    // Check opset version
     for opset in &model.opset_import {
         if opset.domain.is_empty() && opset.version > MAX_OPSET_VERSION {
             return Err(SessionError::UnsupportedOpset(opset.version));
         }
     }
+    Ok(())
+}
 
-    // Check graph presence
-    let graph = match &model.graph {
-        Some(g) => g,
-        None => {
-            return Err(SessionError::InvalidModel(String::from(
-                "model has no graph",
-            )));
-        }
-    };
-
-    // Validate operators
+/// Validates that all graph nodes use supported operators and have outputs.
+fn validate_graph_operators(graph: &crate::onnx_types::GraphProto) -> Result<(), SessionError> {
     let registry = OperatorRegistry::new();
     for node in &graph.node {
-        // Skip custom domain operators
         if !node.domain.is_empty() {
             continue;
         }
@@ -242,8 +223,11 @@ pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
             )));
         }
     }
+    Ok(())
+}
 
-    // Check for duplicate output names
+/// Checks for duplicate output tensor names across all nodes.
+fn validate_unique_outputs(graph: &crate::onnx_types::GraphProto) -> Result<(), SessionError> {
     let mut seen_outputs: Vec<&str> = Vec::new();
     for node in &graph.node {
         for output in &node.output {
@@ -259,6 +243,32 @@ pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
             seen_outputs.push(output.as_str());
         }
     }
+    Ok(())
+}
+
+/// Validates a parsed ONNX model for structural correctness.
+///
+/// Checks:
+/// - IR version is supported
+/// - Opset version is within range
+/// - Graph is present and non-empty
+/// - All operators are in the operator registry
+/// - All nodes have at least one output
+/// - No duplicate output tensor names
+pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
+    validate_model_version(model)?;
+
+    let graph = match &model.graph {
+        Some(g) => g,
+        None => {
+            return Err(SessionError::InvalidModel(String::from(
+                "model has no graph",
+            )));
+        }
+    };
+
+    validate_graph_operators(graph)?;
+    validate_unique_outputs(graph)?;
 
     Ok(())
 }
