@@ -5,7 +5,7 @@
 # Build a bootable SD card image for Jetson Nano.
 #
 # The image contains a GPT partition table with a single ext4 partition
-# holding /boot/Image (kernel), /boot/tegra210-p3450-0000.dtb (DTB),
+# holding /boot/Image (kernel), /boot/tegra210-smallaios.dtb (DTB),
 # and /boot/extlinux/extlinux.conf (U-Boot boot config).
 #
 # Usage:
@@ -26,7 +26,7 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 IMAGE_FILE="$PROJECT_DIR/build/sdcard-jetson.img"
 IMAGE_SIZE_MB=64
 KERNEL_IMAGE="$PROJECT_DIR/target/aarch64-unknown-none/release/Image"
-DTB_FILE="$PROJECT_DIR/arch/aarch64/dtb/tegra210-p3450-0000.dtb"
+DTB_FILE="$PROJECT_DIR/arch/aarch64/dtb/tegra210-smallaios.dtb"
 EXTLINUX_CONF="$PROJECT_DIR/arch/aarch64/extlinux.conf"
 MOUNT_DIR=""
 
@@ -105,7 +105,7 @@ sudo mkdir -p "$MOUNT_DIR/boot/extlinux"
 sudo cp "$KERNEL_IMAGE" "$MOUNT_DIR/boot/Image"
 
 if [ "$HAS_DTB" -eq 1 ]; then
-    sudo cp "$DTB_FILE" "$MOUNT_DIR/boot/tegra210-p3450-0000.dtb"
+    sudo cp "$DTB_FILE" "$MOUNT_DIR/boot/tegra210-smallaios.dtb"
 fi
 
 sudo cp "$EXTLINUX_CONF" "$MOUNT_DIR/boot/extlinux/extlinux.conf"

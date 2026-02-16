@@ -268,10 +268,17 @@ check-size-riscv: build-kernel-riscv
 .PHONY: check-size
 check-size: check-size-x86 check-size-arm check-size-riscv
 
+# === Device Tree ===
+
+.PHONY: dtb-jetson
+dtb-jetson:
+	dtc -I dts -O dtb -o arch/aarch64/dtb/tegra210-smallaios.dtb \
+		arch/aarch64/dts/tegra210-smallaios.dts
+
 # === Jetson Nano (Tegra X1) ===
 
 .PHONY: build-kernel-jetson
-build-kernel-jetson:
+build-kernel-jetson: dtb-jetson
 	RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker-tegra.ld" \
 	$(CARGO) build --release --target aarch64-unknown-none \
 		-p smallaios-arch-aarch64 --no-default-features --features tegra-x1 \
