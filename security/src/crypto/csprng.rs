@@ -461,4 +461,73 @@ mod tests {
         assert_eq!(CSPRNG_SEED_LEN, 32);
         assert_eq!(CSPRNG_RESEED_INTERVAL, 1 << 20);
     }
+
+    #[test]
+    fn csprng_default_is_unseeded() {
+        let rng = Csprng::default();
+        assert!(!rng.is_seeded());
+        assert_eq!(rng.bytes_generated(), 0);
+    }
+
+    #[test]
+    fn csprng_needs_reseed_false_initially() {
+        let mut rng = Csprng::new();
+        let seed = CsprngSeed::from_bytes([0x42; CSPRNG_SEED_LEN]);
+        rng.seed(&seed).unwrap();
+        assert!(!rng.needs_reseed());
+    }
+
+    #[test]
+    fn csprng_error_display_all() {
+        assert_eq!(
+            format!("{}", CsprngError::InvalidSeedLength),
+            "invalid seed length (expected 32 bytes)"
+        );
+        assert_eq!(
+            format!("{}", CsprngError::ReseedRequired),
+            "reseed required: generation limit reached"
+        );
+        assert_eq!(
+            format!("{}", CsprngError::ZeroLength),
+            "requested output length is zero"
+        );
+        assert_eq!(format!("{}", CsprngError::NotSeeded), "CSPRNG not seeded");
+    }
+
+    #[test]
+    fn csprng_seed_from_hardware() {
+        let mut rng = Csprng::new();
+        // On x86_64 test hosts, seed_from_hardware should succeed
+        // (uses RDRAND or falls back to zero-seed)
+        rng.seed_from_hardware().unwrap();
+        assert!(rng.is_seeded());
+
+        let mut buf = [0u8; 32];
+        rng.generate(&mut buf).unwrap();
+        assert_eq!(rng.bytes_generated(), 32);
+    }
+
+    #[test]
+    fn csprng_seed_equality() {
+        let s1 = CsprngSeed::from_bytes([0xAA; CSPRNG_SEED_LEN]);
+        let s2 = CsprngSeed::from_bytes([0xAA; CSPRNG_SEED_LEN]);
+        let s3 = CsprngSeed::from_bytes([0xBB; CSPRNG_SEED_LEN]);
+        assert_eq!(s1, s2);
+        assert_ne!(s1, s3);
+    }
+
+    #[test]
+    fn csprng_multiple_generates() {
+        let mut rng = Csprng::new();
+        let seed = CsprngSeed::from_bytes([0x42; CSPRNG_SEED_LEN]);
+        rng.seed(&seed).unwrap();
+
+        let mut buf1 = [0u8; 16];
+        let mut buf2 = [0u8; 16];
+        rng.generate(&mut buf1).unwrap();
+        rng.generate(&mut buf2).unwrap();
+        // Sequential outputs should differ
+        assert_ne!(buf1, buf2);
+        assert_eq!(rng.bytes_generated(), 32);
+    }
 }

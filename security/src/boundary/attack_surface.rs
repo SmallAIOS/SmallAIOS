@@ -326,4 +326,111 @@ mod tests {
             assert_eq!(entry.validation, ValidationMechanism::MemoryRegionCheck);
         }
     }
+
+    #[test]
+    fn data_format_strings_all() {
+        assert_eq!(DataFormat::HttpFrames.as_str(), "http-frames");
+        assert_eq!(DataFormat::Arinc429Word.as_str(), "arinc-429-word");
+        assert_eq!(DataFormat::Arinc664Frame.as_str(), "arinc-664-frame");
+        assert_eq!(DataFormat::Mil1553Word.as_str(), "mil-1553-word");
+        assert_eq!(DataFormat::SpaceWirePacket.as_str(), "spacewire-packet");
+        assert_eq!(DataFormat::CcsdsPacket.as_str(), "ccsds-packet");
+        assert_eq!(DataFormat::PciBarMemory.as_str(), "pci-bar-memory");
+        assert_eq!(DataFormat::DmaDescriptor.as_str(), "dma-descriptor");
+        assert_eq!(DataFormat::JsonConfig.as_str(), "json-config");
+        assert_eq!(DataFormat::PrometheusQuery.as_str(), "prometheus-query");
+    }
+
+    #[test]
+    fn validation_strings_all() {
+        assert_eq!(
+            ValidationMechanism::BoundsValidation.as_str(),
+            "bounds-validation"
+        );
+        assert_eq!(
+            ValidationMechanism::SchemaValidation.as_str(),
+            "schema-validation"
+        );
+        assert_eq!(
+            ValidationMechanism::CertificateValidation.as_str(),
+            "certificate-validation"
+        );
+        assert_eq!(
+            ValidationMechanism::MemoryRegionCheck.as_str(),
+            "memory-region-check"
+        );
+        assert_eq!(ValidationMechanism::RateLimiting.as_str(), "rate-limiting");
+    }
+
+    #[test]
+    fn entry_point_count_matches() {
+        assert_eq!(entry_point_count(TrustBoundary::Kernel), 2);
+        assert_eq!(entry_point_count(TrustBoundary::Network), 2);
+        assert_eq!(entry_point_count(TrustBoundary::BusProtocol), 6);
+        assert_eq!(entry_point_count(TrustBoundary::Gpu), 2);
+        assert_eq!(entry_point_count(TrustBoundary::Kubernetes), 2);
+    }
+
+    #[test]
+    fn entry_point_names_and_formats() {
+        let kernel = entry_points_for(TrustBoundary::Kernel);
+        assert!(
+            kernel
+                .iter()
+                .any(|e| e.name == "syscall-dispatch"
+                    && e.data_format == DataFormat::SyscallRegisters)
+        );
+        assert!(kernel
+            .iter()
+            .any(|e| e.name == "onnx-model-load" && e.data_format == DataFormat::OnnxProtobuf));
+
+        let net = entry_points_for(TrustBoundary::Network);
+        assert!(net
+            .iter()
+            .any(|e| e.name == "tls-termination" && e.data_format == DataFormat::Tls13Record));
+        assert!(net.iter().any(|e| e.name == "tcp-accept"));
+
+        let k8s = entry_points_for(TrustBoundary::Kubernetes);
+        assert!(k8s
+            .iter()
+            .any(|e| e.name == "kubelet-api" && e.data_format == DataFormat::HttpFrames));
+        assert!(k8s
+            .iter()
+            .any(|e| e.name == "metrics-endpoint" && e.data_format == DataFormat::PrometheusQuery));
+    }
+
+    #[test]
+    fn bus_entry_point_names() {
+        let bus = entry_points_for(TrustBoundary::BusProtocol);
+        let names: Vec<&str> = bus.iter().map(|e| e.name).collect();
+        assert!(names.contains(&"can-rx"));
+        assert!(names.contains(&"arinc429-rx"));
+        assert!(names.contains(&"arinc664-rx"));
+        assert!(names.contains(&"mil1553-rx"));
+        assert!(names.contains(&"spacewire-rx"));
+        assert!(names.contains(&"ccsds-rx"));
+    }
+
+    #[test]
+    fn gpu_entry_point_names() {
+        let gpu = entry_points_for(TrustBoundary::Gpu);
+        assert!(gpu
+            .iter()
+            .any(|e| e.name == "command-submission" && e.data_format == DataFormat::DmaDescriptor));
+        assert!(gpu
+            .iter()
+            .any(|e| e.name == "dma-transfer" && e.data_format == DataFormat::PciBarMemory));
+    }
+
+    #[test]
+    fn limitations_content() {
+        let limited = entry_points_with_limitations();
+        for entry in &limited {
+            assert!(!entry.limitation.is_empty());
+        }
+        // Verify specific limitations exist
+        assert!(limited.iter().any(|e| e.name == "syscall-dispatch"));
+        assert!(limited.iter().any(|e| e.name == "onnx-model-load"));
+        assert!(limited.iter().any(|e| e.name == "command-submission"));
+    }
 }

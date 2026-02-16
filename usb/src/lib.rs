@@ -152,13 +152,40 @@ mod tests {
     use alloc::format;
 
     #[test]
-    fn test_usb_error_display() {
+    fn test_usb_error_display_all_variants() {
+        // Test every UsbError Display variant for full coverage.
         assert_eq!(
             format!("{}", UsbError::DescriptorTooShort),
             "descriptor too short"
         );
+        assert_eq!(
+            format!("{}", UsbError::InvalidDescriptorType),
+            "invalid descriptor type"
+        );
+        assert_eq!(
+            format!("{}", UsbError::InvalidDescriptorLength),
+            "invalid descriptor length"
+        );
+        assert_eq!(format!("{}", UsbError::Timeout), "device timeout");
         assert_eq!(format!("{}", UsbError::Stall), "endpoint stall");
+        assert_eq!(format!("{}", UsbError::TransferError), "transfer error");
+        assert_eq!(format!("{}", UsbError::NoFreeSlot), "no free device slot");
+        assert_eq!(format!("{}", UsbError::DeviceNotFound), "device not found");
+        assert_eq!(
+            format!("{}", UsbError::InterfaceAlreadyClaimed),
+            "interface already claimed"
+        );
+        assert_eq!(format!("{}", UsbError::EndpointHalted), "endpoint halted");
+        assert_eq!(format!("{}", UsbError::BufferTooSmall), "buffer too small");
+        assert_eq!(format!("{}", UsbError::InvalidEndpoint), "invalid endpoint");
         assert_eq!(format!("{}", UsbError::TooManyDevices), "too many devices");
+        assert_eq!(
+            format!(
+                "{}",
+                UsbError::HalError(smallaios_kernel::hal::HalError::Timeout)
+            ),
+            "HAL error: timeout"
+        );
     }
 
     #[test]
@@ -169,6 +196,41 @@ mod tests {
             usb_err,
             UsbError::HalError(smallaios_kernel::hal::HalError::Timeout)
         );
+    }
+
+    #[test]
+    fn test_usb_error_from_hal_all_variants() {
+        // Verify From<HalError> works for several HalError variants.
+        let variants = [
+            smallaios_kernel::hal::HalError::InitFailed,
+            smallaios_kernel::hal::HalError::UsbTransferError,
+            smallaios_kernel::hal::HalError::UsbStall,
+            smallaios_kernel::hal::HalError::UsbDeviceNotFound,
+            smallaios_kernel::hal::HalError::UsbEndpointHalted,
+            smallaios_kernel::hal::HalError::HardwareError,
+        ];
+        for hal_err in variants {
+            let usb_err: UsbError = hal_err.into();
+            assert_eq!(usb_err, UsbError::HalError(hal_err));
+        }
+    }
+
+    #[test]
+    fn test_usb_error_debug() {
+        // Ensure Debug impl works (derived).
+        let err = UsbError::Timeout;
+        let debug_str = format!("{:?}", err);
+        assert!(debug_str.contains("Timeout"));
+    }
+
+    #[test]
+    fn test_usb_error_clone_copy_eq() {
+        let err1 = UsbError::Stall;
+        let err2 = err1; // Copy
+        let err3 = err1; // Copy (also tests Clone since Copy implies Clone)
+        assert_eq!(err1, err2);
+        assert_eq!(err1, err3);
+        assert_ne!(UsbError::Stall, UsbError::Timeout);
     }
 
     #[test]
@@ -184,9 +246,55 @@ mod tests {
     }
 
     #[test]
+    fn test_request_type_all_constants() {
+        assert_eq!(request_type::DIR_OUT, 0x00);
+        assert_eq!(request_type::DIR_IN, 0x80);
+        assert_eq!(request_type::TYPE_STANDARD, 0x00);
+        assert_eq!(request_type::TYPE_CLASS, 0x20);
+        assert_eq!(request_type::TYPE_VENDOR, 0x40);
+        assert_eq!(request_type::RECIP_DEVICE, 0x00);
+        assert_eq!(request_type::RECIP_INTERFACE, 0x01);
+        assert_eq!(request_type::RECIP_ENDPOINT, 0x02);
+    }
+
+    #[test]
+    fn test_request_type_combinations() {
+        // Class request to interface (e.g. HID SET_REPORT)
+        assert_eq!(
+            request_type::DIR_OUT | request_type::TYPE_CLASS | request_type::RECIP_INTERFACE,
+            0x21
+        );
+        // Vendor IN from endpoint
+        assert_eq!(
+            request_type::DIR_IN | request_type::TYPE_VENDOR | request_type::RECIP_ENDPOINT,
+            0xC2
+        );
+    }
+
+    #[test]
+    fn test_request_constants() {
+        assert_eq!(request::GET_STATUS, 0x00);
+        assert_eq!(request::CLEAR_FEATURE, 0x01);
+        assert_eq!(request::SET_FEATURE, 0x03);
+        assert_eq!(request::SET_ADDRESS, 0x05);
+        assert_eq!(request::GET_DESCRIPTOR, 0x06);
+        assert_eq!(request::SET_DESCRIPTOR, 0x07);
+        assert_eq!(request::GET_CONFIGURATION, 0x08);
+        assert_eq!(request::SET_CONFIGURATION, 0x09);
+    }
+
+    #[test]
     fn test_descriptor_type_constants() {
         assert_eq!(descriptor_type::DEVICE, 1);
         assert_eq!(descriptor_type::CONFIGURATION, 2);
+        assert_eq!(descriptor_type::STRING, 3);
+        assert_eq!(descriptor_type::INTERFACE, 4);
         assert_eq!(descriptor_type::ENDPOINT, 5);
+        assert_eq!(descriptor_type::INTERFACE_ASSOCIATION, 0x0B);
+    }
+
+    #[test]
+    fn test_feature_constants() {
+        assert_eq!(feature::ENDPOINT_HALT, 0x00);
     }
 }

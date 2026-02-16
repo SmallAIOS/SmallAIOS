@@ -113,3 +113,68 @@ pub enum MemError {
     /// Page table entry already exists.
     AlreadyMapped,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phys_addr_basic() {
+        let addr = PhysAddr::new(0x1000);
+        assert_eq!(addr.as_usize(), 0x1000);
+    }
+
+    #[test]
+    fn phys_addr_align() {
+        assert_eq!(PhysAddr::new(0x1001).align_up(0x1000).as_usize(), 0x2000);
+        assert_eq!(PhysAddr::new(0x1FFF).align_down(0x1000).as_usize(), 0x1000);
+        assert!(PhysAddr::new(0x1000).is_aligned(0x1000));
+        assert!(!PhysAddr::new(0x1001).is_aligned(0x1000));
+    }
+
+    #[test]
+    fn phys_addr_offset() {
+        assert_eq!(PhysAddr::new(0x1000).offset(0x500).as_usize(), 0x1500);
+    }
+
+    #[test]
+    fn virt_addr_basic() {
+        let addr = VirtAddr::new(0x2000);
+        assert_eq!(addr.as_usize(), 0x2000);
+    }
+
+    #[test]
+    fn virt_addr_align() {
+        assert_eq!(VirtAddr::new(0x2001).align_up(0x1000).as_usize(), 0x3000);
+        assert_eq!(VirtAddr::new(0x2FFF).align_down(0x1000).as_usize(), 0x2000);
+        assert!(VirtAddr::new(0x2000).is_aligned(0x1000));
+        assert!(!VirtAddr::new(0x2001).is_aligned(0x1000));
+    }
+
+    #[test]
+    fn virt_addr_as_ptr() {
+        let addr = VirtAddr::new(0x4000);
+        assert_eq!(addr.as_ptr::<u8>() as usize, 0x4000);
+        assert_eq!(addr.as_mut_ptr::<u8>() as usize, 0x4000);
+    }
+
+    #[test]
+    fn phys_addr_ordering() {
+        assert!(PhysAddr::new(0x1000) < PhysAddr::new(0x2000));
+        assert!(PhysAddr::new(0x2000) > PhysAddr::new(0x1000));
+        assert_eq!(PhysAddr::new(0x1000), PhysAddr::new(0x1000));
+    }
+
+    #[test]
+    fn virt_addr_ordering() {
+        assert!(VirtAddr::new(0x1000) < VirtAddr::new(0x2000));
+        assert_eq!(VirtAddr::new(0x1000), VirtAddr::new(0x1000));
+    }
+
+    #[test]
+    fn page_sizes() {
+        assert_eq!(PAGE_SIZE_4K, 4096);
+        assert_eq!(PAGE_SIZE_2M, 2 * 1024 * 1024);
+        assert_eq!(PAGE_SIZE_1G, 1024 * 1024 * 1024);
+    }
+}

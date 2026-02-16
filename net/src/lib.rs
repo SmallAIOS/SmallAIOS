@@ -153,4 +153,24 @@ mod tests {
         let cloned = err;
         assert_eq!(err, cloned);
     }
+
+    #[test]
+    fn test_net_error_display_all() {
+        assert_eq!(format!("{}", NetError::InvalidHeader), "invalid header");
+        assert_eq!(format!("{}", NetError::BufferTooSmall), "buffer too small");
+        assert_eq!(format!("{}", NetError::InvalidProtocol), "invalid protocol");
+        assert_eq!(format!("{}", NetError::InvalidAddress), "invalid address");
+        assert_eq!(format!("{}", NetError::NotFound), "not found");
+        assert_eq!(format!("{}", NetError::NotImplemented), "not implemented");
+        assert_eq!(format!("{}", NetError::DeviceNotReady), "device not ready");
+        assert_eq!(format!("{}", NetError::RingFull), "ring full");
+        assert_eq!(format!("{}", NetError::NoData), "no data");
+    }
+
+    #[test]
+    fn test_link_speed_variants() {
+        assert_ne!(LinkSpeed::Mbps10, LinkSpeed::Mbps100);
+        assert_ne!(LinkSpeed::Mbps100, LinkSpeed::Mbps1000);
+        assert_eq!(LinkSpeed::Mbps10, LinkSpeed::Mbps10);
+    }
 }

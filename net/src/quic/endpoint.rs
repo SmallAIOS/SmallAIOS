@@ -727,4 +727,156 @@ mod tests {
         assert_ne!(e3, e4);
         assert_ne!(e5, e6);
     }
+
+    #[test]
+    fn test_open_stream_uni_not_established() {
+        let mut ep = QuicEndpoint::client(default_params());
+        let handle = ep.connect(b"l", b"r", 1000).unwrap();
+        assert_eq!(
+            ep.open_stream_uni(handle).err(),
+            Some(NetError::InvalidProtocol)
+        );
+    }
+
+    #[test]
+    fn test_open_stream_bidi_nonexistent() {
+        let mut ep = QuicEndpoint::client(default_params());
+        assert_eq!(ep.open_stream_bidi(999).err(), Some(NetError::NotFound));
+    }
+
+    #[test]
+    fn test_open_stream_uni_nonexistent() {
+        let mut ep = QuicEndpoint::client(default_params());
+        assert_eq!(ep.open_stream_uni(999).err(), Some(NetError::NotFound));
+    }
+
+    #[test]
+    fn test_stream_write_nonexistent_conn() {
+        let mut ep = QuicEndpoint::client(default_params());
+        assert_eq!(
+            ep.stream_write(999, 0, b"data").err(),
+            Some(NetError::NotFound)
+        );
+    }
+
+    #[test]
+    fn test_stream_read_nonexistent_conn() {
+        let mut ep = QuicEndpoint::client(default_params());
+        let mut buf = [0u8; 64];
+        assert_eq!(
+            ep.stream_read(999, 0, &mut buf).err(),
+            Some(NetError::NotFound)
+        );
+    }
+
+    #[test]
+    fn test_stream_finish_nonexistent_conn() {
+        let mut ep = QuicEndpoint::client(default_params());
+        assert_eq!(ep.stream_finish(999, 0).err(), Some(NetError::NotFound));
+    }
+
+    #[test]
+    fn test_connection_state_nonexistent() {
+        let ep = QuicEndpoint::client(default_params());
+        assert_eq!(ep.connection_state(999), None);
+    }
+
+    #[test]
+    fn test_receive_short_header_known_connection() {
+        let mut ep = QuicEndpoint::client(default_params());
+        let _handle = ep.connect(b"10.0.0.1:4433", b"10.0.0.2:443", 1000).unwrap();
+
+        // Get the connection's CID from the cid_to_handle map
+        let dcid: Vec<u8> = ep.cid_to_handle.keys().next().unwrap().clone();
+
+        // Build a short header packet with the known DCID
+        let mut pkt = vec![0x40u8]; // short header bit pattern
+        pkt.extend_from_slice(&dcid);
+        pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]); // minimal payload
+
+        // Receive from same address - should not trigger migration
+        let result = ep.receive(&pkt, b"10.0.0.1:4433", b"10.0.0.2:443", 2000);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_receive_short_header_migration() {
+        let mut ep = QuicEndpoint::client(default_params());
+        let _handle = ep.connect(b"10.0.0.1:4433", b"10.0.0.2:443", 1000).unwrap();
+
+        // Get the connection's CID
+        let dcid: Vec<u8> = ep.cid_to_handle.keys().next().unwrap().clone();
+
+        // Build a short header packet with the known DCID
+        let mut pkt = vec![0x40u8];
+        pkt.extend_from_slice(&dcid);
+        pkt.extend_from_slice(&[0x00, 0x00, 0x00, 0x01]);
+
+        // Receive from different address - triggers migration path
+        let result = ep.receive(&pkt, b"10.0.0.3:5000", b"10.0.0.4:6000", 2000);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_receive_unsupported_version() {
+        let mut ep = QuicEndpoint::server(default_params());
+        // Build a long header with unsupported version
+        // Long header: first byte with long header bit set (0xC0 | type bits)
+        // Version is bytes 1-4
+        let mut pkt = vec![0xC0]; // long header, Initial type
+        pkt.extend_from_slice(&[0x99, 0x99, 0x99, 0x99]); // unsupported version
+        pkt.push(8); // DCID length
+        pkt.extend_from_slice(&[0x01; 8]); // DCID
+        pkt.push(8); // SCID length
+        pkt.extend_from_slice(&[0x02; 8]); // SCID
+        pkt.extend_from_slice(&[0x00, 0x00]); // token length (varint) + payload length
+        pkt.extend_from_slice(&[0x00; 20]); // padding
+
+        let result = ep.receive(&pkt, b"local", b"remote", 1000);
+        assert_eq!(result.err(), Some(NetError::InvalidProtocol));
+    }
+
+    #[test]
+    fn test_endpoint_config_default() {
+        let config = EndpointConfig::default();
+        assert!(!config.is_server);
+        assert_eq!(config.max_connections, 256);
+        assert!(!config.retry_required);
+        assert!(!config.enable_0rtt);
+    }
+
+    #[test]
+    fn test_garbage_collect_no_closed() {
+        let mut ep = QuicEndpoint::client(default_params());
+        ep.connect(b"l", b"r", 1000).unwrap();
+        ep.garbage_collect();
+        // Connection still there (not closed)
+        assert_eq!(ep.connection_count(), 1);
+    }
+
+    #[test]
+    fn test_handle_timeouts_no_timeout() {
+        let mut ep = QuicEndpoint::client(default_params());
+        ep.connect(b"l", b"r", 1000).unwrap();
+        // Not enough time passed for timeout
+        ep.handle_timeouts(2000);
+        assert!(ep.poll_events().is_empty());
+    }
+
+    #[test]
+    fn test_receive_long_header_unknown_dcid_not_initial_client() {
+        let mut ep = QuicEndpoint::client(default_params());
+        // Build a long header Handshake packet with unknown DCID
+        // Client endpoint should return NotFound for unknown DCID non-Initial packets
+        let mut hdr = LongHeader::new(PacketType::Handshake, &[0xAA; 8], &[0xBB; 8]).unwrap();
+        hdr.payload_length = 20;
+        hdr.packet_number = 0;
+        let mut buf = [0u8; 128];
+        let hdr_len = hdr.encode(&mut buf).unwrap();
+        buf[hdr_len..hdr_len + 20].fill(0);
+        let total = hdr_len + 20;
+
+        let result = ep.receive(&buf[..total], b"local", b"remote", 1000);
+        assert_eq!(result.err(), Some(NetError::NotFound));
+    }
 }

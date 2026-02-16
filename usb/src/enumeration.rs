@@ -237,6 +237,174 @@ pub fn enumerate_device(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
+    use smallaios_kernel::hal::{
+        HalError, UsbHostController, UsbPortStatus, UsbSetupPacket, UsbSpeed, UsbTransferResult,
+        UsbTransferType,
+    };
+
+    // -----------------------------------------------------------------------
+    // Test data helpers
+    // -----------------------------------------------------------------------
+
+    fn valid_device_descriptor() -> [u8; 18] {
+        [
+            18,   // bLength
+            0x01, // bDescriptorType = DEVICE
+            0x10, 0x02, // bcdUSB = 2.10
+            0xFF, // bDeviceClass = Vendor
+            0x00, // bDeviceSubClass
+            0x00, // bDeviceProtocol
+            64,   // bMaxPacketSize0
+            0xAD, 0xDE, // idVendor = 0xDEAD
+            0xEF, 0xBE, // idProduct = 0xBEEF
+            0x00, 0x01, // bcdDevice = 1.00
+            1,    // iManufacturer
+            2,    // iProduct
+            3,    // iSerialNumber
+            1,    // bNumConfigurations
+        ]
+    }
+
+    fn valid_config_descriptor() -> [u8; 9] {
+        [
+            9,    // bLength
+            0x02, // bDescriptorType = CONFIGURATION
+            9, 0,    // wTotalLength = 9 (header only)
+            1,    // bNumInterfaces
+            1,    // bConfigurationValue
+            0,    // iConfiguration
+            0x80, // bmAttributes = bus-powered
+            50,   // bMaxPower = 100mA
+        ]
+    }
+
+    // -----------------------------------------------------------------------
+    // Scripted mock USB host controller
+    // -----------------------------------------------------------------------
+
+    /// A scripted control transfer response: (result, optional data to fill).
+    type ControlResponse = (Result<UsbTransferResult, HalError>, Option<Vec<u8>>);
+
+    /// Tracks which step in the enumeration sequence we are at and provides
+    /// scripted responses.
+    struct MockHc {
+        /// Scripted control transfer responses in order.
+        control_responses: Vec<ControlResponse>,
+        control_call_index: usize,
+        port_reset_result: Result<(), HalError>,
+        device_attach_result: Result<u8, HalError>,
+    }
+
+    impl MockHc {
+        /// Create a mock that succeeds through the full enumeration sequence.
+        fn success() -> Self {
+            let dev_desc = valid_device_descriptor();
+            let cfg_desc = valid_config_descriptor();
+
+            let ok_transfer = |bytes: u32, data: Option<Vec<u8>>| {
+                (
+                    Ok(UsbTransferResult {
+                        bytes_transferred: bytes,
+                        success: true,
+                        stalled: false,
+                        token: 0,
+                    }),
+                    data,
+                )
+            };
+
+            Self {
+                control_responses: alloc::vec![
+                    // Step 3: GET_DESCRIPTOR(Device) — returns 18-byte device descriptor
+                    ok_transfer(18, Some(dev_desc.to_vec())),
+                    // Step 4a: GET_DESCRIPTOR(Config header) — returns 9-byte config descriptor
+                    ok_transfer(9, Some(cfg_desc.to_vec())),
+                    // Step 5: SET_CONFIGURATION — no data
+                    ok_transfer(0, None),
+                ],
+                control_call_index: 0,
+                port_reset_result: Ok(()),
+                device_attach_result: Ok(1),
+            }
+        }
+    }
+
+    impl UsbHostController for MockHc {
+        fn init(&mut self) -> Result<(), HalError> {
+            Ok(())
+        }
+        fn port_count(&self) -> u8 {
+            1
+        }
+        fn port_status(&self, _port: u8) -> Result<UsbPortStatus, HalError> {
+            Ok(UsbPortStatus {
+                connected: true,
+                enabled: true,
+                reset_active: false,
+                speed: UsbSpeed::High,
+                port: 0,
+            })
+        }
+        fn port_reset(&mut self, _port: u8) -> Result<(), HalError> {
+            self.port_reset_result
+        }
+        fn device_attach(&mut self, _port: u8) -> Result<u8, HalError> {
+            self.device_attach_result
+        }
+        fn device_detach(&mut self, _slot: u8) -> Result<(), HalError> {
+            Ok(())
+        }
+        fn control_transfer(
+            &mut self,
+            _slot: u8,
+            _setup: &UsbSetupPacket,
+            data: Option<&mut [u8]>,
+        ) -> Result<UsbTransferResult, HalError> {
+            if self.control_call_index >= self.control_responses.len() {
+                return Err(HalError::UsbTransferError);
+            }
+            let (result, fill_data) = &self.control_responses[self.control_call_index];
+            self.control_call_index += 1;
+
+            // Fill the data buffer if requested and data is provided.
+            if let (Some(buf), Some(fill)) = (data, fill_data) {
+                let len = buf.len().min(fill.len());
+                buf[..len].copy_from_slice(&fill[..len]);
+            }
+
+            *result
+        }
+        fn bulk_transfer(
+            &mut self,
+            _slot: u8,
+            _endpoint: u8,
+            _data: &mut [u8],
+        ) -> Result<UsbTransferResult, HalError> {
+            Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            })
+        }
+        fn configure_endpoint(
+            &mut self,
+            _slot: u8,
+            _endpoint: u8,
+            _transfer_type: UsbTransferType,
+            _max_packet_size: u16,
+        ) -> Result<(), HalError> {
+            Ok(())
+        }
+        fn poll_events(&mut self) -> Result<bool, HalError> {
+            Ok(false)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // AddressAllocator tests (existing + new)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_address_allocator_basic() {
@@ -284,6 +452,47 @@ mod tests {
     }
 
     #[test]
+    fn test_address_allocator_default() {
+        let alloc = AddressAllocator::default();
+        // Default should behave identically to new().
+        assert!(!alloc.is_used(1));
+        assert!(!alloc.is_used(0));
+        assert!(!alloc.is_used(127));
+    }
+
+    #[test]
+    fn test_address_allocator_release_zero() {
+        // Releasing address 0 should be a no-op (no panic).
+        let mut alloc = AddressAllocator::new();
+        alloc.release(0);
+        // State should be unchanged.
+        assert!(!alloc.is_used(0));
+        assert!(!alloc.is_used(1));
+    }
+
+    #[test]
+    fn test_address_allocator_release_out_of_range() {
+        // Releasing address 128+ should be a no-op (no panic).
+        let mut alloc = AddressAllocator::new();
+        alloc.release(128);
+        alloc.release(255);
+        // State should be unchanged.
+        assert!(!alloc.is_used(1));
+    }
+
+    #[test]
+    fn test_address_allocator_is_used_out_of_range() {
+        let alloc = AddressAllocator::new();
+        // Out-of-range addresses should return false.
+        assert!(!alloc.is_used(128));
+        assert!(!alloc.is_used(255));
+    }
+
+    // -----------------------------------------------------------------------
+    // Setup packet builder tests (existing)
+    // -----------------------------------------------------------------------
+
+    #[test]
     fn test_make_set_address() {
         let pkt = make_set_address(5);
         assert_eq!(pkt.bm_request_type, 0x00);
@@ -327,6 +536,10 @@ mod tests {
         assert_eq!(pkt.w_index, 0x0081);
     }
 
+    // -----------------------------------------------------------------------
+    // EnumerationState tests
+    // -----------------------------------------------------------------------
+
     #[test]
     fn test_enumeration_state_variants() {
         assert_ne!(
@@ -334,5 +547,412 @@ mod tests {
             EnumerationState::Complete
         );
         assert_eq!(EnumerationState::Failed, EnumerationState::Failed);
+    }
+
+    #[test]
+    fn test_enumeration_state_all_variants() {
+        // Exercise all EnumerationState variants for coverage of Debug/PartialEq.
+        let states = [
+            EnumerationState::WaitingForReset,
+            EnumerationState::SettingAddress,
+            EnumerationState::ReadingDeviceDescriptor,
+            EnumerationState::ReadingConfigDescriptor,
+            EnumerationState::SettingConfiguration,
+            EnumerationState::Complete,
+            EnumerationState::Failed,
+        ];
+        // Each state should be equal to itself.
+        for s in &states {
+            assert_eq!(*s, *s);
+        }
+        // All states should be distinct.
+        for i in 0..states.len() {
+            for j in (i + 1)..states.len() {
+                assert_ne!(states[i], states[j]);
+            }
+        }
+        // Debug output should work for each.
+        for s in &states {
+            let debug = alloc::format!("{:?}", s);
+            assert!(!debug.is_empty());
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // enumerate_device success path
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enumerate_device_success() {
+        let mut hc = MockHc::success();
+        let result = enumerate_device(&mut hc, 0);
+        assert!(result.is_ok());
+        let dev = result.unwrap();
+        assert_eq!(dev.slot, 1);
+        assert_eq!(dev.port, 0);
+        assert_eq!(dev.device_desc.vendor_id, 0xDEAD);
+        assert_eq!(dev.device_desc.product_id, 0xBEEF);
+        assert_eq!(dev.device_desc.device_class, 0xFF);
+        assert_eq!(dev.config_desc.configuration_value, 1);
+        assert_eq!(dev.config_desc.num_interfaces, 1);
+        assert_eq!(dev.config_data_len, 9);
+    }
+
+    // -----------------------------------------------------------------------
+    // enumerate_device with total_length > 9 (triggers full config read)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enumerate_device_large_config_descriptor() {
+        let dev_desc = valid_device_descriptor();
+        // Config descriptor with total_length = 32 (larger than header).
+        let mut cfg_desc_header = valid_config_descriptor();
+        cfg_desc_header[2] = 32; // wTotalLength low byte
+        cfg_desc_header[3] = 0; // wTotalLength high byte
+
+        // Build a full 32-byte config descriptor chain:
+        // config(9) + interface(9) + endpoint(7) + endpoint(7) = 32
+        let mut full_config = [0u8; 32];
+        full_config[..9].copy_from_slice(&cfg_desc_header);
+        // Interface descriptor
+        full_config[9] = 9;
+        full_config[10] = 0x04; // INTERFACE
+        full_config[11] = 0; // interface number
+        full_config[13] = 2; // num_endpoints
+        full_config[14] = 0xFF; // class
+                                // Endpoint 1 (bulk IN 0x81)
+        full_config[18] = 7;
+        full_config[19] = 0x05; // ENDPOINT
+        full_config[20] = 0x81;
+        full_config[21] = 0x02; // bulk
+        full_config[22] = 0x00;
+        full_config[23] = 0x02; // 512 max pkt
+                                // Endpoint 2 (bulk OUT 0x02)
+        full_config[25] = 7;
+        full_config[26] = 0x05; // ENDPOINT
+        full_config[27] = 0x02;
+        full_config[28] = 0x02; // bulk
+        full_config[29] = 0x00;
+        full_config[30] = 0x02; // 512 max pkt
+
+        let ok = |bytes: u32, data: Option<Vec<u8>>| {
+            (
+                Ok(UsbTransferResult {
+                    bytes_transferred: bytes,
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+                data,
+            )
+        };
+
+        let mut hc = MockHc {
+            control_responses: alloc::vec![
+                ok(18, Some(dev_desc.to_vec())),
+                ok(9, Some(cfg_desc_header.to_vec())),
+                ok(32, Some(full_config.to_vec())),
+                ok(0, None),
+            ],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+
+        let result = enumerate_device(&mut hc, 0);
+        assert!(result.is_ok());
+        let dev = result.unwrap();
+        assert_eq!(dev.config_data_len, 32);
+        assert_eq!(dev.config_desc.total_length, 32);
+        assert_eq!(dev.config_desc.num_interfaces, 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // enumerate_device failure paths
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enumerate_device_port_reset_failure() {
+        let mut hc = MockHc {
+            control_responses: alloc::vec![],
+            control_call_index: 0,
+            port_reset_result: Err(HalError::Timeout),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), UsbError::HalError(HalError::Timeout));
+    }
+
+    #[test]
+    fn test_enumerate_device_attach_failure() {
+        let mut hc = MockHc {
+            control_responses: alloc::vec![],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Err(HalError::UsbDeviceNotFound),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            UsbError::HalError(HalError::UsbDeviceNotFound)
+        );
+    }
+
+    #[test]
+    fn test_enumerate_device_get_device_desc_transfer_error() {
+        // Control transfer returns not-success for device descriptor.
+        let mut hc = MockHc {
+            control_responses: alloc::vec![(
+                Ok(UsbTransferResult {
+                    bytes_transferred: 0,
+                    success: false,
+                    stalled: false,
+                    token: 0,
+                }),
+                None,
+            )],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert_eq!(result.unwrap_err(), UsbError::TransferError);
+    }
+
+    #[test]
+    fn test_enumerate_device_get_device_desc_hal_error() {
+        // Control transfer returns HalError for device descriptor.
+        let mut hc = MockHc {
+            control_responses: alloc::vec![(Err(HalError::UsbTransferError), None)],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert_eq!(
+            result.unwrap_err(),
+            UsbError::HalError(HalError::UsbTransferError)
+        );
+    }
+
+    #[test]
+    fn test_enumerate_device_get_device_desc_short_transfer() {
+        // Control transfer succeeds but returns too few bytes.
+        let dev_desc = valid_device_descriptor();
+        let mut hc = MockHc {
+            control_responses: alloc::vec![(
+                Ok(UsbTransferResult {
+                    bytes_transferred: 8, // Too short (need 18)
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+                Some(dev_desc.to_vec()),
+            )],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert_eq!(result.unwrap_err(), UsbError::TransferError);
+    }
+
+    #[test]
+    fn test_enumerate_device_get_config_header_failure() {
+        let dev_desc = valid_device_descriptor();
+        let ok = |bytes: u32, data: Option<Vec<u8>>| {
+            (
+                Ok(UsbTransferResult {
+                    bytes_transferred: bytes,
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+                data,
+            )
+        };
+        let mut hc = MockHc {
+            control_responses: alloc::vec![
+                ok(18, Some(dev_desc.to_vec())),
+                // Config header read fails
+                (
+                    Ok(UsbTransferResult {
+                        bytes_transferred: 0,
+                        success: false,
+                        stalled: false,
+                        token: 0,
+                    }),
+                    None,
+                ),
+            ],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert_eq!(result.unwrap_err(), UsbError::TransferError);
+    }
+
+    #[test]
+    fn test_enumerate_device_get_config_header_short() {
+        let dev_desc = valid_device_descriptor();
+        let cfg_desc = valid_config_descriptor();
+        let ok = |bytes: u32, data: Option<Vec<u8>>| {
+            (
+                Ok(UsbTransferResult {
+                    bytes_transferred: bytes,
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+                data,
+            )
+        };
+        let mut hc = MockHc {
+            control_responses: alloc::vec![
+                ok(18, Some(dev_desc.to_vec())),
+                // Config header returns too few bytes
+                (
+                    Ok(UsbTransferResult {
+                        bytes_transferred: 4, // Need at least 9
+                        success: true,
+                        stalled: false,
+                        token: 0,
+                    }),
+                    Some(cfg_desc.to_vec()),
+                ),
+            ],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert_eq!(result.unwrap_err(), UsbError::TransferError);
+    }
+
+    #[test]
+    fn test_enumerate_device_set_configuration_failure() {
+        let dev_desc = valid_device_descriptor();
+        let cfg_desc = valid_config_descriptor();
+        let ok = |bytes: u32, data: Option<Vec<u8>>| {
+            (
+                Ok(UsbTransferResult {
+                    bytes_transferred: bytes,
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+                data,
+            )
+        };
+        let mut hc = MockHc {
+            control_responses: alloc::vec![
+                ok(18, Some(dev_desc.to_vec())),
+                ok(9, Some(cfg_desc.to_vec())),
+                // SET_CONFIGURATION fails
+                (
+                    Ok(UsbTransferResult {
+                        bytes_transferred: 0,
+                        success: false,
+                        stalled: false,
+                        token: 0,
+                    }),
+                    None,
+                ),
+            ],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert_eq!(result.unwrap_err(), UsbError::TransferError);
+    }
+
+    #[test]
+    fn test_enumerate_device_full_config_read_failure() {
+        let dev_desc = valid_device_descriptor();
+        // Config with total_length > 9 to trigger full read
+        let mut cfg_desc_header = valid_config_descriptor();
+        cfg_desc_header[2] = 32;
+        cfg_desc_header[3] = 0;
+
+        let ok = |bytes: u32, data: Option<Vec<u8>>| {
+            (
+                Ok(UsbTransferResult {
+                    bytes_transferred: bytes,
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+                data,
+            )
+        };
+        let mut hc = MockHc {
+            control_responses: alloc::vec![
+                ok(18, Some(dev_desc.to_vec())),
+                ok(9, Some(cfg_desc_header.to_vec())),
+                // Full config read fails
+                (
+                    Ok(UsbTransferResult {
+                        bytes_transferred: 32,
+                        success: false,
+                        stalled: false,
+                        token: 0,
+                    }),
+                    None,
+                ),
+            ],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert_eq!(result.unwrap_err(), UsbError::TransferError);
+    }
+
+    #[test]
+    fn test_enumerate_device_full_config_read_hal_error() {
+        let dev_desc = valid_device_descriptor();
+        let mut cfg_desc_header = valid_config_descriptor();
+        cfg_desc_header[2] = 32;
+        cfg_desc_header[3] = 0;
+
+        let ok = |bytes: u32, data: Option<Vec<u8>>| {
+            (
+                Ok(UsbTransferResult {
+                    bytes_transferred: bytes,
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+                data,
+            )
+        };
+        let mut hc = MockHc {
+            control_responses: alloc::vec![
+                ok(18, Some(dev_desc.to_vec())),
+                ok(9, Some(cfg_desc_header.to_vec())),
+                // Full config read: HAL error
+                (Err(HalError::Timeout), None),
+            ],
+            control_call_index: 0,
+            port_reset_result: Ok(()),
+            device_attach_result: Ok(1),
+        };
+        let result = enumerate_device(&mut hc, 0);
+        assert_eq!(result.unwrap_err(), UsbError::HalError(HalError::Timeout));
+    }
+
+    // -----------------------------------------------------------------------
+    // Constants tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_enumeration_constants() {
+        assert_eq!(MAX_USB_ADDRESS, 127);
+        assert_eq!(ENUMERATION_TIMEOUT_MS, 5000);
+        assert_eq!(MAX_CONFIG_DESC_SIZE, 512);
     }
 }
