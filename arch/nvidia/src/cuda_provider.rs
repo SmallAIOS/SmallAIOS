@@ -106,6 +106,24 @@ pub struct CudaProvider {
 }
 
 impl CudaProvider {
+    /// Default DRAM budget for Tegra T210 — 256 MiB carved from shared
+    /// system memory for GPU use (weights + workspace).
+    #[cfg(feature = "tegra")]
+    const TEGRA_DEFAULT_DRAM_BUDGET: u64 = 256 * 1024 * 1024;
+
+    /// Create a new CUDA provider pre-configured for the Tegra T210 GM20B.
+    ///
+    /// The GM20B is the SoC-integrated Maxwell GPU on the Jetson Nano
+    /// (CC 5.3, 2 SMs, 256 CUDA cores).  It has no discrete VRAM — the
+    /// allocator is backed by a 256 MiB carve-out from shared system DRAM
+    /// with the standard 70 % static / 30 % dynamic split.
+    #[cfg(feature = "tegra")]
+    pub fn new_tegra() -> Self {
+        let gpu_info = crate::gpu_id::identify_gpu(0x12B1)
+            .expect("GM20B device ID 0x12B1 must be in the GPU ID table");
+        Self::new(gpu_info, Self::TEGRA_DEFAULT_DRAM_BUDGET)
+    }
+
     /// Create a new CUDA provider for the given GPU.
     ///
     /// `vram_size` is the total usable VRAM in bytes.  The allocator is
@@ -590,7 +608,27 @@ mod tests {
         }
     }
 
-    // -- 22. Shared memory passed through from PTX kernel -------------------
+    // -- 22. new_tegra() convenience constructor (tegra feature) ------------
+
+    #[cfg(feature = "tegra")]
+    #[test]
+    fn test_new_tegra_provider() {
+        let prov = CudaProvider::new_tegra();
+        assert_eq!(*prov.status(), ProviderStatus::Ready);
+
+        let info = prov.gpu_info();
+        assert_eq!(info.device_id, 0x12B1);
+        assert_eq!(info.name, "NVIDIA GM20B (Tegra X1)");
+        assert_eq!(info.compute_capability.as_sm_version(), 53);
+        assert_eq!(info.sm_count, 2);
+        assert_eq!(info.vram_size_mb, 0); // shared DRAM, no discrete VRAM
+
+        // 256 MiB DRAM budget
+        let total = prov.vram_used() + prov.vram_free();
+        assert_eq!(total, 256 * 1024 * 1024);
+    }
+
+    // -- 23. Shared memory passed through from PTX kernel -------------------
 
     #[test]
     fn test_shared_memory_passed_through() {
@@ -606,5 +644,26 @@ mod tests {
         let kid2 = crate::compute::KernelId(kid_raw2);
         let kernel2 = prov.compute.kernels.iter().find(|k| k.id == kid2).unwrap();
         assert_eq!(kernel2.config.shared_memory, 0);
+    }
+
+    // -- 24. Tegra allocation round-trip (tegra feature) --------------------
+
+    #[cfg(feature = "tegra")]
+    #[test]
+    fn test_tegra_alloc_free_round_trip() {
+        let mut prov = CudaProvider::new_tegra();
+        assert_eq!(*prov.status(), ProviderStatus::Ready);
+
+        let baseline = prov.vram_used();
+        let one_mb: u64 = 1024 * 1024;
+
+        // Allocate 1 MiB of workspace.
+        let id = prov.allocate_workspace(one_mb).unwrap();
+        assert!(id >= 1);
+        assert_eq!(prov.vram_used(), baseline + one_mb);
+
+        // Free the allocation.
+        prov.free_allocation(id).unwrap();
+        assert_eq!(prov.vram_used(), baseline);
     }
 }
