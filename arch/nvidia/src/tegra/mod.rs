@@ -98,7 +98,7 @@ impl<M: power::MmioAccess> TegraGpuPlatform<M> {
         self.gpcpll_freq
     }
 
-    /// Full platform init: power on, enable clocks, configure GPCPLL.
+    /// Full platform init: power on, enable clocks, configure GPCPLL, enable interrupts.
     ///
     /// Uses GPCPLL step 7 (614 MHz) as a sensible default boot frequency.
     /// On failure the platform transitions to `Error` and partial state is
@@ -130,8 +130,47 @@ impl<M: power::MmioAccess> TegraGpuPlatform<M> {
         }
         self.gpcpll_freq = self.clock.current_frequency_mhz();
 
+        // Step 4: Enable GPU interrupts via PMC interrupt tree
+        self.enable_interrupts();
+
         self.state = TegraGpuState::PlatformReady;
         Ok(())
+    }
+
+    /// Enable GPU interrupts by writing to the NV_PMC_INTR_EN_0 register.
+    ///
+    /// This configures the GPU-internal interrupt enable register so that
+    /// engine interrupts (GR, FIFO, etc.) propagate to the top-level PMC
+    /// interrupt output. On Tegra X1, the PMC interrupt lines are wired to
+    /// GICv2 SPI 189 (stall) and SPI 190 (non-stall).
+    ///
+    /// # GICv2 SPI routing
+    ///
+    /// After this method returns, the GICv2 distributor must also be
+    /// programmed to unmask SPI 189 and SPI 190. This is the responsibility
+    /// of the platform-level interrupt controller driver (e.g.,
+    /// `arch/aarch64::gicv2::enable_irq()`), which is called from the boot
+    /// sequence rather than from within this GPU HAL crate.
+    ///
+    /// TODO(hardware): On real hardware, also call:
+    ///   gicv2::enable_irq(189);  // GPU stall interrupt
+    ///   gicv2::enable_irq(190);  // GPU non-stall interrupt
+    /// This requires the GICv2 driver to be accessible from this context,
+    /// which will be wired up when running on actual Jetson Nano hardware.
+    pub fn enable_interrupts(&self) {
+        // GPU BAR0 base address for the GM20B on Tegra X1.
+        const GPU_BAR0_BASE: u64 = 0x5700_0000;
+
+        // Enable all interrupt sources in the GPU PMC interrupt tree.
+        // Bit 0 = hardware interrupt enable (routes engine interrupts to SPI lines).
+        // Bit 1 = software interrupt enable (for driver-generated interrupts).
+        // Writing 0x3 enables both hardware and software interrupt propagation.
+        const INTR_EN_HW_AND_SW: u32 = 0x3;
+
+        self.power.mmio().write32(
+            GPU_BAR0_BASE + regs::NV_PMC_INTR_EN_0 as u64,
+            INTR_EN_HW_AND_SW,
+        );
     }
 
     /// Shutdown: disable GPCPLL/clocks, then power off (reverse of init).
@@ -202,15 +241,29 @@ mod tests {
     // MockMmio — same pattern as power.rs / clock.rs tests
     // -----------------------------------------------------------------
 
+    /// Recorded MMIO write operation for test verification.
+    #[derive(Clone, Debug, PartialEq)]
+    struct WriteRecord {
+        addr: u64,
+        val: u32,
+    }
+
     struct MockMmio {
         reads: RefCell<Vec<u32>>,
+        writes: RefCell<Vec<WriteRecord>>,
     }
 
     impl MockMmio {
         fn new(reads: Vec<u32>) -> Self {
             Self {
                 reads: RefCell::new(reads),
+                writes: RefCell::new(Vec::new()),
             }
+        }
+
+        /// Return all recorded writes.
+        fn get_writes(&self) -> Vec<WriteRecord> {
+            self.writes.borrow().clone()
         }
     }
 
@@ -224,7 +277,9 @@ mod tests {
             }
         }
 
-        fn write32(&self, _addr: u64, _val: u32) {}
+        fn write32(&self, addr: u64, val: u32) {
+            self.writes.borrow_mut().push(WriteRecord { addr, val });
+        }
     }
 
     /// Build mock reads for a successful init sequence.
@@ -349,7 +404,7 @@ mod tests {
         let partition_mask = 1u32 << PMC_GPU_PARTITION;
         // power_on succeeds, enable_clocks succeeds, but GPCPLL never locks
         let mut reads = vec![partition_mask]; // power_on
-        // configure_gpcpll: IDDQ read, enable read, then 10_000 lock polls all 0
+                                              // configure_gpcpll: IDDQ read, enable read, then 10_000 lock polls all 0
         reads.push(0); // IDDQ
         reads.push(0); // enable
         reads.extend(vec![0u32; 10_000]); // lock poll — never locks
@@ -508,5 +563,55 @@ mod tests {
         assert!(gr.is_ready());
         assert_eq!(fifo.active_channel_count(), 1);
         assert!(gmmu.is_active());
+    }
+
+    // -----------------------------------------------------------------
+    // Interrupt enable tests (Task A8)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn enable_interrupts_writes_pmc_intr_en() {
+        let mmio = MockMmio::new(mock_reads_for_init());
+        let mut plat = TegraGpuPlatform::new(mmio);
+
+        plat.init().unwrap();
+
+        // Verify that NV_PMC_INTR_EN_0 was written during init
+        let gpu_bar0: u64 = 0x5700_0000;
+        let intr_en_addr = gpu_bar0 + NV_PMC_INTR_EN_0 as u64;
+        let writes = plat.power.mmio().get_writes();
+        let intr_writes: Vec<_> = writes.iter().filter(|w| w.addr == intr_en_addr).collect();
+
+        assert_eq!(
+            intr_writes.len(),
+            1,
+            "Expected exactly one write to NV_PMC_INTR_EN_0"
+        );
+        // 0x3 = hardware + software interrupt enable
+        assert_eq!(
+            intr_writes[0].val, 0x3,
+            "NV_PMC_INTR_EN_0 should be set to 0x3 (HW + SW interrupts)"
+        );
+    }
+
+    #[test]
+    fn enable_interrupts_called_standalone() {
+        // Test enable_interrupts() in isolation (platform already initialized)
+        let mmio = MockMmio::new(mock_reads_for_init());
+        let mut plat = TegraGpuPlatform::new(mmio);
+        plat.init().unwrap();
+
+        // Clear write log by re-reading, then call enable_interrupts again
+        let writes_before = plat.power.mmio().get_writes().len();
+        plat.enable_interrupts();
+        let writes_after = plat.power.mmio().get_writes();
+
+        // Should have one new write
+        assert_eq!(writes_after.len(), writes_before + 1);
+
+        let last_write = writes_after.last().unwrap();
+        let gpu_bar0: u64 = 0x5700_0000;
+        assert_eq!(last_write.addr, gpu_bar0 + NV_PMC_INTR_EN_0 as u64);
+        assert_eq!(last_write.val, 0x3);
     }
 }

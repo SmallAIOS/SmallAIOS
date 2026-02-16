@@ -325,6 +325,74 @@ impl FirmwareBlobs {
 }
 
 // ---------------------------------------------------------------------------
+// Firmware blob stubs for compile-time embedding
+// ---------------------------------------------------------------------------
+//
+// These constants provide the `include_bytes!` integration point for real
+// GM20B firmware blobs. When the actual firmware files are placed in
+// `arch/nvidia/firmware/gm20b/`, the `include_bytes!` lines below can be
+// uncommented and the empty-array fallbacks removed.
+//
+// Until real firmware blobs are available (requires extraction from an
+// NVIDIA L4T distribution on actual Jetson Nano hardware), we use empty
+// byte arrays as stubs. The `firmware_available()` function returns false
+// when stubs are empty, allowing runtime code to skip firmware loading
+// gracefully.
+//
+// Expected firmware files:
+//   - fecs_sig.bin  : FECS context-switch firmware signature
+//   - gpccs_sig.bin : GPCCS context-switch firmware signature
+//   - acr_ucode.bin : ACR (Application Code Rewriting) microcode
+//   - pmu_bl.bin    : PMU bootloader firmware
+
+// When firmware files exist, replace the empty arrays with:
+//   static FECS_FW: &[u8] = include_bytes!("../../firmware/gm20b/fecs_sig.bin");
+//   static GPCCS_FW: &[u8] = include_bytes!("../../firmware/gm20b/gpccs_sig.bin");
+//   static ACR_UCODE: &[u8] = include_bytes!("../../firmware/gm20b/acr_ucode.bin");
+//   static PMU_BL: &[u8] = include_bytes!("../../firmware/gm20b/pmu_bl.bin");
+
+/// FECS context-switch firmware signature (stub: empty until real blobs available).
+#[cfg(feature = "tegra")]
+pub static FECS_FW: &[u8] = &[];
+
+/// GPCCS context-switch firmware signature (stub: empty until real blobs available).
+#[cfg(feature = "tegra")]
+pub static GPCCS_FW: &[u8] = &[];
+
+/// ACR (Authentication and Code Rewriting) microcode (stub: empty until real blobs available).
+#[cfg(feature = "tegra")]
+pub static ACR_UCODE: &[u8] = &[];
+
+/// PMU bootloader firmware (stub: empty until real blobs available).
+#[cfg(feature = "tegra")]
+pub static PMU_BL: &[u8] = &[];
+
+/// Returns `true` if real firmware blobs are embedded (non-empty).
+///
+/// When this returns `false`, firmware loading should be skipped and the
+/// GPU will remain in platform-ready state without compute capability.
+/// This allows the system to boot and report GPU status even without
+/// firmware, which is useful for development and hardware bring-up.
+#[cfg(feature = "tegra")]
+pub fn firmware_available() -> bool {
+    !FECS_FW.is_empty() && !GPCCS_FW.is_empty() && !ACR_UCODE.is_empty() && !PMU_BL.is_empty()
+}
+
+/// Build a `FirmwareBlobs` struct from the embedded firmware stubs.
+///
+/// Returns blobs populated from the compile-time `include_bytes!` stubs
+/// (or empty arrays if real firmware is not yet available).
+#[cfg(feature = "tegra")]
+pub fn embedded_firmware() -> FirmwareBlobs {
+    FirmwareBlobs {
+        acr_ucode: ACR_UCODE,
+        pmu_bl: PMU_BL,
+        fecs_sig: FECS_FW,
+        gpccs_sig: GPCCS_FW,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Firmware loader
 // ---------------------------------------------------------------------------
 
@@ -782,5 +850,48 @@ mod tests {
                 "size={size} expected {expected_chunks} chunks, got {chunks}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Firmware stub tests (Task B6)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn firmware_stubs_are_empty() {
+        // Verify that the stub firmware blobs are empty byte arrays.
+        // These will be non-empty once real firmware files are embedded
+        // via include_bytes!().
+        assert!(FECS_FW.is_empty(), "FECS_FW stub should be empty");
+        assert!(GPCCS_FW.is_empty(), "GPCCS_FW stub should be empty");
+        assert!(ACR_UCODE.is_empty(), "ACR_UCODE stub should be empty");
+        assert!(PMU_BL.is_empty(), "PMU_BL stub should be empty");
+    }
+
+    #[test]
+    fn firmware_available_returns_false_for_stubs() {
+        // With empty stubs, firmware_available() must return false.
+        assert!(
+            !firmware_available(),
+            "firmware_available() should be false with empty stubs"
+        );
+    }
+
+    #[test]
+    fn embedded_firmware_returns_empty_blobs() {
+        let blobs = embedded_firmware();
+        assert!(blobs.acr_ucode.is_empty());
+        assert!(blobs.pmu_bl.is_empty());
+        assert!(blobs.fecs_sig.is_empty());
+        assert!(blobs.gpccs_sig.is_empty());
+    }
+
+    #[test]
+    fn firmware_blobs_from_embedded_matches_stubs() {
+        // Verify that embedded_firmware() returns the same data as the statics.
+        let blobs = embedded_firmware();
+        assert_eq!(blobs.acr_ucode.len(), ACR_UCODE.len());
+        assert_eq!(blobs.pmu_bl.len(), PMU_BL.len());
+        assert_eq!(blobs.fecs_sig.len(), FECS_FW.len());
+        assert_eq!(blobs.gpccs_sig.len(), GPCCS_FW.len());
     }
 }

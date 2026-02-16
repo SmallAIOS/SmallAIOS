@@ -494,3 +494,169 @@ Cybersecurity Compliance
    TLA+ model (formal/tla/SchedulerAnomaly.tla) verifying: alert boundedness,
    suppression effectiveness, denial count bounds, threshold correctness,
    mutual exclusion, watchdog liveness.
+
+Implementation Traceability — Scheduler, ONNX, Security
+---------------------------------------------------------
+
+.. spec:: Cooperative Scheduler Design
+   :id: SPEC_010
+   :safety_level: DAL_A
+   :tags: kernel, scheduler
+   :links: REQ_010
+
+   Three-class priority scheduler (SYSTEM > IPC > INFERENCE) with
+   cooperative yield at ONNX operator boundaries and round-robin
+   within each class.
+
+.. impl:: kernel/src/sched/
+   :id: IMPL_010
+   :safety_level: DAL_A
+   :tags: kernel, scheduler
+   :links: SPEC_010
+
+   Scheduler implementation with Task struct, RunQueue, yield_now(),
+   spawn(), and priority-based dequeue. Cooperative context switch.
+
+.. test:: Scheduler Unit Tests
+   :id: TEST_010
+   :safety_level: DAL_A
+   :tags: kernel, scheduler, test
+   :links: IMPL_010
+
+   Tests covering: task spawn, priority ordering, yield behavior,
+   round-robin within class, empty queue handling.
+
+.. impl:: kernel/src/sched/watchdog.rs
+   :id: IMPL_011
+   :safety_level: DAL_A
+   :tags: kernel, scheduler, watchdog
+   :links: REQ_011
+
+   Hardware watchdog timer with configurable timeout (default 30s),
+   pet/kick interface, and system class task auto-service.
+
+.. spec:: Syscall Dispatch Table
+   :id: SPEC_012
+   :safety_level: DAL_A
+   :tags: kernel, syscall
+   :links: REQ_012
+
+   46 syscalls organized into 7 categories with capability-gated
+   dispatch, architecture-specific entry points (SYSCALL/SVC/ECALL).
+
+.. impl:: kernel/src/syscall/
+   :id: IMPL_012
+   :safety_level: DAL_A
+   :tags: kernel, syscall
+   :links: SPEC_012
+
+   Syscall dispatch table, handler implementations for memory, task,
+   IPC, ONNX, device, system, and capability operations.
+
+.. test:: Syscall Unit Tests
+   :id: TEST_012
+   :safety_level: DAL_A
+   :tags: kernel, syscall, test
+   :links: IMPL_012
+
+   Tests covering: dispatch table lookup, invalid syscall number,
+   capability check enforcement, all 7 categories exercised.
+
+.. spec:: ONNX Protobuf Parser
+   :id: SPEC_020
+   :safety_level: DAL_A
+   :tags: onnx
+   :links: REQ_020
+
+   Clean-room no_std protobuf parser for ONNX ModelProto, GraphProto,
+   NodeProto, and TensorProto with opset validation.
+
+.. impl:: onnx-rt/src/parser/
+   :id: IMPL_020
+   :safety_level: DAL_A
+   :tags: onnx
+   :links: SPEC_020
+
+   Protobuf wire-format parser, ONNX model deserialization, operator
+   registry, opset version validation, graph topology check.
+
+.. test:: ONNX Parser Tests
+   :id: TEST_020
+   :safety_level: DAL_A
+   :tags: onnx, test
+   :links: IMPL_020
+
+   Tests covering: valid model parse, invalid protobuf rejection,
+   unsupported opset, unknown operator, graph cycle detection.
+
+.. spec:: CPU Execution Provider Design
+   :id: SPEC_021
+   :safety_level: DAL_A
+   :tags: onnx, cpu
+   :links: REQ_021
+
+   CPU execution provider with 6 operators (Conv, MatMul, Relu,
+   Sigmoid, Reshape, Softmax), GEMM, and SIMD-optimized paths.
+
+.. impl:: onnx-rt/src/cpu_provider.rs
+   :id: IMPL_021
+   :safety_level: DAL_A
+   :tags: onnx, cpu
+   :links: SPEC_021
+
+   CPU execution provider implementation with operator dispatch,
+   tensor workspace allocation, and operator fusion support.
+
+.. test:: CPU Provider Tests
+   :id: TEST_021
+   :safety_level: DAL_A
+   :tags: onnx, cpu, test
+   :links: IMPL_021
+
+   Tests covering: all 6 operators produce correct output, GEMM
+   accuracy, workspace allocation, operator fusion correctness.
+
+.. impl:: security/src/crypto/ml_kem.rs
+   :id: IMPL_030
+   :safety_level: DAL_A
+   :tags: security, pqc
+   :links: REQ_030
+
+   ML-KEM-768 (FIPS 203) implementation with keygen, encapsulate,
+   decapsulate, and X25519 hybrid mode.
+
+.. impl:: security/src/capability/
+   :id: IMPL_031
+   :safety_level: DAL_A
+   :tags: security, capabilities
+   :links: REQ_031
+
+   Capability-based access control: unforgeable tokens, permission
+   bitmasks, revocation, delegation with attenuation.
+
+.. impl:: security/src/supply_chain/
+   :id: IMPL_043
+   :safety_level: DAL_A
+   :tags: security, supply-chain
+   :links: REQ_043
+
+   Supply chain security: CycloneDX SBOM generation, vendor
+   attestation, build reproducibility checks.
+
+.. impl:: security/src/crypto/key_manager.rs
+   :id: IMPL_046
+   :safety_level: DAL_A
+   :tags: security, crypto
+   :links: REQ_046
+
+   Key lifecycle management: boot-time generation, memory-only
+   storage, reboot rotation, volatile-write zeroization.
+
+.. impl:: security/src/compliance/nist_controls.rs
+   :id: IMPL_047
+   :safety_level: DAL_A
+   :tags: security, compliance
+   :links: REQ_047
+
+   NIST SP 800-53 Rev 5 control mappings for all 20 families,
+   implementation status tracking, SSP skeleton, POA&M.

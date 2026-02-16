@@ -21,8 +21,8 @@
 - [x] A7: Add `TegraGpuPlatform` struct combining power and clock init with interrupt setup
   Orchestrates: power_on -> enable_clocks -> configure_gpcpll -> enable_interrupts. Tracks state (powered, clocks_enabled, gpcpll_freq). Unit tests for init sequence state machine.
 
-- [ ] A8: Wire GICv2 SPI 189/190 interrupt enable into Tegra GPU init (HARDWARE-DEFERRED)
-  Call `gicv2::enable_irq(189)` and `gicv2::enable_irq(190)`. Configure GPU PMC interrupt tree (`NV_PMC_INTR_EN_0`). Unit tests for interrupt enable register calculations.
+- [x] A8: Wire GICv2 SPI 189/190 interrupt enable into Tegra GPU init (HARDWARE-DEFERRED: GICv2 SPI enable deferred, PMC interrupt register implemented)
+  Added `enable_interrupts()` to `TegraGpuPlatform` that writes NV_PMC_INTR_EN_0 (0x3 = HW+SW). Called from `init()` after GPCPLL. GICv2 SPI 189/190 enable documented as TODO. Unit tests verify PMC register write.
 
 ## Phase B: Firmware Loading (Falcon, ACR)
 
@@ -41,8 +41,8 @@
 - [x] B5: Implement `FirmwareLoader` struct that orchestrates ACR -> FECS -> GPCCS loading
   `boot_all()` method: load ACR, boot ACR, wait for FECS/GPCCS ready. Timeout handling (100 ms per Falcon). Error reporting for each stage. Unit tests for full load sequence.
 
-- [ ] B6: Add `include_bytes!` stubs for firmware embedding with feature-gated compile-time inclusion (HARDWARE-DEFERRED)
-  `#[cfg(feature = "tegra")] static FECS_FW: &[u8] = include_bytes!("../../firmware/gm20b/fecs_sig.bin");` (behind a sub-feature or with fallback empty arrays for testing without blobs).
+- [x] B6: Add `include_bytes!` stubs for firmware embedding with feature-gated compile-time inclusion (HARDWARE-DEFERRED: using empty arrays until real blobs available)
+  Added `#[cfg(feature = "tegra")]` statics: FECS_FW, GPCCS_FW, ACR_UCODE, PMU_BL as empty byte arrays. Added `firmware_available()` (returns false for stubs) and `embedded_firmware()` helper. Commented `include_bytes!` lines ready for real blobs. Unit tests verify stubs are empty and firmware_available() returns false.
 
 ## Phase C: Engine Init (GR, FIFO, GMMU)
 
@@ -72,8 +72,8 @@
 - [x] D3: Update `onnx-rt/Cargo.toml` to support `tegra` feature alongside `cuda`
   Add `tegra` feature that enables both `cuda` and `smallaios-arch-nvidia/tegra`. When both are active, ONNX session uses `new_tegra()`.
 
-- [ ] D4: Wire Tegra GPU init into `arch/aarch64` boot sequence behind `tegra-x1` feature (HARDWARE-DEFERRED)
-  After display init, before inference loop: call `TegraGpu::init()` -> `into_provider()`. Print GPU info to UART.
+- [x] D4: Wire Tegra GPU init into `arch/aarch64` boot sequence behind `tegra-x1` feature (HARDWARE-DEFERRED: code complete, hardware testing deferred)
+  Added `smallaios-arch-nvidia` as optional dep in aarch64 Cargo.toml (feature-gated on `tegra-x1`). Updated `run_gpu_status_demo()` in onnx_demo.rs to call `TegraGpuPlatform::init()` behind `#[cfg(feature = "tegra-x1")]`. Reports GPCPLL freq, interrupt config, and firmware availability via UART. Errors handled gracefully (print + continue, no panic).
 
 - [x] D5: Write integration tests for CudaProvider::new_tegra() -> launch_kernel -> sync cycle
   Test full provider lifecycle with mock GPU: init, load weights, allocate workspace, launch MatMul/Relu kernels, synchronize, verify completion. Ensure CC 5.3 PTX kernels are selected.

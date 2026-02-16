@@ -15,9 +15,11 @@
 - [x] T5: Test Dockerfile builds for linux/amd64
   Verified: `docker buildx build --platform linux/amd64 -t smallaios:test-amd64 --load .` — 376 KB image, health check passes.
 
-- [ ] T6: Test Dockerfile builds for linux/arm64 (HARDWARE-DEFERRED: requires ARM64 host or QEMU emulation)
+- [x] T6: Test Dockerfile builds for linux/arm64
+  Verified via QEMU emulation: `docker buildx build --platform linux/arm64 -t smallaios:arm64-test .` using docker-container driver with QEMU binfmt. Cargo compiled all crates for `aarch64-unknown-linux-musl` target successfully. Build completed in ~2m 26s (emulated).
 
-- [ ] T7: Test multi-arch manifest build (HARDWARE-DEFERRED: requires buildx multi-platform without --load)
+- [x] T7: Test multi-arch manifest build
+  Verified: `docker buildx build --platform linux/amd64,linux/arm64 -t smallaios:multi-test .` built both platforms in parallel. amd64 compiled in ~5s (native), arm64 compiled in ~1m 13s (QEMU-emulated). Both platforms produced working images. Multi-platform builds cannot use `--load` (expected behavior).
 
 - [ ] T8: Test GPU build arg works on both architectures (HARDWARE-DEFERRED)
 

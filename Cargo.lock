@@ -6,7 +6,9 @@ version = 4
 name = "smallaios-arch-aarch64"
 version = "0.1.0"
 dependencies = [
+ "smallaios-arch-nvidia",
  "smallaios-kernel",
+ "smallaios-onnx-rt",
 ]
 
 [[package]]
