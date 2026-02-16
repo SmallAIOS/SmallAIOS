@@ -235,4 +235,73 @@ mod tests {
             assert!(!entry.is_present());
         }
     }
+
+    #[test]
+    fn test_page_table_default() {
+        let pt = PageTable::default();
+        assert!(!pt.entries[0].is_present());
+    }
+
+    #[test]
+    fn test_page_table_clear() {
+        let mut pt = PageTable::new();
+        pt.entries[0] = PageTableEntry(0x03);
+        assert!(pt.entries[0].is_present());
+        pt.clear();
+        assert!(!pt.entries[0].is_present());
+    }
+
+    #[test]
+    fn test_page_table_entry_huge() {
+        let entry = PageTableEntry(1 | (1 << 7)); // present + huge
+        assert!(entry.is_present());
+        assert!(entry.is_huge());
+        let normal = PageTableEntry(1);
+        assert!(!normal.is_huge());
+    }
+
+    #[test]
+    fn test_page_flags_none() {
+        let flags = PageFlags::NONE;
+        assert_eq!(flags.bits(), 0);
+        assert!(!flags.contains(PageFlags::PRESENT));
+    }
+
+    #[test]
+    fn test_page_flags_union_and_contains() {
+        let rw = PageFlags::PRESENT
+            .union(PageFlags::WRITABLE)
+            .union(PageFlags::NO_EXECUTE);
+        assert!(rw.contains(PageFlags::PRESENT));
+        assert!(rw.contains(PageFlags::WRITABLE));
+        assert!(rw.contains(PageFlags::NO_EXECUTE));
+        assert!(!rw.contains(PageFlags::USER));
+        assert!(!rw.contains(PageFlags::CACHE_DISABLE));
+    }
+
+    #[test]
+    fn test_predefined_flags() {
+        assert!(KERNEL_CODE_FLAGS.contains(PageFlags::PRESENT));
+        assert!(KERNEL_CODE_FLAGS.contains(PageFlags::GLOBAL));
+        assert!(!KERNEL_CODE_FLAGS.contains(PageFlags::WRITABLE));
+
+        assert!(KERNEL_DATA_FLAGS.contains(PageFlags::PRESENT));
+        assert!(KERNEL_DATA_FLAGS.contains(PageFlags::WRITABLE));
+        assert!(KERNEL_DATA_FLAGS.contains(PageFlags::NO_EXECUTE));
+
+        assert!(MMIO_FLAGS.contains(PageFlags::CACHE_DISABLE));
+        assert!(!MMIO_FLAGS.contains(PageFlags::GLOBAL));
+
+        assert!(TENSOR_FLAGS.contains(PageFlags::WRITABLE));
+        assert!(TENSOR_FLAGS.contains(PageFlags::NO_EXECUTE));
+    }
+
+    #[test]
+    fn test_page_flags_from_bits() {
+        let flags = PageFlags::from_bits(0xFF);
+        assert!(flags.contains(PageFlags::PRESENT));
+        assert!(flags.contains(PageFlags::WRITABLE));
+        assert!(flags.contains(PageFlags::USER));
+        assert!(flags.contains(PageFlags::HUGE_PAGE));
+    }
 }

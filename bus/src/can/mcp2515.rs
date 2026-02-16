@@ -498,4 +498,464 @@ mod tests {
         assert!(!drv.initialized);
         assert_eq!(drv.mode(), CanMode::Configuration);
     }
+
+    // -------------------------------------------------------------------
+    // set_mode coverage: Normal, ListenOnly, Configuration, Sleep
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_set_mode_normal() {
+        let mut spi = MockSpi::new();
+        // init: reset + read CANSTAT + write RXB0CTRL
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Normal): bit_modify + read_mode_bits verify
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::NORMAL]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Normal).unwrap();
+        assert_eq!(drv.mode(), CanMode::Normal);
+    }
+
+    #[test]
+    fn test_mcp2515_set_mode_listen_only() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(ListenOnly): bit_modify + verify
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::LISTEN_ONLY]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::ListenOnly).unwrap();
+        assert_eq!(drv.mode(), CanMode::ListenOnly);
+    }
+
+    #[test]
+    fn test_mcp2515_set_mode_configuration() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Configuration): bit_modify + verify
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Configuration).unwrap();
+        assert_eq!(drv.mode(), CanMode::Configuration);
+    }
+
+    #[test]
+    fn test_mcp2515_set_mode_sleep() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Sleep): bit_modify + verify
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::SLEEP]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Sleep).unwrap();
+        assert_eq!(drv.mode(), CanMode::Sleep);
+    }
+
+    // -------------------------------------------------------------------
+    // set_mode before init should fail
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_set_mode_not_initialized() {
+        let spi = MockSpi::new();
+        let mut drv = Mcp2515::new(spi);
+        // Not initialized, set_mode should return NotSupported
+        assert_eq!(
+            drv.set_mode(CanMode::Normal).err(),
+            Some(BusError::NotSupported)
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // transmit standard frame in Normal mode
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_transmit_standard_normal() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Normal)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::NORMAL]);
+        // transmit: write_tx_buffer (LOAD_TX_BUFFER_0) + RTS_TXB0
+        spi.push_response(&[]); // LOAD_TX_BUFFER_0
+        spi.push_response(&[]); // RTS_TXB0
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Normal).unwrap();
+
+        let frame = CanFrame::new_standard(0x100, &[0xAA, 0xBB]).unwrap();
+        drv.transmit(&frame).unwrap();
+        assert_eq!(drv.stats().tx_frames, 1);
+    }
+
+    // -------------------------------------------------------------------
+    // transmit extended frame in Loopback mode
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_transmit_extended_loopback() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Loopback)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::LOOPBACK]);
+        // transmit: LOAD_TX_BUFFER_0 + RTS_TXB0
+        spi.push_response(&[]);
+        spi.push_response(&[]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Loopback).unwrap();
+
+        let frame = CanFrame::new_extended(0x1234_5678, &[0x01, 0x02, 0x03]).unwrap();
+        drv.transmit(&frame).unwrap();
+        assert_eq!(drv.stats().tx_frames, 1);
+    }
+
+    // -------------------------------------------------------------------
+    // receive standard frame (RX0IF set)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_receive_standard_frame() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Normal)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::NORMAL]);
+
+        // receive: read_reg(CANINTF) -> RX0IF set
+        spi.push_response(&[0, 0, int_flag::RX0IF]);
+
+        // receive: READ_RX_BUFFER_0 transfer (14 bytes)
+        // Standard frame id=0x100, data=[0xDE, 0xAD]
+        // SIDH = (0x100 >> 3) & 0xFF = 0x20
+        // SIDL = (0x100 & 0x07) << 5 = 0x00 (IDE bit=0)
+        // EID8 = 0, EID0 = 0, DLC = 2
+        let mut rx_buf = [0u8; 14];
+        rx_buf[1] = 0x20; // SIDH
+        rx_buf[2] = 0x00; // SIDL (standard, IDE=0)
+        rx_buf[3] = 0x00; // EID8
+        rx_buf[4] = 0x00; // EID0
+        rx_buf[5] = 0x02; // DLC
+        rx_buf[6] = 0xDE; // D0
+        rx_buf[7] = 0xAD; // D1
+        spi.push_response(&rx_buf);
+
+        // receive: bit_modify to clear RX0IF
+        spi.push_response(&[]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Normal).unwrap();
+
+        let frame = drv.receive().unwrap().unwrap();
+        assert_eq!(frame.frame_type, FrameType::Standard);
+        assert_eq!(frame.id, 0x100);
+        assert_eq!(frame.data.len(), 2);
+        assert_eq!(frame.data[0], 0xDE);
+        assert_eq!(frame.data[1], 0xAD);
+        assert_eq!(drv.stats().rx_frames, 1);
+    }
+
+    // -------------------------------------------------------------------
+    // receive extended frame (RX0IF set)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_receive_extended_frame() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Normal)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::NORMAL]);
+
+        // receive: read_reg(CANINTF) -> RX0IF set
+        spi.push_response(&[0, 0, int_flag::RX0IF]);
+
+        // receive: READ_RX_BUFFER_0 transfer (14 bytes)
+        // Extended frame id=0x0001_ABCD, data=[0x42]
+        //
+        // Encode into SIDH/SIDL/EID8/EID0:
+        //   SIDH = (id >> 21) & 0xFF = (0x0001_ABCD >> 21) & 0xFF = 0x00
+        //   SIDL = ((id >> 13) & 0xE0) | 0x08 | ((id >> 16) & 0x03)
+        //        = ((0x0001_ABCD >> 13) & 0xE0) | 0x08 | ((0x0001_ABCD >> 16) & 0x03)
+        //        = (0xD5E0 & 0xE0 = 0xC0) ... wait, let me compute step by step
+        //
+        // id = 0x0001_ABCD = 0b0000_0000_0000_0001_1010_1011_1100_1101
+        //   bits [28:21] -> SIDH: (id >> 21) & 0xFF = 0 >> ... = 0x00
+        //   bits [20:18] -> SIDL[7:5]: (id >> 13) & 0xE0 = (0x0001_ABCD >> 13) = 0xD5
+        //          0xD5 & 0xE0 = 0xC0... Hmm, let me use a simpler ID.
+        //
+        // Use id = 0x0000_1234, data = [0x42]
+        //   SIDH = (0x1234 >> 21) & 0xFF = 0x00
+        //   SIDL = ((0x1234 >> 13) & 0xE0) | 0x08 | ((0x1234 >> 16) & 0x03)
+        //        = (0 & 0xE0) | 0x08 | (0 & 0x03)
+        //        = 0x08
+        //   EID8 = (0x1234 >> 8) & 0xFF = 0x12
+        //   EID0 = 0x1234 & 0xFF = 0x34
+        //
+        // Verify decode: is_extended = SIDL & 0x08 != 0 -> 0x08 & 0x08 = 0x08, yes
+        //   id = (SIDH << 21) | ((SIDL & 0xE0) << 13) | ((SIDL & 0x03) << 16) | (EID8 << 8) | EID0
+        //      = (0 << 21) | (0 << 13) | (0 << 16) | (0x12 << 8) | 0x34
+        //      = 0x1234  -> correct
+        let mut rx_buf = [0u8; 14];
+        rx_buf[1] = 0x00; // SIDH
+        rx_buf[2] = 0x08; // SIDL (IDE=1)
+        rx_buf[3] = 0x12; // EID8
+        rx_buf[4] = 0x34; // EID0
+        rx_buf[5] = 0x01; // DLC
+        rx_buf[6] = 0x42; // D0
+        spi.push_response(&rx_buf);
+
+        // receive: bit_modify to clear RX0IF
+        spi.push_response(&[]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Normal).unwrap();
+
+        let frame = drv.receive().unwrap().unwrap();
+        assert_eq!(frame.frame_type, FrameType::Extended);
+        assert_eq!(frame.id, 0x1234);
+        assert_eq!(frame.data.len(), 1);
+        assert_eq!(frame.data[0], 0x42);
+        assert_eq!(drv.stats().rx_frames, 1);
+    }
+
+    // -------------------------------------------------------------------
+    // receive in Sleep mode should fail
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_receive_sleep_mode() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Sleep)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::SLEEP]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Sleep).unwrap();
+        assert_eq!(drv.receive().err(), Some(BusError::NotSupported));
+    }
+
+    // -------------------------------------------------------------------
+    // transmit in ListenOnly mode should fail
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_transmit_listen_only() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(ListenOnly)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::LISTEN_ONLY]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::ListenOnly).unwrap();
+
+        let frame = CanFrame::new_standard(0x100, &[0x01]).unwrap();
+        assert_eq!(drv.transmit(&frame).err(), Some(BusError::NotSupported));
+    }
+
+    // -------------------------------------------------------------------
+    // receive in ListenOnly mode should succeed (not Config/Sleep)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_receive_listen_only_empty() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(ListenOnly)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::LISTEN_ONLY]);
+        // receive: read CANINTF -> no RX0IF
+        spi.push_response(&[0, 0, 0x00]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::ListenOnly).unwrap();
+        assert!(drv.receive().unwrap().is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // receive in Loopback mode should succeed
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_receive_loopback_empty() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Loopback)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::LOOPBACK]);
+        // receive: read CANINTF -> no RX0IF
+        spi.push_response(&[0, 0, 0x00]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Loopback).unwrap();
+        assert!(drv.receive().unwrap().is_none());
+    }
+
+    // -------------------------------------------------------------------
+    // set_mode_bits fails when verify returns wrong mode (Timeout)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_set_mode_timeout() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Normal): bit_modify succeeds but verify returns wrong mode
+        spi.push_response(&[]); // bit_modify
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]); // verify returns CONFIG instead of NORMAL
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        assert_eq!(drv.set_mode(CanMode::Normal).err(), Some(BusError::Timeout));
+    }
+
+    // -------------------------------------------------------------------
+    // set_bit_timing in wrong mode should fail
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_set_bit_timing_wrong_mode() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Normal)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::NORMAL]);
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Normal).unwrap();
+
+        let timing = CanBitTiming::standard_500kbps();
+        assert_eq!(
+            drv.set_bit_timing(&timing).err(),
+            Some(BusError::NotSupported)
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // init fails when CANSTAT does not report Configuration mode
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_init_wrong_mode() {
+        let mut spi = MockSpi::new();
+        // reset
+        spi.push_response(&[]);
+        // read_mode_bits: returns NORMAL instead of CONFIGURATION
+        spi.push_response(&[0, 0, mode_bits::NORMAL]);
+
+        let mut drv = Mcp2515::new(spi);
+        assert_eq!(drv.init().err(), Some(BusError::NotSupported));
+        assert!(!drv.initialized);
+    }
+
+    // -------------------------------------------------------------------
+    // transmit and receive multiple frames to verify stats
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_mcp2515_stats_after_tx_rx() {
+        let mut spi = MockSpi::new();
+        // init
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::CONFIGURATION]);
+        spi.push_response(&[]);
+        // set_mode(Normal)
+        spi.push_response(&[]);
+        spi.push_response(&[0, 0, mode_bits::NORMAL]);
+
+        // First transmit
+        spi.push_response(&[]); // LOAD_TX_BUFFER_0
+        spi.push_response(&[]); // RTS_TXB0
+
+        // Second transmit
+        spi.push_response(&[]); // LOAD_TX_BUFFER_0
+        spi.push_response(&[]); // RTS_TXB0
+
+        // Receive a standard frame
+        spi.push_response(&[0, 0, int_flag::RX0IF]); // CANINTF
+        let mut rx_buf = [0u8; 14];
+        rx_buf[1] = 0x20; // SIDH for id=0x100
+        rx_buf[2] = 0x00; // SIDL
+        rx_buf[5] = 0x01; // DLC=1
+        rx_buf[6] = 0xFF; // D0
+        spi.push_response(&rx_buf); // READ_RX_BUFFER_0
+        spi.push_response(&[]); // bit_modify clear RX0IF
+
+        let mut drv = Mcp2515::new(spi);
+        drv.init().unwrap();
+        drv.set_mode(CanMode::Normal).unwrap();
+
+        let frame1 = CanFrame::new_standard(0x100, &[0xAA]).unwrap();
+        drv.transmit(&frame1).unwrap();
+        let frame2 = CanFrame::new_standard(0x200, &[0xBB]).unwrap();
+        drv.transmit(&frame2).unwrap();
+
+        let received = drv.receive().unwrap().unwrap();
+        assert_eq!(received.id, 0x100);
+
+        assert_eq!(drv.stats().tx_frames, 2);
+        assert_eq!(drv.stats().rx_frames, 1);
+    }
 }

@@ -389,4 +389,122 @@ mod tests {
         assert_eq!(SecurityMechanism::AuditLogging.as_str(), "audit-logging");
         assert_eq!(SecurityMechanism::KeyManagement.as_str(), "key-management");
     }
+
+    #[test]
+    fn security_mechanism_strings_all() {
+        assert_eq!(SecurityMechanism::Cryptography.as_str(), "cryptography");
+        assert_eq!(
+            SecurityMechanism::InformationFlow.as_str(),
+            "information-flow"
+        );
+        assert_eq!(SecurityMechanism::Monitoring.as_str(), "monitoring");
+        assert_eq!(
+            SecurityMechanism::IncidentResponse.as_str(),
+            "incident-response"
+        );
+        assert_eq!(SecurityMechanism::SupplyChain.as_str(), "supply-chain");
+        assert_eq!(SecurityMechanism::OtSecurity.as_str(), "ot-security");
+    }
+
+    #[test]
+    fn control_family_names_all() {
+        assert_eq!(ControlFamily::AccessControl.name(), "Access Control");
+        assert_eq!(ControlFamily::Audit.name(), "Audit and Accountability");
+        assert_eq!(
+            ControlFamily::Assessment.name(),
+            "Assessment, Authorization, and Monitoring"
+        );
+        assert_eq!(
+            ControlFamily::ConfigManagement.name(),
+            "Configuration Management"
+        );
+        assert_eq!(ControlFamily::Contingency.name(), "Contingency Planning");
+        assert_eq!(
+            ControlFamily::IdAuth.name(),
+            "Identification and Authentication"
+        );
+        assert_eq!(ControlFamily::IncidentResponse.name(), "Incident Response");
+        assert_eq!(
+            ControlFamily::SystemComm.name(),
+            "System and Communications Protection"
+        );
+        assert_eq!(
+            ControlFamily::SystemIntegrity.name(),
+            "System and Information Integrity"
+        );
+        assert_eq!(
+            ControlFamily::SupplyChain.name(),
+            "Supply Chain Risk Management"
+        );
+    }
+
+    #[test]
+    fn control_family_codes_all() {
+        assert_eq!(ControlFamily::Assessment.code(), "CA");
+        assert_eq!(ControlFamily::ConfigManagement.code(), "CM");
+        assert_eq!(ControlFamily::Contingency.code(), "CP");
+        assert_eq!(ControlFamily::IdAuth.code(), "IA");
+        assert_eq!(ControlFamily::IncidentResponse.code(), "IR");
+        assert_eq!(ControlFamily::SystemIntegrity.code(), "SI");
+    }
+
+    #[test]
+    fn pending_count_value() {
+        let count = pending_count();
+        assert!(count >= 1); // SC-13 is Partial
+    }
+
+    #[test]
+    fn mechanisms_for_various_controls() {
+        let si4: alloc::vec::Vec<_> = mechanisms_for_control(SI_4).collect();
+        assert_eq!(si4.len(), 1);
+        assert_eq!(si4[0].mechanism, SecurityMechanism::Monitoring);
+
+        let au9: alloc::vec::Vec<_> = mechanisms_for_control(AU_9).collect();
+        assert_eq!(au9.len(), 1);
+        assert_eq!(au9[0].mechanism, SecurityMechanism::AuditLogging);
+
+        let ir4: alloc::vec::Vec<_> = mechanisms_for_control(IR_4).collect();
+        assert_eq!(ir4.len(), 1);
+        assert_eq!(ir4[0].mechanism, SecurityMechanism::IncidentResponse);
+    }
+
+    #[test]
+    fn monitoring_maps_to_ca7_si4() {
+        let mon: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::Monitoring).collect();
+        assert!(mon.iter().any(|m| m.control == CA_7));
+        assert!(mon.iter().any(|m| m.control == SI_4));
+    }
+
+    #[test]
+    fn ot_security_maps_to_si7() {
+        let ot: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::OtSecurity).collect();
+        assert!(ot.iter().any(|m| m.control == SI_7));
+    }
+
+    #[test]
+    fn crypto_maps_to_sc13_partial() {
+        let crypto: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::Cryptography).collect();
+        assert!(crypto.iter().any(
+            |m| m.control == SC_13 && m.implementation_status == ImplementationStatus::Partial
+        ));
+    }
+
+    #[test]
+    fn incident_response_maps_to_ir4_ir5() {
+        let ir: alloc::vec::Vec<_> =
+            controls_for_mechanism(SecurityMechanism::IncidentResponse).collect();
+        assert!(ir.iter().any(|m| m.control == IR_4));
+        assert!(ir.iter().any(|m| m.control == IR_5));
+    }
+
+    #[test]
+    fn control_id_construction() {
+        let id = ControlId::new(ControlFamily::Contingency, 1);
+        assert_eq!(id.family, ControlFamily::Contingency);
+        assert_eq!(id.number, 1);
+    }
 }

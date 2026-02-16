@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS x86-64 architecture HAL: boot, GDT, IDT, APIC, paging"
+publish = false
 
 [lib]
 name = "smallaios_arch_x86_64"

@@ -55,6 +55,20 @@ impl<C: CanController> CanZenohAdapter<C> {
         &mut self.controller
     }
 
+    /// Construct a CAN frame from a raw payload and frame ID.
+    ///
+    /// Uses extended format when `frame_id` exceeds the 11-bit standard range.
+    fn frame_from_raw(frame_id: u32, payload: &[u8]) -> Result<CanFrame, BusError> {
+        if payload.len() > 8 {
+            return Err(BusError::PayloadTooLarge);
+        }
+        if frame_id > 0x7FF {
+            CanFrame::new_extended(frame_id, payload)
+        } else {
+            CanFrame::new_standard(frame_id, payload)
+        }
+    }
+
     /// Parse a CAN frame ID from a key expression suffix.
     ///
     /// Accepts hex format: `0x1A3` or `0x12345678`
@@ -114,25 +128,11 @@ impl<C: CanController> ZenohTransport for CanZenohAdapter<C> {
                 decoded
             } else {
                 // Decoded ID doesn't match key — treat as raw payload.
-                if payload.len() > 8 {
-                    return Err(BusError::PayloadTooLarge);
-                }
-                if frame_id > 0x7FF {
-                    CanFrame::new_extended(frame_id, payload)?
-                } else {
-                    CanFrame::new_standard(frame_id, payload)?
-                }
+                Self::frame_from_raw(frame_id, payload)?
             }
         } else {
             // Construct a new frame from raw payload.
-            if payload.len() > 8 {
-                return Err(BusError::PayloadTooLarge);
-            }
-            if frame_id > 0x7FF {
-                CanFrame::new_extended(frame_id, payload)?
-            } else {
-                CanFrame::new_standard(frame_id, payload)?
-            }
+            Self::frame_from_raw(frame_id, payload)?
         };
 
         self.controller.transmit(&frame)

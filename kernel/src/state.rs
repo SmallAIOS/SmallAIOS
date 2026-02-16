@@ -256,4 +256,72 @@ mod tests {
             SyscallError::InvalidHandle.as_i64()
         );
     }
+
+    #[test]
+    fn test_mem_error_mapping_all() {
+        use crate::syscall::SyscallError;
+        assert_eq!(
+            mem_error_to_syscall(MemError::SizeTooLarge),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            mem_error_to_syscall(MemError::OrderTooLarge),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            mem_error_to_syscall(MemError::SlabExhausted),
+            SyscallError::OutOfMemory.as_i64()
+        );
+        assert_eq!(
+            mem_error_to_syscall(MemError::TensorPoolExhausted),
+            SyscallError::OutOfMemory.as_i64()
+        );
+        assert_eq!(
+            mem_error_to_syscall(MemError::MappingError),
+            SyscallError::IoError.as_i64()
+        );
+        assert_eq!(
+            mem_error_to_syscall(MemError::NotMapped),
+            SyscallError::NotFound.as_i64()
+        );
+        assert_eq!(
+            mem_error_to_syscall(MemError::AlreadyMapped),
+            SyscallError::AlreadyExists.as_i64()
+        );
+    }
+
+    #[test]
+    fn test_cap_error_mapping_all() {
+        use crate::syscall::SyscallError;
+        assert_eq!(
+            cap_error_to_syscall(CapError::Expired),
+            SyscallError::InvalidHandle.as_i64()
+        );
+        assert_eq!(
+            cap_error_to_syscall(CapError::WrongResource),
+            SyscallError::InvalidArgument.as_i64()
+        );
+        assert_eq!(
+            cap_error_to_syscall(CapError::DelegationExceedsPermissions),
+            SyscallError::PermissionDenied.as_i64()
+        );
+        assert_eq!(
+            cap_error_to_syscall(CapError::TooManyCaps),
+            SyscallError::OutOfMemory.as_i64()
+        );
+        assert_eq!(
+            cap_error_to_syscall(CapError::SystemLimitReached),
+            SyscallError::OutOfMemory.as_i64()
+        );
+        assert_eq!(
+            cap_error_to_syscall(CapError::InvalidId),
+            SyscallError::InvalidHandle.as_i64()
+        );
+    }
+
+    #[test]
+    fn test_mark_and_check_initialized() {
+        mark_initialized();
+        assert!(is_initialized());
+    }
 }

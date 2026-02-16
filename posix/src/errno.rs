@@ -193,8 +193,96 @@ mod tests {
     }
 
     #[test]
-    fn errno_display() {
-        let msg = alloc::format!("{}", Errno::ENOSYS);
-        assert_eq!(msg, "Function not implemented");
+    fn errno_from_raw_all_variants() {
+        assert_eq!(Errno::from_raw(2), Some(Errno::ENOENT));
+        assert_eq!(Errno::from_raw(3), Some(Errno::ESRCH));
+        assert_eq!(Errno::from_raw(4), Some(Errno::EINTR));
+        assert_eq!(Errno::from_raw(5), Some(Errno::EIO));
+        assert_eq!(Errno::from_raw(6), Some(Errno::ENXIO));
+        assert_eq!(Errno::from_raw(9), Some(Errno::EBADF));
+        assert_eq!(Errno::from_raw(11), Some(Errno::EAGAIN));
+        assert_eq!(Errno::from_raw(12), Some(Errno::ENOMEM));
+        assert_eq!(Errno::from_raw(13), Some(Errno::EACCES));
+        assert_eq!(Errno::from_raw(14), Some(Errno::EFAULT));
+        assert_eq!(Errno::from_raw(16), Some(Errno::EBUSY));
+        assert_eq!(Errno::from_raw(17), Some(Errno::EEXIST));
+        assert_eq!(Errno::from_raw(22), Some(Errno::EINVAL));
+        assert_eq!(Errno::from_raw(24), Some(Errno::EMFILE));
+        assert_eq!(Errno::from_raw(28), Some(Errno::ENOSPC));
+        assert_eq!(Errno::from_raw(30), Some(Errno::EROFS));
+        assert_eq!(Errno::from_raw(88), Some(Errno::ENOTSOCK));
+        assert_eq!(Errno::from_raw(97), Some(Errno::EAFNOSUPPORT));
+        assert_eq!(Errno::from_raw(98), Some(Errno::EADDRINUSE));
+        assert_eq!(Errno::from_raw(101), Some(Errno::ENETUNREACH));
+        assert_eq!(Errno::from_raw(104), Some(Errno::ECONNRESET));
+        assert_eq!(Errno::from_raw(110), Some(Errno::ETIMEDOUT));
+        assert_eq!(Errno::from_raw(114), Some(Errno::EALREADY));
+        assert_eq!(Errno::from_raw(115), Some(Errno::EINPROGRESS));
+    }
+
+    #[test]
+    fn errno_display_all_variants() {
+        use alloc::format;
+        assert_eq!(format!("{}", Errno::EPERM), "Operation not permitted");
+        assert_eq!(format!("{}", Errno::ENOENT), "No such file or directory");
+        assert_eq!(format!("{}", Errno::ESRCH), "No such process");
+        assert_eq!(format!("{}", Errno::EINTR), "Interrupted system call");
+        assert_eq!(format!("{}", Errno::EIO), "I/O error");
+        assert_eq!(format!("{}", Errno::ENXIO), "No such device or address");
+        assert_eq!(format!("{}", Errno::EBADF), "Bad file descriptor");
+        assert_eq!(
+            format!("{}", Errno::EAGAIN),
+            "Resource temporarily unavailable"
+        );
+        assert_eq!(format!("{}", Errno::ENOMEM), "Out of memory");
+        assert_eq!(format!("{}", Errno::EACCES), "Permission denied");
+        assert_eq!(format!("{}", Errno::EFAULT), "Bad address");
+        assert_eq!(format!("{}", Errno::EBUSY), "Device or resource busy");
+        assert_eq!(format!("{}", Errno::EEXIST), "File exists");
+        assert_eq!(format!("{}", Errno::EINVAL), "Invalid argument");
+        assert_eq!(format!("{}", Errno::EMFILE), "Too many open files");
+        assert_eq!(format!("{}", Errno::ENOSPC), "No space left on device");
+        assert_eq!(format!("{}", Errno::EROFS), "Read-only file system");
+        assert_eq!(format!("{}", Errno::ENOSYS), "Function not implemented");
+        assert_eq!(format!("{}", Errno::ECONNREFUSED), "Connection refused");
+        assert_eq!(format!("{}", Errno::ECONNRESET), "Connection reset by peer");
+        assert_eq!(format!("{}", Errno::ETIMEDOUT), "Connection timed out");
+        assert_eq!(format!("{}", Errno::EADDRINUSE), "Address already in use");
+        assert_eq!(format!("{}", Errno::ENETUNREACH), "Network is unreachable");
+        assert_eq!(
+            format!("{}", Errno::EALREADY),
+            "Operation already in progress"
+        );
+        assert_eq!(
+            format!("{}", Errno::EINPROGRESS),
+            "Operation now in progress"
+        );
+        assert_eq!(format!("{}", Errno::ENOTSOCK), "Not a socket");
+        assert_eq!(
+            format!("{}", Errno::EAFNOSUPPORT),
+            "Address family not supported"
+        );
+    }
+
+    #[test]
+    fn errno_values_all_match_linux() {
+        assert_eq!(Errno::ESRCH as i32, 3);
+        assert_eq!(Errno::EINTR as i32, 4);
+        assert_eq!(Errno::EIO as i32, 5);
+        assert_eq!(Errno::ENXIO as i32, 6);
+        assert_eq!(Errno::EFAULT as i32, 14);
+        assert_eq!(Errno::EBUSY as i32, 16);
+        assert_eq!(Errno::EEXIST as i32, 17);
+        assert_eq!(Errno::EMFILE as i32, 24);
+        assert_eq!(Errno::ENOSPC as i32, 28);
+        assert_eq!(Errno::EROFS as i32, 30);
+        assert_eq!(Errno::ENOTSOCK as i32, 88);
+        assert_eq!(Errno::EAFNOSUPPORT as i32, 97);
+        assert_eq!(Errno::EADDRINUSE as i32, 98);
+        assert_eq!(Errno::ENETUNREACH as i32, 101);
+        assert_eq!(Errno::ECONNRESET as i32, 104);
+        assert_eq!(Errno::ETIMEDOUT as i32, 110);
+        assert_eq!(Errno::EALREADY as i32, 114);
+        assert_eq!(Errno::EINPROGRESS as i32, 115);
     }
 }

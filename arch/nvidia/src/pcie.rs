@@ -139,6 +139,12 @@ pub struct PciScanner {
     devices: Vec<PciDevice>,
 }
 
+impl Default for PciScanner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PciScanner {
     /// Create a new, empty scanner.
     pub fn new() -> Self {

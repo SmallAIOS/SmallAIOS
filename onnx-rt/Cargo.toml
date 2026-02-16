@@ -5,11 +5,13 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS ONNX runtime: protobuf parser, graph optimizer, operators"
+publish = false
 
 [features]
 default = ["cpu"]
 cpu = []
 cuda = ["smallaios-arch-nvidia"]
+tegra = ["cuda", "smallaios-arch-nvidia/tegra"]
 formal-gate = ["dep:smallaios-security", "smallaios-security/formal-gate"]
 
 [dependencies]

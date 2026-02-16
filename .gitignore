@@ -21,6 +21,9 @@ states/
 *_TTrace_*.bin
 *_TTrace_*.tla
 
+# Compiled device tree blobs (built from dts/ sources)
+*.dtb
+
 # Secrets (should never exist in this repo, but just in case)
 *.pem
 *.key

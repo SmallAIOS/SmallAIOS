@@ -63,3 +63,60 @@ impl fmt::Display for ContainerError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::format;
+    use alloc::string::ToString;
+
+    #[test]
+    fn container_error_display_all() {
+        assert_eq!(
+            format!("{}", ContainerError::InvalidConfig("bad".into())),
+            "invalid config: bad"
+        );
+        assert_eq!(
+            format!("{}", ContainerError::BootFailed("oops".into())),
+            "boot failed: oops"
+        );
+        assert_eq!(
+            format!("{}", ContainerError::AlreadyReady),
+            "boot sequence already completed"
+        );
+        assert_eq!(
+            format!("{}", ContainerError::NotFound("x".into())),
+            "not found: x"
+        );
+        assert_eq!(
+            format!("{}", ContainerError::TableFull),
+            "registration table full"
+        );
+        assert_eq!(
+            format!("{}", ContainerError::AlreadyInitiated),
+            "shutdown already initiated"
+        );
+        assert_eq!(
+            format!("{}", ContainerError::ShutdownFailed("err".into())),
+            "shutdown failed: err"
+        );
+        assert_eq!(
+            format!("{}", ContainerError::InvalidManifest("bad".into())),
+            "invalid manifest: bad"
+        );
+    }
+
+    #[test]
+    fn container_error_equality() {
+        assert_eq!(ContainerError::AlreadyReady, ContainerError::AlreadyReady);
+        assert_eq!(ContainerError::TableFull, ContainerError::TableFull);
+        assert_ne!(ContainerError::AlreadyReady, ContainerError::TableFull);
+    }
+
+    #[test]
+    fn container_error_debug() {
+        let err = ContainerError::InvalidConfig("test".to_string());
+        let dbg = format!("{:?}", err);
+        assert!(dbg.contains("InvalidConfig"));
+    }
+}

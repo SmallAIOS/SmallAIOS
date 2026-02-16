@@ -126,9 +126,24 @@ impl GpuInfo {
 pub fn identify_gpu(device_id: u16) -> Result<GpuInfo, GpuError> {
     match device_id {
         // ----- Maxwell (CC 5.3) — Jetson Nano / TX1 ----------------------
+        // GM20B is the SoC-integrated GPU on Tegra X1 (not PCIe).
+        // Device ID 0x12B1 is read from NV_PMC_BOOT_0 at BAR0+0x0.
+        0x12B1 => Ok(GpuInfo {
+            device_id,
+            architecture: GpuArchitecture::Maxwell,
+            compute_capability: ComputeCapability::new(5, 3),
+            sm_count: 2,
+            vram_size_mb: 0, // shared system DRAM, no discrete VRAM
+            max_threads_per_sm: 2048,
+            max_warps_per_sm: 64,
+            warp_size: 32,
+            max_shared_memory_per_sm: 96 * 1024,
+            max_registers_per_sm: 65536,
+            name: "NVIDIA GM20B (Tegra X1)",
+        }),
         0x1340..=0x137F => {
             let (name, sm, vram) = match device_id {
-                0x1340 => ("NVIDIA Jetson Nano (Maxwell)", 1, 4096),
+                0x1340 => ("NVIDIA Jetson Nano (Maxwell)", 2, 4096),
                 _ => ("NVIDIA Maxwell GPU", 4, 2048),
             };
             Ok(GpuInfo {
@@ -354,9 +369,20 @@ mod tests {
         let info = identify_gpu(0x1340).unwrap();
         assert_eq!(info.architecture, GpuArchitecture::Maxwell);
         assert_eq!(info.compute_capability, ComputeCapability::new(5, 3));
-        assert_eq!(info.sm_count, 1);
+        assert_eq!(info.sm_count, 2);
         assert_eq!(info.vram_size_mb, 4096);
         assert_eq!(info.name, "NVIDIA Jetson Nano (Maxwell)");
+    }
+
+    #[test]
+    fn identify_gm20b_tegra_x1() {
+        let info = identify_gpu(0x12B1).unwrap();
+        assert_eq!(info.architecture, GpuArchitecture::Maxwell);
+        assert_eq!(info.compute_capability, ComputeCapability::new(5, 3));
+        assert_eq!(info.sm_count, 2);
+        assert_eq!(info.vram_size_mb, 0); // shared DRAM
+        assert_eq!(info.name, "NVIDIA GM20B (Tegra X1)");
+        assert_eq!(info.total_cuda_cores(), 2 * 128); // 256 CUDA cores
     }
 
     #[test]
@@ -420,8 +446,8 @@ mod tests {
     #[test]
     fn total_cuda_cores_maxwell() {
         let info = identify_gpu(0x1340).unwrap();
-        // Maxwell: 128 cores/SM * 1 SM = 128
-        assert_eq!(info.total_cuda_cores(), 1 * 128);
+        // Maxwell: 128 cores/SM * 2 SM = 256
+        assert_eq!(info.total_cuda_cores(), 2 * 128);
     }
 
     #[test]

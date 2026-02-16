@@ -182,6 +182,97 @@ pub fn clear_endpoint_halt(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use smallaios_kernel::hal::{
+        HalError, UsbHostController, UsbPortStatus, UsbSetupPacket, UsbSpeed, UsbTransferResult,
+        UsbTransferType,
+    };
+
+    // -----------------------------------------------------------------------
+    // Mock USB host controller
+    // -----------------------------------------------------------------------
+
+    struct MockHc {
+        control_result: Result<UsbTransferResult, HalError>,
+        bulk_result: Result<UsbTransferResult, HalError>,
+    }
+
+    impl MockHc {
+        fn success() -> Self {
+            Self {
+                control_result: Ok(UsbTransferResult {
+                    bytes_transferred: 0,
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+                bulk_result: Ok(UsbTransferResult {
+                    bytes_transferred: 64,
+                    success: true,
+                    stalled: false,
+                    token: 0,
+                }),
+            }
+        }
+    }
+
+    impl UsbHostController for MockHc {
+        fn init(&mut self) -> Result<(), HalError> {
+            Ok(())
+        }
+        fn port_count(&self) -> u8 {
+            1
+        }
+        fn port_status(&self, _port: u8) -> Result<UsbPortStatus, HalError> {
+            Ok(UsbPortStatus {
+                connected: true,
+                enabled: true,
+                reset_active: false,
+                speed: UsbSpeed::High,
+                port: 0,
+            })
+        }
+        fn port_reset(&mut self, _port: u8) -> Result<(), HalError> {
+            Ok(())
+        }
+        fn device_attach(&mut self, _port: u8) -> Result<u8, HalError> {
+            Ok(1)
+        }
+        fn device_detach(&mut self, _slot: u8) -> Result<(), HalError> {
+            Ok(())
+        }
+        fn control_transfer(
+            &mut self,
+            _slot: u8,
+            _setup: &UsbSetupPacket,
+            _data: Option<&mut [u8]>,
+        ) -> Result<UsbTransferResult, HalError> {
+            self.control_result
+        }
+        fn bulk_transfer(
+            &mut self,
+            _slot: u8,
+            _endpoint: u8,
+            _data: &mut [u8],
+        ) -> Result<UsbTransferResult, HalError> {
+            self.bulk_result
+        }
+        fn configure_endpoint(
+            &mut self,
+            _slot: u8,
+            _endpoint: u8,
+            _transfer_type: UsbTransferType,
+            _max_packet_size: u16,
+        ) -> Result<(), HalError> {
+            Ok(())
+        }
+        fn poll_events(&mut self) -> Result<bool, HalError> {
+            Ok(false)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // EndpointTracker tests (existing)
+    // -----------------------------------------------------------------------
 
     #[test]
     fn test_endpoint_tracker_lifecycle() {
@@ -221,5 +312,239 @@ mod tests {
     fn test_endpoint_state_variants() {
         assert_ne!(EndpointState::Idle, EndpointState::Active);
         assert_ne!(EndpointState::Active, EndpointState::Halted);
+    }
+
+    // -----------------------------------------------------------------------
+    // vendor_control_out tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vendor_control_out_empty_data() {
+        let mut hc = MockHc::success();
+        let result = vendor_control_out(&mut hc, 1, 0x01, 0x1234, 0x0000, &[]);
+        assert!(result.is_ok());
+        let r = result.unwrap();
+        assert!(r.success);
+    }
+
+    #[test]
+    fn test_vendor_control_out_with_data() {
+        let mut hc = MockHc {
+            control_result: Ok(UsbTransferResult {
+                bytes_transferred: 4,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+            bulk_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+        };
+        let data = [0xDE, 0xAD, 0xBE, 0xEF];
+        let result = vendor_control_out(&mut hc, 1, 0x09, 0x0100, 0x0000, &data);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().bytes_transferred, 4);
+    }
+
+    #[test]
+    fn test_vendor_control_out_hal_error() {
+        let mut hc = MockHc {
+            control_result: Err(HalError::Timeout),
+            bulk_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+        };
+        let result = vendor_control_out(&mut hc, 1, 0x01, 0, 0, &[]);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), UsbError::HalError(HalError::Timeout));
+    }
+
+    // -----------------------------------------------------------------------
+    // vendor_control_in tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_vendor_control_in() {
+        let mut hc = MockHc {
+            control_result: Ok(UsbTransferResult {
+                bytes_transferred: 8,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+            bulk_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+        };
+        let mut buf = [0u8; 64];
+        let result = vendor_control_in(&mut hc, 1, 0x01, 0x0000, 0x0000, &mut buf);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().bytes_transferred, 8);
+    }
+
+    #[test]
+    fn test_vendor_control_in_hal_error() {
+        let mut hc = MockHc {
+            control_result: Err(HalError::UsbTransferError),
+            bulk_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+        };
+        let mut buf = [0u8; 64];
+        let result = vendor_control_in(&mut hc, 1, 0x01, 0, 0, &mut buf);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            UsbError::HalError(HalError::UsbTransferError)
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // bulk_in / bulk_out tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_bulk_in() {
+        let mut hc = MockHc::success();
+        let mut buf = [0u8; 512];
+        let result = bulk_in(&mut hc, 1, 0x01, &mut buf);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().bytes_transferred, 64);
+    }
+
+    #[test]
+    fn test_bulk_in_hal_error() {
+        let mut hc = MockHc {
+            control_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+            bulk_result: Err(HalError::Timeout),
+        };
+        let mut buf = [0u8; 512];
+        let result = bulk_in(&mut hc, 1, 0x01, &mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bulk_out() {
+        let mut hc = MockHc::success();
+        let mut data = [0xAA; 128];
+        let result = bulk_out(&mut hc, 1, 0x02, &mut data);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().bytes_transferred, 64);
+    }
+
+    #[test]
+    fn test_bulk_out_hal_error() {
+        let mut hc = MockHc {
+            control_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+            bulk_result: Err(HalError::UsbTransferError),
+        };
+        let mut data = [0xAA; 128];
+        let result = bulk_out(&mut hc, 1, 0x02, &mut data);
+        assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // clear_endpoint_halt tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_clear_endpoint_halt_success() {
+        let mut hc = MockHc {
+            control_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+            bulk_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+        };
+        let result = clear_endpoint_halt(&mut hc, 1, 0x81);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_clear_endpoint_halt_stalled() {
+        let mut hc = MockHc {
+            control_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: false,
+                stalled: true,
+                token: 0,
+            }),
+            bulk_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+        };
+        let result = clear_endpoint_halt(&mut hc, 1, 0x81);
+        assert_eq!(result.unwrap_err(), UsbError::Stall);
+    }
+
+    #[test]
+    fn test_clear_endpoint_halt_transfer_error() {
+        let mut hc = MockHc {
+            control_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: false,
+                stalled: false,
+                token: 0,
+            }),
+            bulk_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+        };
+        let result = clear_endpoint_halt(&mut hc, 1, 0x81);
+        assert_eq!(result.unwrap_err(), UsbError::TransferError);
+    }
+
+    #[test]
+    fn test_clear_endpoint_halt_hal_error() {
+        let mut hc = MockHc {
+            control_result: Err(HalError::UsbEndpointHalted),
+            bulk_result: Ok(UsbTransferResult {
+                bytes_transferred: 0,
+                success: true,
+                stalled: false,
+                token: 0,
+            }),
+        };
+        let result = clear_endpoint_halt(&mut hc, 1, 0x81);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            UsbError::HalError(HalError::UsbEndpointHalted)
+        );
     }
 }

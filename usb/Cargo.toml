@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS USB stack: xHCI host controller, descriptors, gadget framework"
+publish = false
 
 [features]
 default = ["xhci"]

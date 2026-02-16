@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS benchmarks and performance testing utilities"
+publish = false
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }

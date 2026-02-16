@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS RISC-V 64 architecture HAL: boot, PLIC, CLINT, SBI"
+publish = false
 
 [lib]
 name = "smallaios_arch_riscv64"

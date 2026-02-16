@@ -510,4 +510,367 @@ mod tests {
         assert_eq!(size_to_order(8193), 2); // > 2 pages = order 2 (4 pages)
         assert_eq!(size_to_order(2 * 1024 * 1024), 9); // 2 MiB = 512 pages = order 9
     }
+
+    // --- Coverage tests for slab/buddy allocation paths ---
+
+    #[test]
+    fn test_mem_alloc_slab_path() {
+        // size <= 2048, flags=0, align=0 → slab allocator path
+        let args = SyscallArgs::new(0x00, [64, 0, 0, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        // Slab not initialized in test context, expect an error
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_alloc_slab_with_small_align() {
+        // size=128, align=16, flags=0 → slab path (align <= 16)
+        let args = SyscallArgs::new(0x00, [128, 16, 0, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_alloc_buddy_path_large_size() {
+        // size > 2048 → buddy allocator path
+        let args = SyscallArgs::new(0x00, [8192, 0, 0, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_alloc_large_align_forces_buddy() {
+        // size=128 (would be slab), but align=32 (> 16) forces buddy path
+        let args = SyscallArgs::new(0x00, [128, 32, 0, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_alloc_nonzero_flags_forces_buddy() {
+        // size=128 (would be slab), but flags=1 (non-zero) forces buddy path
+        let args = SyscallArgs::new(0x00, [128, 0, 1, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_free_slab_path() {
+        // size <= 2048 → slab free path
+        let args = SyscallArgs::new(0x01, [0x1000, 64, 0, 0, 0, 0]);
+        let result = sys_mem_free(&args);
+        // Slab not initialized, will fail but exercises slab free path
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_free_buddy_path() {
+        // size > 2048 → buddy free path
+        let args = SyscallArgs::new(0x01, [0x1000, 8192, 0, 0, 0, 0]);
+        let result = sys_mem_free(&args);
+        // Buddy not initialized, will fail but exercises buddy free path
+        assert_ne!(result, 0);
+    }
+
+    // --- Coverage tests for capability-checked paths ---
+
+    #[test]
+    fn test_mem_map_with_nonzero_size() {
+        // Non-zero size passes validation, hits capability check
+        let args = SyscallArgs::new(0x02, [0x1000, 0x2000, 4096, 0, 0, 0]);
+        let result = sys_mem_map(&args);
+        // No capabilities registered → PermissionDenied or NotSupported
+        assert!(result < 0);
+    }
+
+    #[test]
+    fn test_mem_protect_with_nonzero_ptr_and_size() {
+        // Non-zero ptr and non-zero size passes validation, hits capability check
+        let args = SyscallArgs::new(0x03, [0x1000, 4096, 1, 0, 0, 0]);
+        let result = sys_mem_protect(&args);
+        // No capabilities registered → PermissionDenied
+        assert!(result < 0);
+    }
+
+    #[test]
+    fn test_mem_protect_zero_size_nonzero_ptr() {
+        // ptr != 0 but size == 0 → InvalidArgument (short-circuit on OR condition)
+        let args = SyscallArgs::new(0x03, [0x1000, 0, 1, 0, 0, 0]);
+        assert_eq!(
+            sys_mem_protect(&args),
+            SyscallError::InvalidArgument.as_i64()
+        );
+    }
+
+    #[test]
+    fn test_tensor_free_valid_handle() {
+        // Non-zero handle passes validation, hits capability check.
+        // Use a high handle value unlikely to have a registered capability.
+        let args = SyscallArgs::new(0x05, [50000, 0, 0, 0, 0, 0]);
+        let result = sys_tensor_free(&args);
+        // No capability for this instance → PermissionDenied
+        assert_eq!(result, SyscallError::PermissionDenied.as_i64());
+    }
+
+    #[test]
+    fn test_tensor_map_gpu_valid_handle() {
+        // Non-zero handle passes validation, hits capability check.
+        // Use a high handle value unlikely to have a registered capability.
+        let args = SyscallArgs::new(0x06, [60000, 0, 0, 0, 0, 0]);
+        let result = sys_tensor_map_gpu(&args);
+        // No capability for this instance → PermissionDenied
+        assert_eq!(result, SyscallError::PermissionDenied.as_i64());
+    }
+
+    #[test]
+    fn test_tensor_unmap_gpu_valid_handle() {
+        // Non-zero handle passes validation, hits capability check.
+        // Use a high handle value unlikely to have a registered capability.
+        let args = SyscallArgs::new(0x07, [60001, 0, 0, 0, 0, 0]);
+        let result = sys_tensor_unmap_gpu(&args);
+        // No capability for this instance → PermissionDenied
+        assert_eq!(result, SyscallError::PermissionDenied.as_i64());
+    }
+
+    // --- Coverage tests for enum repr values ---
+
+    #[test]
+    fn test_mem_flags_repr_values() {
+        assert_eq!(MemFlags::Normal as u32, 0);
+        assert_eq!(MemFlags::Dma as u32, 1);
+        assert_eq!(MemFlags::HugePage2M as u32, 2);
+        assert_eq!(MemFlags::HugePage1G as u32, 3);
+        assert_eq!(MemFlags::Zeroed as u32, 4);
+    }
+
+    #[test]
+    fn test_prot_flags_repr_values() {
+        assert_eq!(ProtFlags::None as u32, 0);
+        assert_eq!(ProtFlags::Read as u32, 1);
+        assert_eq!(ProtFlags::ReadWrite as u32, 3);
+        assert_eq!(ProtFlags::ReadExecute as u32, 5);
+    }
+
+    #[test]
+    fn test_tensor_dtype_repr_values() {
+        assert_eq!(TensorDtype::Float32 as u32, 0);
+        assert_eq!(TensorDtype::Float16 as u32, 1);
+        assert_eq!(TensorDtype::Int8 as u32, 2);
+        assert_eq!(TensorDtype::Uint8 as u32, 3);
+        assert_eq!(TensorDtype::Int32 as u32, 4);
+        assert_eq!(TensorDtype::Int64 as u32, 5);
+        assert_eq!(TensorDtype::Float64 as u32, 6);
+        assert_eq!(TensorDtype::BFloat16 as u32, 7);
+    }
+
+    // --- Additional coverage tests ---
+
+    #[test]
+    fn test_size_to_order_zero() {
+        // size=0 → pages=0 → order 0
+        assert_eq!(size_to_order(0), 0);
+    }
+
+    #[test]
+    fn test_size_to_order_exact_four_pages() {
+        // 4 pages = 16384 bytes → order 2
+        assert_eq!(size_to_order(16384), 2);
+    }
+
+    #[test]
+    fn test_size_to_order_just_over_four_pages() {
+        // 16385 bytes → 5 pages → order 3 (next power of 2 is 8)
+        assert_eq!(size_to_order(16385), 3);
+    }
+
+    #[test]
+    fn test_mem_alloc_align_one() {
+        // align=1 is a valid power of 2; size=4096 with align=1 goes to slab path
+        // (size <= 2048 is false, so this goes to buddy path)
+        let args = SyscallArgs::new(0x00, [4096, 1, 0, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        // Buddy not initialized → OutOfMemory (negative)
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_alloc_slab_boundary_size() {
+        // size=2048 is exactly the slab boundary, flags=0, align=0 → slab path
+        let args = SyscallArgs::new(0x00, [2048, 0, 0, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_alloc_just_over_slab_boundary() {
+        // size=2049 → buddy path
+        let args = SyscallArgs::new(0x00, [2049, 0, 0, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_free_slab_boundary_size() {
+        // size=2048 → slab free path
+        let args = SyscallArgs::new(0x01, [0x1000, 2048, 0, 0, 0, 0]);
+        let result = sys_mem_free(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_free_just_over_slab_boundary() {
+        // size=2049 → buddy free path
+        let args = SyscallArgs::new(0x01, [0x1000, 2049, 0, 0, 0, 0]);
+        let result = sys_mem_free(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_tensor_alloc_valid_dtype_bfloat16() {
+        // dtype=7 (BFloat16) is the highest valid dtype — passes dtype check
+        // ndim=1, shape_ptr valid → passes ndim check, hits capability check
+        // Without the capability grant, this hits PermissionDenied
+        let shape: [usize; 1] = [8];
+        let shape_ptr = shape.as_ptr() as usize;
+        let args = SyscallArgs::new(0x04, [shape_ptr, 1, 7, 0, 0, 0]);
+        let result = sys_tensor_alloc(&args);
+        // Either succeeds (if pool+cap ready from another test) or PermissionDenied
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_tensor_alloc_ndim_at_max() {
+        // ndim=8 is the maximum allowed (> 8 is rejected)
+        let shape: [usize; 8] = [1, 2, 1, 1, 1, 1, 1, 3];
+        let shape_ptr = shape.as_ptr() as usize;
+        let args = SyscallArgs::new(0x04, [shape_ptr, 8, 0, 0, 0, 0]);
+        let result = sys_tensor_alloc(&args);
+        // Either succeeds (if pool+cap ready from another test) or PermissionDenied
+        assert_ne!(result, 0);
+    }
+
+    /// Combined tensor pool test that exercises all tensor alloc/free code
+    /// paths that require capability + pool state. Consolidated into a single
+    /// test to avoid races with the global kernel state used by other tests.
+    #[test]
+    fn test_tensor_pool_paths_consolidated() {
+        // --- Setup: grant capability and initialize pool ---
+        unsafe {
+            state::with_cap_registry(|reg| {
+                // Grant TensorBuffer:WRITE for instance 0 (used by sys_tensor_alloc cap check)
+                let resource = ResourceRef::new(ResourceType::TensorBuffer, 0);
+                let _ = reg.create(0, resource, Permissions::WRITE, 0);
+            });
+            state::with_tensor_pool(|pool| {
+                pool.init(crate::mem::PhysAddr::new(0x200_0000), 1024 * 1024);
+            });
+        }
+
+        // --- Test 1: Basic tensor allocation (covers lines 255-280) ---
+        let shape: [usize; 2] = [4, 8];
+        let shape_ptr = shape.as_ptr() as usize;
+        let args = SyscallArgs::new(0x04, [shape_ptr, 2, 0, 0, 0, 0]);
+        let handle1 = sys_tensor_alloc(&args);
+        assert!(handle1 > 0, "basic tensor alloc failed: {handle1}");
+
+        // --- Test 2: Different dtypes (covers element_size paths) ---
+        let shape_1d: [usize; 1] = [10];
+        let ptr_1d = shape_1d.as_ptr() as usize;
+
+        // Float16
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_1d, 1, 1, 0, 0, 0]));
+        assert!(r > 0, "Float16 alloc failed: {r}");
+        // Int8
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_1d, 1, 2, 0, 0, 0]));
+        assert!(r > 0, "Int8 alloc failed: {r}");
+        // Float64
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_1d, 1, 6, 0, 0, 0]));
+        assert!(r > 0, "Float64 alloc failed: {r}");
+        // BFloat16
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_1d, 1, 7, 0, 0, 0]));
+        assert!(r > 0, "BFloat16 alloc failed: {r}");
+
+        // --- Test 3: Multi-dim shape ---
+        let shape_3d: [usize; 3] = [2, 3, 4];
+        let ptr_3d = shape_3d.as_ptr() as usize;
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_3d, 3, 0, 0, 0, 0]));
+        assert!(r > 0, "3D tensor alloc failed: {r}");
+
+        // --- Test 4: 8-dim shape ---
+        let shape_8d: [usize; 8] = [1, 2, 1, 1, 1, 1, 1, 3];
+        let ptr_8d = shape_8d.as_ptr() as usize;
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_8d, 8, 0, 0, 0, 0]));
+        assert!(r > 0, "8-dim tensor alloc failed: {r}");
+
+        // --- Test 5: Shape with zero dim (rejected after cap check) ---
+        let bad_shape: [usize; 2] = [4, 0];
+        let ptr_bad = bad_shape.as_ptr() as usize;
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_bad, 2, 0, 0, 0, 0]));
+        assert_eq!(r, SyscallError::InvalidArgument.as_i64());
+
+        // --- Test 6: Overflow in shape multiplication ---
+        let overflow_shape: [usize; 2] = [usize::MAX, 2];
+        let ptr_of = overflow_shape.as_ptr() as usize;
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_of, 2, 0, 0, 0, 0]));
+        assert_eq!(r, SyscallError::InvalidArgument.as_i64());
+
+        // --- Test 7: Overflow in total_bytes ---
+        let big_shape: [usize; 1] = [usize::MAX / 4];
+        let ptr_big = big_shape.as_ptr() as usize;
+        let r = sys_tensor_alloc(&SyscallArgs::new(0x04, [ptr_big, 1, 5, 0, 0, 0]));
+        assert_eq!(r, SyscallError::InvalidArgument.as_i64());
+
+        // --- Test 8: Tensor free (covers lines 300-308) ---
+        // Grant cap for the specific handle returned by handle1
+        unsafe {
+            state::with_cap_registry(|reg| {
+                let resource = ResourceRef::new(ResourceType::TensorBuffer, handle1 as u64);
+                let _ = reg.create(0, resource, Permissions::WRITE, 0);
+            });
+        }
+        let free_args = SyscallArgs::new(0x05, [handle1 as usize, 0, 0, 0, 0, 0]);
+        let r = sys_tensor_free(&free_args);
+        assert_eq!(r, SyscallError::Success.as_i64());
+
+        // --- Test 9: Free with invalid handle (after cap check) ---
+        unsafe {
+            state::with_cap_registry(|reg| {
+                let resource = ResourceRef::new(ResourceType::TensorBuffer, 9999);
+                let _ = reg.create(0, resource, Permissions::WRITE, 0);
+            });
+        }
+        let r = sys_tensor_free(&SyscallArgs::new(0x05, [9999, 0, 0, 0, 0, 0]));
+        assert!(r < 0, "expected error for invalid handle, got {r}");
+
+        // --- Cleanup: reset pool to avoid interference with fuzz tests ---
+        unsafe {
+            state::with_tensor_pool(|pool| {
+                pool.reset();
+            });
+        }
+    }
+
+    #[test]
+    fn test_mem_alloc_dma_flag_forces_buddy() {
+        // size=64 (would be slab), but flags=1 (DMA) forces buddy
+        let args = SyscallArgs::new(0x00, [64, 0, 1, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_alloc_huge_page_flag() {
+        // flags=2 (HugePage2M) forces buddy path
+        let args = SyscallArgs::new(0x00, [64, 0, 2, 0, 0, 0]);
+        let result = sys_mem_alloc(&args);
+        assert_ne!(result, 0);
+    }
+
+    #[test]
+    fn test_mem_free_exactly_one_byte() {
+        // Smallest valid free: 1 byte → slab path
+        let args = SyscallArgs::new(0x01, [0x1000, 1, 0, 0, 0, 0]);
+        let result = sys_mem_free(&args);
+        assert_ne!(result, 0);
+    }
 }

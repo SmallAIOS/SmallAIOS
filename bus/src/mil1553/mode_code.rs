@@ -195,108 +195,44 @@ impl ModeCodeHandler {
                     Ok(ModeCodeResult::StatusOnly(sw))
                 }
             }
-            ModeCode::Synchronize => {
-                // Synchronize the RT clock — application handles actual sync
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
-            }
-            ModeCode::TransmitStatusWord => {
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
+            ModeCode::Synchronize | ModeCode::TransmitStatusWord => {
+                self.broadcast_or_status(is_broadcast)
             }
             ModeCode::InitiateSelfTest => {
                 self.self_test_active = true;
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
+                self.broadcast_or_status(is_broadcast)
             }
-            ModeCode::TransmitterShutdown => {
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
-            }
-            ModeCode::OverrideTransmitterShutdown => {
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
+            ModeCode::TransmitterShutdown | ModeCode::OverrideTransmitterShutdown => {
+                self.broadcast_or_status(is_broadcast)
             }
             ModeCode::InhibitTerminalFlag => {
                 self.terminal_flag_inhibited = true;
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
+                self.broadcast_or_status(is_broadcast)
             }
             ModeCode::OverrideInhibitTerminalFlag => {
                 self.terminal_flag_inhibited = false;
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
+                self.broadcast_or_status(is_broadcast)
             }
             ModeCode::ResetRemoteTerminal => {
                 self.terminal_flag_inhibited = false;
                 self.self_test_active = false;
                 self.vector_word = 0;
                 self.bit_word = 0;
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
+                self.broadcast_or_status(is_broadcast)
             }
             ModeCode::TransmitVectorWord => {
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusWithData(
-                        self.make_status()?,
-                        self.vector_word,
-                    ))
-                }
+                self.broadcast_or_status_with_data(is_broadcast, self.vector_word)
             }
             ModeCode::SynchronizeWithData => {
                 // The data word contains a sync value from the BC
                 let _sync_value = data_word.unwrap_or(0);
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusOnly(self.make_status()?))
-                }
+                self.broadcast_or_status(is_broadcast)
             }
             ModeCode::TransmitLastCommand => {
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusWithData(
-                        self.make_status()?,
-                        self.last_command_raw,
-                    ))
-                }
+                self.broadcast_or_status_with_data(is_broadcast, self.last_command_raw)
             }
             ModeCode::TransmitBitWord => {
-                if is_broadcast {
-                    Ok(ModeCodeResult::NoResponse)
-                } else {
-                    Ok(ModeCodeResult::StatusWithData(
-                        self.make_status()?,
-                        self.bit_word,
-                    ))
-                }
+                self.broadcast_or_status_with_data(is_broadcast, self.bit_word)
             }
             ModeCode::Unknown(_) => Err(BusError::NotSupported),
         }
@@ -309,6 +245,30 @@ impl ModeCodeHandler {
             sw.terminal_flag = self.self_test_active;
         }
         Ok(sw)
+    }
+
+    /// Return `NoResponse` for broadcast commands, or `StatusOnly` with
+    /// the current status word for unicast commands.
+    fn broadcast_or_status(&self, is_broadcast: bool) -> Result<ModeCodeResult, BusError> {
+        if is_broadcast {
+            Ok(ModeCodeResult::NoResponse)
+        } else {
+            Ok(ModeCodeResult::StatusOnly(self.make_status()?))
+        }
+    }
+
+    /// Return `NoResponse` for broadcast commands, or `StatusWithData`
+    /// carrying `data` for unicast commands.
+    fn broadcast_or_status_with_data(
+        &self,
+        is_broadcast: bool,
+        data: u16,
+    ) -> Result<ModeCodeResult, BusError> {
+        if is_broadcast {
+            Ok(ModeCodeResult::NoResponse)
+        } else {
+            Ok(ModeCodeResult::StatusWithData(self.make_status()?, data))
+        }
     }
 }
 

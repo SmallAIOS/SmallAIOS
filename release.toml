@@ -1,0 +1,11 @@
+# cargo-release configuration for SmallAIOS workspace
+
+publish = false                              # no_std kernel crates, not on crates.io
+push = false                                 # user reviews then pushes to trigger release.yml
+tag-name = "v{{version}}"                    # v0.1.1, v0.2.0, etc.
+tag-message = "chore: release v{{version}}"
+consolidate-commits = true                   # one commit for all 18 crates
+pre-release-commit-message = "chore: release v{{version}}"
+shared-version = true                        # all crates share one version
+allow-branch = ["main"]                      # Gitflow: only release from main
+pre-release-hook = ["bash", "-c", "make -C $(git rev-parse --show-toplevel) test"]

@@ -78,6 +78,12 @@ pub struct DmaEngine {
     active: bool,
 }
 
+impl Default for DmaEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DmaEngine {
     /// Create a new, active DMA engine with no pending work.
     pub fn new() -> Self {

@@ -333,15 +333,29 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           fail_ci_if_error: false
+      - name: Convert LCOV to SonarCloud generic format
+        run: |
+          python3 scripts/lcov-to-sonar.py lcov.info > sonar-coverage.xml
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-sonar
+          path: sonar-coverage.xml
+          retention-days: 1
 
   sonarcloud:
     name: SonarCloud Analysis
     runs-on: ubuntu-latest
-    needs: test
+    needs: coverage
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-sonar
       - name: SonarCloud Scan
         uses: SonarSource/sonarcloud-github-action@master
         env:

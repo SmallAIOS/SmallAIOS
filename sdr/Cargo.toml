@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS SDR drivers: HackRF One, ADALM-Pluto, IQ processing pipeline"
+publish = false
 
 [features]
 default = ["hackrf", "pluto"]

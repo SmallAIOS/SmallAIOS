@@ -794,4 +794,181 @@ mod tests {
         assert_eq!(kp1.public_key.ed25519_pk(), kp2.public_key.ed25519_pk());
         assert_eq!(kp1.public_key.ml_dsa_pk(), kp2.public_key.ml_dsa_pk());
     }
+
+    #[test]
+    fn hybrid_error_display_all() {
+        assert_eq!(
+            format!("{}", HybridError::InvalidPublicKeyLength),
+            "invalid hybrid public key length"
+        );
+        assert_eq!(
+            format!("{}", HybridError::InvalidSecretKeyLength),
+            "invalid hybrid secret key length"
+        );
+        assert_eq!(
+            format!("{}", HybridError::InvalidCiphertextLength),
+            "invalid hybrid ciphertext length"
+        );
+        assert_eq!(
+            format!("{}", HybridError::InvalidSignatureLength),
+            "invalid hybrid signature length"
+        );
+        assert_eq!(
+            format!("{}", HybridError::ClassicalFailure),
+            "classical cryptographic component failure"
+        );
+        assert_eq!(
+            format!("{}", HybridError::PostQuantumFailure),
+            "post-quantum cryptographic component failure"
+        );
+        assert_eq!(
+            format!("{}", HybridError::VerificationFailed),
+            "hybrid signature verification failed"
+        );
+        assert_eq!(
+            format!("{}", HybridError::RngFailure),
+            "random number generation failure"
+        );
+        assert_eq!(
+            format!("{}", HybridError::NotImplemented),
+            "hybrid scheme not yet implemented"
+        );
+    }
+
+    #[test]
+    fn hybrid_kem_public_key_is_empty() {
+        let pk = HybridKemPublicKey::from_components(
+            [0; X25519_PK_LEN],
+            [0; super::super::ml_kem::ML_KEM_768_PK_LEN],
+        );
+        assert!(!pk.is_empty());
+    }
+
+    #[test]
+    fn hybrid_kem_secret_key_len_and_is_empty() {
+        let sk = HybridKemSecretKey::from_components(
+            [0; X25519_SK_LEN],
+            [0; super::super::ml_kem::ML_KEM_768_SK_LEN],
+        );
+        assert_eq!(sk.len(), HYBRID_KEM_SK_LEN);
+        assert!(!sk.is_empty());
+    }
+
+    #[test]
+    fn hybrid_kem_ciphertext_is_empty() {
+        let ct = HybridKemCiphertext::from_components(
+            [0; X25519_PK_LEN],
+            [0; super::super::ml_kem::ML_KEM_768_CT_LEN],
+        );
+        assert!(!ct.is_empty());
+    }
+
+    #[test]
+    fn hybrid_sig_public_key_is_empty() {
+        let pk = HybridSigPublicKey::from_components(
+            [0; ED25519_PK_LEN],
+            [0; super::super::ml_dsa::ML_DSA_65_PK_LEN],
+        );
+        assert!(!pk.is_empty());
+    }
+
+    #[test]
+    fn hybrid_sig_secret_key_len_and_is_empty() {
+        let sk = HybridSigSecretKey::from_components(
+            [0; ED25519_SK_LEN],
+            [0; super::super::ml_dsa::ML_DSA_65_SK_LEN],
+        );
+        assert_eq!(sk.len(), HYBRID_SIG_SK_LEN);
+        assert!(!sk.is_empty());
+    }
+
+    #[test]
+    fn hybrid_signature_is_empty() {
+        let sig = HybridSignature::from_components(
+            [0; ED25519_SIG_LEN],
+            [0; super::super::ml_dsa::ML_DSA_65_SIG_LEN],
+        );
+        assert!(!sig.is_empty());
+    }
+
+    #[test]
+    fn hybrid_kem_public_key_debug() {
+        let pk = HybridKemPublicKey::from_components(
+            [0; X25519_PK_LEN],
+            [0; super::super::ml_kem::ML_KEM_768_PK_LEN],
+        );
+        let debug = format!("{:?}", pk);
+        assert!(debug.contains("HybridKemPublicKey"));
+    }
+
+    #[test]
+    fn hybrid_kem_ciphertext_debug() {
+        let ct = HybridKemCiphertext::from_components(
+            [0; X25519_PK_LEN],
+            [0; super::super::ml_kem::ML_KEM_768_CT_LEN],
+        );
+        let debug = format!("{:?}", ct);
+        assert!(debug.contains("HybridKemCiphertext"));
+    }
+
+    #[test]
+    fn hybrid_kem_keypair_debug() {
+        let seed = [0x42u8; 96];
+        let kp = hybrid_kem_keygen(&seed).unwrap();
+        let debug = format!("{:?}", kp);
+        assert!(debug.contains("HybridKemKeyPair"));
+    }
+
+    #[test]
+    fn hybrid_sig_public_key_debug() {
+        let pk = HybridSigPublicKey::from_components(
+            [0; ED25519_PK_LEN],
+            [0; super::super::ml_dsa::ML_DSA_65_PK_LEN],
+        );
+        let debug = format!("{:?}", pk);
+        assert!(debug.contains("HybridSigPublicKey"));
+    }
+
+    #[test]
+    fn hybrid_signature_debug() {
+        let sig = HybridSignature::from_components(
+            [0; ED25519_SIG_LEN],
+            [0; super::super::ml_dsa::ML_DSA_65_SIG_LEN],
+        );
+        let debug = format!("{:?}", sig);
+        assert!(debug.contains("HybridSignature"));
+    }
+
+    #[test]
+    fn hybrid_sig_keypair_debug() {
+        let seed = [0x42u8; 64];
+        let kp = hybrid_sig_keygen(&seed).unwrap();
+        let debug = format!("{:?}", kp);
+        assert!(debug.contains("HybridSigKeyPair"));
+    }
+
+    #[test]
+    fn hybrid_kem_shared_secret_as_bytes() {
+        let ss = HybridKemSharedSecret::from_bytes([0xAB; HYBRID_KEM_SS_LEN]);
+        assert_eq!(ss.as_bytes()[0], 0xAB);
+        assert_eq!(ss.as_bytes().len(), HYBRID_KEM_SS_LEN);
+    }
+
+    #[test]
+    fn hybrid_kem_secret_key_components() {
+        let x_sk = [0x11u8; X25519_SK_LEN];
+        let ml_sk = [0x22u8; super::super::ml_kem::ML_KEM_768_SK_LEN];
+        let sk = HybridKemSecretKey::from_components(x_sk, ml_sk);
+        assert_eq!(sk.x25519_sk()[0], 0x11);
+        assert_eq!(sk.ml_kem_sk()[0], 0x22);
+    }
+
+    #[test]
+    fn hybrid_sig_secret_key_components() {
+        let ed_sk = [0x33u8; ED25519_SK_LEN];
+        let ml_sk = [0x44u8; super::super::ml_dsa::ML_DSA_65_SK_LEN];
+        let sk = HybridSigSecretKey::from_components(ed_sk, ml_sk);
+        assert_eq!(sk.ed25519_sk()[0], 0x33);
+        assert_eq!(sk.ml_dsa_sk()[0], 0x44);
+    }
 }

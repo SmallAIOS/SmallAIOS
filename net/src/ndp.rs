@@ -419,54 +419,66 @@ fn parse_ndp_options(mut data: &[u8]) -> Result<Vec<NdpOption>, NetError> {
             return Err(NetError::PacketTooShort);
         }
 
-        match opt_type {
-            1 => {
-                // Source Link-Layer Address
-                if opt_len_bytes >= 8 {
-                    let mac = MacAddress::new(data[2], data[3], data[4], data[5], data[6], data[7]);
-                    options.push(NdpOption::SourceLinkLayerAddress(mac));
-                }
-            }
-            2 => {
-                // Target Link-Layer Address
-                if opt_len_bytes >= 8 {
-                    let mac = MacAddress::new(data[2], data[3], data[4], data[5], data[6], data[7]);
-                    options.push(NdpOption::TargetLinkLayerAddress(mac));
-                }
-            }
-            3 => {
-                // Prefix Information (32 bytes)
-                if opt_len_bytes >= 32 {
-                    let prefix_len = data[2];
-                    let valid_lifetime = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-                    let preferred_lifetime =
-                        u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
-                    let mut prefix = [0u8; 16];
-                    prefix.copy_from_slice(&data[16..32]);
-                    options.push(NdpOption::PrefixInformation {
-                        prefix_len,
-                        prefix,
-                        valid_lifetime,
-                        preferred_lifetime,
-                    });
-                }
-            }
-            5 => {
-                // MTU
-                if opt_len_bytes >= 8 {
-                    let mtu = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
-                    options.push(NdpOption::Mtu(mtu));
-                }
-            }
-            _ => {
-                // Skip unknown options
-            }
+        if let Some(opt) = parse_single_ndp_option(opt_type, &data[..opt_len_bytes]) {
+            options.push(opt);
         }
 
         data = &data[opt_len_bytes..];
     }
 
     Ok(options)
+}
+
+/// Parse a single NDP option from a byte slice that is exactly `opt_len_bytes`
+/// long (the full TLV including type and length fields). Returns `None` for
+/// unknown option types or options too short for their type.
+fn parse_single_ndp_option(opt_type: u8, data: &[u8]) -> Option<NdpOption> {
+    match opt_type {
+        1 => parse_link_layer_address(data).map(NdpOption::SourceLinkLayerAddress),
+        2 => parse_link_layer_address(data).map(NdpOption::TargetLinkLayerAddress),
+        3 => parse_prefix_information(data),
+        5 => parse_mtu_option(data),
+        _ => None, // Skip unknown options
+    }
+}
+
+/// Parse a Source or Target Link-Layer Address option (types 1 and 2).
+fn parse_link_layer_address(data: &[u8]) -> Option<MacAddress> {
+    if data.len() >= 8 {
+        Some(MacAddress::new(
+            data[2], data[3], data[4], data[5], data[6], data[7],
+        ))
+    } else {
+        None
+    }
+}
+
+/// Parse a Prefix Information option (type 3, 32 bytes).
+fn parse_prefix_information(data: &[u8]) -> Option<NdpOption> {
+    if data.len() < 32 {
+        return None;
+    }
+    let prefix_len = data[2];
+    let valid_lifetime = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+    let preferred_lifetime = u32::from_be_bytes([data[8], data[9], data[10], data[11]]);
+    let mut prefix = [0u8; 16];
+    prefix.copy_from_slice(&data[16..32]);
+    Some(NdpOption::PrefixInformation {
+        prefix_len,
+        prefix,
+        valid_lifetime,
+        preferred_lifetime,
+    })
+}
+
+/// Parse an MTU option (type 5).
+fn parse_mtu_option(data: &[u8]) -> Option<NdpOption> {
+    if data.len() >= 8 {
+        let mtu = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
+        Some(NdpOption::Mtu(mtu))
+    } else {
+        None
+    }
 }
 
 // ---------------------------------------------------------------------------
