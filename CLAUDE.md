@@ -33,6 +33,10 @@ make run-arm                # Boot in QEMU ARM64
 
 # Docker
 make docker-build           # Multi-arch container build
+
+# Release (requires cargo-release)
+make release-dry-run BUMP=patch  # preview version bump
+make release BUMP=minor          # execute bump + commit + tag
 ```
 
 ## Workspace Architecture
@@ -97,7 +101,17 @@ kernel (foundation: memory, scheduler, syscall interface)
 
 **Scripts:**
 - `./scripts/check-pr-semver.sh "<title>"` — validate and print bump level
-- `./scripts/bump-version.sh <major|minor|patch|X.Y.Z>` — bump workspace version
+
+### Releasing
+
+Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release), configured in `release.toml`. All 18 crates share a single version and are bumped together.
+
+```bash
+make release-dry-run BUMP=patch   # preview: 0.1.0 → 0.1.1
+make release BUMP=minor           # execute: 0.1.0 → 0.2.0
+```
+
+`cargo-release` bumps workspace version, updates `Cargo.lock`, commits, and tags. `push = false` so you review before pushing. Releases are only allowed from `main` (enforced by `allow-branch`).
 
 ## Git Workflow
 

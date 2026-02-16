@@ -191,6 +191,18 @@ fmt:
 fmt-check:
 	$(CARGO) fmt --all -- --check
 
+# === Release ===
+
+.PHONY: release-dry-run
+release-dry-run:
+	@if [ -z "$(BUMP)" ]; then echo "usage: make release-dry-run BUMP=<patch|minor|major>"; exit 1; fi
+	cargo release $(BUMP)
+
+.PHONY: release
+release:
+	@if [ -z "$(BUMP)" ]; then echo "usage: make release BUMP=<patch|minor|major>"; exit 1; fi
+	cargo release $(BUMP) --execute
+
 # === Bare Metal Deploy ===
 
 # Network boot: build + copy kernel to TFTP server

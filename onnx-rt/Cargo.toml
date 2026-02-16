@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS ONNX runtime: protobuf parser, graph optimizer, operators"
+publish = false
 
 [features]
 default = ["cpu"]

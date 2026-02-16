@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# DEPRECATED: Use 'make release BUMP=<level>' (cargo-release) instead.
 # bump-version.sh — Bump the workspace version across all crates.
 #
 # Usage:

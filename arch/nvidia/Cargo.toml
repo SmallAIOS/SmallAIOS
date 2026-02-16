@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS NVIDIA GPU HAL: PCIe, memory, DMA, compute, PTX"
+publish = false
 
 [features]
 default = []

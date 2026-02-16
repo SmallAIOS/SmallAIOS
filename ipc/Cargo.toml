@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS IPC: Zenoh-inspired pub/sub messaging with capability security"
+publish = false
 
 [features]
 default = []

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS bus protocols: CAN, ARINC 429/664, MIL-STD-1553, SpaceWire, DDS"
+publish = false
 
 [features]
 default = ["can", "arinc429", "arinc664", "mil1553", "spacewire", "ccsds", "dds", "fpga"]

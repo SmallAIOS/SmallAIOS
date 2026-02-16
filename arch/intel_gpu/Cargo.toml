@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS Intel GPU HAL: Xe-LP/HPG/HPC, EU compute, SPIR-V"
+publish = false
 
 [features]
 default = []

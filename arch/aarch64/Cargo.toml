@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS AArch64 architecture HAL: boot, GICv2/v3, paging, SVE, Tegra X1"
+publish = false
 
 [lib]
 name = "smallaios_arch_aarch64"
@@ -17,7 +18,8 @@ path = "src/main.rs"
 [features]
 default = ["qemu-virt"]
 qemu-virt = []
-tegra-x1 = []
+tegra-x1 = ["smallaios-onnx-rt"]
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
+smallaios-onnx-rt = { path = "../../onnx-rt", optional = true, default-features = false, features = ["cpu"] }

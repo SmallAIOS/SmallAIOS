@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "SmallAIOS POSIX compatibility layer for AI runtime operations"
+publish = false
 
 [features]
 default = []
