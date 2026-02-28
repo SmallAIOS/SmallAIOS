@@ -23,6 +23,8 @@ pub mod graph;
 pub mod memory_planner;
 #[cfg(feature = "formal-gate")]
 pub mod model_policy;
+#[cfg(feature = "verified-boot")]
+pub mod model_verify;
 pub mod onnx_types;
 pub mod operators;
 pub mod optimizer;

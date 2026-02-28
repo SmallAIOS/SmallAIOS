@@ -12,6 +12,7 @@ default = []
 verbose-boot = []
 no-global-alloc = []
 large-memory = []  # Track 64 GiB of pages (16M pages); default tracks 1 GiB (256K pages)
+verified-boot = ["smallaios-security/verified-boot"]  # Boot integrity verification and measurement log
 
 [dependencies]
 smallaios-security = { path = "../security" }

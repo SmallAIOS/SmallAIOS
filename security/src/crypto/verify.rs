@@ -57,6 +57,32 @@ pub const SIGNATURE_FORMAT_VERSION: u32 = 1;
 /// Magic bytes identifying a SmallAIOS model signature block.
 pub const SIGNATURE_MAGIC: [u8; 8] = *b"SAIOS\x00\x01\x00";
 
+// ─── Verification Policy ─────────────────────────────────────────────────────
+
+/// Policy controlling how verification failures are handled.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationPolicy {
+    /// Reject on verification failure (halt boot or reject model load).
+    Enforce,
+    /// Log a warning on failure but continue operation.
+    #[default]
+    WarnOnly,
+    /// Skip verification entirely (no hash computation or signature checks).
+    Disabled,
+}
+
+impl VerificationPolicy {
+    /// Returns `true` if verification should be performed.
+    pub fn should_verify(&self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    /// Returns `true` if failures should halt/reject the operation.
+    pub fn should_reject(&self) -> bool {
+        matches!(self, Self::Enforce)
+    }
+}
+
 // ─── Error Type ──────────────────────────────────────────────────────────────
 
 /// Errors from model verification operations.

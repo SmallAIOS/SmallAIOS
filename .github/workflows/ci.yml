@@ -155,6 +155,29 @@ jobs:
           -p smallaios-onnx-rt
           -p smallaios-container
 
+  test-verified-boot:
+    name: Unit Tests (verified-boot)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Test with verified-boot enabled
+        run: >-
+          cargo test
+          -p smallaios-kernel --features verified-boot
+          -p smallaios-security --features verified-boot
+          -p smallaios-onnx-rt --features verified-boot
+      - name: Clippy with verified-boot enabled
+        run: >-
+          cargo clippy
+          -p smallaios-kernel --features verified-boot
+          -p smallaios-security --features verified-boot
+          -p smallaios-onnx-rt --features verified-boot
+          -- -D warnings
+
   riscv-qemu-smoke:
     name: RISC-V QEMU Smoke Test
     runs-on: ubuntu-latest

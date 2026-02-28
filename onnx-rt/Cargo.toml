@@ -13,6 +13,7 @@ cpu = []
 cuda = ["smallaios-arch-nvidia"]
 tegra = ["cuda", "smallaios-arch-nvidia/tegra"]
 formal-gate = ["dep:smallaios-security", "smallaios-security/formal-gate"]
+verified-boot = ["dep:smallaios-security", "smallaios-security/verified-boot"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }

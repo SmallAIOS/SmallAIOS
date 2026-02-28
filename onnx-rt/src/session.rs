@@ -283,6 +283,13 @@ pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
 /// Currently returns `NotImplemented` after validation passes;
 /// full protobuf parsing will be added in a later phase.
 pub fn load_model(data: &[u8]) -> Result<ModelProto, SessionError> {
+    // Verified boot: check model signature before parsing
+    #[cfg(feature = "verified-boot")]
+    {
+        let policy = smallaios_security::crypto::verify::VerificationPolicy::default();
+        crate::model_verify::verify_model_data(data, policy)?;
+    }
+
     if data.len() < MIN_MODEL_SIZE {
         return Err(SessionError::ModelLoadFailed(String::from(
             "data too small to be a valid ONNX model",
