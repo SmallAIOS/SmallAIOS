@@ -1,0 +1,59 @@
+@startuml SmallAIOS Process View
+!theme plain
+title SmallAIOS Process View — Boot to Inference
+
+skinparam defaultFontName "Segoe UI"
+skinparam shadowing false
+
+|Boot|
+start
+:Platform init (arch-specific);
+note right: x86: GDT/IDT/APIC\nARM: GICv3/MMU\nRISC-V: SBI/PLIC
+:Enable paging & map kernel;
+:Initialize buddy allocator;
+:Initialize slab allocator;
+:Initialize tensor pool;
+
+|Scheduler|
+:Create idle task;
+:Create init task;
+
+|Security|
+:Initialize capability registry;
+:Initialize CSPRNG (seed from RDRAND/TRNG);
+:Initialize key manager;
+if (verified-boot enabled?) then (yes)
+  :Verify boot measurements;
+  :Check kernel signature;
+else (no)
+endif
+
+|Init|
+:Parse container config;
+:Initialize network stack;
+note right: ARP/NDP, DHCP/static IP\nTCP listeners, QUIC endpoints
+:Initialize IPC pub/sub;
+:Load ONNX model;
+note right: Parse protobuf\nBuild operator graph\nAllocate tensors
+
+|Inference Loop|
+repeat
+  :Receive input (IPC/network);
+  :Allocate input tensor;
+  :Execute ONNX graph;
+  note right
+    Cooperative scheduling:
+    yield between operators
+    (Conv → yield → MatMul → yield → ...)
+  end note
+  :Send output (IPC/network);
+  :Free tensors;
+repeat while (running)
+
+|Shutdown|
+:Flush logs;
+:Release capabilities;
+:Halt CPU;
+stop
+
+@enduml

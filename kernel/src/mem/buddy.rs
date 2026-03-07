@@ -495,3 +495,59 @@ mod tests {
         );
     }
 }
+
+// ─── Kani Proofs ────────────────────────────────────────────────────────────
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove: allocate never panics for any valid order.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn buddy_allocate_no_panic() {
+        let mut alloc = BuddyAllocator::new();
+        let base = PhysAddr::new(0x10_0000);
+        let pages: usize = kani::any();
+        kani::assume(pages > 0 && pages <= 16);
+        alloc.init(base, pages * PAGE_SIZE_4K);
+        alloc.add_free_region(base, pages * PAGE_SIZE_4K);
+
+        let order: usize = kani::any();
+        kani::assume(order <= MAX_ORDER);
+        let _ = alloc.allocate(order); // Must not panic
+    }
+
+    /// Prove: free after allocate never panics and restores free count.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn buddy_alloc_free_roundtrip() {
+        let mut alloc = BuddyAllocator::new();
+        let base = PhysAddr::new(0x10_0000);
+        alloc.init(base, 4 * PAGE_SIZE_4K);
+        alloc.add_free_region(base, 4 * PAGE_SIZE_4K);
+
+        let initial_free = alloc.free_pages();
+        if let Ok(addr) = alloc.allocate_page() {
+            assert!(alloc.free_pages() < initial_free);
+            let _ = alloc.free_page(addr);
+            assert_eq!(alloc.free_pages(), initial_free);
+        }
+    }
+
+    /// Prove: double free is always detected.
+    #[kani::proof]
+    #[kani::unwind(4)]
+    fn buddy_double_free_detected() {
+        let mut alloc = BuddyAllocator::new();
+        let base = PhysAddr::new(0x10_0000);
+        alloc.init(base, 4 * PAGE_SIZE_4K);
+        alloc.add_free_region(base, 4 * PAGE_SIZE_4K);
+
+        if let Ok(addr) = alloc.allocate_page() {
+            let _ = alloc.free_page(addr);
+            let result = alloc.free_page(addr);
+            assert_eq!(result, Err(MemError::DoubleFree));
+        }
+    }
+}

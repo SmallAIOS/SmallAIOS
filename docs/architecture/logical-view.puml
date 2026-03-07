@@ -1,0 +1,115 @@
+@startuml SmallAIOS Logical View
+!theme plain
+title SmallAIOS Logical View — Crate Decomposition
+
+skinparam componentStyle rectangle
+skinparam defaultFontName "Segoe UI"
+skinparam shadowing false
+skinparam linetype ortho
+
+skinparam component {
+  BackgroundColor<<foundation>> #FEF9E7
+  BorderColor<<foundation>> #F1C40F
+  BackgroundColor<<service>> #D5F5E3
+  BorderColor<<service>> #27AE60
+  BackgroundColor<<hal>> #E8DAEF
+  BorderColor<<hal>> #8E44AD
+  BackgroundColor<<entry>> #D6EAF8
+  BorderColor<<entry>> #2980B9
+  BackgroundColor<<io>> #FADBD8
+  BorderColor<<io>> #E74C3C
+}
+
+' === Foundation Layer ===
+package "Foundation" {
+  [security] <<foundation>> as SEC
+  note right of SEC
+    PQC crypto (ML-KEM, ML-DSA)
+    Capability system
+    Formal gate
+  end note
+
+  [kernel] <<foundation>> as KER
+  note right of KER
+    Buddy/slab allocators
+    Cooperative scheduler
+    ~46 syscalls
+  end note
+
+  KER -down-> SEC : "capabilities,\ncrypto"
+}
+
+' === Service Layer ===
+package "Services" {
+  [onnx-rt] <<service>> as ORT
+  note bottom of ORT : ONNX parser + 6 operators
+
+  [ipc] <<service>> as IPC
+  note bottom of IPC : Zenoh pub/sub
+
+  [net] <<service>> as NET
+  note bottom of NET : IPv4/6, TCP, QUIC/H3
+
+  [posix] <<service>> as PSX
+
+  [bus] <<service>> as BUS
+  note bottom of BUS : CAN, ARINC, MIL-1553
+
+  [peripheral] <<service>> as PER
+  note bottom of PER : I2C, SPI, GPIO, UART
+
+  [usb] <<service>> as USB
+  note bottom of USB : xHCI host controller
+
+  [sdr] <<service>> as SDR
+  note bottom of SDR : HackRF, ADALM-Pluto
+
+  [bench] <<service>> as BEN
+}
+
+ORT -down-> KER
+ORT -down-> SEC
+IPC -down-> KER
+IPC -down-> SEC
+NET -down-> KER
+PSX -down-> KER
+PSX -down-> NET
+BUS -down-> KER
+PER -down-> KER
+PER -down-> SEC
+USB -down-> KER
+SDR -down-> USB
+BEN -down-> KER
+
+' === HAL Layer ===
+package "Hardware Abstraction" {
+  [arch-x86_64] <<hal>> as X86
+  [arch-aarch64] <<hal>> as ARM
+  [arch-riscv64] <<hal>> as RV
+  [arch-nvidia] <<hal>> as NV
+  [arch-intel-gpu] <<hal>> as INTEL
+  [arch-amd] <<hal>> as AMD
+}
+
+X86 -down-> KER
+ARM -down-> KER
+ARM -down-> NV
+RV -down-> KER
+NV -down-> KER
+INTEL -down-> KER
+AMD -down-> KER
+
+' === Entry Point ===
+package "Entry" {
+  [container] <<entry>> as CON
+}
+
+CON -down-> ORT
+CON -down-> IPC
+CON -down-> NET
+CON -down-> PSX
+CON -down-> SEC
+CON -down-> KER
+CON -down-> NV
+
+@enduml

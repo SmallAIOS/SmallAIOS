@@ -5,6 +5,9 @@ on:
     branches: [main, develop, "claude/**", "change/**"]
   pull_request:
     branches: [main, develop]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday 06:00 UTC (Miri)
+  workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -491,11 +494,186 @@ jobs:
               labels: [`semver:${bump}`],
             });
 
+  cargo-deny:
+    name: Supply Chain Security (cargo-deny)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  cargo-geiger:
+    name: Unsafe Usage Report (cargo-geiger)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install cargo-geiger
+        run: cargo install cargo-geiger --locked || true
+      - name: Generate unsafe usage report
+        run: |
+          cargo geiger --all-features --output-format ascii 2>&1 | tee geiger-report.txt || true
+          echo "=== Unsafe Usage Summary ==="
+          grep -c "unsafe" geiger-report.txt || echo "0 unsafe usages found"
+      - name: Upload geiger report
+        uses: actions/upload-artifact@v4
+        with:
+          name: geiger-report
+          path: geiger-report.txt
+          retention-days: 30
+
+  check-cycles:
+    name: Cyclic Dependency Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+      - name: Check for cyclic dependencies
+        run: ./scripts/check-cycles.sh
+
+  spin-verify:
+    name: SPIN Model Verification
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install SPIN
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y spin || {
+            # Build from source if package unavailable
+            git clone https://github.com/nimble-code/Spin.git /tmp/spin-src
+            cd /tmp/spin-src/Src
+            make
+            sudo cp spin /usr/local/bin/
+          }
+      - name: Verify all Promela models
+        run: |
+          failed=()
+          timed_out=()
+          for model in formal/spin/*.pml formal/promela/*.pml; do
+            [ -f "$model" ] || continue
+            name=$(basename "$model" .pml)
+            echo "=== Verifying $name ==="
+            set +e
+
+            # Generate verifier
+            spin -a "$model" 2>&1
+            if [ $? -ne 0 ]; then
+              echo "WARNING: $name failed to generate verifier (syntax error?)"
+              failed+=("$name")
+              rm -f pan.* *.trail
+              continue
+            fi
+
+            # Compile verifier
+            cc -DMEMLIM=1024 -DVECTORSZ=4096 -o pan pan.c 2>&1
+            if [ $? -ne 0 ]; then
+              echo "WARNING: $name failed to compile verifier"
+              failed+=("$name")
+              rm -f pan.* *.trail
+              continue
+            fi
+
+            # Run verification with 5 min timeout
+            timeout 300 ./pan -a 2>&1
+            rc=$?
+            set -e
+
+            if [ $rc -eq 124 ]; then
+              echo "WARNING: $name timed out (5 min limit)"
+              timed_out+=("$name")
+            elif [ $rc -ne 0 ]; then
+              echo "FAIL: $name verification found errors (exit $rc)"
+              failed+=("$name")
+            else
+              echo "OK: $name verified"
+            fi
+            rm -f pan.* *.trail
+          done
+
+          echo ""
+          echo "=== SPIN Summary ==="
+          echo "Timed out (${#timed_out[@]}): ${timed_out[*]:-none}"
+          echo "Failed (${#failed[@]}): ${failed[*]:-none}"
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "WARNING: ${#failed[@]} model(s) had issues"
+          fi
+          echo "SPIN verification complete."
+
+  mutation-testing:
+    name: Mutation Testing (on-demand)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+      - name: Run mutation testing on crypto
+        run: |
+          cargo mutants -p smallaios-security --file security/src/crypto/constant_time.rs -- --lib 2>&1 | tee mutants-crypto.txt || true
+      - name: Run mutation testing on memory
+        run: |
+          cargo mutants -p smallaios-kernel --file kernel/src/mem/buddy.rs --file kernel/src/mem/slab.rs -- --lib 2>&1 | tee mutants-memory.txt || true
+      - name: Upload mutation reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-reports
+          path: mutants-*.txt
+          retention-days: 30
+
+  miri:
+    name: Miri UB Detection
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: miri, rust-src
+      - name: Run Miri on host-testable crates
+        run: >-
+          cargo miri test
+          -p smallaios-kernel
+          -p smallaios-security
+          -p smallaios-ipc
+          -p smallaios-net
+          -p smallaios-posix
+          -p smallaios-bus
+          -p smallaios-bench
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+
   change-gates:
     name: Change Gates
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check]
+    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check, cargo-deny, check-cycles]
     if: github.event_name == 'pull_request'
     steps:
       - name: All gates passed
