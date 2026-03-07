@@ -18,8 +18,9 @@ path = "src/main.rs"
 [features]
 default = ["qemu-virt"]
 qemu-virt = []
-tegra-x1 = ["smallaios-onnx-rt"]
+tegra-x1 = ["smallaios-onnx-rt", "smallaios-arch-nvidia"]
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
 smallaios-onnx-rt = { path = "../../onnx-rt", optional = true, default-features = false, features = ["cpu"] }
+smallaios-arch-nvidia = { path = "../nvidia", optional = true, default-features = false, features = ["tegra"] }

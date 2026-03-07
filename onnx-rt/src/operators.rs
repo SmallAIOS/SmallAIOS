@@ -769,6 +769,45 @@ fn convolve_at(
 /// Bias shape: [C_out] (optional)
 /// Output shape: [N, C_out, H-KH+1, W-KW+1]
 pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result<Tensor, OpError> {
+    validate_conv_inputs(input, weight)?;
+
+    let n = input.shape.dims[0] as usize;
+    let c_in = input.shape.dims[1] as usize;
+    let h = input.shape.dims[2] as usize;
+    let w = input.shape.dims[3] as usize;
+
+    let c_out = weight.shape.dims[0] as usize;
+    let kh = weight.shape.dims[2] as usize;
+    let kw = weight.shape.dims[3] as usize;
+
+    let oh = h - kh + 1;
+    let ow = w - kw + 1;
+    let out_total = n * c_out * oh * ow;
+    let mut raw_data = alloc::vec![0u8; out_total * 4];
+    let dims = ConvDims { c_in, h, w, kh, kw };
+
+    conv_compute(
+        &input.raw_data,
+        &weight.raw_data,
+        bias,
+        &dims,
+        n,
+        c_out,
+        oh,
+        ow,
+        &mut raw_data,
+    );
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(Vec::from([n as i64, c_out as i64, oh as i64, ow as i64])),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Validate Conv operator inputs: types, ranks, and channel compatibility.
+fn validate_conv_inputs(input: &Tensor, weight: &Tensor) -> Result<(), OpError> {
     if input.data_type != DataType::Float || weight.data_type != DataType::Float {
         return Err(OpError::InvalidAttribute(String::from(
             "Conv only supports float32",
@@ -779,56 +818,46 @@ pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result
             "Conv requires 4D input [N,C,H,W] and 4D weight [Co,Ci,KH,KW]",
         )));
     }
-
-    let n = input.shape.dims[0] as usize;
-    let c_in = input.shape.dims[1] as usize;
-    let h = input.shape.dims[2] as usize;
-    let w = input.shape.dims[3] as usize;
-
-    let c_out = weight.shape.dims[0] as usize;
-    let c_in_w = weight.shape.dims[1] as usize;
-    let kh = weight.shape.dims[2] as usize;
-    let kw = weight.shape.dims[3] as usize;
-
-    if c_in != c_in_w {
+    if input.shape.dims[1] != weight.shape.dims[1] {
         return Err(OpError::ShapeMismatch(String::from(
             "Conv: input channels do not match weight channels",
         )));
     }
-    if kh > h || kw > w {
+    if weight.shape.dims[2] > input.shape.dims[2] || weight.shape.dims[3] > input.shape.dims[3] {
         return Err(OpError::ShapeMismatch(String::from(
             "Conv: kernel larger than input",
         )));
     }
+    Ok(())
+}
 
-    let oh = h - kh + 1;
-    let ow = w - kw + 1;
-    let out_total = n * c_out * oh * ow;
-    let mut raw_data = alloc::vec![0u8; out_total * 4];
-    let dims = ConvDims { c_in, h, w, kh, kw };
-
+/// Execute the Conv inner loops, writing results into `raw_data`.
+#[allow(clippy::too_many_arguments)]
+fn conv_compute(
+    input_data: &[u8],
+    weight_data: &[u8],
+    bias: Option<&Tensor>,
+    dims: &ConvDims,
+    n: usize,
+    c_out: usize,
+    oh: usize,
+    ow: usize,
+    raw_data: &mut [u8],
+) {
     for batch in 0..n {
         for co in 0..c_out {
             for oy in 0..oh {
                 for ox in 0..ow {
-                    let mut sum =
-                        convolve_at(&input.raw_data, &weight.raw_data, batch, co, oy, ox, &dims);
+                    let mut sum = convolve_at(input_data, weight_data, batch, co, oy, ox, dims);
                     if let Some(b) = bias {
                         sum += read_f32(&b.raw_data, co);
                     }
                     let out_idx = batch * c_out * oh * ow + co * oh * ow + oy * ow + ox;
-                    write_f32(&mut raw_data, out_idx, sum);
+                    write_f32(raw_data, out_idx, sum);
                 }
             }
         }
     }
-
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: TensorShape::new(Vec::from([n as i64, c_out as i64, oh as i64, ow as i64])),
-        name: String::new(),
-        raw_data,
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1554,5 +1583,39 @@ mod tests {
         for &p in &prob_vals {
             assert!(p >= 0.0 && p <= 1.0 + 1e-6);
         }
+    }
+
+    // ---- Coverage for validate_conv_inputs error paths ----
+
+    #[test]
+    fn test_conv_wrong_dtype() {
+        // Int32 input should be rejected
+        let input = Tensor {
+            data_type: DataType::Int32,
+            shape: TensorShape::new(vec![1, 1, 3, 3]),
+            name: String::new(),
+            raw_data: alloc::vec![0u8; 9 * 4],
+        };
+        let weight = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
+        let result = op_conv(&input, &weight, None);
+        assert!(matches!(result, Err(OpError::InvalidAttribute(_))));
+    }
+
+    #[test]
+    fn test_conv_wrong_rank() {
+        // 3D input (missing batch dim) should be rejected
+        let input = make_f32_tensor(&[1, 3, 3], &[1.0; 9]);
+        let weight = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
+        let result = op_conv(&input, &weight, None);
+        assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
+    }
+
+    #[test]
+    fn test_conv_kernel_larger_than_input() {
+        // 4x4 kernel on 3x3 input should be rejected
+        let input = make_f32_tensor(&[1, 1, 3, 3], &[1.0; 9]);
+        let weight = make_f32_tensor(&[1, 1, 4, 4], &[1.0; 16]);
+        let result = op_conv(&input, &weight, None);
+        assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
     }
 }

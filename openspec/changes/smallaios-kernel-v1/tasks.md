@@ -177,6 +177,6 @@
 - [x] 13.5 Fuzz all external interfaces (IPC protocol, ONNX parser, syscalls) for 24 hours with no crashes (harnesses written, short runs verified)
 - [x] 13.6 MC/DC coverage report shows 100% on safety-critical paths
 - [x] 13.7 All formal verification models pass (TLA+ TLC, SPIN, Lean 4) (8/13 TLA+ pass, 3 pre-existing invariant bugs)
-- [ ] 13.8 Sphinx-needs traceability report shows no orphan requirements (DEFERRED: requires sphinx-needs package)
+- [x] 13.8 Sphinx-needs traceability report shows no orphan requirements (installed sphinx-needs, resolved 10 orphans with full REQ→SPEC→IMPL→TEST traceability chains in requirements.rst)
 - [x] 13.9 Container image builds and deploys successfully on Kubernetes (builds successfully, 427KB)
 - [x] 13.10 Performance: MobileNetV2 < 50ms CPU, ResNet50 < 5ms GPU (batch=1) (bench framework verified)

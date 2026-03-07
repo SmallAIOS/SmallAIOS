@@ -149,6 +149,39 @@ pub fn put_hex16(val: u16) {
     }
 }
 
+/// Write an f32 value as decimal with 4 decimal places.
+///
+/// Uses integer arithmetic only (no libm/formatting).
+/// Output format: `[-]integer.dddd`
+pub fn put_f32(val: f32) {
+    // Handle negative
+    if val < 0.0 {
+        putc(b'-');
+        put_f32(-val);
+        return;
+    }
+
+    // Integer part
+    let int_part = val as u64;
+    put_dec(int_part);
+    putc(b'.');
+
+    // Fractional part: 4 decimal digits
+    let frac = val - int_part as f32;
+    let scaled = (frac * 10000.0 + 0.5) as u32;
+    // Zero-pad to 4 digits
+    if scaled < 1000 {
+        putc(b'0');
+    }
+    if scaled < 100 {
+        putc(b'0');
+    }
+    if scaled < 10 {
+        putc(b'0');
+    }
+    put_dec(scaled as u64);
+}
+
 /// Write a 64-bit value as decimal.
 pub fn put_dec(val: u64) {
     if val == 0 {

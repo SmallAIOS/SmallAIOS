@@ -12,6 +12,8 @@
 //! enabled. Syscall handlers access subsystems through the accessor
 //! functions here.
 
+#[cfg(feature = "verified-boot")]
+use crate::boot_integrity::{BootMeasurementLog, BootVerifyConfig};
 use crate::mem::buddy::BuddyAllocator;
 use crate::mem::slab::SlabAllocator;
 use crate::mem::tensor::TensorPool;
@@ -33,6 +35,10 @@ struct KernelState {
     tensor_pool: UnsafeCell<TensorPool>,
     cap_registry: UnsafeCell<CapRegistry>,
     csprng: UnsafeCell<Csprng>,
+    #[cfg(feature = "verified-boot")]
+    boot_measurement_log: UnsafeCell<BootMeasurementLog>,
+    #[cfg(feature = "verified-boot")]
+    boot_verify_config: UnsafeCell<BootVerifyConfig>,
     initialized: core::sync::atomic::AtomicBool,
 }
 
@@ -47,6 +53,13 @@ static KERNEL_STATE: KernelState = KernelState {
     tensor_pool: UnsafeCell::new(TensorPool::new()),
     cap_registry: UnsafeCell::new(CapRegistry::new()),
     csprng: UnsafeCell::new(Csprng::new()),
+    #[cfg(feature = "verified-boot")]
+    boot_measurement_log: UnsafeCell::new(BootMeasurementLog::new()),
+    #[cfg(feature = "verified-boot")]
+    boot_verify_config: UnsafeCell::new(BootVerifyConfig {
+        kernel_policy: smallaios_security::crypto::verify::VerificationPolicy::WarnOnly,
+        model_policy: smallaios_security::crypto::verify::VerificationPolicy::WarnOnly,
+    }),
     initialized: core::sync::atomic::AtomicBool::new(false),
 };
 
@@ -177,6 +190,40 @@ where
     // exclusive access per core. The caller asserts this precondition.
     let rng = unsafe { &mut *KERNEL_STATE.csprng.get() };
     f(rng)
+}
+
+/// Access the boot measurement log.
+///
+/// # Safety
+/// Caller must ensure exclusive access (e.g., interrupts disabled).
+#[cfg(feature = "verified-boot")]
+pub unsafe fn with_boot_measurement_log<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut BootMeasurementLog) -> R,
+{
+    // SAFETY: Syscall handlers run with interrupts masked, guaranteeing
+    // exclusive access per core. The caller asserts this precondition.
+    let log = unsafe { &mut *KERNEL_STATE.boot_measurement_log.get() };
+    f(log)
+}
+
+/// Read-only access to the boot measurement log.
+#[cfg(feature = "verified-boot")]
+pub fn with_boot_measurement_log_ref<F, R>(f: F) -> R
+where
+    F: FnOnce(&BootMeasurementLog) -> R,
+{
+    // SAFETY: Read-only shared reference. Multiple readers are safe.
+    let log = unsafe { &*KERNEL_STATE.boot_measurement_log.get() };
+    f(log)
+}
+
+/// Access the boot verification config.
+#[cfg(feature = "verified-boot")]
+pub fn boot_verify_config() -> BootVerifyConfig {
+    // SAFETY: Config is write-once at boot, then read-only.
+    let config = unsafe { &*KERNEL_STATE.boot_verify_config.get() };
+    config.clone()
 }
 
 /// Seed the kernel CSPRNG with a given seed.

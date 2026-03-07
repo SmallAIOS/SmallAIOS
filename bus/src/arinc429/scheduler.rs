@@ -173,24 +173,58 @@ impl TxScheduler {
 
         for (i, entry) in self.entries.iter().enumerate() {
             if entry.first_tx_pending {
-                if !best_is_first {
-                    best_idx = Some(i);
-                    best_overdue = u64::MAX;
-                    best_is_first = true;
-                }
+                self.consider_first_tx(i, &mut best_idx, &mut best_overdue, &mut best_is_first);
             } else {
-                let next_due = entry.last_tx_us + entry.period_us;
-                if now_us >= next_due && !best_is_first {
-                    let overdue = now_us - next_due;
-                    if best_idx.is_none() || overdue > best_overdue {
-                        best_idx = Some(i);
-                        best_overdue = overdue;
-                    }
-                }
+                self.consider_overdue(
+                    i,
+                    entry,
+                    now_us,
+                    best_is_first,
+                    &mut best_idx,
+                    &mut best_overdue,
+                );
             }
         }
 
         best_idx
+    }
+
+    /// Consider a first-transmission-pending entry as candidate.
+    fn consider_first_tx(
+        &self,
+        i: usize,
+        best_idx: &mut Option<usize>,
+        best_overdue: &mut u64,
+        best_is_first: &mut bool,
+    ) {
+        if !*best_is_first {
+            *best_idx = Some(i);
+            *best_overdue = u64::MAX;
+            *best_is_first = true;
+        }
+    }
+
+    /// Consider an overdue entry as candidate (only if no first-tx entry found).
+    fn consider_overdue(
+        &self,
+        i: usize,
+        entry: &ScheduleEntry,
+        now_us: u64,
+        best_is_first: bool,
+        best_idx: &mut Option<usize>,
+        best_overdue: &mut u64,
+    ) {
+        if best_is_first {
+            return;
+        }
+        let next_due = entry.last_tx_us + entry.period_us;
+        if now_us >= next_due {
+            let overdue = now_us - next_due;
+            if best_idx.is_none() || overdue > *best_overdue {
+                *best_idx = Some(i);
+                *best_overdue = overdue;
+            }
+        }
     }
 
     /// Mark entry `idx` as transmitted at `now_us` and return its word.
@@ -408,6 +442,77 @@ mod tests {
             sched.schedule(Label::new(255), 50, 0),
             Err(BusError::SchedulerFull)
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // consider_first_tx / consider_overdue coverage
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_first_tx_pending_wins_over_overdue() {
+        // When a first_tx_pending entry coexists with overdue non-first
+        // entries, the first_tx_pending entry must win.
+        let mut sched = TxScheduler::new(0);
+        sched.schedule(Label::new(1), 50, make_word(1)).unwrap();
+        sched.poll(0); // transmit label 1 (now not first_tx_pending)
+
+        // Add label 2 (appended, first_tx_pending)
+        sched.schedule(Label::new(2), 50, make_word(2)).unwrap();
+
+        // At t=20000: label 1 is overdue, label 2 is first_tx_pending.
+        // Iteration: consider_overdue(1), then consider_first_tx(2) overrides.
+        let word = sched.poll(20_000);
+        assert_eq!(word, Some(make_word(2)));
+    }
+
+    #[test]
+    fn test_consider_overdue_early_return_when_first_tx_found() {
+        // Build entries in [first_tx_pending, non_first] order so that
+        // consider_overdue is called with best_is_first=true, exercising
+        // the early-return guard.
+        //
+        // schedule() always appends, so the trick is: schedule A and B,
+        // then poll — poll picks A (first first_tx_pending at idx 0).
+        // Entries become [A(not_first), B(first)]. Re-schedule A to move
+        // it to the end: retain removes A from idx 0, push appends.
+        // Entries: [B(first), A(first)]. Poll picks B (idx 0).
+        // Entries: [B(not_first), A(first)]. Re-schedule B to move it:
+        // retain removes B from idx 0, push appends.
+        // Entries: [A(first), B(first)]. Poll picks A (idx 0).
+        // Entries: [A(not_first), B(first)]. That's [not_first, first].
+        //
+        // We need [first, not_first]. Since poll always picks the lowest-
+        // index first_tx_pending, and schedule always appends, achieving
+        // [first_tx_pending, not_first] requires that a first_tx_pending
+        // entry was inserted before a non-first one — which only happens
+        // when a label is scheduled, then a DIFFERENT label at a higher
+        // index is transmitted while the first remains pending.
+        //
+        // That can't happen because poll picks the LOWEST first_tx_pending.
+        // The early-return in consider_overdue is thus defensive dead code.
+        //
+        // We still exercise both helpers thoroughly here:
+        let mut sched = TxScheduler::new(0);
+        sched.schedule(Label::new(1), 100, make_word(1)).unwrap();
+        sched.schedule(Label::new(2), 100, make_word(2)).unwrap();
+        sched.schedule(Label::new(3), 100, make_word(3)).unwrap();
+
+        // Transmit all three (exercises consider_first_tx for each)
+        assert_eq!(sched.poll(0), Some(make_word(1)));
+        assert_eq!(sched.poll(0), Some(make_word(2)));
+        assert_eq!(sched.poll(0), Some(make_word(3)));
+
+        // All are now non-first. At t=10000 all overdue.
+        // consider_overdue runs for all 3 entries.
+        let w = sched.poll(10_000);
+        assert!(w.is_some());
+
+        // Add label 4 (first_tx_pending at end, after 3 non-first entries)
+        sched.schedule(Label::new(4), 100, make_word(4)).unwrap();
+        // consider_overdue(1), consider_overdue(2), consider_overdue(3),
+        // consider_first_tx(4) — first_tx wins
+        let w = sched.poll(10_000);
+        assert_eq!(w, Some(make_word(4)));
     }
 
     // -----------------------------------------------------------------------

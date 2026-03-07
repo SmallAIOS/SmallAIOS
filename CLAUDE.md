@@ -171,9 +171,9 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` an
 
 ## Crate Feature Flags
 
-- `kernel`: `verbose-boot`, `no-global-alloc`, `large-memory` (64 GiB page tracking; default 1 GiB)
-- `security`: `pqc-hybrid` (default), `pqc-only`, `classical-only`, `formal-gate`
-- `onnx-rt`: `cpu` (default), `cuda`, `formal-gate`
+- `kernel`: `verbose-boot`, `no-global-alloc`, `large-memory` (64 GiB page tracking; default 1 GiB), `verified-boot` (boot integrity verification + measurement log)
+- `security`: `pqc-hybrid` (default), `pqc-only`, `classical-only`, `formal-gate`, `verified-boot` (boot signature verification APIs)
+- `onnx-rt`: `cpu` (default), `cuda`, `formal-gate`, `verified-boot` (model signature verification at load time)
 - `net`: `ipv4`, `ipv6` (both default)
 - `container`: `nvidia_gpu`, `formal-gate`
 - `ipc`: `formal-gate`

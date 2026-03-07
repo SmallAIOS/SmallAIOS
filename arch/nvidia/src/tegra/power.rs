@@ -106,6 +106,11 @@ impl<M: MmioAccess> GpuPower<M> {
         self.state
     }
 
+    /// Return a reference to the underlying MMIO accessor.
+    pub fn mmio(&self) -> &M {
+        &self.mmio
+    }
+
     /// Power on the GPU partition.
     ///
     /// Sequence:

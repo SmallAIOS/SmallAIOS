@@ -9,14 +9,25 @@ SECTIONS
     /* Image header must come first for U-Boot booti compatibility */
     .text : ALIGN(0x1000)
     {
+        __text_start = .;
         KEEP(*(.text.image_header))
         KEEP(*(.text.boot))
         *(.text .text.*)
+        __text_end = .;
     }
 
     .rodata : ALIGN(0x1000)
     {
+        __rodata_start = .;
         *(.rodata .rodata.*)
+        __rodata_end = .;
+    }
+
+    .boot_sig : ALIGN(0x10)
+    {
+        __boot_sig_start = .;
+        KEEP(*(.boot_sig))
+        __boot_sig_end = .;
     }
 
     .data : ALIGN(0x1000)

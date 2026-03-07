@@ -64,9 +64,9 @@ impl PacketProtectionKeys {
     /// Create new packet protection keys.
     pub fn new(key: &[u8], iv: &[u8], hp_key: &[u8], cipher: CipherSuite) -> Self {
         Self {
-            key: Vec::from(key),
-            iv: Vec::from(iv),
-            hp_key: Vec::from(hp_key),
+            key: Vec::from(key), // lgtm[rust/cleartext-logging] — struct field assignment, not logging
+            iv: Vec::from(iv), // lgtm[rust/cleartext-logging] — struct field assignment, not logging
+            hp_key: Vec::from(hp_key), // lgtm[rust/cleartext-logging] — struct field assignment, not logging
             cipher,
             key_phase: false,
         }
@@ -221,6 +221,7 @@ mod tests {
     use super::*;
 
     fn test_keys() -> PacketProtectionKeys {
+        // lgtm[rust/hard-coded-cryptographic-value] — deterministic test fixtures, not production keys
         PacketProtectionKeys::new(
             &[0xAA; 32],
             &[0xBB; 12],
@@ -274,6 +275,7 @@ mod tests {
         let ct_len = aead_encrypt(&keys, 1, aad, plaintext, &mut ciphertext).unwrap();
 
         // Decrypt with different keys
+        // lgtm[rust/hard-coded-cryptographic-value] — deterministic test fixtures, not production keys
         let wrong_keys = PacketProtectionKeys::new(
             &[0x01; 32],
             &[0xBB; 12],

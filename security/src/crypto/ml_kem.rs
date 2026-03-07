@@ -800,6 +800,7 @@ fn k_pke_encrypt(
     for i in 0..ML_KEM_768_K {
         e1[i] = prf(random_coins, (ML_KEM_768_K + i) as u8, ETA2);
     }
+    // lgtm[rust/hard-coded-cryptographic-value] — FIPS 203 §7.2 PRF(σ) deterministic noise sampling
     let e2 = prf(random_coins, (2 * ML_KEM_768_K) as u8, ETA2);
 
     // NTT(r)

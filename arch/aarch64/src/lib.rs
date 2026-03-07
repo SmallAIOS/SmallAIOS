@@ -29,6 +29,8 @@ pub mod uart;
 #[cfg(feature = "tegra-x1")]
 pub mod image_header;
 #[cfg(feature = "tegra-x1")]
+pub mod onnx_demo;
+#[cfg(feature = "tegra-x1")]
 pub mod tegra_dc;
 #[cfg(feature = "tegra-x1")]
 pub mod tegra_edid;
@@ -96,6 +98,30 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
     uart::puts(" region(s), ");
     uart::put_dec(usable_mib as u64);
     uart::puts(" MiB usable RAM\n");
+
+    // ── Stage 2.5: Heap allocator ──────────────────────────────────────
+    uart::puts("\n[boot] Stage 2.5: Heap allocator\n");
+    if let Some(region) = phys_map.usable_regions().next() {
+        let base = region.base.as_usize();
+        let size = region.size;
+        // Skip first 16 MiB for kernel image/stack/BSS
+        let heap_offset = 16 * 1024 * 1024;
+        if size > heap_offset {
+            unsafe {
+                smallaios_kernel::mem::global::global_allocator().init(
+                    smallaios_kernel::mem::PhysAddr::new(base + heap_offset),
+                    size - heap_offset,
+                );
+            }
+            uart::puts("[heap] Initialized: ");
+            uart::put_dec(((size - heap_offset) / 1024 / 1024) as u64);
+            uart::puts(" MiB\n");
+        } else {
+            uart::puts("[heap] WARN: usable region too small for heap\n");
+        }
+    } else {
+        uart::puts("[heap] WARN: no usable memory regions found\n");
+    }
 
     // ── Stage 3: Interrupt controller ────────────────────────────────
     uart::puts("\n[boot] Stage 3: Interrupt controller\n");
@@ -231,6 +257,14 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
                 uart::puts("[hdmi] WARN: SOR0 PLL lock failed, continuing without HDMI\n");
             }
         }
+    }
+
+    // ── Stage 6: ONNX inference demo (Tegra only) ──────────────────
+    #[cfg(feature = "tegra-x1")]
+    {
+        uart::puts("\n[boot] Stage 6: ONNX inference demo\n");
+        onnx_demo::run_cpu_inference_demo();
+        onnx_demo::run_gpu_status_demo();
     }
 
     // ── Boot complete ────────────────────────────────────────────────

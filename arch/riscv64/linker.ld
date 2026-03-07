@@ -38,6 +38,14 @@ SECTIONS
         __rodata_end = .;
     } > RAM
 
+    /* Boot signature section (verified-boot) */
+    .boot_sig ALIGN(16) :
+    {
+        __boot_sig_start = .;
+        KEEP(*(.boot_sig))
+        __boot_sig_end = .;
+    } > RAM
+
     /* Initialized data */
     .data ALIGN(4K) :
     {

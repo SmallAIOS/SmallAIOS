@@ -20,6 +20,9 @@ pub mod sched;
 pub mod state;
 pub mod syscall;
 
+#[cfg(feature = "verified-boot")]
+pub mod boot_integrity;
+
 /// Kernel version
 pub const VERSION: &str = "0.1.0";
 

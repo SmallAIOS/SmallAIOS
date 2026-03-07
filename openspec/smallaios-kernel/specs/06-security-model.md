@@ -144,14 +144,24 @@ All external input is validated before processing:
 
 ## Boot Security
 
+SmallAIOS provides software-level boot integrity verification when the
+`verified-boot` feature is enabled. The kernel verifies its own integrity
+via an embedded SHA-3-256 hash signed with Ed25519, verifies ONNX model
+signatures at load time using Ed25519/ML-DSA-65/hybrid, and maintains an
+immutable boot measurement log recording the hash of every loaded component.
+Hardware-level boot verification (UEFI Secure Boot, ARM TrustZone, RISC-V PMP)
+is documented as platform-dependent and remains outside SmallAIOS's direct
+control.
+
 ### Secure Boot Chain (bare metal/VM)
 
 ```
-UEFI Secure Boot → Signed kernel image → Verified ONNX models
+[Platform firmware verification] → Signed kernel image (Ed25519) → Verified ONNX models (Ed25519/ML-DSA-65/hybrid)
 ```
 
-- Kernel binary is signed with a project-specific key
-- ONNX model files can optionally be signed (SHA-256 hash in manifest)
+- Kernel binary integrity verified at boot via embedded Ed25519-signed SHA-3-256 hash (`verified-boot` feature)
+- ONNX model files verified at load time using Ed25519, ML-DSA-65, or hybrid signatures
+- Boot measurement log records SHA-3-256 hashes of all loaded components (kernel, DTB, models)
 - Container images use standard OCI signing (cosign/notation)
 
 ### Container Mode Security
@@ -161,6 +171,15 @@ UEFI Secure Boot → Signed kernel image → Verified ONNX models
 - GPU access via NVIDIA Container Toolkit (device passthrough)
 - Read-only container filesystem
 - No volume mounts required (models embedded in image)
+- ONNX model signature verification available within the container (`verified-boot` feature)
+
+### Verification Policy
+
+Three verification modes are supported (configurable independently for kernel
+self-integrity and model verification):
+- **Enforce**: Reject on verification failure (halt boot or reject model load)
+- **WarnOnly** (default): Log warning on failure but continue operation
+- **Disabled**: Skip verification entirely
 
 ## Resource Limits
 
