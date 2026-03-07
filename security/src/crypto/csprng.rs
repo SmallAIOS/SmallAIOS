@@ -494,6 +494,7 @@ mod tests {
         assert_eq!(format!("{}", CsprngError::NotSeeded), "CSPRNG not seeded");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn csprng_seed_from_hardware() {
         let mut rng = Csprng::new();
