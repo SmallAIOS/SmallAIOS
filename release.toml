@@ -8,4 +8,4 @@ consolidate-commits = true                   # one commit for all 18 crates
 pre-release-commit-message = "chore: release v{{version}}"
 shared-version = true                        # all crates share one version
 allow-branch = ["main"]                      # Gitflow: only release from main
-pre-release-hook = ["bash", "-c", "make -C $(git rev-parse --show-toplevel) test"]
+pre-release-hook = ["bash", "-c", "ROOT=$(git rev-parse --show-toplevel) && make -C $ROOT test && make -C $ROOT changelog && git add $ROOT/CHANGELOG.md"]

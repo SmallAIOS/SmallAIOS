@@ -1,25 +1,141 @@
+# SmallAIOS Codecov Configuration
+# See: https://docs.codecov.io/docs/codecov-yaml
+
 codecov:
   require_ci_to_pass: yes
 
 coverage:
   precision: 2
   round: down
-  range: "40...90"
+  range: "60...100"
 
   status:
     project:
       default:
-        target: auto
+        target: 93%
         threshold: 1%
     patch:
       default:
-        target: 70%
+        target: 90%
+        threshold: 1%
 
+# Per-crate coverage flags
+# CI uploads coverage with --flag <name> for each crate
+flags:
+  kernel:
+    paths:
+      - kernel/src/
+    carryforward: true
+  security:
+    paths:
+      - security/src/
+    carryforward: true
+  onnx-rt:
+    paths:
+      - onnx-rt/src/
+    carryforward: true
+  net:
+    paths:
+      - net/src/
+    carryforward: true
+  ipc:
+    paths:
+      - ipc/src/
+    carryforward: true
+  container:
+    paths:
+      - container/src/
+    carryforward: true
+  bus:
+    paths:
+      - bus/src/
+    carryforward: true
+  peripheral:
+    paths:
+      - peripheral/src/
+    carryforward: true
+  usb:
+    paths:
+      - usb/src/
+    carryforward: true
+  sdr:
+    paths:
+      - sdr/src/
+    carryforward: true
+  posix:
+    paths:
+      - posix/src/
+    carryforward: true
+
+# Paths excluded from coverage analysis
 ignore:
-  - "arch/**"
-  - "target/**"
-  - "formal/**"
-  - "openspec/**"
-  - "deploy/**"
-  - "kubelet/**"
+  - "container/src/main.rs"    # Binary entry point
+  - "arch/*/src/**"            # Bare-metal architecture HALs
+  - "arch/x86_64/**"
+  - "arch/aarch64/**"
+  - "arch/riscv64/**"
+  - "arch/nvidia/**"
+  - "arch/intel_gpu/**"
+  - "arch/amd/**"
+  - "bench/src/**"             # Benchmark harness
   - "bench/**"
+  - "fuzz/**"                  # Fuzz targets
+  - "target/**"                # Build artifacts
+  - "formal/**"                # TLA+ formal models
+  - "openspec/**"              # Specification documents
+  - "deploy/**"                # Deployment configs
+  - "kubelet/**"               # Kubelet configs
+  - "docs/**"                  # Documentation
+
+# PR comment configuration
+comment:
+  layout: "header, diff, flags, components, footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+  hide_project_coverage: false
+
+# Component-level reporting in PR comments
+component_management:
+  individual_components:
+    - component_id: kernel
+      name: Kernel
+      paths:
+        - kernel/src/**
+    - component_id: security
+      name: Security & Crypto
+      paths:
+        - security/src/**
+    - component_id: onnx_rt
+      name: ONNX Runtime
+      paths:
+        - onnx-rt/src/**
+    - component_id: networking
+      name: Networking
+      paths:
+        - net/src/**
+    - component_id: ipc
+      name: IPC
+      paths:
+        - ipc/src/**
+    - component_id: peripheral
+      name: Peripherals
+      paths:
+        - peripheral/src/**
+    - component_id: bus
+      name: Bus Protocols
+      paths:
+        - bus/src/**
+    - component_id: usb
+      name: USB
+      paths:
+        - usb/src/**
+    - component_id: sdr
+      name: SDR
+      paths:
+        - sdr/src/**
+    - component_id: container
+      name: Container
+      paths:
+        - container/src/**

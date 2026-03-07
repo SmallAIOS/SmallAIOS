@@ -191,6 +191,12 @@ fmt:
 fmt-check:
 	$(CARGO) fmt --all -- --check
 
+# === Changelog ===
+
+.PHONY: changelog
+changelog:
+	git-cliff --config cliff.toml -o CHANGELOG.md
+
 # === Release ===
 
 .PHONY: release-dry-run
