@@ -790,4 +790,84 @@ mod tests {
         assert!(debug.contains("ml_dsa_keys"));
         assert!(debug.contains("hybrid_keys"));
     }
+
+    // ---- Coverage for VerificationPolicy methods ----
+
+    #[test]
+    fn verification_policy_should_verify() {
+        assert!(VerificationPolicy::Enforce.should_verify());
+        assert!(VerificationPolicy::WarnOnly.should_verify());
+        assert!(!VerificationPolicy::Disabled.should_verify());
+    }
+
+    #[test]
+    fn verification_policy_should_reject() {
+        assert!(VerificationPolicy::Enforce.should_reject());
+        assert!(!VerificationPolicy::WarnOnly.should_reject());
+        assert!(!VerificationPolicy::Disabled.should_reject());
+    }
+
+    // ---- Coverage for VerifyError Display ----
+
+    #[test]
+    fn verify_error_display() {
+        assert_eq!(
+            format!("{}", VerifyError::ModelTooLarge),
+            format!("model exceeds maximum size ({} bytes)", MAX_MODEL_SIZE)
+        );
+        assert_eq!(
+            format!("{}", VerifyError::NameTooLong),
+            format!("model name exceeds {} bytes", MAX_MODEL_NAME_LEN)
+        );
+        assert_eq!(
+            format!("{}", VerifyError::InvalidSignatureFormat),
+            "invalid model signature format"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::UnsupportedVersion),
+            "unsupported signature format version"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::HashMismatch),
+            "model hash does not match signature"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::SignatureInvalid),
+            "ML-DSA-65 signature verification failed"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::HybridSignatureInvalid),
+            "hybrid signature verification failed"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::UntrustedKey),
+            "signing key not in trusted key set"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::TimestampOutOfRange),
+            "signature timestamp out of acceptable range"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::NoSignature),
+            "no signature found for model"
+        );
+        assert_eq!(
+            format!("{}", VerifyError::NotImplemented),
+            "model verification not yet implemented"
+        );
+    }
+
+    // ---- Coverage for ModelMetadata::serialize error path ----
+
+    #[test]
+    fn model_metadata_serialize_buffer_too_small() {
+        let hash = Sha3_256Digest::from_bytes([0x42; SHA3_256_DIGEST_LEN]);
+        let meta =
+            ModelMetadata::new(b"mymodel", 1, 12345, hash, SignatureScheme::MlDsa65).unwrap();
+        let mut tiny_buf = [0u8; 4]; // way too small
+        assert_eq!(
+            meta.serialize(&mut tiny_buf),
+            Err(VerifyError::InvalidSignatureFormat)
+        );
+    }
 }
