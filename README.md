@@ -22,18 +22,64 @@ on x86-64, ARM64, and RISC-V platforms.
 
 ## Architecture
 
-```
-┌───────────────────────────────────────────────────────────┐
-│                  Container / Bare-Metal Entry              │
-├───────────────────────────────────────────────────────────┤
-│  ONNX Runtime    │  IPC (Zenoh)  │  POSIX Compat Layer   │
-├──────────────────┼───────────────┼───────────────────────┤
-│  Net (TCP/QUIC)  │  Security     │  USB / SDR / Bus      │
-├──────────────────┴───────────────┴───────────────────────┤
-│          Kernel (Scheduler, Memory, Syscalls, HAL)        │
-├──────────┬──────────┬──────────┬─────────────────────────┤
-│  x86-64  │  AArch64 │  RISC-V  │  GPU (NVIDIA/AMD/Intel) │
-└──────────┴──────────┴──────────┴─────────────────────────┘
+```plantuml
+@startuml SmallAIOS Architecture
+skinparam componentStyle rectangle
+skinparam defaultFontName "Segoe UI"
+skinparam shadowing false
+
+skinparam component {
+  BackgroundColor<<entry>> #D6EAF8
+  BorderColor<<entry>> #2980B9
+  BackgroundColor<<service>> #D5F5E3
+  BorderColor<<service>> #27AE60
+  BackgroundColor<<kernel>> #FEF9E7
+  BorderColor<<kernel>> #F1C40F
+  BackgroundColor<<arch>> #E5E8E8
+  BorderColor<<arch>> #7F8C8D
+}
+
+package "Entry Layer" <<entry>> {
+  [Container / Bare-Metal Entry] <<entry>>
+}
+
+package "Services Layer" <<service>> {
+  [ONNX Runtime] <<service>>
+  [IPC (Zenoh)] <<service>>
+  [POSIX Compat] <<service>>
+  [Net (TCP/QUIC)] <<service>>
+  [Security] <<service>>
+  [USB / SDR / Bus] <<service>>
+}
+
+package "Kernel Layer" <<kernel>> {
+  [Kernel\nScheduler | Memory | Syscalls | HAL] <<kernel>>
+}
+
+package "Architecture / Hardware Layer" <<arch>> {
+  [x86-64] <<arch>>
+  [AArch64] <<arch>>
+  [RISC-V] <<arch>>
+  [GPU\nNVIDIA | AMD | Intel] <<arch>>
+}
+
+[Container / Bare-Metal Entry] -down-> [ONNX Runtime]
+[Container / Bare-Metal Entry] -down-> [IPC (Zenoh)]
+[Container / Bare-Metal Entry] -down-> [POSIX Compat]
+
+[ONNX Runtime] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
+[IPC (Zenoh)] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
+[POSIX Compat] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
+[Net (TCP/QUIC)] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
+[Security] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
+[USB / SDR / Bus] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
+
+[Kernel\nScheduler | Memory | Syscalls | HAL] -down-> [x86-64]
+[Kernel\nScheduler | Memory | Syscalls | HAL] -down-> [AArch64]
+[Kernel\nScheduler | Memory | Syscalls | HAL] -down-> [RISC-V]
+[Kernel\nScheduler | Memory | Syscalls | HAL] -down-> [GPU\nNVIDIA | AMD | Intel]
+
+@enduml
 ```
 
 ## Workspace Crates
