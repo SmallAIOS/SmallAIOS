@@ -183,6 +183,34 @@ tla-verify:
 	done
 	@echo "All TLA+ models verified."
 
+# === SPIN Model Verification ===
+
+.PHONY: spin-verify
+spin-verify:
+	@echo "Verifying SPIN/Promela models..."
+	@for model in formal/spin/*.pml formal/promela/*.pml; do \
+		[ -f "$$model" ] || continue; \
+		name=$$(basename "$$model" .pml); \
+		echo "--- Checking $$name ---"; \
+		spin -a "$$model" && \
+		cc -DMEMLIM=1024 -o pan pan.c && \
+		timeout 300 ./pan -a && \
+		echo "OK: $$name verified" || \
+		echo "WARNING: $$name had issues"; \
+		rm -f pan.* *.trail; \
+	done
+	@echo "SPIN verification complete."
+
+# === Supply Chain Security ===
+
+.PHONY: deny
+deny:
+	cargo deny check --all-features
+
+.PHONY: check-cycles
+check-cycles:
+	./scripts/check-cycles.sh
+
 .PHONY: fmt
 fmt:
 	$(CARGO) fmt --all

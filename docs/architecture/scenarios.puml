@@ -1,0 +1,134 @@
+@startuml SmallAIOS Scenarios — Boot to Inference
+!theme plain
+title Scenario 1: Boot to First Inference
+
+skinparam defaultFontName "Segoe UI"
+
+actor "Hardware" as HW
+participant "arch (HAL)" as ARCH
+participant "kernel" as KER
+participant "security" as SEC
+participant "container" as CON
+participant "onnx-rt" as ORT
+participant "net" as NET
+
+HW -> ARCH : Reset vector
+activate ARCH
+ARCH -> ARCH : CPU init, enable MMU
+ARCH -> KER : kernel_main()
+deactivate ARCH
+activate KER
+KER -> KER : buddy_init(), slab_init()
+KER -> SEC : init_capabilities()
+activate SEC
+SEC -> SEC : seed CSPRNG
+SEC --> KER : ready
+deactivate SEC
+KER -> CON : container_init()
+deactivate KER
+activate CON
+CON -> NET : init_network()
+activate NET
+NET -> NET : ARP/NDP, bind QUIC
+NET --> CON : listening
+deactivate NET
+CON -> ORT : load_model("model.onnx")
+activate ORT
+ORT -> ORT : parse protobuf
+ORT -> KER : tensor_alloc()
+ORT --> CON : model ready
+deactivate ORT
+CON -> CON : enter inference loop
+deactivate CON
+
+@enduml
+
+
+@startuml SmallAIOS Scenarios — QUIC Handshake
+!theme plain
+title Scenario 2: QUIC 1-RTT Handshake with PQ Hybrid
+
+skinparam defaultFontName "Segoe UI"
+
+participant "Client" as C
+participant "net::quic" as Q
+participant "security::tls" as TLS
+participant "security::crypto" as CRYPTO
+
+C -> Q : ClientHello (QUIC Initial)
+activate Q
+Q -> TLS : process_client_hello()
+activate TLS
+TLS -> CRYPTO : ML-KEM-768 encapsulate()
+activate CRYPTO
+CRYPTO --> TLS : (ciphertext, shared_secret)
+deactivate CRYPTO
+TLS -> CRYPTO : X25519 key_exchange()
+activate CRYPTO
+CRYPTO --> TLS : ecdh_shared_secret
+deactivate CRYPTO
+TLS -> TLS : combine_secrets(ml_kem, x25519)
+TLS -> TLS : derive_handshake_keys(HKDF-SHA3)
+TLS --> Q : ServerHello + EncryptedExtensions
+deactivate TLS
+Q --> C : ServerHello (QUIC Handshake)
+C -> Q : Finished
+Q -> TLS : derive_application_keys()
+activate TLS
+TLS --> Q : 1-RTT keys ready
+deactivate TLS
+Q --> C : Handshake Done (1-RTT established)
+deactivate Q
+
+@enduml
+
+
+@startuml SmallAIOS Scenarios — Tensor Lifecycle
+!theme plain
+title Scenario 3: Tensor Allocation and Lifecycle
+
+skinparam defaultFontName "Segoe UI"
+
+participant "onnx-rt" as ORT
+participant "kernel::mem::tensor" as TP
+participant "kernel::mem::buddy" as BUD
+participant "kernel::sched" as SCHED
+
+ORT -> TP : tensor_alloc(shape=[1,3,224,224], f32)
+activate TP
+TP -> TP : check pool for cached tensor
+alt cache hit
+  TP --> ORT : TensorHandle (from pool)
+else cache miss
+  TP -> BUD : alloc_pages(ceil(602112 / 4096))
+  activate BUD
+  BUD -> BUD : find free block (order 8)
+  BUD -> BUD : split if needed
+  BUD --> TP : PhysAddr
+  deactivate BUD
+  TP -> TP : create TensorHandle
+  TP --> ORT : TensorHandle (fresh)
+end
+deactivate TP
+
+ORT -> ORT : fill input data
+ORT -> SCHED : yield (cooperative)
+activate SCHED
+SCHED --> ORT : resume
+deactivate SCHED
+ORT -> ORT : execute Conv2D operator
+ORT -> SCHED : yield
+activate SCHED
+SCHED --> ORT : resume
+deactivate SCHED
+ORT -> ORT : execute MatMul operator
+ORT -> ORT : read output
+
+ORT -> TP : tensor_free(handle)
+activate TP
+TP -> TP : return to pool (cached)
+note right: Pool keeps tensor for\nreuse on next inference
+deactivate TP
+
+@enduml
+

@@ -1,0 +1,50 @@
+# cargo-deny configuration for SmallAIOS
+# Run: cargo deny check
+# SPDX-License-Identifier: Apache-2.0
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+
+# Advisory database — deny all known vulnerabilities
+[advisories]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+notice = "warn"
+
+# License compliance — allow-list only
+[licenses]
+unlicensed = "deny"
+allow = [
+    "Apache-2.0",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+]
+copyleft = "deny"
+confidence-threshold = 0.8
+
+[[licenses.clarify]]
+name = "ring"
+expression = "ISC AND MIT AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+# Ban rules — no GPL/LGPL/AGPL in transitive deps
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+# Sources — crates.io only for production deps
+[sources]
+unknown-registry = "deny"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

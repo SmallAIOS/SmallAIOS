@@ -294,3 +294,48 @@ mod tests {
         assert_eq!(pool.allocate(0), Err(MemError::BadAlignment));
     }
 }
+
+// ─── Kani Proofs ────────────────────────────────────────────────────────────
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove: TensorHandle round-trip is identity.
+    #[kani::proof]
+    fn tensor_handle_roundtrip() {
+        let idx: u32 = kani::any();
+        kani::assume(idx < MAX_TENSOR_BUFFERS as u32);
+        let h = TensorHandle::from_index(idx);
+        assert_eq!(h.index(), idx as usize);
+    }
+
+    /// Prove: allocate never panics for any valid size.
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn tensor_allocate_no_panic() {
+        let mut pool = TensorPool::new();
+        pool.init(PhysAddr::new(0x20_0000), 4096);
+
+        let size: usize = kani::any();
+        kani::assume(size <= 4096);
+        let _ = pool.allocate(size); // Must not panic
+    }
+
+    /// Prove: release after allocate never panics, handle becomes invalid.
+    #[kani::proof]
+    #[kani::unwind(2)]
+    fn tensor_alloc_release_no_double_free() {
+        let mut pool = TensorPool::new();
+        pool.init(PhysAddr::new(0x20_0000), 4096);
+
+        if let Ok((h, _)) = pool.allocate(64) {
+            assert_eq!(pool.active_count(), 1);
+            let _ = pool.release(h);
+            assert_eq!(pool.active_count(), 0);
+            // Second release should return error (not panic)
+            let result = pool.release(h);
+            assert!(result.is_err());
+        }
+    }
+}

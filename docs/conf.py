@@ -52,9 +52,16 @@ needs_types = [
         "color": "#9CAFB7",
         "style": "node",
     },
+    {
+        "directive": "nist_control",
+        "title": "NIST SP 800-53 Control",
+        "prefix": "NIST_",
+        "color": "#C3E6CB",
+        "style": "node",
+    },
 ]
 
-needs_extra_options = ["safety_level", "coverage", "verification_method"]
+needs_extra_options = ["safety_level", "coverage", "verification_method", "implements", "status"]
 
 needs_extra_links = [
     {"option": "satisfies", "incoming": "satisfied_by", "copy": False},
