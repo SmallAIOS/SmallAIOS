@@ -363,6 +363,12 @@ pub fn sys_tensor_unmap_gpu(args: &SyscallArgs) -> SyscallResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    extern crate std;
+    use std::sync::Mutex;
+
+    /// Mutex to serialize tests that touch the global tensor pool / cap registry.
+    /// Without this, parallel tests race on static kernel state.
+    static TENSOR_STATE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_mem_alloc_zero_size() {
@@ -754,6 +760,7 @@ mod tests {
     /// test to avoid races with the global kernel state used by other tests.
     #[test]
     fn test_tensor_pool_paths_consolidated() {
+        let _lock = TENSOR_STATE_LOCK.lock().unwrap();
         // --- Setup: grant capability and initialize pool ---
         unsafe {
             state::with_cap_registry(|reg| {
