@@ -101,17 +101,22 @@ kernel (foundation: memory, scheduler, syscall interface)
 
 **Scripts:**
 - `./scripts/check-pr-semver.sh "<title>"` — validate and print bump level
+- `./scripts/suggest-release-bump.sh` — scan commits since last tag, suggest aggregate bump level
 
 ### Releasing
 
-Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release), configured in `release.toml`. All 18 crates share a single version and are bumped together.
+Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release), configured in `release.toml`. All 18 crates share a single version and are bumped together. See `docs/release-runbook.md` for the full step-by-step process.
 
 ```bash
+make changelog                   # regenerate CHANGELOG.md via git-cliff
+./scripts/suggest-release-bump.sh  # check suggested bump level
 make release-dry-run BUMP=patch   # preview: 0.1.0 → 0.1.1
 make release BUMP=minor           # execute: 0.1.0 → 0.2.0
 ```
 
-`cargo-release` bumps workspace version, updates `Cargo.lock`, commits, and tags. `push = false` so you review before pushing. Releases are only allowed from `main` (enforced by `allow-branch`).
+`cargo-release` bumps workspace version, updates `Cargo.lock`, commits, and tags. The pre-release hook runs tests and generates the changelog via `git-cliff`. `push = false` so you review before pushing. Releases are only allowed from `main` (enforced by `allow-branch`).
+
+**Development dependencies for releases:** `git-cliff` (changelog generation), `cargo-release` (version management).
 
 ## Git Workflow
 
