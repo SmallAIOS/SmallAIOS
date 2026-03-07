@@ -1584,4 +1584,38 @@ mod tests {
             assert!(p >= 0.0 && p <= 1.0 + 1e-6);
         }
     }
+
+    // ---- Coverage for validate_conv_inputs error paths ----
+
+    #[test]
+    fn test_conv_wrong_dtype() {
+        // Int32 input should be rejected
+        let input = Tensor {
+            data_type: DataType::Int32,
+            shape: TensorShape::new(vec![1, 1, 3, 3]),
+            name: String::new(),
+            raw_data: alloc::vec![0u8; 9 * 4],
+        };
+        let weight = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
+        let result = op_conv(&input, &weight, None);
+        assert!(matches!(result, Err(OpError::InvalidAttribute(_))));
+    }
+
+    #[test]
+    fn test_conv_wrong_rank() {
+        // 3D input (missing batch dim) should be rejected
+        let input = make_f32_tensor(&[1, 3, 3], &[1.0; 9]);
+        let weight = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
+        let result = op_conv(&input, &weight, None);
+        assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
+    }
+
+    #[test]
+    fn test_conv_kernel_larger_than_input() {
+        // 4x4 kernel on 3x3 input should be rejected
+        let input = make_f32_tensor(&[1, 1, 3, 3], &[1.0; 9]);
+        let weight = make_f32_tensor(&[1, 1, 4, 4], &[1.0; 16]);
+        let result = op_conv(&input, &weight, None);
+        assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
+    }
 }
