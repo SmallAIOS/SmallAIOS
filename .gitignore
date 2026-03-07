@@ -24,6 +24,9 @@ states/
 # Compiled device tree blobs (built from dts/ sources)
 *.dtb
 
+# Sphinx documentation build artifacts
+docs/_build/
+
 # Secrets (should never exist in this repo, but just in case)
 *.pem
 *.key
