@@ -1066,6 +1066,7 @@ pub fn ml_dsa_65_keygen(seed: &[u8; 32]) -> Result<MlDsaKeyPair, MlDsaError> {
     let mut a_hat = [[Poly::zero(); L]; K];
     for i in 0..K {
         for j in 0..L {
+            // lgtm[rust/hard-coded-cryptographic-value] — FIPS 204 §6.1 ExpandA(ρ) on public seed
             a_hat[i][j] = sample_uniform(&rho, (i * 256 + j) as u16);
             a_hat[i][j].ntt();
         }
@@ -1152,6 +1153,7 @@ fn prepare_ntt_vectors(
     let mut a_hat = [[Poly::zero(); L]; K];
     for i in 0..K {
         for j in 0..L {
+            // lgtm[rust/hard-coded-cryptographic-value] — FIPS 204 §6.2 ExpandA(ρ) on public seed
             a_hat[i][j] = sample_uniform(rho, (i * 256 + j) as u16);
             a_hat[i][j].ntt();
         }
@@ -1351,6 +1353,7 @@ pub fn ml_dsa_65_sign(
         // Sample y from rho''
         let mut y = [Poly::zero(); L];
         for i in 0..L {
+            // lgtm[rust/hard-coded-cryptographic-value] — FIPS 204 §6.2 ExpandMask(ρ'') deterministic sampling
             y[i] = sample_mask(&rho_pp, kappa + i as u16);
         }
         kappa += L as u16;
@@ -1473,6 +1476,7 @@ pub fn ml_dsa_65_verify(
     let mut a_hat = [[Poly::zero(); L]; K];
     for i in 0..K {
         for j in 0..L {
+            // lgtm[rust/hard-coded-cryptographic-value] — FIPS 204 §6.3 ExpandA(ρ) on public seed
             a_hat[i][j] = sample_uniform(&rho, (i * 256 + j) as u16);
             a_hat[i][j].ntt();
         }

@@ -12,6 +12,8 @@ env:
 jobs:
   build-kernels:
     name: Build Release Kernels
+    permissions:
+      contents: read
     strategy:
       matrix:
         include:
@@ -48,6 +50,8 @@ jobs:
   test:
     name: Pre-release Tests
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
