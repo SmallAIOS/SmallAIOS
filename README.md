@@ -22,65 +22,13 @@ on x86-64, ARM64, and RISC-V platforms.
 
 ## Architecture
 
-```plantuml
-@startuml SmallAIOS Architecture
-skinparam componentStyle rectangle
-skinparam defaultFontName "Segoe UI"
-skinparam shadowing false
+![SmallAIOS Architecture](https://kroki.io/plantuml/svg/eNqdVV1v2jAUffevsNhL94DKugJBqlBDSNZoJTA8qmorD1ZyCxGOjRynHVr73-uklHwxrc0LinzOPfee-yEuY0WlSiKGSUQZM90pwab016ECXyUSULwJ-ZZKGmFfRFvBgSuidgyw1ATKV6xICeCeJkw5giuPRoBbBFYC8MJtFUjxmgbiMeQrfE9ZDOhYCvwXYTyi_mYlRcIDSzAhLy40IHfDIf407tmmY6QUIQOQVfhsYHRGg2MKMciH0IdMo-t07a9VjQLhrG_avc4xlQ1IDizlOLYzsPtVkQL-xTrvOMc0qG5yyrC7tmHXrLyhfcewjDF6RmirBehKt9ROXeJrugPZwrnptGG_Ld14GnKQ-FRnlNCegKIMZyHLnFzSI6-O41wy70EmOvW8WzxPuAojWBbhFHRnFj75BVysP9ew2ZS4t9jSM6WqBnqg8MlPa3b6Y-Fa9VgCfiJDtasBCzLS5sh4nlpM4jJe9PU9G0Lu6jCUzNQreseJv4YgYbpjT3gCkdCtfcJkF_v6GGL9eWVeLwvBpQzFO9HVXFEZPOqm5yn3U8wS_jF67d758vCavpmpQvVx7hKrfVN--zZb3HHvxh27pq7JnIz1r8sVsAJNV_af-bf12fH2sDLRd0cVR_3uoNIO6ArLy3SgfWQcqLx0DTXKy9lQpLrEDWXyZW8oUDuKZjroY2dxSLLf7abhb2fQNH5_MU3D_31cCF0CD_SfI3oBCeNYkw==)
 
-skinparam component {
-  BackgroundColor<<entry>> #D6EAF8
-  BorderColor<<entry>> #2980B9
-  BackgroundColor<<service>> #D5F5E3
-  BorderColor<<service>> #27AE60
-  BackgroundColor<<kernel>> #FEF9E7
-  BorderColor<<kernel>> #F1C40F
-  BackgroundColor<<arch>> #E5E8E8
-  BorderColor<<arch>> #7F8C8D
-}
+<details>
+<summary>Diagram source (PlantUML)</summary>
 
-package "Entry Layer" <<entry>> {
-  [Container / Bare-Metal Entry] <<entry>>
-}
-
-package "Services Layer" <<service>> {
-  [ONNX Runtime] <<service>>
-  [IPC (Zenoh)] <<service>>
-  [POSIX Compat] <<service>>
-  [Net (TCP/QUIC)] <<service>>
-  [Security] <<service>>
-  [USB / SDR / Bus] <<service>>
-}
-
-package "Kernel Layer" <<kernel>> {
-  [Kernel\nScheduler | Memory | Syscalls | HAL] <<kernel>>
-}
-
-package "Architecture / Hardware Layer" <<arch>> {
-  [x86-64] <<arch>>
-  [AArch64] <<arch>>
-  [RISC-V] <<arch>>
-  [GPU\nNVIDIA | AMD | Intel] <<arch>>
-}
-
-[Container / Bare-Metal Entry] -down-> [ONNX Runtime]
-[Container / Bare-Metal Entry] -down-> [IPC (Zenoh)]
-[Container / Bare-Metal Entry] -down-> [POSIX Compat]
-
-[ONNX Runtime] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
-[IPC (Zenoh)] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
-[POSIX Compat] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
-[Net (TCP/QUIC)] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
-[Security] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
-[USB / SDR / Bus] -down-> [Kernel\nScheduler | Memory | Syscalls | HAL]
-
-[Kernel\nScheduler | Memory | Syscalls | HAL] -down-> [x86-64]
-[Kernel\nScheduler | Memory | Syscalls | HAL] -down-> [AArch64]
-[Kernel\nScheduler | Memory | Syscalls | HAL] -down-> [RISC-V]
-[Kernel\nScheduler | Memory | Syscalls | HAL] -down-> [GPU\nNVIDIA | AMD | Intel]
-
-@enduml
-```
+See [`docs/architecture.puml`](docs/architecture.puml)
+</details>
 
 ## Workspace Crates
 
