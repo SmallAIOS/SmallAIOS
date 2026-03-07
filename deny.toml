@@ -11,9 +11,10 @@ targets = [
 # Advisory database — deny all known vulnerabilities
 [advisories]
 vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
+unmaintained = "workspace"
+yanked = "workspace"
+notice = "workspace"
+ignore = []
 
 # License compliance — allow-list only
 [licenses]

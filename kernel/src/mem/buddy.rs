@@ -498,6 +498,7 @@ mod tests {
 
 // ─── Kani Proofs ────────────────────────────────────────────────────────────
 
+#[allow(unexpected_cfgs)]
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
