@@ -135,7 +135,10 @@ impl BootMeasurementLog {
     ///
     /// Returns `Err(MeasurementError::LogSealed)` if the log has been sealed,
     /// or `Err(MeasurementError::LogFull)` if capacity is reached.
-    pub fn add_measurement(&mut self, measurement: BootMeasurement) -> Result<(), MeasurementError> {
+    pub fn add_measurement(
+        &mut self,
+        measurement: BootMeasurement,
+    ) -> Result<(), MeasurementError> {
         if self.sealed {
             return Err(MeasurementError::LogSealed);
         }
@@ -243,8 +246,7 @@ pub fn verify_kernel_signature(
 
     // Verify Ed25519 signature over the expected hash
     let pk = smallaios_security::crypto::ed25519::Ed25519PublicKey::from_bytes(*ed25519_public_key);
-    let sig =
-        smallaios_security::crypto::ed25519::Ed25519Signature::from_bytes(boot_sig.signature);
+    let sig = smallaios_security::crypto::ed25519::Ed25519Signature::from_bytes(boot_sig.signature);
 
     match smallaios_security::crypto::ed25519::ed25519_verify(&pk, &boot_sig.expected_hash, &sig) {
         Ok(()) => VerifyStatus::Verified,
@@ -289,7 +291,8 @@ pub fn measure_dtb(
     log: &mut BootMeasurementLog,
 ) -> Result<(), MeasurementError> {
     let hash = smallaios_security::crypto::sha3::sha3_256(dtb_data);
-    let measurement = BootMeasurement::new(b"firmware:dtb", hash, timestamp, VerifyStatus::Unverified);
+    let measurement =
+        BootMeasurement::new(b"firmware:dtb", hash, timestamp, VerifyStatus::Unverified);
     log.add_measurement(measurement)
 }
 
@@ -442,10 +445,7 @@ mod tests {
         assert!(log.is_sealed());
 
         let m2 = BootMeasurement::new(b"after-seal", hash, 1, VerifyStatus::Verified);
-        assert_eq!(
-            log.add_measurement(m2),
-            Err(MeasurementError::LogSealed)
-        );
+        assert_eq!(log.add_measurement(m2), Err(MeasurementError::LogSealed));
         assert_eq!(log.len(), 1);
     }
 
@@ -455,12 +455,7 @@ mod tests {
         let hash = Sha3_256Digest::from_bytes([0; SHA3_256_DIGEST_LEN]);
 
         for i in 0..MAX_BOOT_MEASUREMENTS {
-            let m = BootMeasurement::new(
-                &[i as u8],
-                hash,
-                i as u64,
-                VerifyStatus::Unverified,
-            );
+            let m = BootMeasurement::new(&[i as u8], hash, i as u64, VerifyStatus::Unverified);
             log.add_measurement(m).unwrap();
         }
         assert_eq!(log.len(), MAX_BOOT_MEASUREMENTS);
@@ -475,12 +470,7 @@ mod tests {
         let hash = Sha3_256Digest::from_bytes([0; SHA3_256_DIGEST_LEN]);
 
         for i in 0..5 {
-            let m = BootMeasurement::new(
-                &[b'a' + i as u8],
-                hash,
-                i as u64,
-                VerifyStatus::Verified,
-            );
+            let m = BootMeasurement::new(&[b'a' + i as u8], hash, i as u64, VerifyStatus::Verified);
             log.add_measurement(m).unwrap();
         }
 
@@ -541,10 +531,8 @@ mod tests {
         let hash = smallaios_security::crypto::sha3::sha3_256(kernel_data);
 
         // Sign the hash
-        let sig = smallaios_security::crypto::ed25519::ed25519_sign(
-            &kp.secret_key,
-            hash.as_bytes(),
-        );
+        let sig =
+            smallaios_security::crypto::ed25519::ed25519_sign(&kp.secret_key, hash.as_bytes());
 
         let boot_sig = BootSignature {
             signature: *sig.as_bytes(),
@@ -567,10 +555,8 @@ mod tests {
         let hash = smallaios_security::crypto::sha3::sha3_256(b"original data");
         let wrong_hash = smallaios_security::crypto::sha3::sha3_256(b"different data");
 
-        let sig = smallaios_security::crypto::ed25519::ed25519_sign(
-            &kp.secret_key,
-            hash.as_bytes(),
-        );
+        let sig =
+            smallaios_security::crypto::ed25519::ed25519_sign(&kp.secret_key, hash.as_bytes());
 
         let boot_sig = BootSignature {
             signature: *sig.as_bytes(),
@@ -665,10 +651,8 @@ mod tests {
         let kp = smallaios_security::crypto::ed25519::ed25519_keygen(&seed);
         let kernel_data = b"fake kernel text and rodata";
         let hash = smallaios_security::crypto::sha3::sha3_256(kernel_data);
-        let sig = smallaios_security::crypto::ed25519::ed25519_sign(
-            &kp.secret_key,
-            hash.as_bytes(),
-        );
+        let sig =
+            smallaios_security::crypto::ed25519::ed25519_sign(&kp.secret_key, hash.as_bytes());
         let boot_sig = BootSignature {
             signature: *sig.as_bytes(),
             expected_hash: {

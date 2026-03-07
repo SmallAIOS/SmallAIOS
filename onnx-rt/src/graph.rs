@@ -190,26 +190,37 @@ fn resolve_dependencies(
     for (node_idx, deps) in deps_per_node.iter_mut().enumerate() {
         let inputs = &nodes[node_idx].inputs;
         for input_name in inputs {
-            if input_names.iter().any(|n| n == input_name) {
-                continue;
-            }
-            let producer = output_producers.iter().find(|(name, _)| name == input_name);
-            match producer {
-                Some((_, prod_idx)) => {
-                    if !deps.iter().any(|d| d.index() == prod_idx.index()) {
-                        deps.push(*prod_idx);
-                    }
-                }
-                None => {
-                    if !input_name.is_empty() {
-                        return Err(GraphError::MissingInput(input_name.clone()));
-                    }
-                }
-            }
+            resolve_single_input(input_name, input_names, output_producers, deps)?;
         }
     }
 
     Ok(deps_per_node)
+}
+
+/// Resolve a single input name to its producing node, adding it to `deps`.
+fn resolve_single_input(
+    input_name: &str,
+    input_names: &[String],
+    output_producers: &[(String, NodeIndex)],
+    deps: &mut Vec<NodeIndex>,
+) -> Result<(), GraphError> {
+    if input_names.iter().any(|n| n == input_name) {
+        return Ok(());
+    }
+    let producer = output_producers.iter().find(|(name, _)| name == input_name);
+    match producer {
+        Some((_, prod_idx)) => {
+            if !deps.iter().any(|d| d.index() == prod_idx.index()) {
+                deps.push(*prod_idx);
+            }
+        }
+        None => {
+            if !input_name.is_empty() {
+                return Err(GraphError::MissingInput(String::from(input_name)));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Builds an `ExecutionGraph` from an ONNX `GraphProto`.

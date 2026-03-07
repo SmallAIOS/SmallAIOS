@@ -41,7 +41,14 @@ fn full_boot_measurement_sequence() {
 
     // 3. Measure an ONNX model (verified)
     let model_hash = sha3_256(b"model data");
-    measure_model(b"resnet50.onnx", model_hash, VerifyStatus::Verified, 3, &mut log).unwrap();
+    measure_model(
+        b"resnet50.onnx",
+        model_hash,
+        VerifyStatus::Verified,
+        3,
+        &mut log,
+    )
+    .unwrap();
 
     // 4. Seal the log
     log.seal();

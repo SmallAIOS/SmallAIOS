@@ -173,24 +173,58 @@ impl TxScheduler {
 
         for (i, entry) in self.entries.iter().enumerate() {
             if entry.first_tx_pending {
-                if !best_is_first {
-                    best_idx = Some(i);
-                    best_overdue = u64::MAX;
-                    best_is_first = true;
-                }
+                self.consider_first_tx(i, &mut best_idx, &mut best_overdue, &mut best_is_first);
             } else {
-                let next_due = entry.last_tx_us + entry.period_us;
-                if now_us >= next_due && !best_is_first {
-                    let overdue = now_us - next_due;
-                    if best_idx.is_none() || overdue > best_overdue {
-                        best_idx = Some(i);
-                        best_overdue = overdue;
-                    }
-                }
+                self.consider_overdue(
+                    i,
+                    entry,
+                    now_us,
+                    best_is_first,
+                    &mut best_idx,
+                    &mut best_overdue,
+                );
             }
         }
 
         best_idx
+    }
+
+    /// Consider a first-transmission-pending entry as candidate.
+    fn consider_first_tx(
+        &self,
+        i: usize,
+        best_idx: &mut Option<usize>,
+        best_overdue: &mut u64,
+        best_is_first: &mut bool,
+    ) {
+        if !*best_is_first {
+            *best_idx = Some(i);
+            *best_overdue = u64::MAX;
+            *best_is_first = true;
+        }
+    }
+
+    /// Consider an overdue entry as candidate (only if no first-tx entry found).
+    fn consider_overdue(
+        &self,
+        i: usize,
+        entry: &ScheduleEntry,
+        now_us: u64,
+        best_is_first: bool,
+        best_idx: &mut Option<usize>,
+        best_overdue: &mut u64,
+    ) {
+        if best_is_first {
+            return;
+        }
+        let next_due = entry.last_tx_us + entry.period_us;
+        if now_us >= next_due {
+            let overdue = now_us - next_due;
+            if best_idx.is_none() || overdue > *best_overdue {
+                *best_idx = Some(i);
+                *best_overdue = overdue;
+            }
+        }
     }
 
     /// Mark entry `idx` as transmitted at `now_us` and return its word.

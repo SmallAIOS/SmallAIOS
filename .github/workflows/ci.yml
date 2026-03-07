@@ -167,13 +167,13 @@ jobs:
       - name: Test with verified-boot enabled
         run: >-
           cargo test
-          -p smallaios-kernel --features verified-boot
+          -p smallaios-kernel --features verified-boot,no-global-alloc
           -p smallaios-security --features verified-boot
           -p smallaios-onnx-rt --features verified-boot
       - name: Clippy with verified-boot enabled
         run: >-
           cargo clippy
-          -p smallaios-kernel --features verified-boot
+          -p smallaios-kernel --features verified-boot,no-global-alloc
           -p smallaios-security --features verified-boot
           -p smallaios-onnx-rt --features verified-boot
           -- -D warnings

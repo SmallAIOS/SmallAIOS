@@ -12,6 +12,8 @@
 //! enabled. Syscall handlers access subsystems through the accessor
 //! functions here.
 
+#[cfg(feature = "verified-boot")]
+use crate::boot_integrity::{BootMeasurementLog, BootVerifyConfig};
 use crate::mem::buddy::BuddyAllocator;
 use crate::mem::slab::SlabAllocator;
 use crate::mem::tensor::TensorPool;
@@ -19,8 +21,6 @@ use crate::mem::MemError;
 use core::cell::UnsafeCell;
 use smallaios_security::capability::{CapError, CapRegistry};
 use smallaios_security::crypto::csprng::{Csprng, CsprngError, CsprngSeed};
-#[cfg(feature = "verified-boot")]
-use crate::boot_integrity::{BootMeasurementLog, BootVerifyConfig};
 
 /// Global kernel state, initialized once during boot.
 ///
