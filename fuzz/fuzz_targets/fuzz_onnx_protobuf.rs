@@ -19,7 +19,6 @@ fuzz_target!(|data: &[u8]| {
                 smallaios_onnx_rt::protobuf::WireType::Fixed32 => {
                     let _ = decoder.read_fixed32();
                 }
-                _ => break,
             }
         } else {
             break;
