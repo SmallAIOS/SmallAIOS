@@ -34,9 +34,28 @@ make run-arm                # Boot in QEMU ARM64
 # Docker
 make docker-build           # Multi-arch container build
 
+# Dependency analysis (requires cargo-depgraph, cargo-modules, graphviz)
+make depgraph                # Crate-level DOT/SVG dependency graph
+make modgraph                # Module-level graphs for all host crates
+make modgraph CRATE=smallaios-kernel  # Single crate module graph
+make arch-check              # Module-level acyclicity check
+make dsm                     # DSM adjacency matrix (JSON + CSV)
+make arch                    # All of the above
+
 # Release (requires cargo-release)
 make release-dry-run BUMP=patch  # preview version bump
 make release BUMP=minor          # execute bump + commit + tag
+```
+
+### Dev Tool Dependencies
+
+```bash
+# Required
+rustup toolchain install nightly-2026-02-01
+
+# Optional analysis tools
+cargo install cargo-depgraph cargo-modules --locked  # dependency visualization
+sudo apt install graphviz                            # SVG graph rendering
 ```
 
 ## Workspace Architecture

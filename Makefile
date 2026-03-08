@@ -201,6 +201,69 @@ spin-verify:
 	done
 	@echo "SPIN verification complete."
 
+# === Dependency Analysis ===
+
+# Host-testable crates for module-level analysis
+HOST_CRATES = smallaios-kernel smallaios-security smallaios-onnx-rt smallaios-ipc \
+              smallaios-net smallaios-posix smallaios-container smallaios-bus \
+              smallaios-peripheral smallaios-usb smallaios-sdr smallaios-bench
+
+.PHONY: depgraph
+depgraph:
+	@mkdir -p build/analysis
+	cargo depgraph --workspace-only --dedup-transitive-deps \
+		| tee build/analysis/crate-deps.dot \
+		| (dot -Tsvg -o build/analysis/crate-deps.svg 2>/dev/null \
+			&& echo "Generated build/analysis/crate-deps.svg" \
+			|| echo "WARNING: graphviz not installed, SVG skipped (DOT file saved)")
+	@echo "DOT file: build/analysis/crate-deps.dot"
+
+.PHONY: modgraph
+modgraph:
+	@mkdir -p build/analysis/modules
+ifdef CRATE
+	cargo modules dependencies --package $(CRATE) --layout dot \
+		> build/analysis/modules/$(CRATE).dot
+	@echo "Generated build/analysis/modules/$(CRATE).dot"
+else
+	@for crate in $(HOST_CRATES); do \
+		echo "--- $$crate ---"; \
+		cargo modules dependencies --package $$crate --layout dot \
+			> build/analysis/modules/$$crate.dot 2>/dev/null \
+			&& echo "  -> build/analysis/modules/$$crate.dot" \
+			|| echo "  WARNING: $$crate module graph failed"; \
+	done
+endif
+
+.PHONY: arch-check
+arch-check:
+	@echo "Checking module-level acyclicity..."
+	@fail=0; \
+	for crate in $(HOST_CRATES); do \
+		echo -n "  $$crate: "; \
+		if cargo modules dependencies --package $$crate --acyclic 2>&1 | grep -q "error\|cycle"; then \
+			echo "CYCLE DETECTED"; \
+			fail=1; \
+		else \
+			echo "OK"; \
+		fi; \
+	done; \
+	if [ "$$fail" -eq 1 ]; then \
+		echo "WARNING: some crates have module-level cycles"; \
+	else \
+		echo "All crates are acyclic at module level."; \
+	fi
+
+.PHONY: dsm
+dsm:
+	@mkdir -p build/analysis
+	python3 scripts/dsm-matrix.py
+	@echo "Generated build/analysis/dsm-matrix.json and dsm-matrix.csv"
+
+.PHONY: arch
+arch: depgraph modgraph dsm
+	@echo "All dependency analysis complete. See build/analysis/"
+
 # === Supply Chain Security ===
 
 .PHONY: deny
