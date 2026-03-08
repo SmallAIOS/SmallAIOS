@@ -624,4 +624,116 @@ mod tests {
         let mut drv = DesignwareI2c::new(0x4000_5400, 31);
         assert_eq!(drv.reset(), Err(HalError::MmioError));
     }
+
+    #[test]
+    fn test_constructor_fields() {
+        let drv = DesignwareI2c::new(0xBEEF_0000, 77);
+        assert_eq!(drv.base_addr(), 0xBEEF_0000);
+        assert_eq!(drv.irq(), 77);
+        assert!(!drv.is_configured());
+        assert!(drv.config.is_none());
+        assert_eq!(drv.input_clock_hz, DEFAULT_INPUT_CLOCK_HZ);
+    }
+
+    #[test]
+    fn test_with_clock_constructor() {
+        let drv = DesignwareI2c::with_clock(0x5000_0000, 12, 96_000_000);
+        assert_eq!(drv.base_addr(), 0x5000_0000);
+        assert_eq!(drv.irq(), 12);
+        assert_eq!(drv.input_clock_hz, 96_000_000);
+        assert!(!drv.is_configured());
+    }
+
+    #[test]
+    fn test_7bit_address_validation_write() {
+        let mut drv = DesignwareI2c::new(0x4000_5400, 31);
+        drv.configured = true;
+        drv.config = Some(I2cConfig {
+            speed: I2cSpeed::Standard,
+            address_mode: I2cAddressMode::SevenBit,
+            clock_stretching: false,
+            timeout_us: 10_000,
+        });
+        // Address 0x00 (reserved) should fail.
+        assert_eq!(drv.write(0x00, &[0xAB]), Err(HalError::InvalidConfig));
+        // Address 0x78 (reserved) should fail.
+        assert_eq!(drv.write(0x78, &[0xAB]), Err(HalError::InvalidConfig));
+        // Address 0x50 (valid) should proceed to MMIO → MmioError.
+        assert_eq!(drv.write(0x50, &[0xAB]), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_7bit_address_validation_read() {
+        let mut drv = DesignwareI2c::new(0x4000_5400, 31);
+        drv.configured = true;
+        drv.config = Some(I2cConfig {
+            speed: I2cSpeed::Standard,
+            address_mode: I2cAddressMode::SevenBit,
+            clock_stretching: false,
+            timeout_us: 10_000,
+        });
+        let mut buf = [0u8; 2];
+        assert_eq!(drv.read(0x00, &mut buf), Err(HalError::InvalidConfig));
+        assert_eq!(drv.read(0x50, &mut buf), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_10bit_address_build_ic_con() {
+        let config = I2cConfig {
+            speed: I2cSpeed::Standard,
+            address_mode: I2cAddressMode::TenBit,
+            clock_stretching: false,
+            timeout_us: 10_000,
+        };
+        let con = DesignwareI2c::build_ic_con(&config);
+        assert_ne!(con & IC_CON_10BIT_ADDR_MASTER, 0);
+    }
+
+    #[test]
+    fn test_check_abort_source_10bit_addr2_nack() {
+        let drv = DesignwareI2c::new(0x4000_5400, 31);
+        assert_eq!(
+            drv.check_abort_source(ABRT_10ADDR2_NOACK),
+            HalError::NackReceived
+        );
+    }
+
+    #[test]
+    fn test_check_abort_source_combined_arb_and_nack() {
+        let drv = DesignwareI2c::new(0x4000_5400, 31);
+        // When both arbitration lost and NACK are set, arbitration lost takes priority.
+        assert_eq!(
+            drv.check_abort_source(ABRT_LOST | ABRT_7B_ADDR_NOACK),
+            HalError::ArbitrationLost
+        );
+    }
+
+    #[test]
+    fn test_validate_config_valid_timeout() {
+        let config = I2cConfig {
+            speed: I2cSpeed::Fast,
+            address_mode: I2cAddressMode::SevenBit,
+            clock_stretching: true,
+            timeout_us: 1,
+        };
+        assert!(DesignwareI2c::validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_init_zero_timeout_returns_invalid_config() {
+        let mut drv = DesignwareI2c::new(0x4000_5400, 31);
+        let config = I2cConfig {
+            speed: I2cSpeed::Standard,
+            address_mode: I2cAddressMode::SevenBit,
+            clock_stretching: false,
+            timeout_us: 0,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_bus_recovery_returns_mmio_error() {
+        let mut drv = DesignwareI2c::new(0x4000_5400, 31);
+        assert_eq!(drv.bus_recovery(), Err(HalError::MmioError));
+    }
 }

@@ -431,4 +431,170 @@ mod tests {
         // PL022 doesn't have hardware CS.
         assert_eq!(drv.cs_assert(0), Err(HalError::NotSupported));
     }
+
+    #[test]
+    fn test_constructor_fields() {
+        let drv = Pl022Spi::new(0xABCD_0000, 42);
+        assert_eq!(drv.base_addr(), 0xABCD_0000);
+        assert_eq!(drv.irq, 42);
+        assert!(!drv.is_configured());
+        assert!(drv.config.is_none());
+        assert_eq!(drv.input_clock_hz, DEFAULT_INPUT_CLOCK_HZ);
+    }
+
+    #[test]
+    fn test_with_clock_constructor() {
+        let drv = Pl022Spi::with_clock(0x5000_0000, 15, 96_000_000);
+        assert_eq!(drv.base_addr(), 0x5000_0000);
+        assert_eq!(drv.irq, 15);
+        assert_eq!(drv.input_clock_hz, 96_000_000);
+        assert!(!drv.is_configured());
+    }
+
+    #[test]
+    fn test_write_not_configured() {
+        let mut drv = Pl022Spi::new(0x4003_0000, 25);
+        assert_eq!(drv.write(0, &[0x01]), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_read_not_configured() {
+        let mut drv = Pl022Spi::new(0x4003_0000, 25);
+        let mut buf = [0u8; 4];
+        assert_eq!(drv.read(0, &mut buf), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_transfer_dma_not_supported() {
+        let mut drv = Pl022Spi::new(0x4003_0000, 25);
+        assert_eq!(
+            drv.transfer_dma(0, 0x8000_0000, 0x8001_0000, 256),
+            Err(HalError::NotSupported)
+        );
+    }
+
+    #[test]
+    fn test_cs_deassert_not_supported() {
+        let mut drv = Pl022Spi::new(0x4003_0000, 25);
+        assert_eq!(drv.cs_deassert(0), Err(HalError::NotSupported));
+    }
+
+    #[test]
+    fn test_cs_assert_invalid_cs() {
+        let mut drv = Pl022Spi::new(0x4003_0000, 25);
+        // CS >= 8 should fail with InvalidConfig before NotSupported.
+        assert_eq!(drv.cs_assert(8), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_zero_timeout() {
+        let mut drv = Pl022Spi::new(0x4003_0000, 25);
+        let config = SpiConfig {
+            mode: SpiMode::Mode0,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 8,
+            cs_active_low: true,
+            timeout_us: 0,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_build_cr0_mode1() {
+        let config = SpiConfig {
+            mode: SpiMode::Mode1,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 8,
+            cs_active_low: true,
+            timeout_us: 1000,
+        };
+        let cr0 = Pl022Spi::build_cr0(&config, 0);
+        assert_eq!(cr0 & CR0_SPO, 0); // CPOL=0
+        assert_ne!(cr0 & CR0_SPH, 0); // CPHA=1
+    }
+
+    #[test]
+    fn test_build_cr0_mode2() {
+        let config = SpiConfig {
+            mode: SpiMode::Mode2,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 8,
+            cs_active_low: true,
+            timeout_us: 1000,
+        };
+        let cr0 = Pl022Spi::build_cr0(&config, 0);
+        assert_ne!(cr0 & CR0_SPO, 0); // CPOL=1
+        assert_eq!(cr0 & CR0_SPH, 0); // CPHA=0
+    }
+
+    #[test]
+    fn test_build_cr0_4bit_word() {
+        let config = SpiConfig {
+            mode: SpiMode::Mode0,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 4,
+            cs_active_low: true,
+            timeout_us: 1000,
+        };
+        let cr0 = Pl022Spi::build_cr0(&config, 0);
+        assert_eq!(cr0 & CR0_DSS_MASK, 3); // 4-1
+    }
+
+    #[test]
+    fn test_build_cr0_scr_value() {
+        let config = SpiConfig {
+            mode: SpiMode::Mode0,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 8,
+            cs_active_low: true,
+            timeout_us: 1000,
+        };
+        let cr0 = Pl022Spi::build_cr0(&config, 200);
+        assert_eq!((cr0 >> CR0_SCR_SHIFT) & 0xFF, 200);
+    }
+
+    #[test]
+    fn test_compute_clock_params_low_speed() {
+        // Very low target speed should produce large CPSR and SCR values.
+        let (cpsr, scr) = Pl022Spi::compute_clock_params(48_000_000, 100_000);
+        let actual = 48_000_000 / (cpsr as u32 * (1 + scr as u32));
+        // Should be close to 100 kHz.
+        assert!(actual <= 100_000 + 5_000);
+        assert!(actual >= 100_000 - 5_000);
+    }
+
+    #[test]
+    fn test_compute_clock_params_zero_input() {
+        let (cpsr, _scr) = Pl022Spi::compute_clock_params(0, 1_000_000);
+        assert_eq!(cpsr, CPSR_MIN as u8);
+    }
+
+    #[test]
+    fn test_reset_returns_mmio_error() {
+        let mut drv = Pl022Spi::new(0x4003_0000, 25);
+        assert_eq!(drv.reset(), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_init_valid_word_sizes() {
+        // Word sizes 4, 8, 16, 32 are valid. Only 4, 8, 16 fit PL022 (clamped).
+        for ws in [4u8, 8, 16, 32] {
+            let mut drv = Pl022Spi::new(0x4003_0000, 25);
+            let config = SpiConfig {
+                mode: SpiMode::Mode0,
+                clock_hz: 1_000_000,
+                bit_order: SpiBitOrder::MsbFirst,
+                word_size: ws,
+                cs_active_low: true,
+                timeout_us: 1000,
+            };
+            // Should fail at MmioError (past validation), not InvalidConfig.
+            assert_eq!(drv.init(config), Err(HalError::MmioError));
+        }
+    }
 }

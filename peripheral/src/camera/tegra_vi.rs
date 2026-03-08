@@ -396,4 +396,384 @@ mod tests {
         let drv = TegraVi::new(0x5420_0000, 50);
         assert_eq!(drv.buffer_address(0), Err(HalError::InitFailed));
     }
+
+    // ----- Constructor and field access tests -----
+
+    #[test]
+    fn test_tegra_vi_new_different_params() {
+        let drv = TegraVi::new(0xFFFF_0000, 99);
+        assert_eq!(drv.base_addr(), 0xFFFF_0000);
+        assert_eq!(drv.irq, 99);
+        assert_eq!(drv.buffer_size(), 0);
+        assert_eq!(drv.sequence, 0);
+        assert_eq!(drv.current_buffer, 0);
+        assert_eq!(drv.buffer_addrs, [0u64; 4]);
+    }
+
+    #[test]
+    fn test_tegra_vi_new_zero_base() {
+        let drv = TegraVi::new(0, 0);
+        assert_eq!(drv.base_addr(), 0);
+        assert!(!drv.is_configured());
+        assert!(!drv.is_capturing());
+        assert!(drv.config.is_none());
+    }
+
+    // ----- CSI lane config validation tests -----
+
+    #[test]
+    fn test_init_invalid_lane_count_3() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.lanes = 3;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_lane_count_0() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.lanes = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_lane_count_5() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.lanes = 5;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_width_zero() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.width = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_width_too_large() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.width = 5000;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_height_zero() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.height = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_fps_zero() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.fps = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_fps_too_high() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.fps = 121;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_num_buffers_zero() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.num_buffers = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_num_buffers_too_many() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.num_buffers = 5;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    // ----- Data format configuration tests -----
+
+    #[test]
+    fn test_build_pp_format_raw8() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        cfg.lanes = 1;
+        let fmt = TegraVi::build_pp_format(&cfg);
+        assert_eq!(fmt & 0xFF, 0x2A);
+        assert_eq!((fmt >> 16) & 0xFF, 1);
+    }
+
+    #[test]
+    fn test_build_pp_format_raw12() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw12;
+        cfg.lanes = 4;
+        let fmt = TegraVi::build_pp_format(&cfg);
+        assert_eq!(fmt & 0xFF, 0x2C);
+        assert_eq!((fmt >> 16) & 0xFF, 4);
+    }
+
+    #[test]
+    fn test_build_pp_format_yuv422() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Yuv422;
+        let fmt = TegraVi::build_pp_format(&cfg);
+        assert_eq!(fmt & 0xFF, 0x1E);
+    }
+
+    #[test]
+    fn test_build_pp_format_rgb888() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Rgb888;
+        let fmt = TegraVi::build_pp_format(&cfg);
+        assert_eq!(fmt & 0xFF, 0x24);
+    }
+
+    #[test]
+    fn test_build_active_size_small_resolution() {
+        let mut cfg = make_config();
+        cfg.width = 320;
+        cfg.height = 240;
+        let size = TegraVi::build_active_size(&cfg);
+        assert_eq!(size & 0xFFFF, 320);
+        assert_eq!((size >> 16) & 0xFFFF, 240);
+    }
+
+    #[test]
+    fn test_build_active_size_max_resolution() {
+        let mut cfg = make_config();
+        cfg.width = 4096;
+        cfg.height = 4096;
+        let size = TegraVi::build_active_size(&cfg);
+        assert_eq!(size & 0xFFFF, 4096);
+        assert_eq!((size >> 16) & 0xFFFF, 4096);
+    }
+
+    // ----- Line stride computation tests -----
+
+    #[test]
+    fn test_compute_line_stride_raw8() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        cfg.width = 1920;
+        let stride = TegraVi::compute_line_stride(&cfg);
+        // 1920 * 8 / 8 = 1920, aligned to 64 = 1920 (already aligned).
+        assert_eq!(stride, 1920);
+    }
+
+    #[test]
+    fn test_compute_line_stride_raw12() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw12;
+        cfg.width = 1920;
+        let stride = TegraVi::compute_line_stride(&cfg);
+        // 1920 * 12 / 8 = 2880, aligned to 64 = 2880.
+        assert_eq!(stride, 2880);
+    }
+
+    #[test]
+    fn test_compute_line_stride_yuv422() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Yuv422;
+        cfg.width = 1920;
+        let stride = TegraVi::compute_line_stride(&cfg);
+        // 1920 * 16 / 8 = 3840, aligned to 64 = 3840.
+        assert_eq!(stride, 3840);
+    }
+
+    #[test]
+    fn test_compute_line_stride_alignment_needed() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        cfg.width = 100;
+        let stride = TegraVi::compute_line_stride(&cfg);
+        // 100 * 8 / 8 = 100, next multiple of 64 = 128.
+        assert_eq!(stride, 128);
+        assert_eq!(stride % 64, 0);
+    }
+
+    // ----- State machine transition tests -----
+
+    #[test]
+    fn test_stop_capture_not_configured() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        assert_eq!(drv.stop_capture(), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_dequeue_frame_not_capturing() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        assert_eq!(drv.dequeue_frame(), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_enqueue_frame_not_configured() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        assert_eq!(drv.enqueue_frame(0), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_reset_returns_mmio_error() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        // reset writes to registers, which stub as MmioError.
+        assert_eq!(drv.reset(), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_irq_handler_returns_mmio_error() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        // irq_handler reads registers, which stub as MmioError.
+        assert_eq!(drv.irq_handler(), Err(HalError::MmioError));
+    }
+
+    // ----- DMA buffer setup tests -----
+
+    #[test]
+    fn test_buffer_addrs_manual_setup() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        drv.buffer_addrs[0] = 0x8000_0000;
+        drv.buffer_addrs[1] = 0x8010_0000;
+        drv.buffer_addrs[2] = 0x8020_0000;
+        drv.buffer_addrs[3] = 0x8030_0000;
+        // Without config, buffer_address returns InitFailed.
+        assert_eq!(drv.buffer_address(0), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_buffer_address_with_config() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        drv.config = Some(make_config());
+        drv.buffer_addrs[0] = 0xDEAD_BEEF;
+        drv.buffer_addrs[1] = 0xCAFE_BABE;
+        assert_eq!(drv.buffer_address(0), Ok(0xDEAD_BEEF));
+        assert_eq!(drv.buffer_address(1), Ok(0xCAFE_BABE));
+    }
+
+    #[test]
+    fn test_buffer_address_out_of_range() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.num_buffers = 2;
+        drv.config = Some(cfg);
+        assert_eq!(drv.buffer_address(2), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_enqueue_frame_with_config_returns_mmio() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        drv.config = Some(make_config());
+        drv.buffer_addrs[0] = 0x1000_0000;
+        // enqueue_frame writes registers, which stub as MmioError.
+        assert_eq!(drv.enqueue_frame(0), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_enqueue_frame_buffer_index_out_of_range() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.num_buffers = 2;
+        drv.config = Some(cfg);
+        assert_eq!(drv.enqueue_frame(2), Err(HalError::OutOfRange));
+    }
+
+    // ----- Error flag handling tests -----
+
+    #[test]
+    fn test_read_reg_always_returns_mmio_error() {
+        let drv = TegraVi::new(0x5420_0000, 50);
+        assert_eq!(drv.read_reg(0), Err(HalError::MmioError));
+        assert_eq!(drv.read_reg(VI_IRQ_STATUS), Err(HalError::MmioError));
+        assert_eq!(drv.read_reg(0xFFFF_FFFF), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_write_reg_always_returns_mmio_error() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        assert_eq!(drv.write_reg(0, 0), Err(HalError::MmioError));
+        assert_eq!(drv.write_reg(VI_CHAN_CTRL, 0xFF), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_configured_flag_not_set_on_mmio_failure() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let _ = drv.init(make_config());
+        // init fails on first write_reg, so configured stays false.
+        assert!(!drv.is_configured());
+        assert!(drv.config.is_none());
+    }
+
+    #[test]
+    fn test_capturing_flag_not_set_without_configuration() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let _ = drv.start_capture();
+        assert!(!drv.is_capturing());
+    }
+
+    #[test]
+    fn test_frame_size_stays_zero_on_failed_init() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let _ = drv.init(make_config());
+        assert_eq!(drv.buffer_size(), 0);
+    }
+
+    #[test]
+    fn test_sequence_counter_stays_zero_on_failed_init() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let _ = drv.init(make_config());
+        assert_eq!(drv.sequence, 0);
+    }
+
+    // ----- Shadow register tracking tests -----
+
+    #[test]
+    fn test_manual_state_tracking() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        // Manually set state to simulate a successful init.
+        drv.configured = true;
+        drv.config = Some(make_config());
+        drv.frame_size = crate::camera::compute_frame_size(&make_config());
+        assert!(drv.is_configured());
+        assert_eq!(drv.buffer_size(), (1920 * 1080 * 10 + 7) / 8);
+    }
+
+    #[test]
+    fn test_current_buffer_wraps_around() {
+        let mut drv = TegraVi::new(0x5420_0000, 50);
+        let mut cfg = make_config();
+        cfg.num_buffers = 3;
+        drv.config = Some(cfg);
+
+        // Simulate buffer index wrapping.
+        drv.current_buffer = 2;
+        let next = (drv.current_buffer + 1) % drv.config.as_ref().unwrap().num_buffers;
+        assert_eq!(next, 0);
+    }
+
+    #[test]
+    fn test_buffer_size_for_all_pixel_formats() {
+        let formats_and_sizes: &[(CsiPixelFormat, usize)] = &[
+            (CsiPixelFormat::Raw8, 1920 * 1080),
+            (CsiPixelFormat::Raw10, (1920 * 1080 * 10 + 7) / 8),
+            (CsiPixelFormat::Raw12, (1920 * 1080 * 12 + 7) / 8),
+            (CsiPixelFormat::Yuv422, 1920 * 1080 * 2),
+            (CsiPixelFormat::Rgb888, 1920 * 1080 * 3),
+        ];
+        for &(fmt, expected) in formats_and_sizes {
+            let mut cfg = make_config();
+            cfg.pixel_format = fmt;
+            let mut drv = TegraVi::new(0x5420_0000, 50);
+            drv.frame_size = crate::camera::compute_frame_size(&cfg);
+            assert_eq!(drv.buffer_size(), expected);
+        }
+    }
 }

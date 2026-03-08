@@ -21,7 +21,8 @@ for pkg in meta['packages']:
     name = pkg['name']
     adj[name] = []
     for dep in pkg['dependencies']:
-        if dep['name'] in members and dep['name'] != name:
+        # Only check normal (non-dev, non-build) dependencies for cycles
+        if dep['name'] in members and dep['name'] != name and dep.get('kind') is None:
             adj[name].append(dep['name'])
 
 WHITE, GRAY, BLACK = 0, 1, 2

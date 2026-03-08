@@ -379,4 +379,355 @@ mod tests {
         let drv = BroadcomUnicam::new(0x7E80_0000, 44);
         assert_eq!(drv.buffer_size(), 0);
     }
+
+    // ----- Constructor and field access tests -----
+
+    #[test]
+    fn test_unicam_new_different_params() {
+        let drv = BroadcomUnicam::new(0x7E80_1000, 100);
+        assert_eq!(drv.base_addr(), 0x7E80_1000);
+        assert_eq!(drv.irq, 100);
+        assert_eq!(drv.sequence, 0);
+        assert_eq!(drv.current_buffer, 0);
+        assert_eq!(drv.frame_size, 0);
+        assert_eq!(drv.buffer_addrs, [0u64; 4]);
+        assert!(drv.config.is_none());
+    }
+
+    #[test]
+    fn test_unicam_new_zero_base() {
+        let drv = BroadcomUnicam::new(0, 0);
+        assert_eq!(drv.base_addr(), 0);
+        assert!(!drv.is_configured());
+        assert!(!drv.is_capturing());
+    }
+
+    // ----- Lane configuration validation tests -----
+
+    #[test]
+    fn test_init_rejects_0_lanes() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.lanes = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_rejects_3_lanes() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.lanes = 3;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_1_lane_returns_mmio_error() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.lanes = 1;
+        // Valid lane count, but MMIO is stubbed.
+        assert_eq!(drv.init(cfg), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_init_2_lanes_returns_mmio_error() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let cfg = make_config(); // 2 lanes
+        assert_eq!(drv.init(cfg), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_init_invalid_width() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.width = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_height() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.height = 5000;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_fps_zero() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.fps = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_fps_too_high() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.fps = 121;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_num_buffers_zero() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.num_buffers = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_num_buffers_too_many() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let mut cfg = make_config();
+        cfg.num_buffers = 5;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    // ----- Data ID / pixel format tests -----
+
+    #[test]
+    fn test_build_data_id_raw8() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        assert_eq!(BroadcomUnicam::build_data_id(&cfg), 0x2A);
+    }
+
+    #[test]
+    fn test_build_data_id_raw12() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw12;
+        assert_eq!(BroadcomUnicam::build_data_id(&cfg), 0x2C);
+    }
+
+    #[test]
+    fn test_build_data_id_rgb888() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Rgb888;
+        assert_eq!(BroadcomUnicam::build_data_id(&cfg), 0x24);
+    }
+
+    // ----- Line stride computation tests -----
+
+    #[test]
+    fn test_compute_line_stride_raw8() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        cfg.width = 1920;
+        let stride = BroadcomUnicam::compute_line_stride(&cfg);
+        // 1920 * 8 / 8 = 1920, aligned to 32 = 1920.
+        assert_eq!(stride, 1920);
+        assert_eq!(stride % 32, 0);
+    }
+
+    #[test]
+    fn test_compute_line_stride_raw12() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw12;
+        cfg.width = 1920;
+        let stride = BroadcomUnicam::compute_line_stride(&cfg);
+        // 1920 * 12 / 8 = 2880, aligned to 32 = 2880.
+        assert_eq!(stride, 2880);
+        assert_eq!(stride % 32, 0);
+    }
+
+    #[test]
+    fn test_compute_line_stride_yuv422() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Yuv422;
+        cfg.width = 1920;
+        let stride = BroadcomUnicam::compute_line_stride(&cfg);
+        // 1920 * 16 / 8 = 3840, aligned to 32 = 3840.
+        assert_eq!(stride, 3840);
+        assert_eq!(stride % 32, 0);
+    }
+
+    #[test]
+    fn test_compute_line_stride_alignment_needed() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        cfg.width = 100;
+        let stride = BroadcomUnicam::compute_line_stride(&cfg);
+        // 100 * 8 / 8 = 100, next multiple of 32 = 128.
+        assert_eq!(stride, 128);
+        assert_eq!(stride % 32, 0);
+    }
+
+    #[test]
+    fn test_compute_line_stride_small_width() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        cfg.width = 16; // Minimum valid width.
+        let stride = BroadcomUnicam::compute_line_stride(&cfg);
+        // 16 * 8 / 8 = 16, next multiple of 32 = 32.
+        assert_eq!(stride, 32);
+        assert_eq!(stride % 32, 0);
+    }
+
+    // ----- Frame capture control / state machine tests -----
+
+    #[test]
+    fn test_stop_capture_not_configured() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        assert_eq!(drv.stop_capture(), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_dequeue_frame_not_capturing() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        assert_eq!(drv.dequeue_frame(), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_enqueue_frame_not_configured() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        assert_eq!(drv.enqueue_frame(0), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_start_capture_with_manual_configured_flag() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        drv.configured = true;
+        // write_reg stubs return MmioError.
+        assert_eq!(drv.start_capture(), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_stop_capture_with_manual_configured_flag() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        drv.configured = true;
+        assert_eq!(drv.stop_capture(), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_capturing_flag_not_set_without_config() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let _ = drv.start_capture();
+        assert!(!drv.is_capturing());
+    }
+
+    #[test]
+    fn test_configured_flag_not_set_on_mmio_failure() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let _ = drv.init(make_config());
+        assert!(!drv.is_configured());
+        assert!(drv.config.is_none());
+    }
+
+    // ----- Interrupt handling tests -----
+
+    #[test]
+    fn test_irq_handler_returns_mmio_error() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        assert_eq!(drv.irq_handler(), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_reset_returns_mmio_error() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        assert_eq!(drv.reset(), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_read_reg_always_returns_mmio_error() {
+        let drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        assert_eq!(drv.read_reg(0), Err(HalError::MmioError));
+        assert_eq!(drv.read_reg(UNICAM_ISTA), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_write_reg_always_returns_mmio_error() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        assert_eq!(drv.write_reg(0, 0), Err(HalError::MmioError));
+        assert_eq!(drv.write_reg(UNICAM_CTRL, 0xFF), Err(HalError::MmioError));
+    }
+
+    // ----- Buffer management state tests -----
+
+    #[test]
+    fn test_buffer_address_not_configured() {
+        let drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        assert_eq!(drv.buffer_address(0), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_buffer_address_with_config() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        drv.config = Some(make_config());
+        drv.buffer_addrs[0] = 0xA000_0000;
+        drv.buffer_addrs[1] = 0xA010_0000;
+        assert_eq!(drv.buffer_address(0), Ok(0xA000_0000));
+        assert_eq!(drv.buffer_address(1), Ok(0xA010_0000));
+    }
+
+    #[test]
+    fn test_buffer_address_out_of_range() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        drv.config = Some(make_config()); // num_buffers = 2
+        assert_eq!(drv.buffer_address(2), Err(HalError::OutOfRange));
+        assert_eq!(drv.buffer_address(3), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_enqueue_frame_with_config_returns_mmio() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        drv.config = Some(make_config());
+        drv.buffer_addrs[0] = 0xB000_0000;
+        assert_eq!(drv.enqueue_frame(0), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_enqueue_frame_buffer_out_of_range() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        drv.config = Some(make_config()); // num_buffers = 2
+        assert_eq!(drv.enqueue_frame(2), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_frame_size_stays_zero_on_failed_init() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let _ = drv.init(make_config());
+        assert_eq!(drv.buffer_size(), 0);
+    }
+
+    #[test]
+    fn test_manual_frame_size_tracking() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        drv.frame_size = crate::camera::compute_frame_size(&make_config());
+        assert_eq!(drv.buffer_size(), (1920 * 1080 * 10 + 7) / 8);
+    }
+
+    #[test]
+    fn test_current_buffer_wraps_around() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        drv.config = Some(make_config()); // num_buffers = 2
+        drv.current_buffer = 1;
+        let next = (drv.current_buffer + 1) % drv.config.as_ref().unwrap().num_buffers;
+        assert_eq!(next, 0);
+    }
+
+    #[test]
+    fn test_sequence_counter_stays_zero_on_failed_init() {
+        let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+        let _ = drv.init(make_config());
+        assert_eq!(drv.sequence, 0);
+    }
+
+    #[test]
+    fn test_buffer_size_for_all_pixel_formats() {
+        let formats_and_sizes: &[(CsiPixelFormat, usize)] = &[
+            (CsiPixelFormat::Raw8, 1920 * 1080),
+            (CsiPixelFormat::Raw10, (1920 * 1080 * 10 + 7) / 8),
+            (CsiPixelFormat::Raw12, (1920 * 1080 * 12 + 7) / 8),
+            (CsiPixelFormat::Yuv422, 1920 * 1080 * 2),
+            (CsiPixelFormat::Rgb888, 1920 * 1080 * 3),
+        ];
+        for &(fmt, expected) in formats_and_sizes {
+            let mut cfg = make_config();
+            cfg.pixel_format = fmt;
+            let mut drv = BroadcomUnicam::new(0x7E80_0000, 44);
+            drv.frame_size = crate::camera::compute_frame_size(&cfg);
+            assert_eq!(drv.buffer_size(), expected);
+        }
+    }
 }

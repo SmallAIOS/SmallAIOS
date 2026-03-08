@@ -411,4 +411,141 @@ mod tests {
         let mut drv = SiFiveSpi::new(0x1004_0000, 51);
         assert_eq!(drv.write(0, &[0x01]), Err(HalError::InitFailed));
     }
+
+    #[test]
+    fn test_constructor_fields() {
+        let drv = SiFiveSpi::new(0xDEAD_0000, 99);
+        assert_eq!(drv.base_addr(), 0xDEAD_0000);
+        assert_eq!(drv.irq, 99);
+        assert!(!drv.is_configured());
+        assert!(drv.config.is_none());
+        assert_eq!(drv.input_clock_hz, DEFAULT_INPUT_CLOCK_HZ);
+    }
+
+    #[test]
+    fn test_with_clock_constructor() {
+        let drv = SiFiveSpi::with_clock(0x1000_0000, 10, 200_000_000);
+        assert_eq!(drv.base_addr(), 0x1000_0000);
+        assert_eq!(drv.input_clock_hz, 200_000_000);
+        assert!(!drv.is_configured());
+    }
+
+    #[test]
+    fn test_build_sckmode_cpol_cpha() {
+        // Mode0: CPOL=0, CPHA=0
+        assert_eq!(SiFiveSpi::build_sckmode(SpiMode::Mode0), 0);
+        // Mode1: CPOL=0, CPHA=1
+        assert_eq!(SiFiveSpi::build_sckmode(SpiMode::Mode1), SCKMODE_PHA);
+        // Mode2: CPOL=1, CPHA=0
+        assert_eq!(SiFiveSpi::build_sckmode(SpiMode::Mode2), SCKMODE_POL);
+        // Mode3: CPOL=1, CPHA=1
+        assert_eq!(
+            SiFiveSpi::build_sckmode(SpiMode::Mode3),
+            SCKMODE_POL | SCKMODE_PHA
+        );
+    }
+
+    #[test]
+    fn test_compute_sckdiv_various_targets() {
+        // 100 MHz / (2 * 10 MHz) - 1 = 4
+        assert_eq!(SiFiveSpi::compute_sckdiv(100_000_000, 10_000_000), 4);
+        // 100 MHz / (2 * 50 MHz) - 1 = 0
+        assert_eq!(SiFiveSpi::compute_sckdiv(100_000_000, 50_000_000), 0);
+    }
+
+    #[test]
+    fn test_compute_sckdiv_target_exceeds_max() {
+        // When target > input/2, div rounds to 0.
+        assert_eq!(SiFiveSpi::compute_sckdiv(10_000_000, 100_000_000), 0);
+    }
+
+    #[test]
+    fn test_read_not_configured() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        let mut buf = [0u8; 4];
+        assert_eq!(drv.read(0, &mut buf), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_transfer_not_configured() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        let mut rx = [0u8; 4];
+        assert_eq!(drv.transfer(0, &[0x01], &mut rx), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_init_invalid_word_size() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        let config = SpiConfig {
+            mode: SpiMode::Mode0,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 12, // invalid
+            cs_active_low: true,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_zero_timeout() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        let config = SpiConfig {
+            mode: SpiMode::Mode0,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 8,
+            cs_active_low: true,
+            timeout_us: 0,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_transfer_dma_not_supported() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        assert_eq!(
+            drv.transfer_dma(0, 0x8000_0000, 0x8001_0000, 256),
+            Err(HalError::NotSupported)
+        );
+    }
+
+    #[test]
+    fn test_cs_assert_returns_mmio_error() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        // cs_assert calls write_reg which returns MmioError.
+        assert_eq!(drv.cs_assert(0), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_cs_deassert_returns_mmio_error() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        assert_eq!(drv.cs_deassert(0), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_cs_assert_invalid_cs() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        assert_eq!(drv.cs_assert(8), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_reset_returns_mmio_error() {
+        let mut drv = SiFiveSpi::new(0x1004_0000, 51);
+        assert_eq!(drv.reset(), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_build_fmt_4bit_word() {
+        let config = SpiConfig {
+            mode: SpiMode::Mode0,
+            clock_hz: 1_000_000,
+            bit_order: SpiBitOrder::MsbFirst,
+            word_size: 4,
+            cs_active_low: true,
+            timeout_us: 1000,
+        };
+        let fmt = SiFiveSpi::build_fmt(&config);
+        assert_eq!((fmt >> FMT_LEN_SHIFT) & 0xF, 4);
+    }
 }

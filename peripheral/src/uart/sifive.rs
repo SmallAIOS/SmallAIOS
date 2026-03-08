@@ -226,4 +226,222 @@ mod tests {
     fn test_compute_div_zero() {
         assert_eq!(SiFiveUart::compute_div(500_000_000, 0), 0);
     }
+
+    // --- with_clock constructor ---
+
+    #[test]
+    fn test_with_clock_constructor() {
+        let drv = SiFiveUart::with_clock(0x2000_0000, 10, 100_000_000);
+        assert_eq!(drv.base_addr(), 0x2000_0000);
+        assert_eq!(drv.irq, 10);
+        assert_eq!(drv.input_clock_hz, 100_000_000);
+        assert!(!drv.is_configured());
+        assert!(drv.config.is_none());
+    }
+
+    #[test]
+    fn test_new_defaults() {
+        let drv = SiFiveUart::new(0x1001_0000, 39);
+        assert_eq!(drv.input_clock_hz, 500_000_000);
+        assert!(drv.config.is_none());
+    }
+
+    // --- compute_div edge cases ---
+
+    #[test]
+    fn test_compute_div_9600() {
+        // 500_000_000 / 9600 - 1 = 52082
+        assert_eq!(
+            SiFiveUart::compute_div(500_000_000, 9600),
+            500_000_000 / 9600 - 1
+        );
+    }
+
+    #[test]
+    fn test_compute_div_38400() {
+        assert_eq!(
+            SiFiveUart::compute_div(500_000_000, 38400),
+            500_000_000 / 38400 - 1
+        );
+    }
+
+    #[test]
+    fn test_compute_div_1000000() {
+        assert_eq!(
+            SiFiveUart::compute_div(500_000_000, 1_000_000),
+            500_000_000 / 1_000_000 - 1
+        );
+    }
+
+    #[test]
+    fn test_compute_div_very_high_baud() {
+        // When baud > clock, saturating_sub prevents underflow
+        let div = SiFiveUart::compute_div(1000, 2000);
+        assert_eq!(div, 0); // 1000/2000 = 0, saturating_sub(1) = 0
+    }
+
+    #[test]
+    fn test_compute_div_equal_clock_baud() {
+        // clock/baud = 1, minus 1 = 0
+        let div = SiFiveUart::compute_div(115200, 115200);
+        assert_eq!(div, 0);
+    }
+
+    // --- init restrictions: parity not supported ---
+
+    #[test]
+    fn test_init_odd_parity_not_supported() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let config = UartConfig {
+            baud_rate: 115200,
+            data_bits: 8,
+            parity: UartParity::Odd,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::NotSupported));
+    }
+
+    // --- init restriction: 7-bit data not supported ---
+
+    #[test]
+    fn test_init_7bit_data_not_supported() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let config = UartConfig {
+            baud_rate: 115200,
+            data_bits: 7,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::NotSupported));
+    }
+
+    // --- invalid baud rate ---
+
+    #[test]
+    fn test_init_invalid_baud_zero() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let config = UartConfig {
+            baud_rate: 0,
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_baud_too_low() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let config = UartConfig {
+            baud_rate: 100,
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_baud_too_high() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let config = UartConfig {
+            baud_rate: 5_000_000,
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    // --- not-configured error checks ---
+
+    #[test]
+    fn test_read_not_configured() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let mut buf = [0u8; 4];
+        assert_eq!(drv.read(&mut buf), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_read_exact_not_configured() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let mut buf = [0u8; 4];
+        assert_eq!(drv.read_exact(&mut buf), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_read_until_not_configured() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let mut buf = [0u8; 4];
+        assert_eq!(drv.read_until(b'\n', &mut buf), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_flush_not_configured() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        assert_eq!(drv.flush(), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_write_all_not_configured() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        assert_eq!(drv.write_all(&[0x41]), Err(HalError::InitFailed));
+    }
+
+    // --- rx_available ---
+
+    #[test]
+    fn test_rx_available_always_zero() {
+        let drv = SiFiveUart::new(0x1001_0000, 39);
+        assert_eq!(drv.rx_available(), 0);
+    }
+
+    // --- init fails on MMIO (valid config but MMIO stub) ---
+
+    #[test]
+    fn test_init_fails_on_mmio_write() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        let config = UartConfig {
+            baud_rate: 115200,
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::MmioError));
+        assert!(!drv.is_configured());
+    }
+
+    // --- reset fails on MMIO ---
+
+    #[test]
+    fn test_reset_fails_on_mmio() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        assert_eq!(drv.reset(), Err(HalError::MmioError));
+    }
+
+    // --- irq_handler fails on MMIO ---
+
+    #[test]
+    fn test_irq_handler_fails_on_mmio() {
+        let mut drv = SiFiveUart::new(0x1001_0000, 39);
+        assert_eq!(drv.irq_handler(), Err(HalError::MmioError));
+    }
 }

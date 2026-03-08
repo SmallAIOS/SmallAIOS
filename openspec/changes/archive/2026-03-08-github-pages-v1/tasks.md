@@ -55,7 +55,7 @@
 
 ## 7. GitHub Pages Repository Settings
 
-- [ ] 7.1 Configure GitHub Pages source to "GitHub Actions" in repository settings (Settings > Pages > Source > GitHub Actions)
+- [x] 7.1 Configure GitHub Pages source to "GitHub Actions" in repository settings (Settings > Pages > Source > GitHub Actions)
 
 ## 8. Local Build Verification
 
