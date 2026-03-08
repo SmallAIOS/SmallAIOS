@@ -848,6 +848,9 @@ jobs:
         run: just arch-check
       - name: Generate DSM matrix
         run: just dsm
+      - name: Run DSM analysis
+        run: just dsm-analyze
+        continue-on-error: true
       - name: Upload analysis artifacts
         uses: actions/upload-artifact@v4
         with:
