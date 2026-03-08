@@ -1,0 +1,33 @@
+# Pre-commit hooks for SmallAIOS
+# Install: pre-commit install
+# Run all: pre-commit run --all-files
+repos:
+  - repo: local
+    hooks:
+      - id: cargo-fmt
+        name: cargo fmt
+        entry: cargo fmt --all -- --check
+        language: system
+        pass_filenames: false
+        types: [rust]
+
+      - id: cargo-clippy
+        name: cargo clippy
+        entry: cargo clippy --workspace --exclude smallaios-arch-x86_64 --exclude smallaios-arch-aarch64 --exclude smallaios-arch-riscv64 -- -D warnings
+        language: system
+        pass_filenames: false
+        types: [rust]
+
+      - id: cargo-deny
+        name: cargo deny
+        entry: cargo deny check
+        language: system
+        pass_filenames: false
+        files: '(Cargo\.(toml|lock)|deny\.toml)$'
+
+      - id: check-cycles
+        name: check cyclic dependencies
+        entry: ./scripts/check-cycles.sh
+        language: system
+        pass_filenames: false
+        files: 'Cargo\.toml$'
