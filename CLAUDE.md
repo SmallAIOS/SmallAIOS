@@ -10,33 +10,53 @@ SmallAIOS is a minimal, secure, Rust-based OS kernel purpose-built for AI infere
 
 ## Build Commands
 
-Requires Rust nightly (pinned in `rust-toolchain.toml`). Uses `make` as the primary build interface.
+Requires Rust nightly (pinned in `rust-toolchain.toml`). Uses `just` as the task runner wrapping Cargo commands. Run `just --list` to see all available recipes.
 
 ```bash
 # Container mode (library OS)
-make build-container-x86    # x86_64-unknown-linux-musl
-make build-container-arm    # aarch64-unknown-linux-musl
+just build-container-x86    # x86_64-unknown-linux-musl
+just build-container-arm    # aarch64-unknown-linux-musl
 
 # Kernel mode (VM/bare metal)
-make build-kernel-x86       # x86_64-unknown-none
-make build-kernel-arm       # aarch64-unknown-none
+just build-kernel-x86       # x86_64-unknown-none
+just build-kernel-arm       # aarch64-unknown-none
 
 # Testing
-make test                   # cargo test --workspace
-make clippy                 # cargo clippy -- -D warnings
-make fmt                    # cargo fmt
-make fmt-check              # cargo fmt -- --check
+just test                   # cargo test --workspace
+just clippy                 # cargo clippy -- -D warnings
+just fmt                    # cargo fmt
+just fmt-check              # cargo fmt -- --check
 
 # QEMU
-make run-x86                # Boot in QEMU x86-64
-make run-arm                # Boot in QEMU ARM64
+just run-x86                # Boot in QEMU x86-64
+just run-arm                # Boot in QEMU ARM64
 
 # Docker
-make docker-build           # Multi-arch container build
+just docker-build           # Multi-arch container build
+
+# Dependency analysis (requires cargo-depgraph, cargo-modules, graphviz)
+just depgraph               # Crate-level DOT/SVG dependency graph
+just modgraph               # Module-level graphs for all host crates
+just modgraph smallaios-kernel  # Single crate module graph
+just arch-check             # Module-level acyclicity check
+just dsm                    # DSM adjacency matrix (JSON + CSV)
+just arch                   # All of the above
 
 # Release (requires cargo-release)
-make release-dry-run BUMP=patch  # preview version bump
-make release BUMP=minor          # execute bump + commit + tag
+just release-dry-run patch  # preview version bump
+just release minor          # execute bump + commit + tag
+```
+
+### Dev Tool Dependencies
+
+```bash
+# Required
+rustup toolchain install nightly-2026-02-01
+cargo install just --locked                          # task runner
+
+# Optional analysis tools
+cargo install cargo-depgraph cargo-modules --locked  # dependency visualization
+sudo apt install graphviz                            # SVG graph rendering
 ```
 
 ## Workspace Architecture
@@ -108,10 +128,10 @@ kernel (foundation: memory, scheduler, syscall interface)
 Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release), configured in `release.toml`. All 18 crates share a single version and are bumped together. See `docs/release-runbook.md` for the full step-by-step process.
 
 ```bash
-make changelog                   # regenerate CHANGELOG.md via git-cliff
+just changelog                   # regenerate CHANGELOG.md via git-cliff
 ./scripts/suggest-release-bump.sh  # check suggested bump level
-make release-dry-run BUMP=patch   # preview: 0.1.0 → 0.1.1
-make release BUMP=minor           # execute: 0.1.0 → 0.2.0
+just release-dry-run patch       # preview: 0.1.0 → 0.1.1
+just release minor               # execute: 0.1.0 → 0.2.0
 ```
 
 `cargo-release` bumps workspace version, updates `Cargo.lock`, commits, and tags. The pre-release hook runs tests and generates the changelog via `git-cliff`. `push = false` so you review before pushing. Releases are only allowed from `main` (enforced by `allow-branch`).

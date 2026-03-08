@@ -823,6 +823,38 @@ jobs:
           path: target/criterion/
           retention-days: 30
 
+  dependency-analysis:
+    name: Dependency Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install just
+        uses: taiki-e/install-action@just
+      - name: Install analysis tools
+        run: |
+          cargo install cargo-depgraph --locked
+          cargo install cargo-modules --locked
+          sudo apt-get update && sudo apt-get install -y graphviz
+      - name: Generate crate-level dependency graph
+        run: just depgraph
+      - name: Module-level acyclicity check
+        continue-on-error: true
+        run: just arch-check
+      - name: Generate DSM matrix
+        run: just dsm
+      - name: Upload analysis artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-analysis
+          path: build/analysis/
+          retention-days: 30
+
   change-gates:
     name: Change Gates
     runs-on: ubuntu-latest
