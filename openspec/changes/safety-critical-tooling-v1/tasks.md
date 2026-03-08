@@ -12,12 +12,12 @@
 - [x] 2.3 Write Kani proofs for slab allocator (`kernel/src/mem/slab.rs`) — no panics, no OOB
 - [x] 2.4 Write Kani proofs for tensor pool (`kernel/src/mem/tensor.rs`) — handle validity, no double-free
 - [x] 2.5 Write Kani proofs for constant-time operations (`security/src/crypto/constant_time.rs`)
-- [ ] 2.6 Add Kani verification job to `.github/workflows/ci.yml`
+- [x] 2.6 Add Kani verification job to `.github/workflows/ci.yml`
 
 ## 3. Miri UB Detection
 
 - [x] 3.1 Add weekly Miri CI job to `.github/workflows/ci.yml` (schedule: weekly, nightly toolchain)
-- [ ] 3.2 Run Miri locally on all host-testable crates and fix any UB findings
+- [x] 3.2 Run Miri locally on all host-testable crates and fix any UB findings
 - [x] 3.3 Document Miri-incompatible tests (if any) and add `#[cfg_attr(miri, ignore)]` annotations
 
 ## 4. Supply Chain Security (cargo-deny)
@@ -30,10 +30,10 @@
 
 ## 5. Mutation Testing
 
-- [ ] 5.1 Run cargo-mutants on `security/src/crypto/` and document baseline mutation score
-- [ ] 5.2 Run cargo-mutants on `kernel/src/mem/` and document baseline mutation score
+- [x] 5.1 Run cargo-mutants on `security/src/crypto/` and document baseline mutation score
+- [x] 5.2 Run cargo-mutants on `kernel/src/mem/` and document baseline mutation score
 - [x] 5.3 Add on-demand mutation testing CI job (manual trigger)
-- [ ] 5.4 Document surviving mutants and create follow-up test tasks
+- [x] 5.4 Document surviving mutants and create follow-up test tasks
 
 ## 6. Architecture Documentation (4+1 Views)
 
