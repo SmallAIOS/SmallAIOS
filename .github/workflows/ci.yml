@@ -704,18 +704,20 @@ jobs:
         with:
           toolchain: nightly-2026-02-01
           components: rust-src
+      - name: Install just
+        uses: taiki-e/install-action@just
       - name: Install analysis tools
         run: |
           cargo install cargo-depgraph --locked
           cargo install cargo-modules --locked
           sudo apt-get update && sudo apt-get install -y graphviz
       - name: Generate crate-level dependency graph
-        run: make depgraph
+        run: just depgraph
       - name: Module-level acyclicity check
         continue-on-error: true
-        run: make arch-check
+        run: just arch-check
       - name: Generate DSM matrix
-        run: make dsm
+        run: just dsm
       - name: Upload analysis artifacts
         uses: actions/upload-artifact@v4
         with:

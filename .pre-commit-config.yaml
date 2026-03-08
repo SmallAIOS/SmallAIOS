@@ -34,7 +34,7 @@ repos:
 
       - id: module-cycles
         name: check module-level cycles (advisory)
-        entry: bash -c 'command -v cargo-modules >/dev/null 2>&1 && make arch-check || echo "cargo-modules not installed, skipping"'
+        entry: bash -c 'command -v cargo-modules >/dev/null 2>&1 && just arch-check || echo "cargo-modules not installed, skipping"'
         language: system
         pass_filenames: false
         files: '\.rs$'
