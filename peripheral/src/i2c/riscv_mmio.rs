@@ -424,4 +424,104 @@ mod tests {
         let mut drv = OpenCoresI2c::new(0x1002_0000, 52);
         assert_eq!(drv.reset(), Err(HalError::MmioError));
     }
+
+    #[test]
+    fn test_constructor_fields() {
+        let drv = OpenCoresI2c::new(0xDEAD_0000, 99);
+        assert_eq!(drv.base_addr(), 0xDEAD_0000);
+        assert_eq!(drv.irq, 99);
+        assert!(!drv.is_configured());
+        assert!(drv.config.is_none());
+        assert_eq!(drv.input_clock_hz, DEFAULT_INPUT_CLOCK_HZ);
+    }
+
+    #[test]
+    fn test_with_clock_constructor() {
+        let drv = OpenCoresI2c::with_clock(0x1000_0000, 10, 200_000_000);
+        assert_eq!(drv.base_addr(), 0x1000_0000);
+        assert_eq!(drv.input_clock_hz, 200_000_000);
+        assert!(!drv.is_configured());
+    }
+
+    #[test]
+    fn test_addr_byte_7bit_boundary_addresses() {
+        // Address 0x08 (first valid) write: 0x10
+        assert_eq!(OpenCoresI2c::addr_byte_7bit(0x08, false), 0x10);
+        // Address 0x77 (last valid) read: 0xEF
+        assert_eq!(OpenCoresI2c::addr_byte_7bit(0x77, true), 0xEF);
+    }
+
+    #[test]
+    fn test_write_read_not_configured() {
+        let mut drv = OpenCoresI2c::new(0x1002_0000, 52);
+        let mut buf = [0u8; 2];
+        assert_eq!(
+            drv.write_read(0x50, &[0x00], &mut buf),
+            Err(HalError::InitFailed)
+        );
+    }
+
+    #[test]
+    fn test_compute_prescaler_default_clock_standard() {
+        let drv = OpenCoresI2c::new(0, 0);
+        // 500_000_000 / (5 * 100_000) - 1 = 999
+        assert_eq!(drv.compute_prescaler(I2cSpeed::Standard), 999);
+    }
+
+    #[test]
+    fn test_compute_prescaler_default_clock_fast() {
+        let drv = OpenCoresI2c::new(0, 0);
+        // 500_000_000 / (5 * 400_000) - 1 = 249
+        assert_eq!(drv.compute_prescaler(I2cSpeed::Fast), 249);
+    }
+
+    #[test]
+    fn test_compute_prescaler_default_clock_fast_plus() {
+        let drv = OpenCoresI2c::new(0, 0);
+        // 500_000_000 / (5 * 1_000_000) - 1 = 99
+        assert_eq!(drv.compute_prescaler(I2cSpeed::FastPlus), 99);
+    }
+
+    #[test]
+    fn test_compute_prescaler_very_low_clock() {
+        let drv = OpenCoresI2c::with_clock(0, 0, 500_000);
+        // 500_000 / (5 * 100_000) - 1 = 0
+        assert_eq!(drv.compute_prescaler(I2cSpeed::Standard), 0);
+    }
+
+    #[test]
+    fn test_address_validation_7bit_invalid_low() {
+        let mut drv = OpenCoresI2c::new(0x1002_0000, 52);
+        // Manually set configured to test address validation.
+        drv.configured = true;
+        drv.config = Some(I2cConfig {
+            speed: I2cSpeed::Standard,
+            address_mode: I2cAddressMode::SevenBit,
+            clock_stretching: false,
+            timeout_us: 10_000,
+        });
+        // Address 0x00 is reserved in 7-bit mode.
+        assert_eq!(drv.write(0x00, &[0xAB]), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_address_validation_7bit_invalid_high() {
+        let mut drv = OpenCoresI2c::new(0x1002_0000, 52);
+        drv.configured = true;
+        drv.config = Some(I2cConfig {
+            speed: I2cSpeed::Standard,
+            address_mode: I2cAddressMode::SevenBit,
+            clock_stretching: false,
+            timeout_us: 10_000,
+        });
+        // Address 0x78 is reserved.
+        assert_eq!(drv.write(0x78, &[0xAB]), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_bus_recovery_returns_mmio_error() {
+        let mut drv = OpenCoresI2c::new(0x1002_0000, 52);
+        // bus_recovery calls write_reg which returns MmioError.
+        assert_eq!(drv.bus_recovery(), Err(HalError::MmioError));
+    }
 }

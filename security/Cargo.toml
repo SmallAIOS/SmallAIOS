@@ -18,4 +18,7 @@ verified-boot = []  # Boot integrity verification: kernel self-hash, model signa
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
+[dev-dependencies]
+smallaios-net = { path = "../net", features = ["quic"] }
+
 [dependencies]
