@@ -545,6 +545,30 @@ jobs:
       - name: Check for cyclic dependencies
         run: ./scripts/check-cycles.sh
 
+  kani-verify:
+    name: Kani Model Checking
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      - name: Run Kani proofs (kernel)
+        run: cargo kani -p smallaios-kernel --tests 2>&1 | tee kani-kernel.txt || true
+      - name: Run Kani proofs (security)
+        run: cargo kani -p smallaios-security --tests 2>&1 | tee kani-security.txt || true
+      - name: Upload Kani reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: kani-reports
+          path: kani-*.txt
+          retention-days: 30
+
   spin-verify:
     name: SPIN Model Verification
     runs-on: ubuntu-latest
