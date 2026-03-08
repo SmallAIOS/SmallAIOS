@@ -459,6 +459,11 @@ jobs:
       - name: Convert LCOV to SonarCloud generic format
         run: |
           python3 scripts/lcov-to-sonar.py lcov.info > sonar-coverage.xml
+          echo "--- sonar-coverage.xml (first 20 lines) ---"
+          head -20 sonar-coverage.xml
+          echo "--- sonar-coverage.xml (last 5 lines) ---"
+          tail -5 sonar-coverage.xml
+          echo "--- total lines: $(wc -l < sonar-coverage.xml) ---"
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:

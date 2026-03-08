@@ -28,8 +28,9 @@ fn bench_tensor_alloc_free(c: &mut Criterion) {
             &alloc_size,
             |bench, &size| {
                 let mut pool = heap_pool();
-                pool.init(PhysAddr(0x1000_0000), 256 * 1024 * 1024);
                 bench.iter(|| {
+                    // Re-init each iteration: bump allocator doesn't reclaim on release
+                    pool.init(PhysAddr(0x1000_0000), 256 * 1024 * 1024);
                     let handle = pool.allocate(black_box(size)).unwrap();
                     pool.release(handle.0).unwrap();
                 });
