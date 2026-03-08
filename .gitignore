@@ -27,6 +27,10 @@ states/
 # Sphinx documentation build artifacts
 docs/_build/
 
+# Mutation testing output (cargo-mutants)
+mutants.out/
+mutants.out.old/
+
 # Secrets (should never exist in this repo, but just in case)
 *.pem
 *.key
