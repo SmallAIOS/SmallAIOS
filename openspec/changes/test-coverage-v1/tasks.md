@@ -31,10 +31,10 @@
 ## 6. Integration Tests
 
 - [x] 6.1 Create kernel-security integration test — test capability-gated syscall enforcement: task without required capability gets permission denied, task with capability succeeds. Add to kernel/tests/ or tests/ directory.
-- [ ] 6.2 Create net-onnx-rt integration test — test inference request parsing from a network payload, model execution, and result serialization. Test malformed payload handling. Add to onnx-rt/tests/ or tests/ directory.
+- [x] 6.2 Create net-onnx-rt integration test — test inference request parsing from a network payload, model execution, and result serialization. Test malformed payload handling. Add to onnx-rt/tests/ or tests/ directory.
 - [x] 6.3 Create container boot integration test — test container startup sequence, health check response, and metrics export. Verify startup completes within timeout. Add to container/tests/ directory.
-- [ ] 6.4 Create IPC-security integration test — test formal-gate label enforcement: matched labels deliver messages, mismatched labels reject. Requires feature flag formal-gate. Add to ipc/tests/ directory.
-- [ ] 6.5 Create crypto-network pipeline test — test TLS 1.3 handshake with ML-KEM-768 key exchange through security + net crates, verify encrypted data round-trip. Add to security/tests/ or net/tests/ directory.
+- [x] 6.4 Create IPC-security integration test — test formal-gate label enforcement: matched labels deliver messages, mismatched labels reject. Requires feature flag formal-gate. Add to ipc/tests/ directory.
+- [x] 6.5 Create crypto-network pipeline test — test TLS 1.3 handshake with ML-KEM-768 key exchange through security + net crates, verify encrypted data round-trip. Add to security/tests/ or net/tests/ directory.
 
 ## 7. Fuzz Targets
 
@@ -49,19 +49,19 @@
 
 ## 8. Benchmarks
 
-- [ ] 8.1 Add criterion dependency and benchmark harness to bench/Cargo.toml — configure criterion with JSON output, add dev-dependencies on onnx-rt, security, net, ipc, kernel
-- [ ] 8.2 Create bench/benches/onnx_operators.rs — criterion benchmarks for MatMul (64x64, 256x256, 1024x1024), Conv, Relu, Sigmoid, Softmax, Gemm with representative input sizes
-- [ ] 8.3 Create bench/benches/crypto.rs — criterion benchmarks for SHA-3-256 (64B/1KB/64KB/1MB), AES-256-GCM encrypt/decrypt, ML-KEM-768 keygen/encaps/decaps, ML-DSA-65 sign/verify, Ed25519 sign/verify
-- [ ] 8.4 Create bench/benches/network.rs — criterion benchmarks for TCP packet parsing, UDP packet parsing, Ethernet frame processing throughput
-- [ ] 8.5 Create bench/benches/ipc.rs — criterion benchmarks for IPC pub/sub message throughput (64B/1KB/64KB) and latency measurement
-- [ ] 8.6 Create bench/benches/memory.rs — criterion benchmarks for kernel memory allocator: alloc/free throughput (64B/4KB/64KB/1MB), fragmentation under mixed workload
-- [ ] 8.7 Create bench/baselines/ directory and baseline JSON format — document baseline update process, add make bench-update-baseline target to Makefile
-- [ ] 8.8 Add benchmark regression detection script — compare current results to baselines, fail on >10% regression, produce human-readable report
+- [x] 8.1 Add criterion dependency and benchmark harness to bench/Cargo.toml — configure criterion with JSON output, add dev-dependencies on onnx-rt, security, net, ipc, kernel
+- [x] 8.2 Create bench/benches/onnx_operators.rs — criterion benchmarks for MatMul (64x64, 256x256, 1024x1024), Conv, Relu, Sigmoid, Softmax, Gemm with representative input sizes
+- [x] 8.3 Create bench/benches/crypto.rs — criterion benchmarks for SHA-3-256 (64B/1KB/64KB/1MB), AES-256-GCM encrypt/decrypt, ML-KEM-768 keygen/encaps/decaps, ML-DSA-65 sign/verify, Ed25519 sign/verify
+- [x] 8.4 Create bench/benches/network.rs — criterion benchmarks for TCP packet parsing, UDP packet parsing, Ethernet frame processing throughput
+- [x] 8.5 Create bench/benches/ipc.rs — criterion benchmarks for IPC pub/sub message throughput (64B/1KB/64KB) and latency measurement
+- [x] 8.6 Create bench/benches/memory.rs — criterion benchmarks for kernel memory allocator: alloc/free throughput (64B/4KB/64KB/1MB), fragmentation under mixed workload
+- [x] 8.7 Create bench/baselines/ directory and baseline JSON format — document baseline update process, add make bench-update-baseline target to Makefile
+- [x] 8.8 Add benchmark regression detection script — compare current results to baselines, fail on >10% regression, produce human-readable report
 
 ## 9. CI and Codecov Configuration
 
 - [x] 9.1 Create codecov.yml at repository root — configure project target (93%), patch target (90%), 1% threshold, per-crate flags (kernel, security, onnx-rt, net, peripheral, container, ipc, bus, usb, sdr), path exclusions (arch/**, container/src/main.rs, bench/**, fuzz/**, docs/**), PR comment settings
-- [ ] 9.2 Update .github/workflows/ci.yml coverage job — ensure lcov output is uploaded with per-crate flags matching codecov.yml flag definitions
-- [ ] 9.3 Add fuzzing CI job to .github/workflows/ci.yml — install cargo-fuzz, run each fuzz target for 60 seconds, fail on any crash/panic, report failing input
-- [ ] 9.4 Add benchmark CI job to .github/workflows/ci.yml — run cargo bench, compare against baselines, fail on >10% regression, upload results as artifact
+- [x] 9.2 Update .github/workflows/ci.yml coverage job — ensure lcov output is uploaded with per-crate flags matching codecov.yml flag definitions
+- [x] 9.3 Add fuzzing CI job to .github/workflows/ci.yml — install cargo-fuzz, run each fuzz target for 60 seconds, fail on any crash/panic, report failing input
+- [x] 9.4 Add benchmark CI job to .github/workflows/ci.yml — run cargo bench, compare against baselines, fail on >10% regression, upload results as artifact
 - [x] 9.5 Add Makefile targets — make fuzz (run all fuzz targets locally), make bench (run benchmarks), make bench-update-baseline (update baseline files), make coverage-report (generate local HTML coverage report)

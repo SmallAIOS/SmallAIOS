@@ -9,3 +9,30 @@ publish = false
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+smallaios-onnx-rt = { path = "../onnx-rt" }
+smallaios-security = { path = "../security" }
+smallaios-net = { path = "../net" }
+smallaios-ipc = { path = "../ipc" }
+
+[[bench]]
+name = "onnx_operators"
+harness = false
+
+[[bench]]
+name = "crypto"
+harness = false
+
+[[bench]]
+name = "network"
+harness = false
+
+[[bench]]
+name = "ipc"
+harness = false
+
+[[bench]]
+name = "memory"
+harness = false

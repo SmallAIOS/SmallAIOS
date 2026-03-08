@@ -364,7 +364,17 @@ fuzz:
 
 .PHONY: bench
 bench:
-	$(CARGO) bench --workspace
+	$(CARGO) bench -p smallaios-bench
+
+.PHONY: bench-update-baseline
+bench-update-baseline:
+	$(CARGO) bench -p smallaios-bench -- --save-baseline base
+	@echo "Baselines saved to target/criterion/"
+
+.PHONY: bench-check
+bench-check:
+	$(CARGO) bench -p smallaios-bench
+	./scripts/bench-regression.sh
 
 # === Coverage ===
 
