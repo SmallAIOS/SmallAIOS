@@ -3,7 +3,7 @@
 
 //! Integration test: container boot sequence.
 
-use smallaios_container::boot::{BootPhase, BootSequence};
+use smallaios_container::boot::BootSequence;
 use smallaios_container::config::ContainerConfig;
 
 #[test]
