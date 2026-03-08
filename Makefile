@@ -350,6 +350,41 @@ check-size-jetson: build-kernel-jetson
 sdcard-jetson: build-kernel-jetson
 	./scripts/make-sdcard-jetson.sh
 
+# === Fuzzing ===
+
+.PHONY: fuzz
+fuzz:
+	@echo "Running all fuzz targets for 60 seconds each..."
+	@for target in fuzz_onnx_protobuf fuzz_tcp_packet fuzz_udp_packet fuzz_usb_descriptor fuzz_ipc_message fuzz_onnx_tensor; do \
+		echo "=== $$target ==="; \
+		cargo fuzz run $$target -- -max_total_time=60 2>&1 || true; \
+	done
+
+# === Benchmarks ===
+
+.PHONY: bench
+bench:
+	$(CARGO) bench --workspace
+
+# === Coverage ===
+
+.PHONY: coverage-report
+coverage-report:
+	cargo llvm-cov --workspace --html \
+		-p smallaios-kernel \
+		-p smallaios-security \
+		-p smallaios-onnx-rt \
+		-p smallaios-ipc \
+		-p smallaios-net \
+		-p smallaios-posix \
+		-p smallaios-container \
+		-p smallaios-bus \
+		-p smallaios-peripheral --features smallaios-peripheral/full-peripheral \
+		-p smallaios-usb \
+		-p smallaios-sdr \
+		-p smallaios-bench
+	@echo "Coverage report: target/llvm-cov/html/index.html"
+
 # === Clean ===
 
 .PHONY: clean

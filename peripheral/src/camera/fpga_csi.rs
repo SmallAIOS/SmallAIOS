@@ -450,4 +450,601 @@ mod tests {
             Err(HalError::OutOfRange)
         );
     }
+
+    // ----- Constructor and field access tests -----
+
+    #[test]
+    fn test_fpga_csi_new_different_base() {
+        let drv = FpgaCsi::new(MockFpgaFabric::new(), 0xA000_0000);
+        assert_eq!(drv.base_addr(), 0xA000_0000);
+        assert_eq!(drv.sequence, 0);
+        assert_eq!(drv.current_buffer, 0);
+        assert_eq!(drv.frame_size, 0);
+        assert_eq!(drv.buffer_addrs, [0u64; 4]);
+        assert!(drv.config.is_none());
+    }
+
+    #[test]
+    fn test_fpga_csi_new_zero_base() {
+        let drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        assert_eq!(drv.base_addr(), 0);
+        assert!(!drv.is_configured());
+        assert!(!drv.is_capturing());
+    }
+
+    #[test]
+    fn test_fpga_csi_buffer_size_default() {
+        let drv = FpgaCsi::new(MockFpgaFabric::new(), 0x4300_0000);
+        assert_eq!(drv.buffer_size(), 0);
+    }
+
+    // ----- Pixel format configuration tests -----
+
+    #[test]
+    fn test_data_type_code_raw8() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        assert_eq!(FpgaCsi::<MockFpgaFabric>::data_type_code(&cfg), 0x2A);
+    }
+
+    #[test]
+    fn test_data_type_code_raw12() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw12;
+        assert_eq!(FpgaCsi::<MockFpgaFabric>::data_type_code(&cfg), 0x2C);
+    }
+
+    #[test]
+    fn test_data_type_code_yuv422() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Yuv422;
+        assert_eq!(FpgaCsi::<MockFpgaFabric>::data_type_code(&cfg), 0x1E);
+    }
+
+    #[test]
+    fn test_data_type_code_rgb888() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Rgb888;
+        assert_eq!(FpgaCsi::<MockFpgaFabric>::data_type_code(&cfg), 0x24);
+    }
+
+    #[test]
+    fn test_init_sets_pixel_format_register() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        // CSI_DATA_TYPE is at offset 0x014, index 5.
+        let data_type = drv.fabric.regs[(CSI_DATA_TYPE / 4) as usize];
+        assert_eq!(data_type, 0x2B); // Raw10
+    }
+
+    #[test]
+    fn test_init_sets_width_and_height_registers() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        let width = drv.fabric.regs[(CSI_ACTIVE_WIDTH / 4) as usize];
+        let height = drv.fabric.regs[(CSI_ACTIVE_HEIGHT / 4) as usize];
+        assert_eq!(width, 1920);
+        assert_eq!(height, 1080);
+    }
+
+    #[test]
+    fn test_init_sets_lane_register() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        let lanes = drv.fabric.regs[(CSI_LANES / 4) as usize];
+        assert_eq!(lanes, 2);
+    }
+
+    #[test]
+    fn test_init_with_different_pixel_formats() {
+        let formats: &[(CsiPixelFormat, u32)] = &[
+            (CsiPixelFormat::Raw8, 0x2A),
+            (CsiPixelFormat::Raw10, 0x2B),
+            (CsiPixelFormat::Raw12, 0x2C),
+            (CsiPixelFormat::Yuv422, 0x1E),
+            (CsiPixelFormat::Rgb888, 0x24),
+        ];
+        for &(fmt, expected_code) in formats {
+            let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+            let mut cfg = make_config();
+            cfg.pixel_format = fmt;
+            drv.init(cfg).unwrap();
+            let data_type = drv.fabric.regs[(CSI_DATA_TYPE / 4) as usize];
+            assert_eq!(data_type, expected_code);
+        }
+    }
+
+    // ----- DMA setup tests -----
+
+    #[test]
+    fn test_compute_line_stride_raw8() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        cfg.width = 1920;
+        let stride = FpgaCsi::<MockFpgaFabric>::compute_line_stride(&cfg);
+        // 1920 * 8 / 8 = 1920, aligned to 16 = 1920.
+        assert_eq!(stride, 1920);
+        assert_eq!(stride % 16, 0);
+    }
+
+    #[test]
+    fn test_compute_line_stride_raw12() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw12;
+        cfg.width = 1920;
+        let stride = FpgaCsi::<MockFpgaFabric>::compute_line_stride(&cfg);
+        // 1920 * 12 / 8 = 2880, aligned to 16 = 2880.
+        assert_eq!(stride, 2880);
+        assert_eq!(stride % 16, 0);
+    }
+
+    #[test]
+    fn test_compute_line_stride_yuv422() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Yuv422;
+        cfg.width = 1920;
+        let stride = FpgaCsi::<MockFpgaFabric>::compute_line_stride(&cfg);
+        // 1920 * 16 / 8 = 3840, aligned to 16 = 3840.
+        assert_eq!(stride, 3840);
+        assert_eq!(stride % 16, 0);
+    }
+
+    #[test]
+    fn test_compute_line_stride_rgb888() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Rgb888;
+        cfg.width = 1920;
+        let stride = FpgaCsi::<MockFpgaFabric>::compute_line_stride(&cfg);
+        // 1920 * 24 / 8 = 5760, aligned to 16 = 5760.
+        assert_eq!(stride, 5760);
+        assert_eq!(stride % 16, 0);
+    }
+
+    #[test]
+    fn test_compute_line_stride_alignment_needed() {
+        let mut cfg = make_config();
+        cfg.pixel_format = CsiPixelFormat::Raw8;
+        cfg.width = 100;
+        let stride = FpgaCsi::<MockFpgaFabric>::compute_line_stride(&cfg);
+        // 100 * 8 / 8 = 100, next multiple of 16 = 112.
+        assert_eq!(stride, 112);
+        assert_eq!(stride % 16, 0);
+    }
+
+    #[test]
+    fn test_init_sets_dma_line_stride_register() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        let stride = drv.fabric.regs[(DMA_LINE_STRIDE / 4) as usize];
+        assert_eq!(stride, 2400); // Raw10 1920px aligned to 16.
+    }
+
+    #[test]
+    fn test_init_sets_dma_frame_size_register() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        let frame_sz = drv.fabric.regs[(DMA_FRAME_SIZE / 4) as usize];
+        assert_eq!(
+            frame_sz as usize,
+            crate::camera::compute_frame_size(&make_config())
+        );
+    }
+
+    #[test]
+    fn test_dma_buf_reg_all_indices() {
+        assert_eq!(FpgaCsi::<MockFpgaFabric>::dma_buf_reg(0), Ok(DMA_BUF0_ADDR));
+        assert_eq!(FpgaCsi::<MockFpgaFabric>::dma_buf_reg(1), Ok(DMA_BUF1_ADDR));
+        assert_eq!(FpgaCsi::<MockFpgaFabric>::dma_buf_reg(2), Ok(DMA_BUF2_ADDR));
+        assert_eq!(FpgaCsi::<MockFpgaFabric>::dma_buf_reg(3), Ok(DMA_BUF3_ADDR));
+        assert_eq!(
+            FpgaCsi::<MockFpgaFabric>::dma_buf_reg(4),
+            Err(HalError::OutOfRange)
+        );
+        assert_eq!(
+            FpgaCsi::<MockFpgaFabric>::dma_buf_reg(255),
+            Err(HalError::OutOfRange)
+        );
+    }
+
+    #[test]
+    fn test_enqueue_frame_writes_buffer_address() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.buffer_addrs[0] = 0x1000_0000;
+        drv.enqueue_frame(0).unwrap();
+        let addr = drv.fabric.regs[(DMA_BUF0_ADDR / 4) as usize];
+        assert_eq!(addr, 0x1000_0000);
+    }
+
+    #[test]
+    fn test_enqueue_frame_different_buffers() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.buffer_addrs[0] = 0xA000_0000;
+        drv.buffer_addrs[1] = 0xB000_0000;
+        drv.buffer_addrs[2] = 0xC000_0000;
+        drv.enqueue_frame(0).unwrap();
+        drv.enqueue_frame(1).unwrap();
+        drv.enqueue_frame(2).unwrap();
+        assert_eq!(drv.fabric.regs[(DMA_BUF0_ADDR / 4) as usize], 0xA000_0000);
+        assert_eq!(drv.fabric.regs[(DMA_BUF1_ADDR / 4) as usize], 0xB000_0000);
+        assert_eq!(drv.fabric.regs[(DMA_BUF2_ADDR / 4) as usize], 0xC000_0000);
+    }
+
+    #[test]
+    fn test_enqueue_frame_out_of_range() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap(); // num_buffers = 3
+        assert_eq!(drv.enqueue_frame(3), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_enqueue_frame_not_configured() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        assert_eq!(drv.enqueue_frame(0), Err(HalError::InitFailed));
+    }
+
+    // ----- Frame sync detection / state machine tests -----
+
+    #[test]
+    fn test_start_capture_sets_ctrl_register() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.start_capture().unwrap();
+        let ctrl = drv.fabric.regs[(CTRL_REG / 4) as usize];
+        assert_eq!(ctrl, CTRL_ENABLE | CTRL_CAPTURE | CTRL_CONTINUOUS);
+    }
+
+    #[test]
+    fn test_start_capture_enables_irq_mask() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.start_capture().unwrap();
+        let mask = drv.fabric.regs[(IRQ_MASK / 4) as usize];
+        assert_eq!(
+            mask,
+            IRQ_FRAME_DONE | IRQ_OVERFLOW | IRQ_CRC_ERR | IRQ_ECC_ERR
+        );
+    }
+
+    #[test]
+    fn test_stop_capture_clears_ctrl_register() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.start_capture().unwrap();
+        drv.stop_capture().unwrap();
+        let ctrl = drv.fabric.regs[(CTRL_REG / 4) as usize];
+        assert_eq!(ctrl, 0);
+    }
+
+    #[test]
+    fn test_stop_capture_clears_irq_mask() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.start_capture().unwrap();
+        drv.stop_capture().unwrap();
+        let mask = drv.fabric.regs[(IRQ_MASK / 4) as usize];
+        assert_eq!(mask, 0);
+    }
+
+    #[test]
+    fn test_stop_capture_not_configured() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        assert_eq!(drv.stop_capture(), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_dequeue_frame_not_capturing() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        assert_eq!(drv.dequeue_frame(), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_dequeue_frame_returns_frame_data() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.start_capture().unwrap();
+        // Pre-populate the FRAME_STATUS, FRAME_COUNT, FRAME_TIMESTAMP registers.
+        drv.fabric.regs[(FRAME_STATUS / 4) as usize] = 0x02; // buffer index 2
+        drv.fabric.regs[(FRAME_COUNT / 4) as usize] = 42;
+        drv.fabric.regs[(FRAME_TIMESTAMP / 4) as usize] = 12345;
+        let frame = drv.dequeue_frame().unwrap();
+        assert_eq!(frame.buffer_index, 2);
+        assert_eq!(frame.sequence, 42);
+        assert_eq!(frame.timestamp_us, 12345);
+        assert_eq!(
+            frame.bytes_used as usize,
+            crate::camera::compute_frame_size(&make_config())
+        );
+    }
+
+    #[test]
+    fn test_full_init_start_stop_reset_cycle() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0x4300_0000);
+        // Init
+        assert!(drv.init(make_config()).is_ok());
+        assert!(drv.is_configured());
+        assert!(!drv.is_capturing());
+        // Start
+        assert!(drv.start_capture().is_ok());
+        assert!(drv.is_capturing());
+        // Stop
+        assert!(drv.stop_capture().is_ok());
+        assert!(!drv.is_capturing());
+        assert!(drv.is_configured());
+        // Reset
+        assert!(drv.reset().is_ok());
+        assert!(!drv.is_configured());
+        assert!(!drv.is_capturing());
+        assert_eq!(drv.buffer_size(), 0);
+    }
+
+    // ----- Error reporting tests -----
+
+    #[test]
+    fn test_irq_handler_frame_done() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.start_capture().unwrap();
+        // Set IRQ_FRAME_DONE in the IRQ_STATUS register.
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = IRQ_FRAME_DONE;
+        let result = drv.irq_handler().unwrap();
+        assert!(matches!(result, CsiIrqSource::FrameComplete(0)));
+        assert_eq!(drv.sequence, 1);
+        assert_eq!(drv.current_buffer, 1);
+    }
+
+    #[test]
+    fn test_irq_handler_frame_done_wraps_buffer() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap(); // num_buffers = 3
+        drv.start_capture().unwrap();
+        drv.current_buffer = 2;
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = IRQ_FRAME_DONE;
+        let result = drv.irq_handler().unwrap();
+        assert!(matches!(result, CsiIrqSource::FrameComplete(2)));
+        assert_eq!(drv.current_buffer, 0); // Wrapped around.
+    }
+
+    #[test]
+    fn test_irq_handler_overflow() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = IRQ_OVERFLOW;
+        let result = drv.irq_handler().unwrap();
+        assert!(matches!(result, CsiIrqSource::Overflow));
+    }
+
+    #[test]
+    fn test_irq_handler_crc_error() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = IRQ_CRC_ERR;
+        let result = drv.irq_handler().unwrap();
+        assert!(matches!(result, CsiIrqSource::CrcError));
+    }
+
+    #[test]
+    fn test_irq_handler_ecc_error() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = IRQ_ECC_ERR;
+        let result = drv.irq_handler().unwrap();
+        assert!(matches!(result, CsiIrqSource::EccError));
+    }
+
+    #[test]
+    fn test_irq_handler_overflow_takes_priority_over_frame_done() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        // Both overflow and frame done set.
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = IRQ_OVERFLOW | IRQ_FRAME_DONE;
+        let result = drv.irq_handler().unwrap();
+        assert!(matches!(result, CsiIrqSource::Overflow));
+    }
+
+    #[test]
+    fn test_irq_handler_crc_takes_priority_over_frame_done() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = IRQ_CRC_ERR | IRQ_FRAME_DONE;
+        let result = drv.irq_handler().unwrap();
+        assert!(matches!(result, CsiIrqSource::CrcError));
+    }
+
+    #[test]
+    fn test_irq_handler_no_bits_set() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = 0;
+        assert_eq!(drv.irq_handler(), Err(HalError::InterruptError));
+    }
+
+    #[test]
+    fn test_irq_handler_clears_status() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.fabric.regs[(IRQ_STATUS / 4) as usize] = IRQ_FRAME_DONE;
+        let _ = drv.irq_handler();
+        // IRQ_CLEAR register should have the status written to it.
+        let cleared = drv.fabric.regs[(IRQ_CLEAR / 4) as usize];
+        assert_eq!(cleared, IRQ_FRAME_DONE);
+    }
+
+    // ----- Config validation tests -----
+
+    #[test]
+    fn test_init_invalid_lanes_0() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.lanes = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_lanes_5() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.lanes = 5;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_width_zero() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.width = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_height_too_large() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.height = 5000;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_fps_zero() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.fps = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_num_buffers_zero() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.num_buffers = 0;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_num_buffers_too_many() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.num_buffers = 5;
+        assert_eq!(drv.init(cfg), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_valid_edge_config_1_lane() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.lanes = 1;
+        assert!(drv.init(cfg).is_ok());
+        assert_eq!(drv.fabric.regs[(CSI_LANES / 4) as usize], 1);
+    }
+
+    #[test]
+    fn test_init_valid_edge_config_4_lanes() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        let mut cfg = make_config();
+        cfg.lanes = 4;
+        assert!(drv.init(cfg).is_ok());
+        assert_eq!(drv.fabric.regs[(CSI_LANES / 4) as usize], 4);
+    }
+
+    #[test]
+    fn test_init_resets_sequence_and_buffer() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.sequence = 99;
+        drv.current_buffer = 3;
+        drv.init(make_config()).unwrap();
+        assert_eq!(drv.sequence, 0);
+        assert_eq!(drv.current_buffer, 0);
+    }
+
+    #[test]
+    fn test_init_soft_resets_core() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        // After init, CTRL_REG should be 0 (soft reset cleared).
+        // The init writes CTRL_SOFT_RESET then 0 to CTRL_REG.
+        let ctrl = drv.fabric.regs[(CTRL_REG / 4) as usize];
+        assert_eq!(ctrl, 0);
+    }
+
+    #[test]
+    fn test_init_masks_interrupts_initially() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        let mask = drv.fabric.regs[(IRQ_MASK / 4) as usize];
+        assert_eq!(mask, 0);
+    }
+
+    // ----- Buffer management tests -----
+
+    #[test]
+    fn test_buffer_address_not_configured() {
+        let drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        assert_eq!(drv.buffer_address(0), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_buffer_address_with_config() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.buffer_addrs[0] = 0xDEAD_0000;
+        drv.buffer_addrs[1] = 0xBEEF_0000;
+        assert_eq!(drv.buffer_address(0), Ok(0xDEAD_0000));
+        assert_eq!(drv.buffer_address(1), Ok(0xBEEF_0000));
+    }
+
+    #[test]
+    fn test_buffer_address_out_of_range() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap(); // num_buffers = 3
+        assert_eq!(drv.buffer_address(3), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_buffer_size_for_all_formats() {
+        let formats_and_sizes: &[(CsiPixelFormat, usize)] = &[
+            (CsiPixelFormat::Raw8, 1920 * 1080),
+            (CsiPixelFormat::Raw10, (1920 * 1080 * 10 + 7) / 8),
+            (CsiPixelFormat::Raw12, (1920 * 1080 * 12 + 7) / 8),
+            (CsiPixelFormat::Yuv422, 1920 * 1080 * 2),
+            (CsiPixelFormat::Rgb888, 1920 * 1080 * 3),
+        ];
+        for &(fmt, expected) in formats_and_sizes {
+            let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+            let mut cfg = make_config();
+            cfg.pixel_format = fmt;
+            drv.init(cfg).unwrap();
+            assert_eq!(drv.buffer_size(), expected);
+        }
+    }
+
+    #[test]
+    fn test_reset_clears_all_state() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.start_capture().unwrap();
+        drv.sequence = 10;
+        drv.reset().unwrap();
+        assert!(!drv.is_configured());
+        assert!(!drv.is_capturing());
+        assert!(drv.config.is_none());
+        assert_eq!(drv.frame_size, 0);
+        assert_eq!(drv.sequence, 0);
+        assert_eq!(drv.buffer_size(), 0);
+    }
+
+    #[test]
+    fn test_reinit_after_reset() {
+        let mut drv = FpgaCsi::new(MockFpgaFabric::new(), 0);
+        drv.init(make_config()).unwrap();
+        drv.reset().unwrap();
+        // Should be able to init again.
+        let mut cfg2 = make_config();
+        cfg2.pixel_format = CsiPixelFormat::Rgb888;
+        cfg2.lanes = 4;
+        assert!(drv.init(cfg2).is_ok());
+        assert!(drv.is_configured());
+        assert_eq!(drv.fabric.regs[(CSI_LANES / 4) as usize], 4);
+        assert_eq!(drv.fabric.regs[(CSI_DATA_TYPE / 4) as usize], 0x24);
+    }
 }

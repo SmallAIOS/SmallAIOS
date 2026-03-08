@@ -1,0 +1,45 @@
+[package]
+name = "smallaios-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+smallaios-onnx-rt = { path = "../onnx-rt" }
+smallaios-net = { path = "../net" }
+smallaios-usb = { path = "../usb" }
+smallaios-ipc = { path = "../ipc" }
+
+[[bin]]
+name = "fuzz_onnx_protobuf"
+path = "fuzz_targets/fuzz_onnx_protobuf.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_tcp_packet"
+path = "fuzz_targets/fuzz_tcp_packet.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_udp_packet"
+path = "fuzz_targets/fuzz_udp_packet.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_usb_descriptor"
+path = "fuzz_targets/fuzz_usb_descriptor.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_ipc_message"
+path = "fuzz_targets/fuzz_ipc_message.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_onnx_tensor"
+path = "fuzz_targets/fuzz_onnx_tensor.rs"
+doc = false
