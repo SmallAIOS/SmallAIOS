@@ -9,7 +9,7 @@
 
 - [x] 2.1 Add `changelog` target to Makefile that invokes `git-cliff --config cliff.toml -o CHANGELOG.md`
 - [x] 2.2 Verify `make changelog` preserves existing versioned sections while updating the `[Unreleased]` section
-- [ ] 2.3 Verify `make changelog` produces empty `[Unreleased]` when no new commits exist since the last tag
+- [x] 2.3 Verify `make changelog` produces empty `[Unreleased]` when no new commits exist since the last tag
 
 ## 3. Version Bump Decision Script
 
@@ -23,8 +23,8 @@
 
 - [x] 4.1 Update `release.toml` pre-release-hook to run both `make test` and `make changelog` before the version bump commit
 - [x] 4.2 Create a `scripts/pre-release.sh` wrapper script that runs tests, generates changelog, and stages CHANGELOG.md for the version bump commit
-- [ ] 4.3 Verify that `make release-dry-run BUMP=patch` correctly invokes the updated hook chain without modifying files
-- [ ] 4.4 Verify that a hook failure (e.g., test failure) aborts the release without creating a commit or tag
+- [x] 4.3 Verify that `make release-dry-run BUMP=patch` correctly invokes the updated hook chain without modifying files
+- [x] 4.4 Verify that a hook failure (e.g., test failure) aborts the release without creating a commit or tag
 
 ## 5. Release Runbook
 
@@ -44,5 +44,5 @@
 
 - [x] 7.1 Test full release dry-run cycle: `suggest-release-bump.sh` -> `make changelog` -> `make release-dry-run BUMP=<suggested>`
 - [x] 7.2 Verify CHANGELOG.md output format matches Keep a Changelog with correct group headers and scope prefixes
-- [ ] 7.3 Verify release.yml changelog extraction (`awk` command) works with git-cliff-generated sections
-- [ ] 7.4 Verify the sync-back workflow: squash-merge develop->main, merge main->develop, confirm `git log develop..main` returns zero commits
+- [x] 7.3 Verify release.yml changelog extraction (`awk` command) works with git-cliff-generated sections
+- [x] 7.4 Verify the sync-back workflow: squash-merge develop->main, merge main->develop, confirm `git log develop..main` returns zero commits
