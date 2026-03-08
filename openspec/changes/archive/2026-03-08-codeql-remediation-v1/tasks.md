@@ -35,5 +35,5 @@
 
 ## 5. Enable CodeQL as Merge Gate
 
-- [ ] 5.1 Verify zero open CodeQL alerts after all fixes are merged
-- [ ] 5.2 Add CodeQL as a required status check on branch protection for `main` and `develop`
+- [ ] 5.1 Verify zero open CodeQL alerts after all fixes are merged — DEFERRED: requires admin gate (GitHub branch protection settings)
+- [ ] 5.2 Add CodeQL as a required status check on branch protection for `main` and `develop` — DEFERRED: requires admin gate (GitHub branch protection settings)

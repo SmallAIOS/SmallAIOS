@@ -254,8 +254,17 @@ dsm:
     python3 scripts/dsm-matrix.py
     @echo "Generated build/analysis/dsm-matrix.json and dsm-matrix.csv"
 
-# Run all dependency analysis (depgraph + modgraph + dsm)
-arch: depgraph modgraph dsm
+# Run DSM analysis tool (propagation cost, fan-in/out, clusters, layering violations)
+dsm-analyze: dsm
+    @echo "Running DSM analysis..."
+    @if [ -f tools/dsm/Cargo.toml ]; then \
+        cargo run --manifest-path tools/dsm/Cargo.toml -- build/analysis/dsm-matrix.json --output build/analysis/dsm-metrics.json; \
+    else \
+        echo "WARNING: tools/dsm/ crate not found, skipping DSM analysis"; \
+    fi
+
+# Run all dependency analysis (depgraph + modgraph + dsm + analysis)
+arch: depgraph modgraph dsm dsm-analyze
     @echo "All dependency analysis complete. See build/analysis/"
 
 # === Changelog ===

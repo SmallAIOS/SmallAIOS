@@ -40,6 +40,7 @@ just modgraph               # Module-level graphs for all host crates
 just modgraph smallaios-kernel  # Single crate module graph
 just arch-check             # Module-level acyclicity check
 just dsm                    # DSM adjacency matrix (JSON + CSV)
+just dsm-analyze            # DSM + propagation cost, fan-in/out, clusters
 just arch                   # All of the above
 
 # Release (requires cargo-release)
@@ -61,27 +62,21 @@ sudo apt install graphviz                            # SVG graph rendering
 
 ## Workspace Architecture
 
-18-crate Rust workspace (`#![no_std]`, edition 2021). Dependency flow:
+18-crate Rust workspace (`#![no_std]`, edition 2021). Strict 4-layer acyclic dependency model (see `docs/architecture.md` for full details):
 
 ```
-kernel (foundation: memory, scheduler, syscall interface)
-├── security (capability-based access, PQC crypto, formal gate)
-├── arch/x86_64 (HAL: boot, GDT, IDT, APIC, paging, syscall)
-├── arch/aarch64 (HAL: boot, GICv3, paging, SVE, PSCI)
-├── arch/riscv64 (HAL: boot, SBI, trap handling, paging)
-├── arch/nvidia (HAL stub: PCIe, GPU init, compute, DMA)
-├── arch/intel_gpu (HAL stub: Xe-LP/HPG/HPC interfaces)
-├── arch/amd (HAL stub: RDNA/CDNA interfaces)
-├── onnx-rt (parser, optimizer, execution providers)
-├── ipc (Zenoh-inspired pub/sub messaging)
-├── net (IPv4/IPv6, TCP/UDP native stack)
-├── posix (minimal POSIX compat layer)
-├── bus (CAN, ARINC 429, MIL-STD-1553, SpaceWire)
-├── peripheral (I2C, SPI, GPIO, UART, CSI camera, I2S audio)
-├── usb (USB core stack, xHCI host controller)
-├── sdr (Software-defined radio drivers)
-├── bench (benchmarks)
-└── container (entry point, config, health, metrics)
+Layer 3 — Integration:  container, bench
+Layer 2 — HAL/Drivers:  arch/{x86_64,aarch64,riscv64,nvidia,intel_gpu,amd}, peripheral, bus, sdr
+Layer 1 — Core Services: net, ipc, posix, onnx-rt, usb
+Layer 0 — Foundation:    kernel → security
+```
+
+**Dependency rules:** Higher layers depend on same or lower layers only. Zero production-dependency cycles. The DSM analysis tool (`tools/dsm/`) computes propagation cost, fan-in/out, coupling clusters, and layering violations from `build/analysis/dsm-matrix.json`.
+
+```
+just dsm-analyze    # Generate DSM + run analysis
+just arch-check     # Module-level acyclicity check
+just arch           # Full dependency analysis suite
 ```
 
 ## Key Design Decisions
@@ -161,18 +156,14 @@ Each OpenSpec change gets its own branch. Worktrees can be created as needed in 
 
 ## OpenSpec Changes
 
-Active specs in `openspec/changes/`, completed specs in `openspec/archived/`. Reference specs in `openspec/smallaios-kernel/`.
+Active specs in `openspec/changes/`, archived specs in `openspec/changes/archive/` (with `YYYY-MM-DD-` date prefixes). Reference specs in `openspec/smallaios-kernel/`.
 
 | Change | Status | Tasks | Focus |
 |--------|--------|-------|-------|
-| `smallaios-kernel-v1` | Active | 142/146 | Core kernel, memory, scheduler, crypto, ONNX, networking |
-| `platform-expansion-v2` | Active | 191/205 | RISC-V, CAN/ARINC/MIL-STD buses, K8s, DDS, QUIC |
-| `cybersecurity-compliance-v3` | Complete | 110/110 | NIST SP 800-53, audit, supply chain, incident response |
-| `amd-gpu-support-v4` | Complete | 14/14 | AMD RDNA/CDNA GPU HAL stub |
-| `intel-gpu-support-v5` | Complete | 12/12 | Intel Xe GPU HAL stub |
-| `hardware-peripheral-interfaces-v6` | Complete | 74/74 | I2C, SPI, GPIO, UART, CSI, I2S |
-| `usb-sdr-support-v1` | Active | 109/117 | USB core stack, xHCI, SDR drivers |
-| `formal-type-gate-v1` | Complete | 52/52 | Type-safe security gate with formal verification |
+| `architecture-documentation-v1` | Active | In progress | DSM tooling, architecture docs, archive consolidation |
+| `smallaios-kernel-v1` | Archived | 143/144 | Core kernel — 1 task DEFERRED (sphinx-needs) |
+| `platform-expansion-v2` | Archived | 191/198 | RISC-V, buses — 7 tasks DEFERRED (hardware-dependent) |
+| `codeql-remediation-v1` | Archived | 23/25 | CodeQL fixes — 2 tasks DEFERRED (admin gates) |
 
 Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:verify`, `/opsx:archive`) to manage changes. The workflow is: proposal → design → specs → tasks → implementation → verification → archive.
 
@@ -190,6 +181,7 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` an
 - **TLA+ Verification** — runs TLC on 19 formal models (5 min timeout per model; timeouts are warnings, not failures)
 - **Code Coverage** — `cargo-llvm-cov` with lcov output, uploaded to [Codecov](https://codecov.io)
 - **SonarCloud Analysis** — static analysis via [SonarCloud](https://sonarcloud.io)
+- **Dependency Analysis** — crate/module dependency graphs, DSM matrix, DSM metrics analysis
 - **Change Gates** — meta-job that gates PR mergeability
 
 **Required secrets:** `CODECOV_TOKEN`, `SONAR_TOKEN`
