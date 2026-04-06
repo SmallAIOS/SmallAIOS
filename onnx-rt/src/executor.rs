@@ -222,6 +222,14 @@ fn dispatch_node(
             operators::op_gemm(a, b, c, alpha, beta, trans_a, trans_b)
         }
 
+        // Convolution
+        OpKind::Conv => {
+            let input = require_input(inputs, 0, "Conv")?;
+            let weight = require_input(inputs, 1, "Conv")?;
+            let bias = optional_input(inputs, 2);
+            operators::op_conv(input, weight, bias)
+        }
+
         // Activations
         OpKind::Relu => {
             let t = require_input(inputs, 0, "Relu")?;
@@ -263,7 +271,7 @@ fn dispatch_node(
             let t = require_input(inputs, 0, "Squeeze")?;
             // In opset 13+, axes come from second input tensor
             let axes_tensor = optional_input(inputs, 1);
-            let axes = axes_tensor.map(|at| read_i64_tensor(at));
+            let axes = axes_tensor.map(read_i64_tensor);
             operators::op_squeeze(t, axes.as_deref())
         }
         OpKind::Unsqueeze => {
@@ -297,8 +305,8 @@ fn dispatch_node(
             let steps_tensor = optional_input(inputs, 4);
             let starts = read_i64_tensor(starts_tensor);
             let ends = read_i64_tensor(ends_tensor);
-            let axes = axes_tensor.map(|at| read_i64_tensor(at));
-            let steps = steps_tensor.map(|st| read_i64_tensor(st));
+            let axes = axes_tensor.map(read_i64_tensor);
+            let steps = steps_tensor.map(read_i64_tensor);
             operators::op_slice(t, &starts, &ends, axes.as_deref(), steps.as_deref())
         }
         OpKind::Pad => {
@@ -420,12 +428,9 @@ fn dispatch_node(
         OpKind::ReduceSum => {
             let x = require_input(inputs, 0, "ReduceSum")?;
             // Opset 13+: axes from second input; older: from attribute
-            let axes_from_input = optional_input(inputs, 1).map(|at| read_i64_tensor(at));
+            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
             let axes_attr = get_attr_ints(attrs, "axes");
-            let axes = axes_from_input
-                .as_deref()
-                .or(axes_attr)
-                .unwrap_or(&[]);
+            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
             let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
             operators::op_reduce_sum(x, axes, keepdims)
         }
@@ -447,7 +452,8 @@ fn require_input<'a>(
     inputs.get(index).and_then(|opt| *opt).ok_or_else(|| {
         OpError::ShapeMismatch(alloc::format!(
             "{} missing required input at index {}",
-            op_name, index
+            op_name,
+            index
         ))
     })
 }
@@ -503,7 +509,7 @@ fn read_i64_tensor(tensor: &Tensor) -> Vec<i64> {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::graph::{build_execution_graph, ExecutionNode, NodeIndex};
+    use crate::graph::build_execution_graph;
     use crate::onnx_types::{GraphProto, NodeProto, ValueInfoProto};
     use alloc::string::ToString;
     use alloc::vec;
@@ -536,11 +542,7 @@ mod tests {
         }
     }
 
-    fn make_graph(
-        nodes: Vec<NodeProto>,
-        inputs: &[&str],
-        outputs: &[&str],
-    ) -> GraphProto {
+    fn make_graph(nodes: Vec<NodeProto>, inputs: &[&str], outputs: &[&str]) -> GraphProto {
         GraphProto {
             name: "test".to_string(),
             node: nodes,
@@ -580,12 +582,14 @@ mod tests {
         assert_eq!(results[0].name, "y");
 
         let out_data: Vec<f32> = (0..4)
-            .map(|i| f32::from_le_bytes([
-                results[0].tensor.raw_data[i * 4],
-                results[0].tensor.raw_data[i * 4 + 1],
-                results[0].tensor.raw_data[i * 4 + 2],
-                results[0].tensor.raw_data[i * 4 + 3],
-            ]))
+            .map(|i| {
+                f32::from_le_bytes([
+                    results[0].tensor.raw_data[i * 4],
+                    results[0].tensor.raw_data[i * 4 + 1],
+                    results[0].tensor.raw_data[i * 4 + 2],
+                    results[0].tensor.raw_data[i * 4 + 3],
+                ])
+            })
             .collect();
         assert_eq!(out_data, vec![0.0, 0.0, 1.0, 2.0]);
     }
@@ -605,12 +609,14 @@ mod tests {
 
         let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
         let out_data: Vec<f32> = (0..3)
-            .map(|i| f32::from_le_bytes([
-                results[0].tensor.raw_data[i * 4],
-                results[0].tensor.raw_data[i * 4 + 1],
-                results[0].tensor.raw_data[i * 4 + 2],
-                results[0].tensor.raw_data[i * 4 + 3],
-            ]))
+            .map(|i| {
+                f32::from_le_bytes([
+                    results[0].tensor.raw_data[i * 4],
+                    results[0].tensor.raw_data[i * 4 + 1],
+                    results[0].tensor.raw_data[i * 4 + 2],
+                    results[0].tensor.raw_data[i * 4 + 3],
+                ])
+            })
             .collect();
         assert_eq!(out_data, vec![2.0, 4.0, 6.0]);
     }
@@ -645,12 +651,14 @@ mod tests {
         // Add: [1.0, 2.0] + [-0.5, -3.0] = [0.5, -1.0]
         // Relu: [0.5, 0.0]
         let out_data: Vec<f32> = (0..2)
-            .map(|i| f32::from_le_bytes([
-                results[0].tensor.raw_data[i * 4],
-                results[0].tensor.raw_data[i * 4 + 1],
-                results[0].tensor.raw_data[i * 4 + 2],
-                results[0].tensor.raw_data[i * 4 + 3],
-            ]))
+            .map(|i| {
+                f32::from_le_bytes([
+                    results[0].tensor.raw_data[i * 4],
+                    results[0].tensor.raw_data[i * 4 + 1],
+                    results[0].tensor.raw_data[i * 4 + 2],
+                    results[0].tensor.raw_data[i * 4 + 3],
+                ])
+            })
             .collect();
         assert_eq!(out_data, vec![0.5, 0.0]);
     }
@@ -687,9 +695,10 @@ mod tests {
     #[test]
     fn test_execute_with_initializers() {
         // Use initializer as weight: x → MatMul(x, w_init) → y
+        // In ONNX, initializers are also listed as graph inputs
         let graph_proto = make_graph(
             vec![make_node("MatMul", "mm", &["x", "w"], &["y"])],
-            &["x"],
+            &["x", "w"],
             &["y"],
         );
         let exec_graph = build_execution_graph(&graph_proto).unwrap();
@@ -708,12 +717,14 @@ mod tests {
 
         let results = execute_graph(&exec_graph, &inputs, &[w_init], None).unwrap();
         let out_data: Vec<f32> = (0..2)
-            .map(|i| f32::from_le_bytes([
-                results[0].tensor.raw_data[i * 4],
-                results[0].tensor.raw_data[i * 4 + 1],
-                results[0].tensor.raw_data[i * 4 + 2],
-                results[0].tensor.raw_data[i * 4 + 3],
-            ]))
+            .map(|i| {
+                f32::from_le_bytes([
+                    results[0].tensor.raw_data[i * 4],
+                    results[0].tensor.raw_data[i * 4 + 1],
+                    results[0].tensor.raw_data[i * 4 + 2],
+                    results[0].tensor.raw_data[i * 4 + 3],
+                ])
+            })
             .collect();
         assert_eq!(out_data, vec![3.0, 4.0]);
     }

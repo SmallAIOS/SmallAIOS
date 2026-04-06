@@ -867,12 +867,16 @@ fn conv_compute(
 /// Element-wise subtraction with broadcasting.
 pub fn op_sub(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     if inputs.len() != 2 {
-        return Err(OpError::ShapeMismatch(String::from("Sub requires exactly 2 inputs")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "Sub requires exactly 2 inputs",
+        )));
     }
     let a = inputs[0];
     let b = inputs[1];
     if a.data_type != DataType::Float || b.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Sub only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Sub only supports float32",
+        )));
     }
     let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
     let total = out_shape.total_elements();
@@ -884,23 +888,38 @@ pub fn op_sub(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     let b_dim_offset = ndim.saturating_sub(b.shape.dims.len());
     let mut coord = alloc::vec![0usize; ndim];
     for i in 0..total {
-        if i > 0 { next_coord(&mut coord, &out_shape.dims); }
+        if i > 0 {
+            next_coord(&mut coord, &out_shape.dims);
+        }
         let a_idx = broadcast_linear_index(&coord, &a.shape.dims, &a_strides, a_dim_offset);
         let b_idx = broadcast_linear_index(&coord, &b.shape.dims, &b_strides, b_dim_offset);
-        write_f32(&mut raw_data, i, read_f32(&a.raw_data, a_idx) - read_f32(&b.raw_data, b_idx));
+        write_f32(
+            &mut raw_data,
+            i,
+            read_f32(&a.raw_data, a_idx) - read_f32(&b.raw_data, b_idx),
+        );
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Element-wise multiplication with broadcasting.
 pub fn op_mul(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     if inputs.len() != 2 {
-        return Err(OpError::ShapeMismatch(String::from("Mul requires exactly 2 inputs")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "Mul requires exactly 2 inputs",
+        )));
     }
     let a = inputs[0];
     let b = inputs[1];
     if a.data_type != DataType::Float || b.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Mul only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Mul only supports float32",
+        )));
     }
     let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
     let total = out_shape.total_elements();
@@ -912,23 +931,38 @@ pub fn op_mul(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     let b_dim_offset = ndim.saturating_sub(b.shape.dims.len());
     let mut coord = alloc::vec![0usize; ndim];
     for i in 0..total {
-        if i > 0 { next_coord(&mut coord, &out_shape.dims); }
+        if i > 0 {
+            next_coord(&mut coord, &out_shape.dims);
+        }
         let a_idx = broadcast_linear_index(&coord, &a.shape.dims, &a_strides, a_dim_offset);
         let b_idx = broadcast_linear_index(&coord, &b.shape.dims, &b_strides, b_dim_offset);
-        write_f32(&mut raw_data, i, read_f32(&a.raw_data, a_idx) * read_f32(&b.raw_data, b_idx));
+        write_f32(
+            &mut raw_data,
+            i,
+            read_f32(&a.raw_data, a_idx) * read_f32(&b.raw_data, b_idx),
+        );
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Element-wise division with broadcasting.
 pub fn op_div(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     if inputs.len() != 2 {
-        return Err(OpError::ShapeMismatch(String::from("Div requires exactly 2 inputs")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "Div requires exactly 2 inputs",
+        )));
     }
     let a = inputs[0];
     let b = inputs[1];
     if a.data_type != DataType::Float || b.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Div only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Div only supports float32",
+        )));
     }
     let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
     let total = out_shape.total_elements();
@@ -940,12 +974,23 @@ pub fn op_div(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     let b_dim_offset = ndim.saturating_sub(b.shape.dims.len());
     let mut coord = alloc::vec![0usize; ndim];
     for i in 0..total {
-        if i > 0 { next_coord(&mut coord, &out_shape.dims); }
+        if i > 0 {
+            next_coord(&mut coord, &out_shape.dims);
+        }
         let a_idx = broadcast_linear_index(&coord, &a.shape.dims, &a_strides, a_dim_offset);
         let b_idx = broadcast_linear_index(&coord, &b.shape.dims, &b_strides, b_dim_offset);
-        write_f32(&mut raw_data, i, read_f32(&a.raw_data, a_idx) / read_f32(&b.raw_data, b_idx));
+        write_f32(
+            &mut raw_data,
+            i,
+            read_f32(&a.raw_data, a_idx) / read_f32(&b.raw_data, b_idx),
+        );
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// General Matrix Multiply: alpha * A @ B + beta * C.
@@ -959,10 +1004,14 @@ pub fn op_gemm(
     trans_b: bool,
 ) -> Result<Tensor, OpError> {
     if a.data_type != DataType::Float || b.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Gemm only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Gemm only supports float32",
+        )));
     }
     if a.shape.ndim() != 2 || b.shape.ndim() != 2 {
-        return Err(OpError::ShapeMismatch(String::from("Gemm requires 2D inputs")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "Gemm requires 2D inputs",
+        )));
     }
     let (m, k_a) = if trans_a {
         (a.shape.dims[1] as usize, a.shape.dims[0] as usize)
@@ -975,7 +1024,9 @@ pub fn op_gemm(
         (b.shape.dims[0] as usize, b.shape.dims[1] as usize)
     };
     if k_a != k_b {
-        return Err(OpError::ShapeMismatch(String::from("Gemm inner dimensions mismatch")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "Gemm inner dimensions mismatch",
+        )));
     }
     let k = k_a;
 
@@ -1006,7 +1057,11 @@ pub fn op_gemm(
             if let Some(c_tensor) = c {
                 if beta != 0.0 {
                     // C can be [M, N] or [N] (bias broadcast)
-                    let c_idx = if c_tensor.shape.ndim() == 1 { j } else { i * n + j };
+                    let c_idx = if c_tensor.shape.ndim() == 1 {
+                        j
+                    } else {
+                        i * n + j
+                    };
                     if c_idx < c_tensor.shape.total_elements() {
                         val += beta * read_f32(&c_tensor.raw_data, c_idx);
                     }
@@ -1031,7 +1086,9 @@ pub fn op_gemm(
 /// Element-wise sigmoid: 1 / (1 + exp(-x)).
 pub fn op_sigmoid(input: &Tensor) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Sigmoid only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Sigmoid only supports float32",
+        )));
     }
     let total = input.shape.total_elements();
     let mut raw_data = alloc::vec![0u8; total * 4];
@@ -1040,13 +1097,20 @@ pub fn op_sigmoid(input: &Tensor) -> Result<Tensor, OpError> {
         let val = 1.0 / (1.0 + expf_approx(-x));
         write_f32(&mut raw_data, i, val);
     }
-    Ok(Tensor { data_type: DataType::Float, shape: input.shape.clone(), name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Element-wise tanh: (exp(x) - exp(-x)) / (exp(x) + exp(-x)).
 pub fn op_tanh(input: &Tensor) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Tanh only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Tanh only supports float32",
+        )));
     }
     let total = input.shape.total_elements();
     let mut raw_data = alloc::vec![0u8; total * 4];
@@ -1054,10 +1118,19 @@ pub fn op_tanh(input: &Tensor) -> Result<Tensor, OpError> {
         let x = read_f32(&input.raw_data, i);
         let ep = expf_approx(x);
         let em = expf_approx(-x);
-        let val = if ep + em != 0.0 { (ep - em) / (ep + em) } else { 0.0 };
+        let val = if ep + em != 0.0 {
+            (ep - em) / (ep + em)
+        } else {
+            0.0
+        };
         write_f32(&mut raw_data, i, val);
     }
-    Ok(Tensor { data_type: DataType::Float, shape: input.shape.clone(), name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1067,7 +1140,9 @@ pub fn op_tanh(input: &Tensor) -> Result<Tensor, OpError> {
 /// Transpose tensor dimensions according to permutation.
 pub fn op_transpose(input: &Tensor, perm: Option<&[i64]>) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Transpose only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Transpose only supports float32",
+        )));
     }
     let ndim = input.shape.ndim();
     let perm_vec: Vec<usize> = match perm {
@@ -1075,7 +1150,9 @@ pub fn op_transpose(input: &Tensor, perm: Option<&[i64]>) -> Result<Tensor, OpEr
         None => (0..ndim).rev().collect(),
     };
     if perm_vec.len() != ndim {
-        return Err(OpError::InvalidAttribute(String::from("perm length must match ndim")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "perm length must match ndim",
+        )));
     }
     let out_dims: Vec<i64> = perm_vec.iter().map(|&p| input.shape.dims[p]).collect();
     let out_shape = TensorShape::new(out_dims);
@@ -1086,25 +1163,40 @@ pub fn op_transpose(input: &Tensor, perm: Option<&[i64]>) -> Result<Tensor, OpEr
 
     let mut out_coord = alloc::vec![0usize; ndim];
     for i in 0..total {
-        if i > 0 { next_coord(&mut out_coord, &out_shape.dims); }
+        if i > 0 {
+            next_coord(&mut out_coord, &out_shape.dims);
+        }
         let mut in_idx = 0usize;
         for d in 0..ndim {
             in_idx += out_coord[d] * in_strides[perm_vec[d]];
         }
         write_f32(&mut raw_data, i, read_f32(&input.raw_data, in_idx));
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Concatenate tensors along axis.
 pub fn op_concat(inputs: &[&Tensor], axis: i64) -> Result<Tensor, OpError> {
     if inputs.is_empty() {
-        return Err(OpError::ShapeMismatch(String::from("Concat requires at least 1 input")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "Concat requires at least 1 input",
+        )));
     }
     let ndim = inputs[0].shape.ndim();
-    let resolved_axis = if axis < 0 { (ndim as i64 + axis) as usize } else { axis as usize };
+    let resolved_axis = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
     if resolved_axis >= ndim {
-        return Err(OpError::InvalidAttribute(String::from("Concat axis out of range")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Concat axis out of range",
+        )));
     }
     let mut out_dims = inputs[0].shape.dims.clone();
     let mut concat_size = inputs[0].shape.dims[resolved_axis];
@@ -1122,23 +1214,38 @@ pub fn op_concat(inputs: &[&Tensor], axis: i64) -> Result<Tensor, OpError> {
         let in_total = input.shape.total_elements();
         let mut in_coord = alloc::vec![0usize; ndim];
         for i in 0..in_total {
-            if i > 0 { next_coord(&mut in_coord, &input.shape.dims); }
+            if i > 0 {
+                next_coord(&mut in_coord, &input.shape.dims);
+            }
             let mut out_idx = 0usize;
             for d in 0..ndim {
-                let c = if d == resolved_axis { in_coord[d] + axis_offset } else { in_coord[d] };
+                let c = if d == resolved_axis {
+                    in_coord[d] + axis_offset
+                } else {
+                    in_coord[d]
+                };
                 out_idx += c * out_strides[d];
             }
             write_f32(&mut raw_data, out_idx, read_f32(&input.raw_data, i));
         }
         axis_offset += input.shape.dims[resolved_axis] as usize;
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Flatten tensor to 2D at specified axis.
 pub fn op_flatten(input: &Tensor, axis: i64) -> Result<Tensor, OpError> {
     let ndim = input.shape.ndim();
-    let resolved = if axis < 0 { (ndim as i64 + axis) as usize } else { axis as usize };
+    let resolved = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
     let dim0: i64 = input.shape.dims[..resolved].iter().product::<i64>().max(1);
     let dim1: i64 = input.shape.dims[resolved..].iter().product::<i64>().max(1);
     Ok(Tensor {
@@ -1154,15 +1261,29 @@ pub fn op_squeeze(input: &Tensor, axes: Option<&[i64]>) -> Result<Tensor, OpErro
     let new_dims: Vec<i64> = match axes {
         Some(ax) => {
             let ndim = input.shape.ndim() as i64;
-            input.shape.dims.iter().enumerate()
+            input
+                .shape
+                .dims
+                .iter()
+                .enumerate()
                 .filter(|(i, &d)| {
                     let idx = *i as i64;
-                    !(d == 1 && ax.iter().any(|&a| { let ra = if a < 0 { ndim + a } else { a }; ra == idx }))
+                    !(d == 1
+                        && ax.iter().any(|&a| {
+                            let ra = if a < 0 { ndim + a } else { a };
+                            ra == idx
+                        }))
                 })
                 .map(|(_, &d)| d)
                 .collect()
         }
-        None => input.shape.dims.iter().copied().filter(|&d| d != 1).collect(),
+        None => input
+            .shape
+            .dims
+            .iter()
+            .copied()
+            .filter(|&d| d != 1)
+            .collect(),
     };
     Ok(Tensor {
         data_type: input.data_type,
@@ -1175,8 +1296,15 @@ pub fn op_squeeze(input: &Tensor, axes: Option<&[i64]>) -> Result<Tensor, OpErro
 /// Insert dimensions of size 1 at specified positions.
 pub fn op_unsqueeze(input: &Tensor, axes: &[i64]) -> Result<Tensor, OpError> {
     let out_ndim = input.shape.ndim() + axes.len();
-    let mut sorted_axes: Vec<usize> = axes.iter()
-        .map(|&a| if a < 0 { (out_ndim as i64 + a) as usize } else { a as usize })
+    let mut sorted_axes: Vec<usize> = axes
+        .iter()
+        .map(|&a| {
+            if a < 0 {
+                (out_ndim as i64 + a) as usize
+            } else {
+                a as usize
+            }
+        })
         .collect();
     sorted_axes.sort();
     let mut new_dims = input.shape.dims.clone();
@@ -1206,14 +1334,21 @@ pub fn op_cast(input: &Tensor, to: DataType) -> Result<Tensor, OpError> {
         for i in 0..total {
             let v = read_f32(&input.raw_data, i) as i32;
             let b = v.to_le_bytes();
-            for j in 0..4 { raw_data[i * 4 + j] = b[j]; }
+            for j in 0..4 {
+                raw_data[i * 4 + j] = b[j];
+            }
         }
     }
     // int32 → f32
     else if input.data_type == DataType::Int32 && to == DataType::Float {
         for i in 0..total {
             let off = i * 4;
-            let v = i32::from_le_bytes([input.raw_data[off], input.raw_data[off+1], input.raw_data[off+2], input.raw_data[off+3]]);
+            let v = i32::from_le_bytes([
+                input.raw_data[off],
+                input.raw_data[off + 1],
+                input.raw_data[off + 2],
+                input.raw_data[off + 3],
+            ]);
             write_f32(&mut raw_data, i, v as f32);
         }
     }
@@ -1222,7 +1357,9 @@ pub fn op_cast(input: &Tensor, to: DataType) -> Result<Tensor, OpError> {
         for i in 0..total {
             let v = read_f32(&input.raw_data, i) as i64;
             let b = v.to_le_bytes();
-            for j in 0..8 { raw_data[i * 8 + j] = b[j]; }
+            for j in 0..8 {
+                raw_data[i * 8 + j] = b[j];
+            }
         }
     }
     // int64 → f32
@@ -1230,33 +1367,51 @@ pub fn op_cast(input: &Tensor, to: DataType) -> Result<Tensor, OpError> {
         for i in 0..total {
             let off = i * 8;
             let v = i64::from_le_bytes([
-                input.raw_data[off], input.raw_data[off+1], input.raw_data[off+2], input.raw_data[off+3],
-                input.raw_data[off+4], input.raw_data[off+5], input.raw_data[off+6], input.raw_data[off+7],
+                input.raw_data[off],
+                input.raw_data[off + 1],
+                input.raw_data[off + 2],
+                input.raw_data[off + 3],
+                input.raw_data[off + 4],
+                input.raw_data[off + 5],
+                input.raw_data[off + 6],
+                input.raw_data[off + 7],
             ]);
             write_f32(&mut raw_data, i, v as f32);
         }
-    }
-    else {
+    } else {
         return Err(OpError::NotImplemented);
     }
 
-    Ok(Tensor { data_type: to, shape: input.shape.clone(), name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: to,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Gather elements along axis using index tensor.
 pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Gather only supports float32 input")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Gather only supports float32 input",
+        )));
     }
     let ndim = input.shape.ndim();
-    let resolved_axis = if axis < 0 { (ndim as i64 + axis) as usize } else { axis as usize };
+    let resolved_axis = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
     let num_indices = indices.shape.total_elements();
 
     // Output shape: input dims with axis dim replaced by indices shape
     let mut out_dims = Vec::new();
     for (d, &dim) in input.shape.dims.iter().enumerate() {
         if d == resolved_axis {
-            for &id in &indices.shape.dims { out_dims.push(id); }
+            for &id in &indices.shape.dims {
+                out_dims.push(id);
+            }
         } else {
             out_dims.push(dim);
         }
@@ -1273,8 +1428,14 @@ pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, 
             let off = i * 8;
             let idx = if indices.data_type == DataType::Int64 && indices.raw_data.len() >= off + 8 {
                 i64::from_le_bytes([
-                    indices.raw_data[off], indices.raw_data[off+1], indices.raw_data[off+2], indices.raw_data[off+3],
-                    indices.raw_data[off+4], indices.raw_data[off+5], indices.raw_data[off+6], indices.raw_data[off+7],
+                    indices.raw_data[off],
+                    indices.raw_data[off + 1],
+                    indices.raw_data[off + 2],
+                    indices.raw_data[off + 3],
+                    indices.raw_data[off + 4],
+                    indices.raw_data[off + 5],
+                    indices.raw_data[off + 6],
+                    indices.raw_data[off + 7],
                 ]) as usize
             } else {
                 0
@@ -1286,13 +1447,20 @@ pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, 
         // General N-D case: iterate output coordinates
         let mut out_coord = alloc::vec![0usize; out_shape.ndim()];
         for i in 0..total {
-            if i > 0 { next_coord(&mut out_coord, &out_shape.dims); }
+            if i > 0 {
+                next_coord(&mut out_coord, &out_shape.dims);
+            }
             // TODO: full N-D gather implementation
             write_f32(&mut raw_data, i, 0.0);
         }
     }
 
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Extract sub-tensor with starts, ends, axes, steps.
@@ -1304,7 +1472,9 @@ pub fn op_slice(
     steps: Option<&[i64]>,
 ) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Slice only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Slice only supports float32",
+        )));
     }
     let ndim = input.shape.ndim();
     let mut actual_starts = alloc::vec![0i64; ndim];
@@ -1312,18 +1482,41 @@ pub fn op_slice(
     let mut actual_steps = alloc::vec![1i64; ndim];
 
     let axes_vec: Vec<usize> = match axes {
-        Some(ax) => ax.iter().map(|&a| if a < 0 { (ndim as i64 + a) as usize } else { a as usize }).collect(),
+        Some(ax) => ax
+            .iter()
+            .map(|&a| {
+                if a < 0 {
+                    (ndim as i64 + a) as usize
+                } else {
+                    a as usize
+                }
+            })
+            .collect(),
         None => (0..starts.len()).collect(),
     };
 
     for (i, &ax) in axes_vec.iter().enumerate() {
-        if ax >= ndim { continue; }
+        if ax >= ndim {
+            continue;
+        }
         let dim = input.shape.dims[ax];
         let mut s = if i < starts.len() { starts[i] } else { 0 };
         let mut e = if i < ends.len() { ends[i] } else { dim };
-        let step = if let Some(st) = steps { if i < st.len() { st[i] } else { 1 } } else { 1 };
-        if s < 0 { s += dim; }
-        if e < 0 { e += dim; }
+        let step = if let Some(st) = steps {
+            if i < st.len() {
+                st[i]
+            } else {
+                1
+            }
+        } else {
+            1
+        };
+        if s < 0 {
+            s += dim;
+        }
+        if e < 0 {
+            e += dim;
+        }
         s = s.clamp(0, dim);
         e = e.clamp(0, dim);
         actual_starts[ax] = s;
@@ -1346,7 +1539,9 @@ pub fn op_slice(
     let in_strides = compute_strides(&input.shape.dims);
     let mut out_coord = alloc::vec![0usize; ndim];
     for i in 0..total {
-        if i > 0 { next_coord(&mut out_coord, &out_shape.dims); }
+        if i > 0 {
+            next_coord(&mut out_coord, &out_shape.dims);
+        }
         let mut in_idx = 0usize;
         for d in 0..ndim {
             let in_d = actual_starts[d] as usize + out_coord[d] * actual_steps[d] as usize;
@@ -1354,20 +1549,34 @@ pub fn op_slice(
         }
         write_f32(&mut raw_data, i, read_f32(&input.raw_data, in_idx));
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Pad tensor with constant value.
-pub fn op_pad(input: &Tensor, pads: &[i64], mode: &str, constant_value: f32) -> Result<Tensor, OpError> {
+pub fn op_pad(
+    input: &Tensor,
+    pads: &[i64],
+    mode: &str,
+    constant_value: f32,
+) -> Result<Tensor, OpError> {
     if mode != "constant" {
         return Err(OpError::NotImplemented);
     }
     if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Pad only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Pad only supports float32",
+        )));
     }
     let ndim = input.shape.ndim();
     if pads.len() != ndim * 2 {
-        return Err(OpError::InvalidAttribute(String::from("pads length must be 2 * ndim")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "pads length must be 2 * ndim",
+        )));
     }
     let out_dims: Vec<i64> = (0..ndim)
         .map(|d| input.shape.dims[d] + pads[d] + pads[d + ndim])
@@ -1377,37 +1586,65 @@ pub fn op_pad(input: &Tensor, pads: &[i64], mode: &str, constant_value: f32) -> 
     let mut raw_data = alloc::vec![0u8; total * 4];
 
     // Fill with constant
-    for i in 0..total { write_f32(&mut raw_data, i, constant_value); }
+    for i in 0..total {
+        write_f32(&mut raw_data, i, constant_value);
+    }
 
     // Copy input data
     let out_strides = compute_strides(&out_shape.dims);
     let in_total = input.shape.total_elements();
     let mut in_coord = alloc::vec![0usize; ndim];
     for i in 0..in_total {
-        if i > 0 { next_coord(&mut in_coord, &input.shape.dims); }
+        if i > 0 {
+            next_coord(&mut in_coord, &input.shape.dims);
+        }
         let mut out_idx = 0usize;
         for d in 0..ndim {
             out_idx += (in_coord[d] + pads[d] as usize) * out_strides[d];
         }
         write_f32(&mut raw_data, out_idx, read_f32(&input.raw_data, i));
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Clamp tensor values to [min, max] range.
-pub fn op_clip(input: &Tensor, min_val: Option<f32>, max_val: Option<f32>) -> Result<Tensor, OpError> {
+pub fn op_clip(
+    input: &Tensor,
+    min_val: Option<f32>,
+    max_val: Option<f32>,
+) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("Clip only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "Clip only supports float32",
+        )));
     }
     let total = input.shape.total_elements();
     let mut raw_data = alloc::vec![0u8; total * 4];
     for i in 0..total {
         let mut v = read_f32(&input.raw_data, i);
-        if let Some(lo) = min_val { if v < lo { v = lo; } }
-        if let Some(hi) = max_val { if v > hi { v = hi; } }
+        if let Some(lo) = min_val {
+            if v < lo {
+                v = lo;
+            }
+        }
+        if let Some(hi) = max_val {
+            if v > hi {
+                v = hi;
+            }
+        }
         write_f32(&mut raw_data, i, v);
     }
-    Ok(Tensor { data_type: DataType::Float, shape: input.shape.clone(), name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1416,22 +1653,42 @@ pub fn op_clip(input: &Tensor, min_val: Option<f32>, max_val: Option<f32>) -> Re
 
 /// Approximate square root using Newton's method (no_std).
 fn sqrt_approx(x: f32) -> f32 {
-    if x <= 0.0 { return 0.0; }
+    if x <= 0.0 {
+        return 0.0;
+    }
     let mut s = x;
-    for _ in 0..10 { s = 0.5 * (s + x / s); }
+    for _ in 0..10 {
+        s = 0.5 * (s + x / s);
+    }
     s
 }
 
 /// Batch normalization: scale * (x - mean) / sqrt(var + eps) + bias.
 pub fn op_batch_normalization(
-    input: &Tensor, scale: &Tensor, bias: &Tensor,
-    mean: &Tensor, var: &Tensor, epsilon: f32,
+    input: &Tensor,
+    scale: &Tensor,
+    bias: &Tensor,
+    mean: &Tensor,
+    var: &Tensor,
+    epsilon: f32,
 ) -> Result<Tensor, OpError> {
-    if input.data_type != DataType::Float { return Err(OpError::InvalidAttribute(String::from("BatchNorm only supports float32"))); }
-    if input.shape.ndim() < 2 { return Err(OpError::ShapeMismatch(String::from("BatchNorm requires at least 2D input"))); }
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "BatchNorm only supports float32",
+        )));
+    }
+    if input.shape.ndim() < 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "BatchNorm requires at least 2D input",
+        )));
+    }
     let n = input.shape.dims[0] as usize;
     let c = input.shape.dims[1] as usize;
-    let spatial: usize = input.shape.dims[2..].iter().map(|&d| d as usize).product::<usize>().max(1);
+    let spatial: usize = input.shape.dims[2..]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
     let total = input.shape.total_elements();
     let mut raw_data = alloc::vec![0u8; total * 4];
     for ch in 0..c {
@@ -1448,28 +1705,57 @@ pub fn op_batch_normalization(
             }
         }
     }
-    Ok(Tensor { data_type: DataType::Float, shape: input.shape.clone(), name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Layer normalization along last N dimensions.
 pub fn op_layer_normalization(
-    input: &Tensor, scale: &Tensor, bias: Option<&Tensor>,
-    axis: i64, epsilon: f32,
+    input: &Tensor,
+    scale: &Tensor,
+    bias: Option<&Tensor>,
+    axis: i64,
+    epsilon: f32,
 ) -> Result<Tensor, OpError> {
-    if input.data_type != DataType::Float { return Err(OpError::InvalidAttribute(String::from("LayerNorm only supports float32"))); }
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "LayerNorm only supports float32",
+        )));
+    }
     let ndim = input.shape.ndim();
-    let resolved = if axis < 0 { (ndim as i64 + axis) as usize } else { axis as usize };
-    let outer: usize = input.shape.dims[..resolved].iter().map(|&d| d as usize).product::<usize>().max(1);
-    let inner: usize = input.shape.dims[resolved..].iter().map(|&d| d as usize).product::<usize>().max(1);
+    let resolved = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
+    let outer: usize = input.shape.dims[..resolved]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let inner: usize = input.shape.dims[resolved..]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
     let total = input.shape.total_elements();
     let mut raw_data = alloc::vec![0u8; total * 4];
     for o in 0..outer {
         let base = o * inner;
         let mut sum = 0.0f32;
-        for i in 0..inner { sum += read_f32(&input.raw_data, base + i); }
+        for i in 0..inner {
+            sum += read_f32(&input.raw_data, base + i);
+        }
         let mean = sum / inner as f32;
         let mut var_sum = 0.0f32;
-        for i in 0..inner { let d = read_f32(&input.raw_data, base + i) - mean; var_sum += d * d; }
+        for i in 0..inner {
+            let d = read_f32(&input.raw_data, base + i) - mean;
+            var_sum += d * d;
+        }
         let inv_std = 1.0 / sqrt_approx(var_sum / inner as f32 + epsilon);
         for i in 0..inner {
             let x = read_f32(&input.raw_data, base + i);
@@ -1478,19 +1764,32 @@ pub fn op_layer_normalization(
             write_f32(&mut raw_data, base + i, s * (x - mean) * inv_std + b);
         }
     }
-    Ok(Tensor { data_type: DataType::Float, shape: input.shape.clone(), name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Max pooling over NCHW input.
 pub fn op_maxpool(
-    input: &Tensor, kernel_shape: &[i64],
-    strides: Option<&[i64]>, pads: Option<&[i64]>,
+    input: &Tensor,
+    kernel_shape: &[i64],
+    strides: Option<&[i64]>,
+    pads: Option<&[i64]>,
 ) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float || input.shape.ndim() != 4 {
-        return Err(OpError::ShapeMismatch(String::from("MaxPool requires 4D float input")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "MaxPool requires 4D float input",
+        )));
     }
-    let (n, c, h, w) = (input.shape.dims[0] as usize, input.shape.dims[1] as usize,
-                          input.shape.dims[2] as usize, input.shape.dims[3] as usize);
+    let (n, c, h, w) = (
+        input.shape.dims[0] as usize,
+        input.shape.dims[1] as usize,
+        input.shape.dims[2] as usize,
+        input.shape.dims[3] as usize,
+    );
     let kh = kernel_shape[0] as usize;
     let kw = kernel_shape[1] as usize;
     let sh = strides.map(|s| s[0] as usize).unwrap_or(kh);
@@ -1515,7 +1814,9 @@ pub fn op_maxpool(
                             if hi >= pt && hi < h + pt && wi >= pl && wi < w + pl {
                                 let idx = bn * c * h * w + ch * h * w + (hi - pt) * w + (wi - pl);
                                 let v = read_f32(&input.raw_data, idx);
-                                if v > max_val { max_val = v; }
+                                if v > max_val {
+                                    max_val = v;
+                                }
                             }
                         }
                     }
@@ -1525,19 +1826,32 @@ pub fn op_maxpool(
             }
         }
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Average pooling over NCHW input.
 pub fn op_averagepool(
-    input: &Tensor, kernel_shape: &[i64],
-    strides: Option<&[i64]>, pads: Option<&[i64]>,
+    input: &Tensor,
+    kernel_shape: &[i64],
+    strides: Option<&[i64]>,
+    pads: Option<&[i64]>,
 ) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float || input.shape.ndim() != 4 {
-        return Err(OpError::ShapeMismatch(String::from("AvgPool requires 4D float input")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "AvgPool requires 4D float input",
+        )));
     }
-    let (n, c, h, w) = (input.shape.dims[0] as usize, input.shape.dims[1] as usize,
-                          input.shape.dims[2] as usize, input.shape.dims[3] as usize);
+    let (n, c, h, w) = (
+        input.shape.dims[0] as usize,
+        input.shape.dims[1] as usize,
+        input.shape.dims[2] as usize,
+        input.shape.dims[3] as usize,
+    );
     let kh = kernel_shape[0] as usize;
     let kw = kernel_shape[1] as usize;
     let sh = strides.map(|s| s[0] as usize).unwrap_or(kh);
@@ -1568,18 +1882,29 @@ pub fn op_averagepool(
                         }
                     }
                     let out_idx = bn * c * oh * ow + ch * oh * ow + oi * ow + oj;
-                    write_f32(&mut raw_data, out_idx, if count > 0 { sum / count as f32 } else { 0.0 });
+                    write_f32(
+                        &mut raw_data,
+                        out_idx,
+                        if count > 0 { sum / count as f32 } else { 0.0 },
+                    );
                 }
             }
         }
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Global average pooling: NCHW → NC11.
 pub fn op_global_average_pool(input: &Tensor) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float || input.shape.ndim() != 4 {
-        return Err(OpError::ShapeMismatch(String::from("GlobalAvgPool requires 4D float input")));
+        return Err(OpError::ShapeMismatch(String::from(
+            "GlobalAvgPool requires 4D float input",
+        )));
     }
     let n = input.shape.dims[0] as usize;
     let c = input.shape.dims[1] as usize;
@@ -1597,7 +1922,12 @@ pub fn op_global_average_pool(input: &Tensor) -> Result<Tensor, OpError> {
             write_f32(&mut raw_data, bn * c + ch, sum / spatial as f32);
         }
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Reduce by mean along specified axes.
@@ -1605,37 +1935,69 @@ pub fn op_reduce_mean(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Te
     let sum_tensor = op_reduce_sum(input, axes, keepdims)?;
     let total_in = input.shape.total_elements();
     let total_out = sum_tensor.shape.total_elements();
-    let reduce_count = if total_out > 0 { total_in / total_out } else { 1 };
+    let reduce_count = if total_out > 0 {
+        total_in / total_out
+    } else {
+        1
+    };
     let mut raw_data = sum_tensor.raw_data;
     for i in 0..total_out {
-        let v = f32::from_le_bytes([raw_data[i*4], raw_data[i*4+1], raw_data[i*4+2], raw_data[i*4+3]]);
+        let v = f32::from_le_bytes([
+            raw_data[i * 4],
+            raw_data[i * 4 + 1],
+            raw_data[i * 4 + 2],
+            raw_data[i * 4 + 3],
+        ]);
         write_f32(&mut raw_data, i, v / reduce_count as f32);
     }
-    Ok(Tensor { data_type: DataType::Float, shape: sum_tensor.shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: sum_tensor.shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 /// Reduce by sum along specified axes.
 pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Tensor, OpError> {
     if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from("ReduceSum only supports float32")));
+        return Err(OpError::InvalidAttribute(String::from(
+            "ReduceSum only supports float32",
+        )));
     }
     let ndim = input.shape.ndim();
     let resolved: Vec<usize> = if axes.is_empty() {
         (0..ndim).collect()
     } else {
-        axes.iter().map(|&a| if a < 0 { (ndim as i64 + a) as usize } else { a as usize }).collect()
+        axes.iter()
+            .map(|&a| {
+                if a < 0 {
+                    (ndim as i64 + a) as usize
+                } else {
+                    a as usize
+                }
+            })
+            .collect()
     };
 
     let out_dims: Vec<i64> = (0..ndim)
         .filter_map(|d| {
             if resolved.contains(&d) {
-                if keepdims { Some(1) } else { None }
+                if keepdims {
+                    Some(1)
+                } else {
+                    None
+                }
             } else {
                 Some(input.shape.dims[d])
             }
         })
         .collect();
-    let out_shape = TensorShape::new(if out_dims.is_empty() { Vec::from([1i64]) } else { out_dims });
+    let out_shape = TensorShape::new(if out_dims.is_empty() {
+        Vec::from([1i64])
+    } else {
+        out_dims
+    });
     let total_out = out_shape.total_elements();
     let mut raw_data = alloc::vec![0u8; total_out * 4];
 
@@ -1643,13 +2005,18 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
     let out_strides = compute_strides(&out_shape.dims);
     let mut in_coord = alloc::vec![0usize; ndim];
     for i in 0..in_total {
-        if i > 0 { next_coord(&mut in_coord, &input.shape.dims); }
+        if i > 0 {
+            next_coord(&mut in_coord, &input.shape.dims);
+        }
         // Compute output index by dropping reduced dimensions
         let mut out_idx = 0usize;
         let mut od = 0usize;
+        #[allow(clippy::needless_range_loop)]
         for d in 0..ndim {
             if resolved.contains(&d) {
-                if keepdims { od += 1; }
+                if keepdims {
+                    od += 1;
+                }
             } else {
                 if od < out_strides.len() {
                     out_idx += in_coord[d] * out_strides[od];
@@ -1657,10 +2024,20 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
                 od += 1;
             }
         }
-        let prev = f32::from_le_bytes([raw_data[out_idx*4], raw_data[out_idx*4+1], raw_data[out_idx*4+2], raw_data[out_idx*4+3]]);
+        let prev = f32::from_le_bytes([
+            raw_data[out_idx * 4],
+            raw_data[out_idx * 4 + 1],
+            raw_data[out_idx * 4 + 2],
+            raw_data[out_idx * 4 + 3],
+        ]);
         write_f32(&mut raw_data, out_idx, prev + read_f32(&input.raw_data, i));
     }
-    Ok(Tensor { data_type: DataType::Float, shape: out_shape, name: String::new(), raw_data })
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
 }
 
 // ---------------------------------------------------------------------------

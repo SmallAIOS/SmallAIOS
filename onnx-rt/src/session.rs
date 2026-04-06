@@ -794,12 +794,14 @@ mod tests {
 
         // Relu of [-1, 0, 2] = [0, 0, 2]
         let out_data: Vec<f32> = (0..3)
-            .map(|i| f32::from_le_bytes([
-                outputs[0].tensor.raw_data[i * 4],
-                outputs[0].tensor.raw_data[i * 4 + 1],
-                outputs[0].tensor.raw_data[i * 4 + 2],
-                outputs[0].tensor.raw_data[i * 4 + 3],
-            ]))
+            .map(|i| {
+                f32::from_le_bytes([
+                    outputs[0].tensor.raw_data[i * 4],
+                    outputs[0].tensor.raw_data[i * 4 + 1],
+                    outputs[0].tensor.raw_data[i * 4 + 2],
+                    outputs[0].tensor.raw_data[i * 4 + 3],
+                ])
+            })
             .collect();
         assert_eq!(out_data, vec![0.0, 0.0, 2.0]);
     }
