@@ -1935,11 +1935,7 @@ pub fn op_reduce_mean(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Te
     let sum_tensor = op_reduce_sum(input, axes, keepdims)?;
     let total_in = input.shape.total_elements();
     let total_out = sum_tensor.shape.total_elements();
-    let reduce_count = if total_out > 0 {
-        total_in / total_out
-    } else {
-        1
-    };
+    let reduce_count = total_in.checked_div(total_out).unwrap_or(1);
     let mut raw_data = sum_tensor.raw_data;
     for i in 0..total_out {
         let v = f32::from_le_bytes([
