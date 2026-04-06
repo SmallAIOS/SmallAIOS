@@ -18,6 +18,7 @@
 
 extern crate alloc;
 
+pub mod executor;
 pub mod gemm;
 pub mod graph;
 pub mod memory_planner;
