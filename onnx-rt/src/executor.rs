@@ -80,12 +80,12 @@ pub fn execute_graph(
     // Extract graph outputs
     let mut results = Vec::new();
     for output_name in &graph.output_names {
-        let tensor = value_map
-            .remove(output_name)
-            .ok_or_else(|| SessionError::ExecutionFailed(alloc::format!(
+        let tensor = value_map.remove(output_name).ok_or_else(|| {
+            SessionError::ExecutionFailed(alloc::format!(
                 "output tensor '{}' not produced",
                 output_name
-            )))?;
+            ))
+        })?;
         results.push(InferenceOutput {
             name: output_name.clone(),
             tensor,
@@ -165,7 +165,7 @@ fn get_attr_float(attrs: &[AttributeProto], name: &str, default: f32) -> f32 {
 }
 
 /// Extracts an integer list attribute by name.
-fn get_attr_ints(attrs: &[AttributeProto], name: &str) -> Option<&[i64]> {
+fn get_attr_ints<'a>(attrs: &'a [AttributeProto], name: &str) -> Option<&'a [i64]> {
     attrs
         .iter()
         .find(|a| a.name == name && a.attr_type == AttributeType::Ints)
@@ -186,9 +186,8 @@ fn dispatch_node(
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
 ) -> Result<Vec<Tensor>, OpError> {
-    let kind = OpKind::parse_str(op_type).ok_or_else(|| {
-        OpError::UnsupportedOp(String::from(op_type))
-    })?;
+    let kind =
+        OpKind::parse_str(op_type).ok_or_else(|| OpError::UnsupportedOp(String::from(op_type)))?;
 
     let result = match kind {
         // Arithmetic
@@ -445,16 +444,12 @@ fn require_input<'a>(
     index: usize,
     op_name: &str,
 ) -> Result<&'a Tensor, OpError> {
-    inputs
-        .get(index)
-        .and_then(|opt| *opt)
-        .ok_or_else(|| {
-            OpError::ShapeMismatch(alloc::format!(
-                "{} missing required input at index {}",
-                op_name,
-                index
-            ))
-        })
+    inputs.get(index).and_then(|opt| *opt).ok_or_else(|| {
+        OpError::ShapeMismatch(alloc::format!(
+            "{} missing required input at index {}",
+            op_name, index
+        ))
+    })
 }
 
 /// Returns the input at `index` if it exists, or None.

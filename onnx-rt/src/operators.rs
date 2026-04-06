@@ -1083,7 +1083,6 @@ pub fn op_transpose(input: &Tensor, perm: Option<&[i64]>) -> Result<Tensor, OpEr
     let mut raw_data = alloc::vec![0u8; total * 4];
 
     let in_strides = compute_strides(&input.shape.dims);
-    let out_strides = compute_strides(&out_shape.dims);
 
     let mut out_coord = alloc::vec![0usize; ndim];
     for i in 0..total {
@@ -1121,7 +1120,6 @@ pub fn op_concat(inputs: &[&Tensor], axis: i64) -> Result<Tensor, OpError> {
     let mut axis_offset = 0usize;
     for input in inputs {
         let in_total = input.shape.total_elements();
-        let in_strides = compute_strides(&input.shape.dims);
         let mut in_coord = alloc::vec![0usize; ndim];
         for i in 0..in_total {
             if i > 0 { next_coord(&mut in_coord, &input.shape.dims); }
@@ -1267,7 +1265,6 @@ pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, 
     let total = out_shape.total_elements();
     let mut raw_data = alloc::vec![0u8; total * 4];
 
-    let in_strides = compute_strides(&input.shape.dims);
     let axis_size = input.shape.dims[resolved_axis] as usize;
 
     // Simple 1D gather for common case
@@ -1287,12 +1284,10 @@ pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, 
         }
     } else {
         // General N-D case: iterate output coordinates
-        let out_strides = compute_strides(&out_shape.dims);
         let mut out_coord = alloc::vec![0usize; out_shape.ndim()];
         for i in 0..total {
             if i > 0 { next_coord(&mut out_coord, &out_shape.dims); }
-            // Map output coord to input coord by replacing gathered axis
-            let _ = i; // placeholder for general gather
+            // TODO: full N-D gather implementation
             write_f32(&mut raw_data, i, 0.0);
         }
     }
@@ -1385,7 +1380,6 @@ pub fn op_pad(input: &Tensor, pads: &[i64], mode: &str, constant_value: f32) -> 
     for i in 0..total { write_f32(&mut raw_data, i, constant_value); }
 
     // Copy input data
-    let in_strides = compute_strides(&input.shape.dims);
     let out_strides = compute_strides(&out_shape.dims);
     let in_total = input.shape.total_elements();
     let mut in_coord = alloc::vec![0usize; ndim];
@@ -1645,14 +1639,13 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
     let total_out = out_shape.total_elements();
     let mut raw_data = alloc::vec![0u8; total_out * 4];
 
-    let in_strides = compute_strides(&input.shape.dims);
     let in_total = input.shape.total_elements();
+    let out_strides = compute_strides(&out_shape.dims);
     let mut in_coord = alloc::vec![0usize; ndim];
     for i in 0..in_total {
         if i > 0 { next_coord(&mut in_coord, &input.shape.dims); }
         // Compute output index by dropping reduced dimensions
         let mut out_idx = 0usize;
-        let out_strides = compute_strides(&out_shape.dims);
         let mut od = 0usize;
         for d in 0..ndim {
             if resolved.contains(&d) {
