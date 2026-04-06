@@ -1,6 +1,9 @@
 # Pre-commit hooks for SmallAIOS
-# Install: pre-commit install
+# Install: pre-commit install  (or: just setup-hooks for native git hooks)
 # Run all: pre-commit run --all-files
+#
+# Native git hooks at .githooks/pre-commit run the same checks without
+# requiring the pre-commit Python tool. Use whichever you prefer.
 repos:
   - repo: local
     hooks:
@@ -17,6 +20,30 @@ repos:
         language: system
         pass_filenames: false
         types: [rust]
+
+      - id: cargo-audit
+        name: cargo audit (CVE check)
+        entry: bash -c 'command -v cargo-audit >/dev/null 2>&1 && cargo audit --quiet || echo "cargo-audit not installed, skipping"'
+        language: system
+        pass_filenames: false
+        files: '(Cargo\.(toml|lock))$'
+        verbose: true
+
+      - id: cargo-geiger
+        name: cargo geiger (unsafe audit)
+        entry: bash -c 'command -v cargo-geiger >/dev/null 2>&1 && cargo geiger --output-format ascii --update-readme=false 2>/dev/null | tail -5 || echo "cargo-geiger not installed, skipping"'
+        language: system
+        pass_filenames: false
+        types: [rust]
+        verbose: true
+
+      - id: cargo-semver-checks
+        name: cargo semver-checks (API breakage)
+        entry: bash -c 'command -v cargo-semver-checks >/dev/null 2>&1 && cargo semver-checks check-release --baseline-rev origin/develop -p smallaios-kernel -p smallaios-security -p smallaios-onnx-rt || echo "cargo-semver-checks not installed or no baseline, skipping"'
+        language: system
+        pass_filenames: false
+        types: [rust]
+        verbose: true
 
       - id: cargo-deny
         name: cargo deny

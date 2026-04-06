@@ -1,0 +1,19 @@
+# cargo-vet audits for SmallAIOS dependencies
+# This file records which dependency versions have been reviewed.
+#
+# To audit a new dependency:
+#   cargo vet certify <crate> <version>
+#
+# To add a temporary exemption:
+#   cargo vet add-exemption <crate> <version>
+
+[criteria.safe-to-deploy]
+description = "Reviewed for safety-critical deployment. No unsafe UB, no malicious code, no unexpected network access."
+
+# Exemptions for existing dependencies at time of cargo-vet bootstrap.
+# These should be replaced with proper audits over time.
+# Run `cargo vet suggest` to see which exemptions can be resolved.
+#
+# NOTE: This file must be regenerated with `cargo vet` once the Rust
+# toolchain is available. The initial structure is a placeholder.
+# Run: cargo vet init && cargo vet certify --all

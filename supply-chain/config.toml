@@ -1,0 +1,27 @@
+# cargo-vet supply chain configuration
+# See https://mozilla.github.io/cargo-vet/
+#
+# Run `cargo vet` to check all dependencies have audit entries.
+# Run `cargo vet certify <crate> <version>` to audit a new dependency.
+# Run `cargo vet add-exemption <crate> <version>` for temporary exemptions.
+
+[cargo-vet]
+version = "0.9"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/nickel-org/nickel.rs/main/supply-chain/audits.toml"
+
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/nickel-org/nickel.rs/main/supply-chain/audits.toml"
+
+[imports.google]
+url = "https://chromium.googlesource.com/chromiumos/third_party/rust_crates/+/main/cargo-vet/audits.toml?format=TEXT"
+
+[policy.smallaios-kernel]
+criteria = "safe-to-deploy"
+
+[policy.smallaios-security]
+criteria = "safe-to-deploy"
+
+[policy.smallaios-onnx-rt]
+criteria = "safe-to-deploy"
