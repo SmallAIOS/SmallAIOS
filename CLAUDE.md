@@ -55,10 +55,17 @@ just release minor          # execute bump + commit + tag
 rustup toolchain install nightly-2026-02-01
 cargo install just --locked                          # task runner
 
+# Pre-commit hooks (run once after clone)
+just setup-hooks
+
 # Optional analysis tools
 cargo install cargo-depgraph cargo-modules --locked  # dependency visualization
 sudo apt install graphviz                            # SVG graph rendering
 ```
+
+### Pre-Commit Hooks
+
+Git hooks at `.githooks/pre-commit` run `cargo fmt --check`, `cargo clippy`, and cycle detection before each commit. Install with `just setup-hooks`. Run manually with `just check`. The same checks run in CI.
 
 ## Workspace Architecture
 

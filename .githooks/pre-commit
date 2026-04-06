@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# SmallAIOS pre-commit hook
+# Runs format check, clippy lint, and cycle check before each commit.
+# Install: just setup-hooks  (or: git config core.hooksPath .githooks)
+#
+# To skip (emergency only): git commit --no-verify
+
+set -euo pipefail
+
+# Only check if Rust files are staged
+RUST_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+TOML_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep 'Cargo\.toml$' || true)
+
+if [ -z "$RUST_STAGED" ] && [ -z "$TOML_STAGED" ]; then
+    exit 0
+fi
+
+echo "=== SmallAIOS pre-commit checks ==="
+
+# 1. Format check (fast, catches most issues)
+if command -v cargo >/dev/null 2>&1; then
+    echo "[1/3] cargo fmt --check"
+    if ! cargo fmt --all -- --check 2>/dev/null; then
+        echo ""
+        echo "ERROR: Code is not formatted. Run 'cargo fmt --all' or 'just fmt' to fix."
+        exit 1
+    fi
+
+    # 2. Clippy lint (catches unused vars, lifetime issues, etc.)
+    echo "[2/3] cargo clippy (host crates)"
+    # Use the same crate list as CI, excluding bare-metal arch crates
+    if ! cargo clippy \
+        -p smallaios-kernel \
+        -p smallaios-security \
+        -p smallaios-onnx-rt \
+        -p smallaios-ipc \
+        -p smallaios-net \
+        -p smallaios-posix \
+        -p smallaios-container \
+        -p smallaios-bus \
+        -p smallaios-peripheral \
+        -p smallaios-usb \
+        -p smallaios-sdr \
+        -p smallaios-bench \
+        -- -D warnings 2>&1 | tail -5; then
+        echo ""
+        echo "ERROR: Clippy lint failed. Fix warnings above before committing."
+        exit 1
+    fi
+
+    # 3. Cycle check (if Cargo.toml changed)
+    if [ -n "$TOML_STAGED" ]; then
+        echo "[3/3] Checking dependency cycles"
+        if [ -f scripts/check-cycles.sh ]; then
+            if ! bash scripts/check-cycles.sh 2>/dev/null; then
+                echo ""
+                echo "ERROR: Dependency cycle detected. See output above."
+                exit 1
+            fi
+        fi
+    else
+        echo "[3/3] Cycle check (skipped — no Cargo.toml changes)"
+    fi
+
+    echo "=== All pre-commit checks passed ==="
+else
+    echo "WARNING: cargo not found — skipping pre-commit checks."
+    echo "Install Rust toolchain to enable local checks."
+fi

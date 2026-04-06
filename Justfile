@@ -131,6 +131,18 @@ docker-local-gpu:
 docker-local-clean:
     docker compose down --rmi local --volumes
 
+# === Dev Setup ===
+
+# Install git pre-commit hooks (run once after clone)
+setup-hooks:
+    git config core.hooksPath .githooks
+    @echo "Pre-commit hooks installed (.githooks/pre-commit)"
+    @echo "Hooks run: cargo fmt --check, cargo clippy, cycle check"
+
+# Run all pre-commit checks manually (same as the hook runs)
+check: fmt-check clippy
+    @echo "All checks passed"
+
 # === Testing ===
 
 # Run all unit tests
