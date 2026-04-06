@@ -3,11 +3,12 @@
 
 //! Criterion benchmarks for cryptographic primitives.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use smallaios_security::crypto::aes_gcm::{
     Aes256Gcm, AesKey, GcmNonce, AES256_KEY_LEN, GCM_NONCE_LEN,
 };
 use smallaios_security::crypto::sha3;
+use std::hint::black_box;
 
 fn bench_sha3_256(c: &mut Criterion) {
     let mut group = c.benchmark_group("SHA3-256");

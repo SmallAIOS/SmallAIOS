@@ -3,9 +3,10 @@
 
 //! Criterion benchmarks for kernel memory allocator.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use smallaios_kernel::mem::tensor::TensorPool;
 use smallaios_kernel::mem::PhysAddr;
+use std::hint::black_box;
 
 /// Heap-allocate a TensorPool without placing ~96KB on the stack.
 /// Uses Vec to allocate zeroed memory, then writes into it.

@@ -3,8 +3,9 @@
 
 //! Criterion benchmarks for IPC pub/sub message throughput.
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use smallaios_ipc::pubsub::{Message, MessageQueue, PublisherId};
+use std::hint::black_box;
 
 fn bench_pubsub_throughput(c: &mut Criterion) {
     let mut group = c.benchmark_group("IPC/pubsub");

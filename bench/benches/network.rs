@@ -3,9 +3,10 @@
 
 //! Criterion benchmarks for network packet parsing.
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use smallaios_net::tcp::TcpHeader;
 use smallaios_net::udp::UdpHeader;
+use std::hint::black_box;
 
 fn make_tcp_packet() -> Vec<u8> {
     let mut pkt = vec![0u8; 40];
