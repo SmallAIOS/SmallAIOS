@@ -48,9 +48,30 @@ if command -v cargo >/dev/null 2>&1; then
         exit 1
     fi
 
-    # 3. Cycle check (if Cargo.toml changed)
+    # 3. Unsafe audit — warn on new unsafe blocks
+    if command -v cargo-geiger >/dev/null 2>&1; then
+        echo "[3/6] cargo-geiger (unsafe audit)"
+        # Count-only mode — fast, just reports unsafe usage
+        cargo geiger --output-format ascii --update-readme=false 2>/dev/null | tail -3 || true
+    else
+        echo "[3/6] cargo-geiger (skipped — not installed)"
+    fi
+
+    # 4. Known vulnerability check
+    if command -v cargo-audit >/dev/null 2>&1; then
+        echo "[4/6] cargo-audit (CVE check)"
+        if ! cargo audit --quiet 2>/dev/null; then
+            echo ""
+            echo "WARNING: Known vulnerabilities in dependencies. Run 'cargo audit' for details."
+            # Advisory — don't block commit, but warn loudly
+        fi
+    else
+        echo "[4/6] cargo-audit (skipped — not installed)"
+    fi
+
+    # 5. Cycle check (if Cargo.toml changed)
     if [ -n "$TOML_STAGED" ]; then
-        echo "[3/3] Checking dependency cycles"
+        echo "[5/6] Checking dependency cycles"
         if [ -f scripts/check-cycles.sh ]; then
             if ! bash scripts/check-cycles.sh 2>/dev/null; then
                 echo ""
@@ -59,7 +80,15 @@ if command -v cargo >/dev/null 2>&1; then
             fi
         fi
     else
-        echo "[3/3] Cycle check (skipped — no Cargo.toml changes)"
+        echo "[5/6] Cycle check (skipped — no Cargo.toml changes)"
+    fi
+
+    # 6. Module-level acyclicity (if cargo-modules available)
+    if command -v cargo-modules >/dev/null 2>&1; then
+        echo "[6/6] Module acyclicity check"
+        just arch-check 2>/dev/null || echo "WARNING: Module cycle detected (advisory)"
+    else
+        echo "[6/6] Module acyclicity (skipped — cargo-modules not installed)"
     fi
 
     echo "=== All pre-commit checks passed ==="

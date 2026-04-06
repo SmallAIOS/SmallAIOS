@@ -141,7 +141,22 @@ setup-hooks:
 
 # Run all pre-commit checks manually (same as the hook runs)
 check: fmt-check clippy
-    @echo "All checks passed"
+    @echo "=== Core checks passed ==="
+
+# Run full safety-critical audit (slower, pre-merge)
+audit:
+    @echo "=== Safety-critical audit ==="
+    @echo "[1/5] cargo-deny (supply chain)"
+    cargo deny check
+    @echo "[2/5] cargo-audit (CVE check)"
+    cargo audit
+    @echo "[3/5] cargo-geiger (unsafe report)"
+    cargo geiger --output-format ascii --update-readme=false 2>/dev/null | tail -10 || true
+    @echo "[4/5] Dependency cycle check"
+    ./scripts/check-cycles.sh
+    @echo "[5/5] Module acyclicity"
+    just arch-check || true
+    @echo "=== Safety audit complete ==="
 
 # === Testing ===
 

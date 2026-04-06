@@ -58,6 +58,13 @@ cargo install just --locked                          # task runner
 # Pre-commit hooks (run once after clone)
 just setup-hooks
 
+# Safety-critical tooling (recommended)
+cargo install cargo-audit --locked                   # CVE vulnerability check
+cargo install cargo-geiger --locked                  # unsafe code audit
+cargo install cargo-deny --locked                    # supply chain security
+cargo install cargo-semver-checks --locked           # API breakage detection
+cargo install cargo-vet --locked                     # dependency review audit trail
+
 # Optional analysis tools
 cargo install cargo-depgraph cargo-modules --locked  # dependency visualization
 sudo apt install graphviz                            # SVG graph rendering
