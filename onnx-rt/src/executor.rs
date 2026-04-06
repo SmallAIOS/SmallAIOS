@@ -728,4 +728,328 @@ mod tests {
             .collect();
         assert_eq!(out_data, vec![3.0, 4.0]);
     }
+
+    /// Helper: read f32 values from a tensor's raw_data.
+    fn read_f32_output(tensor: &Tensor, count: usize) -> Vec<f32> {
+        (0..count)
+            .map(|i| {
+                f32::from_le_bytes([
+                    tensor.raw_data[i * 4],
+                    tensor.raw_data[i * 4 + 1],
+                    tensor.raw_data[i * 4 + 2],
+                    tensor.raw_data[i * 4 + 3],
+                ])
+            })
+            .collect()
+    }
+
+    #[test]
+    fn test_execute_softmax_graph() {
+        let graph_proto = make_graph(
+            vec![make_node("Softmax", "sm0", &["x"], &["y"])],
+            &["x"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let input = make_f32_tensor("x", &[1, 4], &[1.0, 2.0, 3.0, 4.0]);
+        let inputs = vec![("x".to_string(), input)];
+
+        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "y");
+
+        let out_data = read_f32_output(&results[0].tensor, 4);
+        let sum: f32 = out_data.iter().sum();
+        assert!(
+            (sum - 1.0).abs() < 1e-5,
+            "softmax output should sum to 1.0, got {sum}"
+        );
+        // Each output should be positive
+        for &v in &out_data {
+            assert!(v > 0.0);
+        }
+    }
+
+    #[test]
+    fn test_execute_sigmoid_graph() {
+        let graph_proto = make_graph(
+            vec![make_node("Sigmoid", "sig0", &["x"], &["y"])],
+            &["x"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let input = make_f32_tensor("x", &[1, 3], &[-10.0, 0.0, 10.0]);
+        let inputs = vec![("x".to_string(), input)];
+
+        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let out_data = read_f32_output(&results[0].tensor, 3);
+        // sigmoid(0) ≈ 0.5
+        assert!(
+            (out_data[1] - 0.5).abs() < 1e-5,
+            "sigmoid(0) should be ~0.5, got {}",
+            out_data[1]
+        );
+        // sigmoid(-10) ≈ 0, sigmoid(10) ≈ 1
+        assert!(out_data[0] < 0.01);
+        assert!(out_data[2] > 0.99);
+    }
+
+    #[test]
+    fn test_execute_sub_graph() {
+        // x - x = 0
+        let graph_proto = make_graph(
+            vec![make_node("Sub", "sub0", &["x", "x"], &["y"])],
+            &["x"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let input = make_f32_tensor("x", &[1, 3], &[5.0, 10.0, 15.0]);
+        let inputs = vec![("x".to_string(), input)];
+
+        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let out_data = read_f32_output(&results[0].tensor, 3);
+        assert_eq!(out_data, vec![0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn test_execute_mul_graph() {
+        // x * 2 using a constant input
+        let graph_proto = make_graph(
+            vec![make_node("Mul", "mul0", &["x", "two"], &["y"])],
+            &["x", "two"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let x = make_f32_tensor("x", &[1, 3], &[1.0, 2.0, 3.0]);
+        let two = make_f32_tensor("two", &[1, 3], &[2.0, 2.0, 2.0]);
+        let inputs = vec![("x".to_string(), x), ("two".to_string(), two)];
+
+        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let out_data = read_f32_output(&results[0].tensor, 3);
+        assert_eq!(out_data, vec![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn test_execute_branching_graph() {
+        // Input feeds two ops: Add(x, x) → sum_out and Sub(x, one) → diff_out
+        let graph_proto = make_graph(
+            vec![
+                make_node("Add", "add0", &["x", "x"], &["sum_out"]),
+                make_node("Sub", "sub0", &["x", "one"], &["diff_out"]),
+            ],
+            &["x", "one"],
+            &["sum_out", "diff_out"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let x = make_f32_tensor("x", &[1, 3], &[3.0, 5.0, 7.0]);
+        let one = make_f32_tensor("one", &[1, 3], &[1.0, 1.0, 1.0]);
+        let inputs = vec![("x".to_string(), x), ("one".to_string(), one)];
+
+        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        assert_eq!(results.len(), 2);
+
+        // Find outputs by name (order may vary)
+        let sum_out = results.iter().find(|r| r.name == "sum_out").unwrap();
+        let diff_out = results.iter().find(|r| r.name == "diff_out").unwrap();
+
+        let sum_data = read_f32_output(&sum_out.tensor, 3);
+        let diff_data = read_f32_output(&diff_out.tensor, 3);
+
+        assert_eq!(sum_data, vec![6.0, 10.0, 14.0]);
+        assert_eq!(diff_data, vec![2.0, 4.0, 6.0]);
+    }
+
+    #[test]
+    fn test_execute_missing_input_error() {
+        // Graph expects "x" but we provide nothing
+        let graph_proto = make_graph(
+            vec![make_node("Relu", "relu0", &["x"], &["y"])],
+            &["x"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let result = execute_graph(&exec_graph, &[], &[], None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            SessionError::ExecutionFailed(msg) => {
+                assert!(
+                    msg.contains("missing required input"),
+                    "expected 'missing required input' in error, got: {msg}"
+                );
+            }
+            other => panic!("expected ExecutionFailed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_execute_unsupported_op_error() {
+        let graph_proto = make_graph(
+            vec![make_node("FakeOp", "fake0", &["x"], &["y"])],
+            &["x"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let input = make_f32_tensor("x", &[1, 2], &[1.0, 2.0]);
+        let inputs = vec![("x".to_string(), input)];
+
+        let result = execute_graph(&exec_graph, &inputs, &[], None);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match err {
+            SessionError::ExecutionFailed(msg) => {
+                assert!(
+                    msg.contains("FakeOp"),
+                    "expected 'FakeOp' in error message, got: {msg}"
+                );
+            }
+            other => panic!("expected ExecutionFailed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_execute_yield_callback() {
+        use core::sync::atomic::{AtomicUsize, Ordering};
+        static YIELD_COUNT: AtomicUsize = AtomicUsize::new(0);
+        fn test_yield() {
+            YIELD_COUNT.fetch_add(1, Ordering::Relaxed);
+        }
+
+        // Reset counter
+        YIELD_COUNT.store(0, Ordering::Relaxed);
+
+        // Graph with 3 nodes: Relu → Relu → Relu chain
+        let graph_proto = make_graph(
+            vec![
+                make_node("Relu", "r0", &["x"], &["a"]),
+                make_node("Relu", "r1", &["a"], &["b"]),
+                make_node("Relu", "r2", &["b"], &["y"]),
+            ],
+            &["x"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let input = make_f32_tensor("x", &[1, 2], &[1.0, 2.0]);
+        let inputs = vec![("x".to_string(), input)];
+
+        let _results = execute_graph(&exec_graph, &inputs, &[], Some(test_yield)).unwrap();
+        assert_eq!(
+            YIELD_COUNT.load(Ordering::Relaxed),
+            3,
+            "yield_fn should be called once per node"
+        );
+    }
+
+    #[test]
+    fn test_tensor_from_proto_int64() {
+        let proto = TensorProto {
+            dims: vec![3],
+            data_type: 7, // INT64
+            name: "i64t".to_string(),
+            int64_data: vec![10, 20, 30],
+            ..TensorProto::default()
+        };
+        let tensor = tensor_from_proto(&proto).unwrap();
+        assert_eq!(tensor.data_type, DataType::Int64);
+        assert_eq!(tensor.shape.dims, vec![3]);
+        assert_eq!(tensor.raw_data.len(), 24); // 3 × 8 bytes
+
+        // Verify round-trip: read back the i64 values
+        let vals = read_i64_tensor(&tensor);
+        assert_eq!(vals, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn test_tensor_from_proto_int32() {
+        let proto = TensorProto {
+            dims: vec![2, 2],
+            data_type: 6, // INT32
+            name: "i32t".to_string(),
+            int32_data: vec![100, 200, 300, 400],
+            ..TensorProto::default()
+        };
+        let tensor = tensor_from_proto(&proto).unwrap();
+        assert_eq!(tensor.data_type, DataType::Int32);
+        assert_eq!(tensor.shape.dims, vec![2, 2]);
+        assert_eq!(tensor.raw_data.len(), 16); // 4 × 4 bytes
+
+        // Verify individual values by reading raw bytes
+        let vals: Vec<i32> = (0..4)
+            .map(|i| {
+                i32::from_le_bytes([
+                    tensor.raw_data[i * 4],
+                    tensor.raw_data[i * 4 + 1],
+                    tensor.raw_data[i * 4 + 2],
+                    tensor.raw_data[i * 4 + 3],
+                ])
+            })
+            .collect();
+        assert_eq!(vals, vec![100, 200, 300, 400]);
+    }
+
+    #[test]
+    fn test_dispatch_conv() {
+        // 1-channel conv with 1×1 kernel (identity-like)
+        // Input: [N=1, C=1, H=2, W=2], Kernel: [1, 1, 1, 1] with weight=1.0
+        let graph_proto = make_graph(
+            vec![make_node("Conv", "conv0", &["x", "w"], &["y"])],
+            &["x", "w"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let x = make_f32_tensor("x", &[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let w = make_f32_tensor("w", &[1, 1, 1, 1], &[1.0]); // 1×1 kernel, weight=1
+        let inputs = vec![("x".to_string(), x), ("w".to_string(), w)];
+
+        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        assert_eq!(results.len(), 1);
+        let out_data = read_f32_output(&results[0].tensor, 4);
+        // 1×1 conv with weight=1.0 is identity
+        assert_eq!(out_data, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_execute_reshape_graph() {
+        // Reshape a [2, 3] tensor to [3, 2] using a shape tensor
+        let graph_proto = make_graph(
+            vec![make_node("Reshape", "rs0", &["x", "shape"], &["y"])],
+            &["x", "shape"],
+            &["y"],
+        );
+        let exec_graph = build_execution_graph(&graph_proto).unwrap();
+
+        let x = make_f32_tensor("x", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+
+        // Shape tensor: Int64 type encoding [3, 2]
+        let shape_tensor = Tensor {
+            data_type: DataType::Int64,
+            shape: TensorShape::new(vec![2]),
+            name: String::from("shape"),
+            raw_data: {
+                let mut d = vec![0u8; 16];
+                d[0..8].copy_from_slice(&3i64.to_le_bytes());
+                d[8..16].copy_from_slice(&2i64.to_le_bytes());
+                d
+            },
+        };
+
+        let inputs = vec![("x".to_string(), x), ("shape".to_string(), shape_tensor)];
+
+        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].tensor.shape.dims, vec![3, 2]);
+
+        // Data should be preserved
+        let out_data = read_f32_output(&results[0].tensor, 6);
+        assert_eq!(out_data, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
 }

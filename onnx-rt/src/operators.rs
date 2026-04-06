@@ -2794,4 +2794,650 @@ mod tests {
         let result = op_conv(&input, &weight, None);
         assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
     }
+
+    // ---- Tier 1: op_sub tests ----
+
+    #[test]
+    fn test_op_sub_basic() {
+        let a = make_f32_tensor(&[3], &[3.0, 2.0, 1.0]);
+        let b = make_f32_tensor(&[3], &[1.0, 1.0, 1.0]);
+        let result = op_sub(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![2.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn test_op_sub_broadcast() {
+        // [1,3] - [1,1] -> [1,3]
+        let a = make_f32_tensor(&[1, 3], &[3.0, 3.0, 3.0]);
+        let b = make_f32_tensor(&[1, 1], &[1.0]);
+        let result = op_sub(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![2.0, 2.0, 2.0]);
+    }
+
+    // ---- Tier 1: op_mul tests ----
+
+    #[test]
+    fn test_op_mul_basic() {
+        let a = make_f32_tensor(&[2], &[2.0, 3.0]);
+        let b = make_f32_tensor(&[2], &[4.0, 5.0]);
+        let result = op_mul(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![8.0, 15.0]);
+    }
+
+    #[test]
+    fn test_op_mul_broadcast() {
+        // [1,3] * scalar [1,1] -> [1,3]
+        let a = make_f32_tensor(&[1, 3], &[1.0, 2.0, 3.0]);
+        let b = make_f32_tensor(&[1, 1], &[5.0]);
+        let result = op_mul(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![5.0, 10.0, 15.0]);
+    }
+
+    // ---- Tier 1: op_div tests ----
+
+    #[test]
+    fn test_op_div_basic() {
+        let a = make_f32_tensor(&[2], &[6.0, 9.0]);
+        let b = make_f32_tensor(&[2], &[2.0, 3.0]);
+        let result = op_div(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![3.0, 3.0]);
+    }
+
+    #[test]
+    fn test_op_div_by_zero() {
+        let a = make_f32_tensor(&[2], &[1.0, -1.0]);
+        let b = make_f32_tensor(&[2], &[0.0, 0.0]);
+        let result = op_div(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(vals[0].is_infinite() && vals[0] > 0.0);
+        assert!(vals[1].is_infinite() && vals[1] < 0.0);
+    }
+
+    // ---- Tier 1: op_gemm tests ----
+
+    #[test]
+    fn test_op_gemm_basic() {
+        // 2x2 identity matrix, alpha=1, beta=0
+        let a = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let identity = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let result = op_gemm(&a, &identity, None, 1.0, 0.0, false, false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_op_gemm_with_bias() {
+        // A = [[1,2],[3,4]], B = [[1,0],[0,1]] (identity), C = [10, 20] (1D bias)
+        // result = 1 * A @ B + 1 * C = [[11, 22], [13, 24]]
+        let a = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let b = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let c = make_f32_tensor(&[2], &[10.0, 20.0]);
+        let result = op_gemm(&a, &b, Some(&c), 1.0, 1.0, false, false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![11.0, 22.0, 13.0, 24.0]);
+    }
+
+    #[test]
+    fn test_op_gemm_transpose() {
+        // A = [[1,3],[2,4]] stored as [1,3,2,4], transA=true -> logical [[1,2],[3,4]]
+        // B = [[1,0],[0,1]] identity
+        // result = [[1,2],[3,4]]
+        let a = make_f32_tensor(&[2, 2], &[1.0, 3.0, 2.0, 4.0]);
+        let b = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let result = op_gemm(&a, &b, None, 1.0, 0.0, true, false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+
+        // transB=true: B stored as [[1,0],[0,1]]^T = [[1,0],[0,1]]
+        // Use a non-identity: B = [[5,6],[7,8]], transB=true -> logical [[5,7],[6,8]]
+        let a2 = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let b2 = make_f32_tensor(&[2, 2], &[5.0, 6.0, 7.0, 8.0]);
+        let result2 = op_gemm(&a2, &b2, None, 1.0, 0.0, false, true).unwrap();
+        let vals2 = read_f32_vec(&result2);
+        // I @ B^T = [[5,7],[6,8]]
+        assert_eq!(vals2, vec![5.0, 7.0, 6.0, 8.0]);
+    }
+
+    #[test]
+    fn test_op_gemm_alpha_beta() {
+        // A = [[1,0],[0,1]], B = [[2,0],[0,2]], C = [[10,10],[10,10]]
+        // result = alpha * A @ B + beta * C = 2 * [[2,0],[0,2]] + 0.5 * [[10,10],[10,10]]
+        //        = [[4,0],[0,4]] + [[5,5],[5,5]] = [[9,5],[5,9]]
+        let a = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let b = make_f32_tensor(&[2, 2], &[2.0, 0.0, 0.0, 2.0]);
+        let c = make_f32_tensor(&[2, 2], &[10.0, 10.0, 10.0, 10.0]);
+        let result = op_gemm(&a, &b, Some(&c), 2.0, 0.5, false, false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![9.0, 5.0, 5.0, 9.0]);
+    }
+
+    // ---- Tier 2: op_sigmoid tests ----
+
+    #[test]
+    fn test_op_sigmoid_zero() {
+        let t = make_f32_tensor(&[1], &[0.0]);
+        let result = op_sigmoid(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            (vals[0] - 0.5).abs() < 1e-4,
+            "sigmoid(0) = {}, expected ~0.5",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn test_op_sigmoid_positive() {
+        let t = make_f32_tensor(&[1], &[10.0]);
+        let result = op_sigmoid(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            (vals[0] - 1.0).abs() < 1e-4,
+            "sigmoid(10) = {}, expected ~1.0",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn test_op_sigmoid_negative() {
+        let t = make_f32_tensor(&[1], &[-10.0]);
+        let result = op_sigmoid(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            vals[0].abs() < 1e-4,
+            "sigmoid(-10) = {}, expected ~0.0",
+            vals[0]
+        );
+    }
+
+    // ---- Tier 2: op_tanh tests ----
+
+    #[test]
+    fn test_op_tanh_zero() {
+        let t = make_f32_tensor(&[1], &[0.0]);
+        let result = op_tanh(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(vals[0].abs() < 1e-4, "tanh(0) = {}, expected ~0.0", vals[0]);
+    }
+
+    #[test]
+    fn test_op_tanh_positive() {
+        let t = make_f32_tensor(&[1], &[10.0]);
+        let result = op_tanh(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            (vals[0] - 1.0).abs() < 1e-4,
+            "tanh(10) = {}, expected ~1.0",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn test_op_tanh_negative() {
+        let t = make_f32_tensor(&[1], &[-10.0]);
+        let result = op_tanh(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            (vals[0] + 1.0).abs() < 1e-4,
+            "tanh(-10) = {}, expected ~-1.0",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn test_op_tanh_symmetry() {
+        // tanh(-x) = -tanh(x)
+        let vals_to_check = [0.5, 1.0, 2.0, 3.0];
+        for &x in &vals_to_check {
+            let pos = make_f32_tensor(&[1], &[x]);
+            let neg = make_f32_tensor(&[1], &[-x]);
+            let r_pos = read_f32_vec(&op_tanh(&pos).unwrap());
+            let r_neg = read_f32_vec(&op_tanh(&neg).unwrap());
+            assert!(
+                (r_neg[0] + r_pos[0]).abs() < 1e-4,
+                "tanh(-{}) + tanh({}) = {}, expected ~0.0",
+                x,
+                x,
+                r_neg[0] + r_pos[0]
+            );
+        }
+    }
+
+    // ---- Tier 4: normalization, pooling, reduction tests ----
+
+    #[test]
+    fn test_op_batch_norm_basic() {
+        // NCHW [1,2,1,2]: 2 channels, each with 2 spatial values
+        // Channel 0: [1.0, 2.0], Channel 1: [3.0, 4.0]
+        let input = make_f32_tensor(&[1, 2, 1, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let scale = make_f32_tensor(&[2], &[1.0, 1.0]);
+        let bias = make_f32_tensor(&[2], &[0.0, 0.0]);
+        let mean = make_f32_tensor(&[2], &[1.5, 3.5]);
+        let var = make_f32_tensor(&[2], &[1.0, 1.0]);
+        let eps = 1e-5;
+        let result = op_batch_normalization(&input, &scale, &bias, &mean, &var, eps).unwrap();
+        let vals = read_f32_vec(&result);
+        // Channel 0: (1.0 - 1.5) / sqrt(1.0 + eps) ≈ -0.5, (2.0 - 1.5) / sqrt(1.0 + eps) ≈ 0.5
+        // Channel 1: (3.0 - 3.5) / sqrt(1.0 + eps) ≈ -0.5, (4.0 - 3.5) / sqrt(1.0 + eps) ≈ 0.5
+        assert!((vals[0] - (-0.5)).abs() < 0.01, "ch0[0]={}", vals[0]);
+        assert!((vals[1] - 0.5).abs() < 0.01, "ch0[1]={}", vals[1]);
+        assert!((vals[2] - (-0.5)).abs() < 0.01, "ch1[0]={}", vals[2]);
+        assert!((vals[3] - 0.5).abs() < 0.01, "ch1[1]={}", vals[3]);
+    }
+
+    #[test]
+    fn test_op_layer_norm_basic() {
+        // [2,3] tensor, normalize along axis=-1 (last axis, size 3)
+        // Row 0: [1.0, 2.0, 3.0], Row 1: [4.0, 5.0, 6.0]
+        let input = make_f32_tensor(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let scale = make_f32_tensor(&[3], &[1.0, 1.0, 1.0]);
+        let eps = 1e-5;
+        let result = op_layer_normalization(&input, &scale, None, -1, eps).unwrap();
+        let vals = read_f32_vec(&result);
+        // Each row should have mean ≈ 0 and variance ≈ 1
+        for row in 0..2 {
+            let row_vals = &vals[row * 3..(row + 1) * 3];
+            let row_mean: f32 = row_vals.iter().sum::<f32>() / 3.0;
+            let row_var: f32 = row_vals
+                .iter()
+                .map(|v| (v - row_mean) * (v - row_mean))
+                .sum::<f32>()
+                / 3.0;
+            assert!(row_mean.abs() < 0.01, "row {} mean={}", row, row_mean);
+            assert!((row_var - 1.0).abs() < 0.01, "row {} var={}", row, row_var);
+        }
+    }
+
+    #[test]
+    fn test_op_maxpool_2x2() {
+        // NCHW [1,1,4,4], kernel 2x2, stride 2 -> [1,1,2,2]
+        #[rustfmt::skip]
+        let data = [
+            1.0, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+            9.0, 10.0, 11.0, 12.0,
+            13.0, 14.0, 15.0, 16.0,
+        ];
+        let input = make_f32_tensor(&[1, 1, 4, 4], &data);
+        let result = op_maxpool(&input, &[2, 2], Some(&[2, 2]), None).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 1, 2, 2]);
+        let vals = read_f32_vec(&result);
+        // Top-left 2x2: max(1,2,5,6)=6
+        // Top-right 2x2: max(3,4,7,8)=8
+        // Bottom-left 2x2: max(9,10,13,14)=14
+        // Bottom-right 2x2: max(11,12,15,16)=16
+        assert!((vals[0] - 6.0).abs() < 0.01, "tl={}", vals[0]);
+        assert!((vals[1] - 8.0).abs() < 0.01, "tr={}", vals[1]);
+        assert!((vals[2] - 14.0).abs() < 0.01, "bl={}", vals[2]);
+        assert!((vals[3] - 16.0).abs() < 0.01, "br={}", vals[3]);
+    }
+
+    #[test]
+    fn test_op_averagepool_2x2() {
+        // NCHW [1,1,4,4], kernel 2x2, stride 2 -> [1,1,2,2]
+        #[rustfmt::skip]
+        let data = [
+            1.0, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+            9.0, 10.0, 11.0, 12.0,
+            13.0, 14.0, 15.0, 16.0,
+        ];
+        let input = make_f32_tensor(&[1, 1, 4, 4], &data);
+        let result = op_averagepool(&input, &[2, 2], Some(&[2, 2]), None).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 1, 2, 2]);
+        let vals = read_f32_vec(&result);
+        // Top-left: avg(1,2,5,6) = 3.5
+        // Top-right: avg(3,4,7,8) = 5.5
+        // Bottom-left: avg(9,10,13,14) = 11.5
+        // Bottom-right: avg(11,12,15,16) = 13.5
+        assert!((vals[0] - 3.5).abs() < 0.01, "tl={}", vals[0]);
+        assert!((vals[1] - 5.5).abs() < 0.01, "tr={}", vals[1]);
+        assert!((vals[2] - 11.5).abs() < 0.01, "bl={}", vals[2]);
+        assert!((vals[3] - 13.5).abs() < 0.01, "br={}", vals[3]);
+    }
+
+    #[test]
+    fn test_op_global_average_pool() {
+        // NCHW [1,2,3,3] -> [1,2,1,1]
+        // Channel 0: 9 values 1..9, mean = 5.0
+        // Channel 1: 9 values 10..18, mean = 14.0
+        #[rustfmt::skip]
+        let data = [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+            10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0,
+        ];
+        let input = make_f32_tensor(&[1, 2, 3, 3], &data);
+        let result = op_global_average_pool(&input).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 2, 1, 1]);
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 5.0).abs() < 0.01, "ch0 mean={}", vals[0]);
+        assert!((vals[1] - 14.0).abs() < 0.01, "ch1 mean={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_sum_axis0() {
+        // [[1,2],[3,4]] reduce axis 0 -> [4,6]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_sum(&input, &[0], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 4.0).abs() < 0.01, "col0={}", vals[0]);
+        assert!((vals[1] - 6.0).abs() < 0.01, "col1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_sum_axis1() {
+        // [[1,2],[3,4]] reduce axis 1 -> [3,7]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_sum(&input, &[1], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 3.0).abs() < 0.01, "row0={}", vals[0]);
+        assert!((vals[1] - 7.0).abs() < 0.01, "row1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_sum_keepdims() {
+        // [[1,2],[3,4]] reduce axis 0, keepdims=true -> shape [1,2], values [4,6]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_sum(&input, &[0], true).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 2]);
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 4.0).abs() < 0.01, "col0={}", vals[0]);
+        assert!((vals[1] - 6.0).abs() < 0.01, "col1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_mean_axis0() {
+        // [[1,2],[3,4]] reduce axis 0 -> [2,3]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_mean(&input, &[0], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 2.0).abs() < 0.01, "col0={}", vals[0]);
+        assert!((vals[1] - 3.0).abs() < 0.01, "col1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_mean_axis1() {
+        // [[1,2],[3,4]] reduce axis 1 -> [1.5, 3.5]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_mean(&input, &[1], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 1.5).abs() < 0.01, "row0={}", vals[0]);
+        assert!((vals[1] - 3.5).abs() < 0.01, "row1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_mean_all() {
+        // [[1,2],[3,4]] reduce all axes -> scalar 2.5
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_mean(&input, &[], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals.len(), 1);
+        assert!((vals[0] - 2.5).abs() < 0.01, "mean={}", vals[0]);
+    }
+
+    #[test]
+    fn test_sqrt_approx() {
+        assert!(
+            (sqrt_approx(4.0) - 2.0).abs() < 0.01,
+            "sqrt(4)={}",
+            sqrt_approx(4.0)
+        );
+        assert!(
+            (sqrt_approx(9.0) - 3.0).abs() < 0.01,
+            "sqrt(9)={}",
+            sqrt_approx(9.0)
+        );
+        assert!(
+            (sqrt_approx(0.0)).abs() < 0.01,
+            "sqrt(0)={}",
+            sqrt_approx(0.0)
+        );
+        assert!(
+            (sqrt_approx(1.0) - 1.0).abs() < 0.01,
+            "sqrt(1)={}",
+            sqrt_approx(1.0)
+        );
+    }
+
+    // ================================================================
+    // Tier 3 — Shape/data movement operator tests
+    // ================================================================
+
+    // ---- op_transpose tests ----
+
+    #[test]
+    fn test_op_transpose_2d() {
+        // [[1,2],[3,4]] transposed = [[1,3],[2,4]]
+        let t = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_transpose(&t, Some(&[1, 0])).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 3.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn test_op_transpose_identity() {
+        // perm=[0,1] returns same data
+        let t = make_f32_tensor(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let result = op_transpose(&t, Some(&[0, 1])).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    // ---- op_concat tests ----
+
+    #[test]
+    fn test_op_concat_axis0() {
+        // Concat two [1,2] tensors along axis 0 -> [2,2]
+        let a = make_f32_tensor(&[1, 2], &[1.0, 2.0]);
+        let b = make_f32_tensor(&[1, 2], &[3.0, 4.0]);
+        let result = op_concat(&[&a, &b], 0).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_op_concat_axis1() {
+        // Concat two [2,1] tensors along axis 1 -> [2,2]
+        let a = make_f32_tensor(&[2, 1], &[1.0, 3.0]);
+        let b = make_f32_tensor(&[2, 1], &[2.0, 4.0]);
+        let result = op_concat(&[&a, &b], 1).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    // ---- op_flatten tests ----
+
+    #[test]
+    fn test_op_flatten_3d() {
+        // [2,3,4] shape -> [2,12] at axis=1
+        let data: Vec<f32> = (0..24).map(|i| i as f32).collect();
+        let t = make_f32_tensor(&[2, 3, 4], &data);
+        let result = op_flatten(&t, 1).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 12]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, data);
+    }
+
+    // ---- op_squeeze tests ----
+
+    #[test]
+    fn test_op_squeeze_all() {
+        // [1,3,1] -> [3]
+        let t = make_f32_tensor(&[1, 3, 1], &[10.0, 20.0, 30.0]);
+        let result = op_squeeze(&t, None).unwrap();
+        assert_eq!(result.shape.dims, vec![3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn test_op_squeeze_specific() {
+        // [1,3,1] squeeze axis 0 -> [3,1]
+        let t = make_f32_tensor(&[1, 3, 1], &[10.0, 20.0, 30.0]);
+        let result = op_squeeze(&t, Some(&[0])).unwrap();
+        assert_eq!(result.shape.dims, vec![3, 1]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    // ---- op_unsqueeze tests ----
+
+    #[test]
+    fn test_op_unsqueeze() {
+        // [3] unsqueeze axis 0 -> [1,3]
+        let t = make_f32_tensor(&[3], &[10.0, 20.0, 30.0]);
+        let result = op_unsqueeze(&t, &[0]).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    // ---- squeeze/unsqueeze roundtrip ----
+
+    #[test]
+    fn test_op_squeeze_unsqueeze_roundtrip() {
+        // Start with [1,3,1], squeeze all -> [3], unsqueeze at 0 and 2 -> [1,3,1]
+        let t = make_f32_tensor(&[1, 3, 1], &[10.0, 20.0, 30.0]);
+        let squeezed = op_squeeze(&t, None).unwrap();
+        assert_eq!(squeezed.shape.dims, vec![3]);
+        let restored = op_unsqueeze(&squeezed, &[0, 2]).unwrap();
+        assert_eq!(restored.shape.dims, vec![1, 3, 1]);
+        let vals = read_f32_vec(&restored);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    // ---- op_cast tests ----
+
+    #[test]
+    fn test_op_cast_f32_to_i32() {
+        // Cast [1.5, -2.7] -> [1, -2] (truncation toward zero)
+        let t = make_f32_tensor(&[2], &[1.5, -2.7]);
+        let result = op_cast(&t, DataType::Int32).unwrap();
+        assert_eq!(result.data_type, DataType::Int32);
+        assert_eq!(result.shape.dims, vec![2]);
+        let v0 = i32::from_le_bytes([
+            result.raw_data[0],
+            result.raw_data[1],
+            result.raw_data[2],
+            result.raw_data[3],
+        ]);
+        let v1 = i32::from_le_bytes([
+            result.raw_data[4],
+            result.raw_data[5],
+            result.raw_data[6],
+            result.raw_data[7],
+        ]);
+        assert_eq!(v0, 1);
+        assert_eq!(v1, -2);
+    }
+
+    #[test]
+    fn test_op_cast_identity() {
+        // Cast f32 to f32 returns same tensor
+        let t = make_f32_tensor(&[3], &[1.0, 2.0, 3.0]);
+        let result = op_cast(&t, DataType::Float).unwrap();
+        assert_eq!(result.data_type, DataType::Float);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    // ---- op_clip tests ----
+
+    #[test]
+    fn test_op_clip_both() {
+        // Clip [-5, 0, 5] to [-2, 2] -> [-2, 0, 2]
+        let t = make_f32_tensor(&[3], &[-5.0, 0.0, 5.0]);
+        let result = op_clip(&t, Some(-2.0), Some(2.0)).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![-2.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn test_op_clip_min_only() {
+        // Clip with min=0 -> relu behavior
+        let t = make_f32_tensor(&[4], &[-3.0, -1.0, 0.0, 5.0]);
+        let result = op_clip(&t, Some(0.0), None).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![0.0, 0.0, 0.0, 5.0]);
+    }
+
+    #[test]
+    fn test_op_clip_max_only() {
+        // Clip with max=1
+        let t = make_f32_tensor(&[4], &[-2.0, 0.5, 1.0, 3.0]);
+        let result = op_clip(&t, None, Some(1.0)).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![-2.0, 0.5, 1.0, 1.0]);
+    }
+
+    // ---- op_pad tests ----
+
+    #[test]
+    fn test_op_pad_1d() {
+        // Pad [1,2,3] with pads=[1,1] constant=0 -> [0,1,2,3,0]
+        let t = make_f32_tensor(&[3], &[1.0, 2.0, 3.0]);
+        let result = op_pad(&t, &[1, 1], "constant", 0.0).unwrap();
+        assert_eq!(result.shape.dims, vec![5]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![0.0, 1.0, 2.0, 3.0, 0.0]);
+    }
+
+    // ---- op_slice tests ----
+
+    #[test]
+    fn test_op_slice_basic() {
+        // Slice [1,2,3,4,5] starts=[1] ends=[4] -> [2,3,4]
+        let t = make_f32_tensor(&[5], &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let result = op_slice(&t, &[1], &[4], None, None).unwrap();
+        assert_eq!(result.shape.dims, vec![3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_op_slice_negative() {
+        // starts=[-3] ends=[-1] on [1,2,3,4,5] -> [3,4]
+        let t = make_f32_tensor(&[5], &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let result = op_slice(&t, &[-3], &[-1], None, None).unwrap();
+        assert_eq!(result.shape.dims, vec![2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![3.0, 4.0]);
+    }
+
+    // ---- op_gather tests ----
+
+    #[test]
+    fn test_op_gather_1d() {
+        // Gather from [10,20,30,40] indices=[1,3] -> [20,40]
+        let input = make_f32_tensor(&[4], &[10.0, 20.0, 30.0, 40.0]);
+        // Create Int64 index tensor with values [1, 3]
+        let idx_data: Vec<u8> = {
+            let mut d = alloc::vec![0u8; 2 * 8];
+            let b1 = 1i64.to_le_bytes();
+            let b3 = 3i64.to_le_bytes();
+            for j in 0..8 {
+                d[j] = b1[j];
+                d[8 + j] = b3[j];
+            }
+            d
+        };
+        let indices = Tensor {
+            data_type: DataType::Int64,
+            shape: TensorShape::new(vec![2]),
+            name: String::new(),
+            raw_data: idx_data,
+        };
+        let result = op_gather(&input, &indices, 0).unwrap();
+        assert_eq!(result.shape.dims, vec![2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![20.0, 40.0]);
+    }
 }
