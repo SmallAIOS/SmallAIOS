@@ -5,9 +5,10 @@
 
 extern crate alloc;
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use smallaios_onnx_rt::operators::{op_add, op_matmul, op_relu, op_softmax};
 use smallaios_onnx_rt::tensor::{DataType, Tensor, TensorShape};
+use std::hint::black_box;
 
 fn make_float_tensor(dims: &[i64]) -> Tensor {
     let shape = TensorShape::new(dims.to_vec());
