@@ -55,10 +55,35 @@ just release minor          # execute bump + commit + tag
 rustup toolchain install nightly-2026-02-01
 cargo install just --locked                          # task runner
 
+# Pre-commit hooks (run once after clone)
+just setup-hooks
+
+# Safety-critical tooling (recommended)
+cargo install cargo-audit --locked                   # CVE vulnerability check
+cargo install cargo-geiger --locked                  # unsafe code audit
+cargo install cargo-deny --locked                    # supply chain security
+cargo install cargo-semver-checks --locked           # API breakage detection
+cargo install cargo-vet --locked                     # dependency review audit trail
+cargo install cargo-careful --locked                 # extra UB detection
+cargo install cargo-llvm-cov --locked                # coverage threshold gate
+
 # Optional analysis tools
 cargo install cargo-depgraph cargo-modules --locked  # dependency visualization
 sudo apt install graphviz                            # SVG graph rendering
 ```
+
+### Pre-Commit Hooks
+
+Git hooks at `.githooks/pre-commit` run before each commit:
+1. `cargo fmt --check` — formatting (blocking)
+2. `cargo clippy -D warnings` — lint (blocking)
+3. `cargo-geiger` — unsafe code audit (advisory)
+4. `cargo-audit` — CVE vulnerability check (advisory)
+5. `cargo-semver-checks` — API breakage detection (advisory)
+6. Dependency cycle check (blocking, on Cargo.toml changes)
+7. Module acyclicity check (advisory)
+
+Install with `just setup-hooks`. Run manually with `just check` (quick) or `just audit` (full safety audit).
 
 ## Workspace Architecture
 
@@ -171,18 +196,34 @@ Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:v
 
 GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` and `develop`, and on PRs targeting either branch.
 
-**Jobs:**
+**Gate Jobs (block PR merge):**
 - **Format Check** — `cargo fmt --check`
 - **Clippy Lint** — all host-testable crates
-- **Unit Tests** — all host-testable crates
-- **Build** — x86-64, AArch64, RISC-V bare-metal kernels
+- **Unit Tests** — all host-testable crates (default, formal-gate, verified-boot)
+- **Build** — x86-64, AArch64, RISC-V, Jetson bare-metal kernels
+- **Docker Build** — container image build
+- **Semver PR Title Check** — validates conventional commit PR titles
+- **API Semver Check** — `cargo-semver-checks` detects accidental API breakage (conditional: passes if PR title has `!`)
+- **Supply Chain Security** — `cargo-deny` license/advisory/ban checks
+- **Dependency Audit** — `cargo-vet` ensures all deps have audit trail (DO-178C traceability)
+- **Cyclic Dependency Check** — no crate-level cycles
+- **Coverage Threshold** — `cargo-llvm-cov --fail-under-lines 80` (ratchets to 93%)
+- **Change Gates** — meta-job that gates PR mergeability on all above
+
+**Advisory Jobs (report only):**
+- **Careful UB Testing** — `cargo-careful` extra undefined behavior checks
+- **Unsafe Usage Report** — `cargo-geiger` counts unsafe blocks
+- **Kani Model Checking** — bounded model checking (scheduled/on-demand)
+- **Miri UB Detection** — memory safety verification (scheduled)
+- **SPIN Model Verification** — Promela protocol models
+- **TLA+ Verification** — TLC on 19 formal models
+- **Fuzz Testing** — `cargo-fuzz` on critical parsers
+- **Mutation Testing** — `cargo-mutants` test quality (on-demand)
+- **Code Coverage** — `cargo-llvm-cov` uploaded to [Codecov](https://codecov.io)
+- **SonarCloud Analysis** — static analysis via [SonarCloud](https://sonarcloud.io)
+- **Dependency Analysis** — crate/module dependency graphs, DSM matrix, DSM metrics
 - **RISC-V QEMU Smoke Test** — boots kernel in QEMU
 - **Image Size Check** — ensures binaries stay under 15 MB
-- **TLA+ Verification** — runs TLC on 19 formal models (5 min timeout per model; timeouts are warnings, not failures)
-- **Code Coverage** — `cargo-llvm-cov` with lcov output, uploaded to [Codecov](https://codecov.io)
-- **SonarCloud Analysis** — static analysis via [SonarCloud](https://sonarcloud.io)
-- **Dependency Analysis** — crate/module dependency graphs, DSM matrix, DSM metrics analysis
-- **Change Gates** — meta-job that gates PR mergeability
 
 **Required secrets:** `CODECOV_TOKEN`, `SONAR_TOKEN`
 

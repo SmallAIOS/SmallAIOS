@@ -2,7 +2,7 @@ name: SmallAIOS CI
 
 on:
   push:
-    branches: [main, develop, "claude/**", "change/**"]
+    branches: [main, develop]
   pull_request:
     branches: [main, develop]
   schedule:
@@ -858,11 +858,154 @@ jobs:
           path: build/analysis/
           retention-days: 30
 
+  # --- Safety-Critical Tooling ---
+
+  semver-api-check:
+    name: API Semver Check (cargo-semver-checks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+      - name: Check for API breakage
+        id: semver
+        continue-on-error: true
+        run: |
+          cargo semver-checks check-release \
+            --baseline-rev origin/${{ github.base_ref }} \
+            -p smallaios-kernel \
+            -p smallaios-security \
+            -p smallaios-onnx-rt \
+            -p smallaios-net \
+            -p smallaios-ipc \
+            -p smallaios-posix \
+            -p smallaios-container \
+            2>&1 | tee semver-report.txt
+      - name: Gate or warn based on PR title
+        if: steps.semver.outcome == 'failure'
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          if echo "$PR_TITLE" | grep -q '!'; then
+            echo "::warning::API breaking changes detected — allowed because PR title contains '!'"
+            echo "Breaking changes are intentional per semver convention."
+          else
+            echo "::error::API breaking changes detected but PR title does not contain '!'"
+            echo "Either fix the breaking change or add '!' to the PR title (e.g., feat!: rename API)"
+            cat semver-report.txt
+            exit 1
+          fi
+      - name: Upload semver report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semver-api-report
+          path: semver-report.txt
+          retention-days: 30
+
+  cargo-vet-check:
+    name: Dependency Audit (cargo-vet)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+      - name: Install cargo-vet
+        run: cargo install cargo-vet --locked
+      - name: Check dependency audits
+        run: cargo vet check
+
+  careful-test:
+    name: Careful UB Testing (cargo-careful)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install cargo-careful
+        run: cargo install cargo-careful --locked
+      - name: Run careful tests
+        run: |
+          cargo careful test \
+            -p smallaios-kernel \
+            -p smallaios-security \
+            -p smallaios-onnx-rt \
+            -p smallaios-ipc \
+            -p smallaios-net \
+            -p smallaios-posix \
+            -p smallaios-container \
+            -p smallaios-bus \
+            -p smallaios-bench \
+            2>&1 | tee careful-report.txt
+      - name: Upload careful report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: careful-report
+          path: careful-report.txt
+          retention-days: 30
+
+  coverage-threshold:
+    name: Coverage Threshold (80%)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: llvm-tools
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Check coverage threshold
+        # Threshold ratcheting schedule:
+        #   80% — initial (2026-04-05)
+        #   85% — after onnx-cpu-runtime-v1 tests complete
+        #   90% — after cpu-parallel-inference-v1
+        #   93% — parity with Codecov target
+        run: |
+          cargo llvm-cov \
+            --fail-under-lines 80 \
+            -p smallaios-kernel \
+            -p smallaios-security \
+            -p smallaios-onnx-rt \
+            -p smallaios-ipc \
+            -p smallaios-net \
+            -p smallaios-posix \
+            -p smallaios-container \
+            -p smallaios-bus \
+            -p smallaios-bench \
+            2>&1 | tee coverage-threshold.txt
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-threshold-report
+          path: coverage-threshold.txt
+          retention-days: 30
+
   change-gates:
     name: Change Gates
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check, cargo-deny, check-cycles]
+    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check, cargo-deny, check-cycles, semver-api-check, coverage-threshold]
     if: github.event_name == 'pull_request'
     steps:
       - name: All gates passed
