@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SmallAIOS pre-commit hook
-# Runs format check, clippy lint, and cycle check before each commit.
+# Runs format check, clippy lint, safety audits, and cycle checks.
 # Install: just setup-hooks  (or: git config core.hooksPath .githooks)
 #
 # To skip (emergency only): git commit --no-verify
@@ -17,9 +17,9 @@ fi
 
 echo "=== SmallAIOS pre-commit checks ==="
 
-# 1. Format check (fast, catches most issues)
 if command -v cargo >/dev/null 2>&1; then
-    echo "[1/3] cargo fmt --check"
+    # 1. Format check (fast, catches most issues)
+    echo "[1/7] cargo fmt --check"
     if ! cargo fmt --all -- --check 2>/dev/null; then
         echo ""
         echo "ERROR: Code is not formatted. Run 'cargo fmt --all' or 'just fmt' to fix."
@@ -27,8 +27,7 @@ if command -v cargo >/dev/null 2>&1; then
     fi
 
     # 2. Clippy lint (catches unused vars, lifetime issues, etc.)
-    echo "[2/3] cargo clippy (host crates)"
-    # Use the same crate list as CI, excluding bare-metal arch crates
+    echo "[2/7] cargo clippy (host crates)"
     if ! cargo clippy \
         -p smallaios-kernel \
         -p smallaios-security \
@@ -50,28 +49,35 @@ if command -v cargo >/dev/null 2>&1; then
 
     # 3. Unsafe audit — warn on new unsafe blocks
     if command -v cargo-geiger >/dev/null 2>&1; then
-        echo "[3/6] cargo-geiger (unsafe audit)"
-        # Count-only mode — fast, just reports unsafe usage
+        echo "[3/7] cargo-geiger (unsafe audit)"
         cargo geiger --output-format ascii --update-readme=false 2>/dev/null | tail -3 || true
     else
-        echo "[3/6] cargo-geiger (skipped — not installed)"
+        echo "[3/7] cargo-geiger (skipped — not installed)"
     fi
 
     # 4. Known vulnerability check
     if command -v cargo-audit >/dev/null 2>&1; then
-        echo "[4/6] cargo-audit (CVE check)"
+        echo "[4/7] cargo-audit (CVE check)"
         if ! cargo audit --quiet 2>/dev/null; then
-            echo ""
             echo "WARNING: Known vulnerabilities in dependencies. Run 'cargo audit' for details."
-            # Advisory — don't block commit, but warn loudly
         fi
     else
-        echo "[4/6] cargo-audit (skipped — not installed)"
+        echo "[4/7] cargo-audit (skipped — not installed)"
     fi
 
-    # 5. Cycle check (if Cargo.toml changed)
+    # 5. API breakage check
+    if command -v cargo-semver-checks >/dev/null 2>&1; then
+        echo "[5/7] cargo-semver-checks (API breakage)"
+        cargo semver-checks check-release --baseline-rev origin/develop \
+            -p smallaios-kernel -p smallaios-security -p smallaios-onnx-rt 2>/dev/null || \
+            echo "WARNING: Possible API breaking changes detected. Review before pushing."
+    else
+        echo "[5/7] cargo-semver-checks (skipped — not installed)"
+    fi
+
+    # 6. Cycle check (if Cargo.toml changed)
     if [ -n "$TOML_STAGED" ]; then
-        echo "[5/6] Checking dependency cycles"
+        echo "[6/7] Checking dependency cycles"
         if [ -f scripts/check-cycles.sh ]; then
             if ! bash scripts/check-cycles.sh 2>/dev/null; then
                 echo ""
@@ -80,15 +86,15 @@ if command -v cargo >/dev/null 2>&1; then
             fi
         fi
     else
-        echo "[5/6] Cycle check (skipped — no Cargo.toml changes)"
+        echo "[6/7] Cycle check (skipped — no Cargo.toml changes)"
     fi
 
-    # 6. Module-level acyclicity (if cargo-modules available)
+    # 7. Module-level acyclicity (if cargo-modules available)
     if command -v cargo-modules >/dev/null 2>&1; then
-        echo "[6/6] Module acyclicity check"
+        echo "[7/7] Module acyclicity check"
         just arch-check 2>/dev/null || echo "WARNING: Module cycle detected (advisory)"
     else
-        echo "[6/6] Module acyclicity (skipped — cargo-modules not installed)"
+        echo "[7/7] Module acyclicity (skipped — cargo-modules not installed)"
     fi
 
     echo "=== All pre-commit checks passed ==="

@@ -1,0 +1,13 @@
+# cargo-vet supply chain configuration
+# See https://mozilla.github.io/cargo-vet/
+
+[cargo-vet]
+version = "0.9"
+
+[policy]
+criteria = "safe-to-deploy"
+
+# Exemptions for existing dependencies (bootstrap).
+# Replace with proper audits over time.
+# Run `cargo vet suggest` to see which can be resolved.
+[exemptions]

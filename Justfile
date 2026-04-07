@@ -137,7 +137,7 @@ docker-local-clean:
 setup-hooks:
     git config core.hooksPath .githooks
     @echo "Pre-commit hooks installed (.githooks/pre-commit)"
-    @echo "Hooks run: cargo fmt --check, cargo clippy, cycle check"
+    @echo "Hooks run: cargo fmt, clippy, geiger, audit, semver-checks, cycles"
 
 # Run all pre-commit checks manually (same as the hook runs)
 check: fmt-check clippy
@@ -146,15 +146,17 @@ check: fmt-check clippy
 # Run full safety-critical audit (slower, pre-merge)
 audit:
     @echo "=== Safety-critical audit ==="
-    @echo "[1/5] cargo-deny (supply chain)"
+    @echo "[1/6] cargo-deny (supply chain)"
     cargo deny check
-    @echo "[2/5] cargo-audit (CVE check)"
+    @echo "[2/6] cargo-audit (CVE check)"
     cargo audit
-    @echo "[3/5] cargo-geiger (unsafe report)"
+    @echo "[3/6] cargo-geiger (unsafe report)"
     cargo geiger --output-format ascii --update-readme=false 2>/dev/null | tail -10 || true
-    @echo "[4/5] Dependency cycle check"
+    @echo "[4/6] cargo-vet (dependency audit trail)"
+    cargo vet check || echo "WARNING: Unaudited dependencies found"
+    @echo "[5/6] Dependency cycle check"
     ./scripts/check-cycles.sh
-    @echo "[5/5] Module acyclicity"
+    @echo "[6/6] Module acyclicity"
     just arch-check || true
     @echo "=== Safety audit complete ==="
 
