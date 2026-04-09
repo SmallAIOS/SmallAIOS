@@ -169,6 +169,9 @@ pub struct Session {
     pub initializers: Vec<TensorProto>,
     /// Whether the session has been fully initialized with a model.
     is_initialized: bool,
+    /// Optional GPU backend for accelerated operator dispatch.
+    #[cfg(feature = "gpu")]
+    pub gpu_backend: Option<smallaios_compute::GpuBackend>,
 }
 
 /// ONNX model file magic bytes: `\x08` (field 1, varint wire type).
@@ -331,6 +334,8 @@ impl Session {
             output_names: Vec::new(),
             initializers: Vec::new(),
             is_initialized: false,
+            #[cfg(feature = "gpu")]
+            gpu_backend: None,
         }
     }
 
@@ -414,7 +419,14 @@ impl Session {
         // Get initializers from the model (stored during initialize)
         let initializers = &self.initializers;
 
-        crate::executor::execute_graph(graph, &input_pairs, initializers, None)
+        crate::executor::execute_graph(
+            graph,
+            &input_pairs,
+            initializers,
+            None,
+            #[cfg(feature = "gpu")]
+            self.gpu_backend.as_ref(),
+        )
     }
 
     /// Returns the names of the model's expected inputs.

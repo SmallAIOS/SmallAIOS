@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "kernel",
+    "compute",
     "arch/x86_64",
     "arch/aarch64",
     "arch/riscv64",

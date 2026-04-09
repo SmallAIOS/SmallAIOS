@@ -287,6 +287,98 @@ impl CudaProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ComputeProvider implementation
+// ---------------------------------------------------------------------------
+
+impl smallaios_compute::ComputeProvider for CudaProvider {
+    type Buffer = u64; // VRAM allocation ID
+    type Kernel = u64; // Kernel launch ID (name index)
+    type Error = GpuError;
+
+    fn device_info(&self) -> smallaios_compute::DeviceInfo {
+        smallaios_compute::DeviceInfo {
+            name: String::from(self.gpu_info.name),
+            memory_bytes: self.gpu_info.vram_size_mb as u64 * 1024 * 1024,
+            compute_units: self.gpu_info.sm_count,
+            backend_type: smallaios_compute::BackendType::Cuda,
+        }
+    }
+
+    fn init(&mut self) -> Result<(), Self::Error> {
+        self.status = ProviderStatus::Ready;
+        Ok(())
+    }
+
+    fn alloc(&mut self, size: usize) -> Result<Self::Buffer, Self::Error> {
+        self.allocate_workspace(size as u64)
+    }
+
+    fn free(&mut self, buf: Self::Buffer) -> Result<(), Self::Error> {
+        self.free_allocation(buf)
+    }
+
+    fn copy_host_to_device(
+        &mut self,
+        src: &[u8],
+        dst: &mut Self::Buffer,
+    ) -> Result<(), Self::Error> {
+        // Stub: submit a DMA transfer using placeholder addresses.
+        let _ = self.transfer_to_device(0, *dst, src.len() as u64)?;
+        Ok(())
+    }
+
+    fn copy_device_to_host(&self, _src: &Self::Buffer, _dst: &mut [u8]) -> Result<(), Self::Error> {
+        // Stub: device-to-host requires mutable DMA engine; return Ok
+        // since this is an architectural stub.
+        Ok(())
+    }
+
+    fn load_kernel(&mut self, name: &str, _source: &[u8]) -> Result<Self::Kernel, Self::Error> {
+        // Check if the operator is supported by looking up the mapping.
+        if Self::map_operator(name).is_some() {
+            Ok(0) // Stub kernel handle
+        } else {
+            Err(GpuError::NotFound)
+        }
+    }
+
+    fn launch(
+        &mut self,
+        _kernel: &Self::Kernel,
+        grid: [u32; 3],
+        block: [u32; 3],
+        _args: &[&Self::Buffer],
+    ) -> Result<(), Self::Error> {
+        let config = LaunchConfig {
+            grid: Dim3 {
+                x: grid[0],
+                y: grid[1],
+                z: grid[2],
+            },
+            block: Dim3 {
+                x: block[0],
+                y: block[1],
+                z: block[2],
+            },
+            shared_memory: 0,
+            stream: 0,
+        };
+        let kid = self.compute.launch("compute_provider", config)?;
+        self.compute.dispatch(kid)?;
+        Ok(())
+    }
+
+    fn synchronize(&mut self) -> Result<(), Self::Error> {
+        self.compute.synchronize();
+        Ok(())
+    }
+
+    fn supports_op(&self, op: &str) -> bool {
+        Self::map_operator(op).is_some()
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -665,5 +757,69 @@ mod tests {
         // Free the allocation.
         prov.free_allocation(id).unwrap();
         assert_eq!(prov.vram_used(), baseline);
+    }
+
+    // -- 25. ComputeProvider trait: device_info ----------------------------
+
+    #[test]
+    fn test_compute_provider_device_info() {
+        use smallaios_compute::ComputeProvider;
+        let prov = test_provider();
+        let info = ComputeProvider::device_info(&prov);
+        assert_eq!(info.name, "NVIDIA Tesla T4");
+        assert_eq!(info.backend_type, smallaios_compute::BackendType::Cuda);
+        assert!(info.compute_units > 0);
+    }
+
+    // -- 26. ComputeProvider trait: init -----------------------------------
+
+    #[test]
+    fn test_compute_provider_init() {
+        use smallaios_compute::ComputeProvider;
+        let mut prov = test_provider();
+        assert!(ComputeProvider::init(&mut prov).is_ok());
+    }
+
+    // -- 27. ComputeProvider trait: alloc / free ---------------------------
+
+    #[test]
+    fn test_compute_provider_alloc_free() {
+        use smallaios_compute::ComputeProvider;
+        let mut prov = test_provider();
+        let buf = ComputeProvider::alloc(&mut prov, PAGE as usize).unwrap();
+        assert!(ComputeProvider::free(&mut prov, buf).is_ok());
+    }
+
+    // -- 28. ComputeProvider trait: supports_op ---------------------------
+
+    #[test]
+    fn test_compute_provider_supports_op() {
+        use smallaios_compute::ComputeProvider;
+        let prov = test_provider();
+        assert!(prov.supports_op("MatMul"));
+        assert!(prov.supports_op("Relu"));
+        assert!(prov.supports_op("Conv"));
+        assert!(!prov.supports_op("Reshape"));
+        assert!(!prov.supports_op("UnknownOp"));
+    }
+
+    // -- 29. ComputeProvider trait: launch / synchronize ------------------
+
+    #[test]
+    fn test_compute_provider_launch_sync() {
+        use smallaios_compute::ComputeProvider;
+        let mut prov = test_provider();
+        let kernel = prov.load_kernel("MatMul", &[]).unwrap();
+        assert!(prov.launch(&kernel, [1, 1, 1], [256, 1, 1], &[]).is_ok());
+        assert!(ComputeProvider::synchronize(&mut prov).is_ok());
+    }
+
+    // -- 30. ComputeProvider trait: load_kernel unknown returns err -------
+
+    #[test]
+    fn test_compute_provider_load_kernel_unknown() {
+        use smallaios_compute::ComputeProvider;
+        let mut prov = test_provider();
+        assert!(prov.load_kernel("UnknownOp", &[]).is_err());
     }
 }

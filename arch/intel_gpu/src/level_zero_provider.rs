@@ -252,6 +252,94 @@ impl LevelZeroProvider {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ComputeProvider implementation
+// ---------------------------------------------------------------------------
+
+impl smallaios_compute::ComputeProvider for LevelZeroProvider {
+    type Buffer = u64; // Memory allocation ID
+    type Kernel = u64; // Stub kernel handle
+    type Error = GpuError;
+
+    fn device_info(&self) -> smallaios_compute::DeviceInfo {
+        smallaios_compute::DeviceInfo {
+            name: String::from(self.gpu_info.name),
+            memory_bytes: self.gpu_info.local_memory_mb as u64 * 1024 * 1024,
+            compute_units: self.gpu_info.eu_count,
+            backend_type: smallaios_compute::BackendType::LevelZero,
+        }
+    }
+
+    fn init(&mut self) -> Result<(), Self::Error> {
+        self.status = ProviderStatus::Ready;
+        Ok(())
+    }
+
+    fn alloc(&mut self, size: usize) -> Result<Self::Buffer, Self::Error> {
+        self.allocate_workspace(size as u64)
+    }
+
+    fn free(&mut self, buf: Self::Buffer) -> Result<(), Self::Error> {
+        self.free_allocation(buf)
+    }
+
+    fn copy_host_to_device(
+        &mut self,
+        src: &[u8],
+        dst: &mut Self::Buffer,
+    ) -> Result<(), Self::Error> {
+        let _ = self.transfer_to_device(0, *dst, src.len() as u64)?;
+        Ok(())
+    }
+
+    fn copy_device_to_host(&self, _src: &Self::Buffer, _dst: &mut [u8]) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    fn load_kernel(&mut self, name: &str, _source: &[u8]) -> Result<Self::Kernel, Self::Error> {
+        if Self::map_operator(name).is_some() {
+            Ok(0)
+        } else {
+            Err(GpuError::NotFound)
+        }
+    }
+
+    fn launch(
+        &mut self,
+        _kernel: &Self::Kernel,
+        grid: [u32; 3],
+        block: [u32; 3],
+        _args: &[&Self::Buffer],
+    ) -> Result<(), Self::Error> {
+        let config = DispatchConfig {
+            grid: WorkgroupSize {
+                x: grid[0],
+                y: grid[1],
+                z: grid[2],
+            },
+            workgroup: WorkgroupSize {
+                x: block[0],
+                y: block[1],
+                z: block[2],
+            },
+            shared_memory: 0,
+            queue: 0,
+        };
+        let kid = self.compute.launch("compute_provider", config)?;
+        self.compute.dispatch(kid)?;
+        Ok(())
+    }
+
+    fn synchronize(&mut self) -> Result<(), Self::Error> {
+        self.compute.synchronize();
+        Ok(())
+    }
+
+    fn supports_op(&self, op: &str) -> bool {
+        Self::map_operator(op).is_some()
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -527,5 +615,58 @@ mod tests {
         let kid2 = crate::compute::KernelId(kid_raw2);
         let kernel2 = prov.compute.kernels.iter().find(|k| k.id == kid2).unwrap();
         assert_eq!(kernel2.config.shared_memory, 0);
+    }
+
+    // -- ComputeProvider trait tests --
+
+    #[test]
+    fn test_compute_provider_device_info() {
+        use smallaios_compute::ComputeProvider;
+        let prov = test_provider();
+        let info = ComputeProvider::device_info(&prov);
+        assert_eq!(info.name, "Intel Arc A770");
+        assert_eq!(info.backend_type, smallaios_compute::BackendType::LevelZero);
+        assert!(info.compute_units > 0);
+    }
+
+    #[test]
+    fn test_compute_provider_init() {
+        use smallaios_compute::ComputeProvider;
+        let mut prov = test_provider();
+        assert!(ComputeProvider::init(&mut prov).is_ok());
+    }
+
+    #[test]
+    fn test_compute_provider_alloc_free() {
+        use smallaios_compute::ComputeProvider;
+        let mut prov = test_provider();
+        let buf = ComputeProvider::alloc(&mut prov, PAGE as usize).unwrap();
+        assert!(ComputeProvider::free(&mut prov, buf).is_ok());
+    }
+
+    #[test]
+    fn test_compute_provider_supports_op() {
+        use smallaios_compute::ComputeProvider;
+        let prov = test_provider();
+        assert!(prov.supports_op("MatMul"));
+        assert!(prov.supports_op("Relu"));
+        assert!(!prov.supports_op("Reshape"));
+        assert!(!prov.supports_op("UnknownOp"));
+    }
+
+    #[test]
+    fn test_compute_provider_launch_sync() {
+        use smallaios_compute::ComputeProvider;
+        let mut prov = test_provider();
+        let kernel = prov.load_kernel("MatMul", &[]).unwrap();
+        assert!(prov.launch(&kernel, [1, 1, 1], [256, 1, 1], &[]).is_ok());
+        assert!(ComputeProvider::synchronize(&mut prov).is_ok());
+    }
+
+    #[test]
+    fn test_compute_provider_load_kernel_unknown() {
+        use smallaios_compute::ComputeProvider;
+        let mut prov = test_provider();
+        assert!(prov.load_kernel("UnknownOp", &[]).is_err());
     }
 }
