@@ -9,6 +9,7 @@ members = [
     "arch/nvidia",
     "arch/intel_gpu",
     "arch/amd",
+    "arch/apple",
     "onnx-rt",
     "ipc",
     "net",
