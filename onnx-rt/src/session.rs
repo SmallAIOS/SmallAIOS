@@ -15,6 +15,7 @@ use crate::graph::{build_execution_graph, ExecutionGraph};
 use crate::onnx_types::{ModelProto, TensorProto, CURRENT_IR_VERSION};
 use crate::operators::OperatorRegistry;
 use crate::optimizer::{optimize, OptimizationLevel, OptimizerConfig};
+use crate::parallel::ParallelConfig;
 use crate::tensor::Tensor;
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,8 @@ pub struct SessionConfig {
     pub max_batch_size: usize,
     /// Number of intra-operator threads for parallel computation.
     pub thread_count: usize,
+    /// Parallel execution configuration for operator-level parallelism.
+    pub parallel: ParallelConfig,
 }
 
 impl Default for SessionConfig {
@@ -100,6 +103,7 @@ impl Default for SessionConfig {
             enable_profiling: false,
             max_batch_size: 1,
             thread_count: 1,
+            parallel: ParallelConfig::default(),
         }
     }
 }
@@ -492,11 +496,13 @@ mod tests {
             enable_profiling: true,
             max_batch_size: 8,
             thread_count: 4,
+            parallel: crate::parallel::ParallelConfig::default_for_cores(4),
         };
         assert_eq!(config.optimization_level, OptimizationLevel::Extended);
         assert!(config.enable_profiling);
         assert_eq!(config.max_batch_size, 8);
         assert_eq!(config.thread_count, 4);
+        assert_eq!(config.parallel.max_threads, 4);
     }
 
     // ---- load_model tests ----
