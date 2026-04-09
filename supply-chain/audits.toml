@@ -1,8 +1,4 @@
-# cargo-vet audits for SmallAIOS dependencies
-# Run `cargo vet certify <crate> <version>` to add audit entries.
-# Run `cargo vet suggest` to see which exemptions can be resolved.
 
-[criteria.safe-to-deploy]
-description = "Reviewed for safety-critical deployment"
+# cargo-vet audits file
 
 [audits]
