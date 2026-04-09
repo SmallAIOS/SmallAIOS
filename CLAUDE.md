@@ -107,7 +107,8 @@ just arch           # Full dependency analysis suite
 ## Key Design Decisions
 
 - **Unikernel** — single address space, no microkernel IPC overhead
-- **Cooperative async scheduling** — yields at ONNX operator boundaries
+- **Cooperative async scheduling** — yields at ONNX operator boundaries (see `docs/scheduling-model.md` for POSIX/RTOS alignment)
+- **AMP multi-core** — Core 0 for System/IPC, Cores 1-N for inference data parallelism; no SMP
 - **Clean-room ONNX runtime** — from-scratch `#![no_std]` Rust, no external C deps
 - **Post-quantum crypto default** — ML-KEM-768 + ML-DSA-65 hybrid mode
 - **DO-178C DAL A compliance target** — MC/DC 100% coverage on safety-critical paths

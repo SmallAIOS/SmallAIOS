@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::graph::{build_execution_graph, ExecutionGraph};
-use crate::onnx_types::{ModelProto, CURRENT_IR_VERSION};
+use crate::onnx_types::{ModelProto, TensorProto, CURRENT_IR_VERSION};
 use crate::operators::OperatorRegistry;
 use crate::optimizer::{optimize, OptimizationLevel, OptimizerConfig};
 use crate::tensor::Tensor;
@@ -165,6 +165,8 @@ pub struct Session {
     pub input_names: Vec<String>,
     /// Names of expected model outputs, in order.
     pub output_names: Vec<String>,
+    /// Model initializer tensors (weights, biases).
+    pub initializers: Vec<TensorProto>,
     /// Whether the session has been fully initialized with a model.
     is_initialized: bool,
 }
@@ -327,6 +329,7 @@ impl Session {
             graph: None,
             input_names: Vec::new(),
             output_names: Vec::new(),
+            initializers: Vec::new(),
             is_initialized: false,
         }
     }
@@ -363,6 +366,7 @@ impl Session {
         self.model_name = graph.name.clone();
         self.input_names = graph.input.iter().map(|vi| vi.name.clone()).collect();
         self.output_names = graph.output.iter().map(|vi| vi.name.clone()).collect();
+        self.initializers = graph.initializer.clone();
         self.graph = Some(exec_graph);
         self.is_initialized = true;
 
@@ -396,11 +400,21 @@ impl Session {
             }
         }
 
-        // Stub: graph traversal and operator dispatch not yet wired.
-        // The execution graph is built and optimized, but node-by-node
-        // execution requires connecting each node's OpKind to the
-        // corresponding operator function with tensor I/O plumbing.
-        Err(SessionError::NotImplemented)
+        let graph = self
+            .graph
+            .as_ref()
+            .ok_or_else(|| SessionError::ExecutionFailed(String::from("no execution graph")))?;
+
+        // Build input pairs for the executor
+        let input_pairs: Vec<(String, Tensor)> = inputs
+            .iter()
+            .map(|i| (i.name.clone(), i.tensor.clone()))
+            .collect();
+
+        // Get initializers from the model (stored during initialize)
+        let initializers = &self.initializers;
+
+        crate::executor::execute_graph(graph, &input_pairs, initializers, None)
     }
 
     /// Returns the names of the model's expected inputs.
@@ -747,23 +761,49 @@ mod tests {
     }
 
     #[test]
-    fn test_session_run_after_init_returns_not_implemented() {
+    fn test_session_run_after_init_executes_relu() {
         let model = make_simple_model();
         let mut session = Session::new(SessionConfig::default());
         session.initialize(&model).unwrap();
 
+        // Create input tensor with actual data
+        let mut raw_data = vec![0u8; 3 * 4]; // 3 floats
+        for (i, &val) in [-1.0f32, 0.0, 2.0].iter().enumerate() {
+            let bytes = val.to_le_bytes();
+            raw_data[i * 4] = bytes[0];
+            raw_data[i * 4 + 1] = bytes[1];
+            raw_data[i * 4 + 2] = bytes[2];
+            raw_data[i * 4 + 3] = bytes[3];
+        }
+        let mut tensor = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![1, 3]),
+            String::from("x"),
+        );
+        tensor.raw_data = raw_data;
+
         let input = InferenceInput {
             name: String::from("x"),
-            tensor: Tensor::new(
-                DataType::Float,
-                TensorShape::new(vec![1, 3]),
-                String::from("x"),
-            ),
+            tensor,
         };
         let result = session.run(&[input]);
-        // Session is initialized but run still returns NotImplemented
-        // because operator dispatch is not yet wired
-        assert!(matches!(result, Err(SessionError::NotImplemented)));
+        assert!(result.is_ok(), "Expected Ok, got {:?}", result);
+        let outputs = result.unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "y");
+
+        // Relu of [-1, 0, 2] = [0, 0, 2]
+        let out_data: Vec<f32> = (0..3)
+            .map(|i| {
+                f32::from_le_bytes([
+                    outputs[0].tensor.raw_data[i * 4],
+                    outputs[0].tensor.raw_data[i * 4 + 1],
+                    outputs[0].tensor.raw_data[i * 4 + 2],
+                    outputs[0].tensor.raw_data[i * 4 + 3],
+                ])
+            })
+            .collect();
+        assert_eq!(out_data, vec![0.0, 0.0, 2.0]);
     }
 
     #[test]

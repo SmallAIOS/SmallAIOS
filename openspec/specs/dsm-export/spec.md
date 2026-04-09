@@ -25,6 +25,13 @@ The DSM matrix SHALL distinguish between normal, dev, and build dependencies usi
 - **WHEN** DSM JSON is generated
 - **THEN** `matrix[i][j]` values use: `1` for normal dependency, `2` for dev dependency, `3` for build dependency, `0` for no dependency
 
+### Requirement: DSM JSON output compatibility with analysis tooling
+The existing `scripts/dsm-matrix.py` output format SHALL be compatible with `scripts/dsm-analysis.py` input. The JSON SHALL include crate names, adjacency matrix, and dependency kind encoding.
+
+#### Scenario: Pipeline integration
+- **WHEN** `just dsm` generates `build/analysis/dsm.json`
+- **THEN** `scripts/dsm-analysis.py build/analysis/dsm.json` can consume it without transformation
+
 ### Requirement: DSM export compatible with Lattix import
 The DSM CSV output SHALL use a format compatible with generic DSM import tools (row/column headers as component names, numeric cells for relationships).
 

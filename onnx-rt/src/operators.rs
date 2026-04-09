@@ -861,6 +861,1182 @@ fn conv_compute(
 }
 
 // ---------------------------------------------------------------------------
+// Tier 1: Core math operators (Sub, Mul, Div, Gemm)
+// ---------------------------------------------------------------------------
+
+/// Element-wise subtraction with broadcasting.
+pub fn op_sub(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
+    if inputs.len() != 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Sub requires exactly 2 inputs",
+        )));
+    }
+    let a = inputs[0];
+    let b = inputs[1];
+    if a.data_type != DataType::Float || b.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Sub only supports float32",
+        )));
+    }
+    let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
+    let total = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    let a_strides = compute_strides(&a.shape.dims);
+    let b_strides = compute_strides(&b.shape.dims);
+    let ndim = out_shape.dims.len();
+    let a_dim_offset = ndim.saturating_sub(a.shape.dims.len());
+    let b_dim_offset = ndim.saturating_sub(b.shape.dims.len());
+    let mut coord = alloc::vec![0usize; ndim];
+    for i in 0..total {
+        if i > 0 {
+            next_coord(&mut coord, &out_shape.dims);
+        }
+        let a_idx = broadcast_linear_index(&coord, &a.shape.dims, &a_strides, a_dim_offset);
+        let b_idx = broadcast_linear_index(&coord, &b.shape.dims, &b_strides, b_dim_offset);
+        write_f32(
+            &mut raw_data,
+            i,
+            read_f32(&a.raw_data, a_idx) - read_f32(&b.raw_data, b_idx),
+        );
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Element-wise multiplication with broadcasting.
+pub fn op_mul(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
+    if inputs.len() != 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Mul requires exactly 2 inputs",
+        )));
+    }
+    let a = inputs[0];
+    let b = inputs[1];
+    if a.data_type != DataType::Float || b.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Mul only supports float32",
+        )));
+    }
+    let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
+    let total = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    let a_strides = compute_strides(&a.shape.dims);
+    let b_strides = compute_strides(&b.shape.dims);
+    let ndim = out_shape.dims.len();
+    let a_dim_offset = ndim.saturating_sub(a.shape.dims.len());
+    let b_dim_offset = ndim.saturating_sub(b.shape.dims.len());
+    let mut coord = alloc::vec![0usize; ndim];
+    for i in 0..total {
+        if i > 0 {
+            next_coord(&mut coord, &out_shape.dims);
+        }
+        let a_idx = broadcast_linear_index(&coord, &a.shape.dims, &a_strides, a_dim_offset);
+        let b_idx = broadcast_linear_index(&coord, &b.shape.dims, &b_strides, b_dim_offset);
+        write_f32(
+            &mut raw_data,
+            i,
+            read_f32(&a.raw_data, a_idx) * read_f32(&b.raw_data, b_idx),
+        );
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Element-wise division with broadcasting.
+pub fn op_div(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
+    if inputs.len() != 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Div requires exactly 2 inputs",
+        )));
+    }
+    let a = inputs[0];
+    let b = inputs[1];
+    if a.data_type != DataType::Float || b.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Div only supports float32",
+        )));
+    }
+    let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
+    let total = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    let a_strides = compute_strides(&a.shape.dims);
+    let b_strides = compute_strides(&b.shape.dims);
+    let ndim = out_shape.dims.len();
+    let a_dim_offset = ndim.saturating_sub(a.shape.dims.len());
+    let b_dim_offset = ndim.saturating_sub(b.shape.dims.len());
+    let mut coord = alloc::vec![0usize; ndim];
+    for i in 0..total {
+        if i > 0 {
+            next_coord(&mut coord, &out_shape.dims);
+        }
+        let a_idx = broadcast_linear_index(&coord, &a.shape.dims, &a_strides, a_dim_offset);
+        let b_idx = broadcast_linear_index(&coord, &b.shape.dims, &b_strides, b_dim_offset);
+        write_f32(
+            &mut raw_data,
+            i,
+            read_f32(&a.raw_data, a_idx) / read_f32(&b.raw_data, b_idx),
+        );
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// General Matrix Multiply: alpha * A @ B + beta * C.
+pub fn op_gemm(
+    a: &Tensor,
+    b: &Tensor,
+    c: Option<&Tensor>,
+    alpha: f32,
+    beta: f32,
+    trans_a: bool,
+    trans_b: bool,
+) -> Result<Tensor, OpError> {
+    if a.data_type != DataType::Float || b.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Gemm only supports float32",
+        )));
+    }
+    if a.shape.ndim() != 2 || b.shape.ndim() != 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Gemm requires 2D inputs",
+        )));
+    }
+    let (m, k_a) = if trans_a {
+        (a.shape.dims[1] as usize, a.shape.dims[0] as usize)
+    } else {
+        (a.shape.dims[0] as usize, a.shape.dims[1] as usize)
+    };
+    let (k_b, n) = if trans_b {
+        (b.shape.dims[1] as usize, b.shape.dims[0] as usize)
+    } else {
+        (b.shape.dims[0] as usize, b.shape.dims[1] as usize)
+    };
+    if k_a != k_b {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Gemm inner dimensions mismatch",
+        )));
+    }
+    let k = k_a;
+
+    // Build contiguous A and B (handling transpose via index remapping)
+    let mut a_buf = alloc::vec![0.0f32; m * k];
+    for i in 0..m {
+        for j in 0..k {
+            let idx = if trans_a { j * m + i } else { i * k + j };
+            a_buf[i * k + j] = read_f32(&a.raw_data, idx);
+        }
+    }
+    let mut b_buf = alloc::vec![0.0f32; k * n];
+    for i in 0..k {
+        for j in 0..n {
+            let idx = if trans_b { j * k + i } else { i * n + j };
+            b_buf[i * n + j] = read_f32(&b.raw_data, idx);
+        }
+    }
+
+    let mut c_buf = alloc::vec![0.0f32; m * n];
+    crate::gemm::gemm_f32(m, n, k, &a_buf, &b_buf, &mut c_buf);
+
+    // Apply alpha and add beta * C
+    let mut raw_data = alloc::vec![0u8; m * n * 4];
+    for i in 0..m {
+        for j in 0..n {
+            let mut val = alpha * c_buf[i * n + j];
+            if let Some(c_tensor) = c {
+                if beta != 0.0 {
+                    // C can be [M, N] or [N] (bias broadcast)
+                    let c_idx = if c_tensor.shape.ndim() == 1 {
+                        j
+                    } else {
+                        i * n + j
+                    };
+                    if c_idx < c_tensor.shape.total_elements() {
+                        val += beta * read_f32(&c_tensor.raw_data, c_idx);
+                    }
+                }
+            }
+            write_f32(&mut raw_data, i * n + j, val);
+        }
+    }
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(Vec::from([m as i64, n as i64])),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: Activation operators (Sigmoid, Tanh)
+// ---------------------------------------------------------------------------
+
+/// Element-wise sigmoid: 1 / (1 + exp(-x)).
+pub fn op_sigmoid(input: &Tensor) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Sigmoid only supports float32",
+        )));
+    }
+    let total = input.shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    for i in 0..total {
+        let x = read_f32(&input.raw_data, i);
+        let val = 1.0 / (1.0 + expf_approx(-x));
+        write_f32(&mut raw_data, i, val);
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Element-wise tanh: (exp(x) - exp(-x)) / (exp(x) + exp(-x)).
+pub fn op_tanh(input: &Tensor) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Tanh only supports float32",
+        )));
+    }
+    let total = input.shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    for i in 0..total {
+        let x = read_f32(&input.raw_data, i);
+        let ep = expf_approx(x);
+        let em = expf_approx(-x);
+        let val = if ep + em != 0.0 {
+            (ep - em) / (ep + em)
+        } else {
+            0.0
+        };
+        write_f32(&mut raw_data, i, val);
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 3: Shape and data movement operators
+// ---------------------------------------------------------------------------
+
+/// Transpose tensor dimensions according to permutation.
+pub fn op_transpose(input: &Tensor, perm: Option<&[i64]>) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Transpose only supports float32",
+        )));
+    }
+    let ndim = input.shape.ndim();
+    let perm_vec: Vec<usize> = match perm {
+        Some(p) => p.iter().map(|&x| x as usize).collect(),
+        None => (0..ndim).rev().collect(),
+    };
+    if perm_vec.len() != ndim {
+        return Err(OpError::InvalidAttribute(String::from(
+            "perm length must match ndim",
+        )));
+    }
+    let out_dims: Vec<i64> = perm_vec.iter().map(|&p| input.shape.dims[p]).collect();
+    let out_shape = TensorShape::new(out_dims);
+    let total = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+
+    let in_strides = compute_strides(&input.shape.dims);
+
+    let mut out_coord = alloc::vec![0usize; ndim];
+    for i in 0..total {
+        if i > 0 {
+            next_coord(&mut out_coord, &out_shape.dims);
+        }
+        let mut in_idx = 0usize;
+        for d in 0..ndim {
+            in_idx += out_coord[d] * in_strides[perm_vec[d]];
+        }
+        write_f32(&mut raw_data, i, read_f32(&input.raw_data, in_idx));
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Concatenate tensors along axis.
+pub fn op_concat(inputs: &[&Tensor], axis: i64) -> Result<Tensor, OpError> {
+    if inputs.is_empty() {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Concat requires at least 1 input",
+        )));
+    }
+    let ndim = inputs[0].shape.ndim();
+    let resolved_axis = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
+    if resolved_axis >= ndim {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Concat axis out of range",
+        )));
+    }
+    let mut out_dims = inputs[0].shape.dims.clone();
+    let mut concat_size = inputs[0].shape.dims[resolved_axis];
+    for input in &inputs[1..] {
+        concat_size += input.shape.dims[resolved_axis];
+    }
+    out_dims[resolved_axis] = concat_size;
+    let out_shape = TensorShape::new(out_dims);
+    let total = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+
+    let out_strides = compute_strides(&out_shape.dims);
+    let mut axis_offset = 0usize;
+    for input in inputs {
+        let in_total = input.shape.total_elements();
+        let mut in_coord = alloc::vec![0usize; ndim];
+        for i in 0..in_total {
+            if i > 0 {
+                next_coord(&mut in_coord, &input.shape.dims);
+            }
+            let mut out_idx = 0usize;
+            for d in 0..ndim {
+                let c = if d == resolved_axis {
+                    in_coord[d] + axis_offset
+                } else {
+                    in_coord[d]
+                };
+                out_idx += c * out_strides[d];
+            }
+            write_f32(&mut raw_data, out_idx, read_f32(&input.raw_data, i));
+        }
+        axis_offset += input.shape.dims[resolved_axis] as usize;
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Flatten tensor to 2D at specified axis.
+pub fn op_flatten(input: &Tensor, axis: i64) -> Result<Tensor, OpError> {
+    let ndim = input.shape.ndim();
+    let resolved = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
+    let dim0: i64 = input.shape.dims[..resolved].iter().product::<i64>().max(1);
+    let dim1: i64 = input.shape.dims[resolved..].iter().product::<i64>().max(1);
+    Ok(Tensor {
+        data_type: input.data_type,
+        shape: TensorShape::new(Vec::from([dim0, dim1])),
+        name: String::new(),
+        raw_data: input.raw_data.clone(),
+    })
+}
+
+/// Remove dimensions of size 1.
+pub fn op_squeeze(input: &Tensor, axes: Option<&[i64]>) -> Result<Tensor, OpError> {
+    let new_dims: Vec<i64> = match axes {
+        Some(ax) => {
+            let ndim = input.shape.ndim() as i64;
+            input
+                .shape
+                .dims
+                .iter()
+                .enumerate()
+                .filter(|(i, &d)| {
+                    let idx = *i as i64;
+                    !(d == 1
+                        && ax.iter().any(|&a| {
+                            let ra = if a < 0 { ndim + a } else { a };
+                            ra == idx
+                        }))
+                })
+                .map(|(_, &d)| d)
+                .collect()
+        }
+        None => input
+            .shape
+            .dims
+            .iter()
+            .copied()
+            .filter(|&d| d != 1)
+            .collect(),
+    };
+    Ok(Tensor {
+        data_type: input.data_type,
+        shape: TensorShape::new(new_dims),
+        name: String::new(),
+        raw_data: input.raw_data.clone(),
+    })
+}
+
+/// Insert dimensions of size 1 at specified positions.
+pub fn op_unsqueeze(input: &Tensor, axes: &[i64]) -> Result<Tensor, OpError> {
+    let out_ndim = input.shape.ndim() + axes.len();
+    let mut sorted_axes: Vec<usize> = axes
+        .iter()
+        .map(|&a| {
+            if a < 0 {
+                (out_ndim as i64 + a) as usize
+            } else {
+                a as usize
+            }
+        })
+        .collect();
+    sorted_axes.sort();
+    let mut new_dims = input.shape.dims.clone();
+    for (offset, &ax) in sorted_axes.iter().enumerate() {
+        let pos = ax.min(new_dims.len() + offset);
+        new_dims.insert(pos, 1);
+    }
+    Ok(Tensor {
+        data_type: input.data_type,
+        shape: TensorShape::new(new_dims),
+        name: String::new(),
+        raw_data: input.raw_data.clone(),
+    })
+}
+
+/// Type cast between data types.
+pub fn op_cast(input: &Tensor, to: DataType) -> Result<Tensor, OpError> {
+    if input.data_type == to {
+        return Ok(input.clone());
+    }
+    let total = input.shape.total_elements();
+    let elem_size = to.element_size();
+    let mut raw_data = alloc::vec![0u8; total * elem_size];
+
+    // f32 → int32
+    if input.data_type == DataType::Float && to == DataType::Int32 {
+        for i in 0..total {
+            let v = read_f32(&input.raw_data, i) as i32;
+            let b = v.to_le_bytes();
+            for j in 0..4 {
+                raw_data[i * 4 + j] = b[j];
+            }
+        }
+    }
+    // int32 → f32
+    else if input.data_type == DataType::Int32 && to == DataType::Float {
+        for i in 0..total {
+            let off = i * 4;
+            let v = i32::from_le_bytes([
+                input.raw_data[off],
+                input.raw_data[off + 1],
+                input.raw_data[off + 2],
+                input.raw_data[off + 3],
+            ]);
+            write_f32(&mut raw_data, i, v as f32);
+        }
+    }
+    // f32 → int64
+    else if input.data_type == DataType::Float && to == DataType::Int64 {
+        for i in 0..total {
+            let v = read_f32(&input.raw_data, i) as i64;
+            let b = v.to_le_bytes();
+            for j in 0..8 {
+                raw_data[i * 8 + j] = b[j];
+            }
+        }
+    }
+    // int64 → f32
+    else if input.data_type == DataType::Int64 && to == DataType::Float {
+        for i in 0..total {
+            let off = i * 8;
+            let v = i64::from_le_bytes([
+                input.raw_data[off],
+                input.raw_data[off + 1],
+                input.raw_data[off + 2],
+                input.raw_data[off + 3],
+                input.raw_data[off + 4],
+                input.raw_data[off + 5],
+                input.raw_data[off + 6],
+                input.raw_data[off + 7],
+            ]);
+            write_f32(&mut raw_data, i, v as f32);
+        }
+    } else {
+        return Err(OpError::NotImplemented);
+    }
+
+    Ok(Tensor {
+        data_type: to,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Gather elements along axis using index tensor.
+pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Gather only supports float32 input",
+        )));
+    }
+    let ndim = input.shape.ndim();
+    let resolved_axis = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
+    let num_indices = indices.shape.total_elements();
+
+    // Output shape: input dims with axis dim replaced by indices shape
+    let mut out_dims = Vec::new();
+    for (d, &dim) in input.shape.dims.iter().enumerate() {
+        if d == resolved_axis {
+            for &id in &indices.shape.dims {
+                out_dims.push(id);
+            }
+        } else {
+            out_dims.push(dim);
+        }
+    }
+    let out_shape = TensorShape::new(out_dims);
+    let total = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+
+    let axis_size = input.shape.dims[resolved_axis] as usize;
+
+    // Simple 1D gather for common case
+    if ndim == 1 {
+        for i in 0..num_indices {
+            let off = i * 8;
+            let idx = if indices.data_type == DataType::Int64 && indices.raw_data.len() >= off + 8 {
+                i64::from_le_bytes([
+                    indices.raw_data[off],
+                    indices.raw_data[off + 1],
+                    indices.raw_data[off + 2],
+                    indices.raw_data[off + 3],
+                    indices.raw_data[off + 4],
+                    indices.raw_data[off + 5],
+                    indices.raw_data[off + 6],
+                    indices.raw_data[off + 7],
+                ]) as usize
+            } else {
+                0
+            };
+            let safe_idx = idx.min(axis_size.saturating_sub(1));
+            write_f32(&mut raw_data, i, read_f32(&input.raw_data, safe_idx));
+        }
+    } else {
+        // General N-D case: iterate output coordinates
+        let mut out_coord = alloc::vec![0usize; out_shape.ndim()];
+        for i in 0..total {
+            if i > 0 {
+                next_coord(&mut out_coord, &out_shape.dims);
+            }
+            // TODO: full N-D gather implementation
+            write_f32(&mut raw_data, i, 0.0);
+        }
+    }
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Extract sub-tensor with starts, ends, axes, steps.
+pub fn op_slice(
+    input: &Tensor,
+    starts: &[i64],
+    ends: &[i64],
+    axes: Option<&[i64]>,
+    steps: Option<&[i64]>,
+) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Slice only supports float32",
+        )));
+    }
+    let ndim = input.shape.ndim();
+    let mut actual_starts = alloc::vec![0i64; ndim];
+    let mut actual_ends: Vec<i64> = input.shape.dims.clone();
+    let mut actual_steps = alloc::vec![1i64; ndim];
+
+    let axes_vec: Vec<usize> = match axes {
+        Some(ax) => ax
+            .iter()
+            .map(|&a| {
+                if a < 0 {
+                    (ndim as i64 + a) as usize
+                } else {
+                    a as usize
+                }
+            })
+            .collect(),
+        None => (0..starts.len()).collect(),
+    };
+
+    for (i, &ax) in axes_vec.iter().enumerate() {
+        if ax >= ndim {
+            continue;
+        }
+        let dim = input.shape.dims[ax];
+        let mut s = if i < starts.len() { starts[i] } else { 0 };
+        let mut e = if i < ends.len() { ends[i] } else { dim };
+        let step = if let Some(st) = steps {
+            if i < st.len() {
+                st[i]
+            } else {
+                1
+            }
+        } else {
+            1
+        };
+        if s < 0 {
+            s += dim;
+        }
+        if e < 0 {
+            e += dim;
+        }
+        s = s.clamp(0, dim);
+        e = e.clamp(0, dim);
+        actual_starts[ax] = s;
+        actual_ends[ax] = e;
+        actual_steps[ax] = step;
+    }
+
+    let out_dims: Vec<i64> = (0..ndim)
+        .map(|d| {
+            let s = actual_starts[d];
+            let e = actual_ends[d];
+            let step = actual_steps[d];
+            ((e - s + step - 1) / step).max(0)
+        })
+        .collect();
+    let out_shape = TensorShape::new(out_dims);
+    let total = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+
+    let in_strides = compute_strides(&input.shape.dims);
+    let mut out_coord = alloc::vec![0usize; ndim];
+    for i in 0..total {
+        if i > 0 {
+            next_coord(&mut out_coord, &out_shape.dims);
+        }
+        let mut in_idx = 0usize;
+        for d in 0..ndim {
+            let in_d = actual_starts[d] as usize + out_coord[d] * actual_steps[d] as usize;
+            in_idx += in_d * in_strides[d];
+        }
+        write_f32(&mut raw_data, i, read_f32(&input.raw_data, in_idx));
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Pad tensor with constant value.
+pub fn op_pad(
+    input: &Tensor,
+    pads: &[i64],
+    mode: &str,
+    constant_value: f32,
+) -> Result<Tensor, OpError> {
+    if mode != "constant" {
+        return Err(OpError::NotImplemented);
+    }
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Pad only supports float32",
+        )));
+    }
+    let ndim = input.shape.ndim();
+    if pads.len() != ndim * 2 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "pads length must be 2 * ndim",
+        )));
+    }
+    let out_dims: Vec<i64> = (0..ndim)
+        .map(|d| input.shape.dims[d] + pads[d] + pads[d + ndim])
+        .collect();
+    let out_shape = TensorShape::new(out_dims);
+    let total = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+
+    // Fill with constant
+    for i in 0..total {
+        write_f32(&mut raw_data, i, constant_value);
+    }
+
+    // Copy input data
+    let out_strides = compute_strides(&out_shape.dims);
+    let in_total = input.shape.total_elements();
+    let mut in_coord = alloc::vec![0usize; ndim];
+    for i in 0..in_total {
+        if i > 0 {
+            next_coord(&mut in_coord, &input.shape.dims);
+        }
+        let mut out_idx = 0usize;
+        for d in 0..ndim {
+            out_idx += (in_coord[d] + pads[d] as usize) * out_strides[d];
+        }
+        write_f32(&mut raw_data, out_idx, read_f32(&input.raw_data, i));
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Clamp tensor values to [min, max] range.
+pub fn op_clip(
+    input: &Tensor,
+    min_val: Option<f32>,
+    max_val: Option<f32>,
+) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Clip only supports float32",
+        )));
+    }
+    let total = input.shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    for i in 0..total {
+        let mut v = read_f32(&input.raw_data, i);
+        if let Some(lo) = min_val {
+            if v < lo {
+                v = lo;
+            }
+        }
+        if let Some(hi) = max_val {
+            if v > hi {
+                v = hi;
+            }
+        }
+        write_f32(&mut raw_data, i, v);
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 4: Normalization, pooling, and reduction operators
+// ---------------------------------------------------------------------------
+
+/// Approximate square root using Newton's method (no_std).
+fn sqrt_approx(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let mut s = x;
+    for _ in 0..10 {
+        s = 0.5 * (s + x / s);
+    }
+    s
+}
+
+/// Batch normalization: scale * (x - mean) / sqrt(var + eps) + bias.
+pub fn op_batch_normalization(
+    input: &Tensor,
+    scale: &Tensor,
+    bias: &Tensor,
+    mean: &Tensor,
+    var: &Tensor,
+    epsilon: f32,
+) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "BatchNorm only supports float32",
+        )));
+    }
+    if input.shape.ndim() < 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "BatchNorm requires at least 2D input",
+        )));
+    }
+    let n = input.shape.dims[0] as usize;
+    let c = input.shape.dims[1] as usize;
+    let spatial: usize = input.shape.dims[2..]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let total = input.shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    for ch in 0..c {
+        let s = read_f32(&scale.raw_data, ch);
+        let b = read_f32(&bias.raw_data, ch);
+        let m = read_f32(&mean.raw_data, ch);
+        let v = read_f32(&var.raw_data, ch);
+        let inv_std = 1.0 / sqrt_approx(v + epsilon);
+        for batch in 0..n {
+            for sp in 0..spatial {
+                let idx = batch * c * spatial + ch * spatial + sp;
+                let x = read_f32(&input.raw_data, idx);
+                write_f32(&mut raw_data, idx, s * (x - m) * inv_std + b);
+            }
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Layer normalization along last N dimensions.
+pub fn op_layer_normalization(
+    input: &Tensor,
+    scale: &Tensor,
+    bias: Option<&Tensor>,
+    axis: i64,
+    epsilon: f32,
+) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "LayerNorm only supports float32",
+        )));
+    }
+    let ndim = input.shape.ndim();
+    let resolved = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
+    let outer: usize = input.shape.dims[..resolved]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let inner: usize = input.shape.dims[resolved..]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let total = input.shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    for o in 0..outer {
+        let base = o * inner;
+        let mut sum = 0.0f32;
+        for i in 0..inner {
+            sum += read_f32(&input.raw_data, base + i);
+        }
+        let mean = sum / inner as f32;
+        let mut var_sum = 0.0f32;
+        for i in 0..inner {
+            let d = read_f32(&input.raw_data, base + i) - mean;
+            var_sum += d * d;
+        }
+        let inv_std = 1.0 / sqrt_approx(var_sum / inner as f32 + epsilon);
+        for i in 0..inner {
+            let x = read_f32(&input.raw_data, base + i);
+            let s = read_f32(&scale.raw_data, i);
+            let b = bias.map(|bt| read_f32(&bt.raw_data, i)).unwrap_or(0.0);
+            write_f32(&mut raw_data, base + i, s * (x - mean) * inv_std + b);
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Max pooling over NCHW input.
+pub fn op_maxpool(
+    input: &Tensor,
+    kernel_shape: &[i64],
+    strides: Option<&[i64]>,
+    pads: Option<&[i64]>,
+) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float || input.shape.ndim() != 4 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "MaxPool requires 4D float input",
+        )));
+    }
+    let (n, c, h, w) = (
+        input.shape.dims[0] as usize,
+        input.shape.dims[1] as usize,
+        input.shape.dims[2] as usize,
+        input.shape.dims[3] as usize,
+    );
+    let kh = kernel_shape[0] as usize;
+    let kw = kernel_shape[1] as usize;
+    let sh = strides.map(|s| s[0] as usize).unwrap_or(kh);
+    let sw = strides.map(|s| s[1] as usize).unwrap_or(kw);
+    let (pt, pl, pb, pr) = match pads {
+        Some(p) if p.len() >= 4 => (p[0] as usize, p[1] as usize, p[2] as usize, p[3] as usize),
+        _ => (0, 0, 0, 0),
+    };
+    let oh = (h + pt + pb - kh) / sh + 1;
+    let ow = (w + pl + pr - kw) / sw + 1;
+    let out_shape = TensorShape::new(Vec::from([n as i64, c as i64, oh as i64, ow as i64]));
+    let mut raw_data = alloc::vec![0u8; out_shape.total_elements() * 4];
+    for bn in 0..n {
+        for ch in 0..c {
+            for oi in 0..oh {
+                for oj in 0..ow {
+                    let mut max_val = f32::NEG_INFINITY;
+                    for ki in 0..kh {
+                        for kj in 0..kw {
+                            let hi = oi * sh + ki;
+                            let wi = oj * sw + kj;
+                            if hi >= pt && hi < h + pt && wi >= pl && wi < w + pl {
+                                let idx = bn * c * h * w + ch * h * w + (hi - pt) * w + (wi - pl);
+                                let v = read_f32(&input.raw_data, idx);
+                                if v > max_val {
+                                    max_val = v;
+                                }
+                            }
+                        }
+                    }
+                    let out_idx = bn * c * oh * ow + ch * oh * ow + oi * ow + oj;
+                    write_f32(&mut raw_data, out_idx, max_val);
+                }
+            }
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Average pooling over NCHW input.
+pub fn op_averagepool(
+    input: &Tensor,
+    kernel_shape: &[i64],
+    strides: Option<&[i64]>,
+    pads: Option<&[i64]>,
+) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float || input.shape.ndim() != 4 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "AvgPool requires 4D float input",
+        )));
+    }
+    let (n, c, h, w) = (
+        input.shape.dims[0] as usize,
+        input.shape.dims[1] as usize,
+        input.shape.dims[2] as usize,
+        input.shape.dims[3] as usize,
+    );
+    let kh = kernel_shape[0] as usize;
+    let kw = kernel_shape[1] as usize;
+    let sh = strides.map(|s| s[0] as usize).unwrap_or(kh);
+    let sw = strides.map(|s| s[1] as usize).unwrap_or(kw);
+    let (pt, pl, pb, pr) = match pads {
+        Some(p) if p.len() >= 4 => (p[0] as usize, p[1] as usize, p[2] as usize, p[3] as usize),
+        _ => (0, 0, 0, 0),
+    };
+    let oh = (h + pt + pb - kh) / sh + 1;
+    let ow = (w + pl + pr - kw) / sw + 1;
+    let out_shape = TensorShape::new(Vec::from([n as i64, c as i64, oh as i64, ow as i64]));
+    let mut raw_data = alloc::vec![0u8; out_shape.total_elements() * 4];
+    for bn in 0..n {
+        for ch in 0..c {
+            for oi in 0..oh {
+                for oj in 0..ow {
+                    let mut sum = 0.0f32;
+                    let mut count = 0u32;
+                    for ki in 0..kh {
+                        for kj in 0..kw {
+                            let hi = oi * sh + ki;
+                            let wi = oj * sw + kj;
+                            if hi >= pt && hi < h + pt && wi >= pl && wi < w + pl {
+                                let idx = bn * c * h * w + ch * h * w + (hi - pt) * w + (wi - pl);
+                                sum += read_f32(&input.raw_data, idx);
+                                count += 1;
+                            }
+                        }
+                    }
+                    let out_idx = bn * c * oh * ow + ch * oh * ow + oi * ow + oj;
+                    write_f32(
+                        &mut raw_data,
+                        out_idx,
+                        if count > 0 { sum / count as f32 } else { 0.0 },
+                    );
+                }
+            }
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Global average pooling: NCHW → NC11.
+pub fn op_global_average_pool(input: &Tensor) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float || input.shape.ndim() != 4 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GlobalAvgPool requires 4D float input",
+        )));
+    }
+    let n = input.shape.dims[0] as usize;
+    let c = input.shape.dims[1] as usize;
+    let h = input.shape.dims[2] as usize;
+    let w = input.shape.dims[3] as usize;
+    let spatial = h * w;
+    let out_shape = TensorShape::new(Vec::from([n as i64, c as i64, 1, 1]));
+    let mut raw_data = alloc::vec![0u8; n * c * 4];
+    for bn in 0..n {
+        for ch in 0..c {
+            let mut sum = 0.0f32;
+            for s in 0..spatial {
+                sum += read_f32(&input.raw_data, bn * c * spatial + ch * spatial + s);
+            }
+            write_f32(&mut raw_data, bn * c + ch, sum / spatial as f32);
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Reduce by mean along specified axes.
+pub fn op_reduce_mean(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Tensor, OpError> {
+    let sum_tensor = op_reduce_sum(input, axes, keepdims)?;
+    let total_in = input.shape.total_elements();
+    let total_out = sum_tensor.shape.total_elements();
+    let reduce_count = total_in.checked_div(total_out).unwrap_or(1);
+    let mut raw_data = sum_tensor.raw_data;
+    for i in 0..total_out {
+        let v = f32::from_le_bytes([
+            raw_data[i * 4],
+            raw_data[i * 4 + 1],
+            raw_data[i * 4 + 2],
+            raw_data[i * 4 + 3],
+        ]);
+        write_f32(&mut raw_data, i, v / reduce_count as f32);
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: sum_tensor.shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Reduce by sum along specified axes.
+pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "ReduceSum only supports float32",
+        )));
+    }
+    let ndim = input.shape.ndim();
+    let resolved: Vec<usize> = if axes.is_empty() {
+        (0..ndim).collect()
+    } else {
+        axes.iter()
+            .map(|&a| {
+                if a < 0 {
+                    (ndim as i64 + a) as usize
+                } else {
+                    a as usize
+                }
+            })
+            .collect()
+    };
+
+    let out_dims: Vec<i64> = (0..ndim)
+        .filter_map(|d| {
+            if resolved.contains(&d) {
+                if keepdims {
+                    Some(1)
+                } else {
+                    None
+                }
+            } else {
+                Some(input.shape.dims[d])
+            }
+        })
+        .collect();
+    let out_shape = TensorShape::new(if out_dims.is_empty() {
+        Vec::from([1i64])
+    } else {
+        out_dims
+    });
+    let total_out = out_shape.total_elements();
+    let mut raw_data = alloc::vec![0u8; total_out * 4];
+
+    let in_total = input.shape.total_elements();
+    let out_strides = compute_strides(&out_shape.dims);
+    let mut in_coord = alloc::vec![0usize; ndim];
+    for i in 0..in_total {
+        if i > 0 {
+            next_coord(&mut in_coord, &input.shape.dims);
+        }
+        // Compute output index by dropping reduced dimensions
+        let mut out_idx = 0usize;
+        let mut od = 0usize;
+        #[allow(clippy::needless_range_loop)]
+        for d in 0..ndim {
+            if resolved.contains(&d) {
+                if keepdims {
+                    od += 1;
+                }
+            } else {
+                if od < out_strides.len() {
+                    out_idx += in_coord[d] * out_strides[od];
+                }
+                od += 1;
+            }
+        }
+        let prev = f32::from_le_bytes([
+            raw_data[out_idx * 4],
+            raw_data[out_idx * 4 + 1],
+            raw_data[out_idx * 4 + 2],
+            raw_data[out_idx * 4 + 3],
+        ]);
+        write_f32(&mut raw_data, out_idx, prev + read_f32(&input.raw_data, i));
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // Shape inference helpers
 // ---------------------------------------------------------------------------
 
@@ -1617,5 +2793,651 @@ mod tests {
         let weight = make_f32_tensor(&[1, 1, 4, 4], &[1.0; 16]);
         let result = op_conv(&input, &weight, None);
         assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
+    }
+
+    // ---- Tier 1: op_sub tests ----
+
+    #[test]
+    fn test_op_sub_basic() {
+        let a = make_f32_tensor(&[3], &[3.0, 2.0, 1.0]);
+        let b = make_f32_tensor(&[3], &[1.0, 1.0, 1.0]);
+        let result = op_sub(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![2.0, 1.0, 0.0]);
+    }
+
+    #[test]
+    fn test_op_sub_broadcast() {
+        // [1,3] - [1,1] -> [1,3]
+        let a = make_f32_tensor(&[1, 3], &[3.0, 3.0, 3.0]);
+        let b = make_f32_tensor(&[1, 1], &[1.0]);
+        let result = op_sub(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![2.0, 2.0, 2.0]);
+    }
+
+    // ---- Tier 1: op_mul tests ----
+
+    #[test]
+    fn test_op_mul_basic() {
+        let a = make_f32_tensor(&[2], &[2.0, 3.0]);
+        let b = make_f32_tensor(&[2], &[4.0, 5.0]);
+        let result = op_mul(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![8.0, 15.0]);
+    }
+
+    #[test]
+    fn test_op_mul_broadcast() {
+        // [1,3] * scalar [1,1] -> [1,3]
+        let a = make_f32_tensor(&[1, 3], &[1.0, 2.0, 3.0]);
+        let b = make_f32_tensor(&[1, 1], &[5.0]);
+        let result = op_mul(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![5.0, 10.0, 15.0]);
+    }
+
+    // ---- Tier 1: op_div tests ----
+
+    #[test]
+    fn test_op_div_basic() {
+        let a = make_f32_tensor(&[2], &[6.0, 9.0]);
+        let b = make_f32_tensor(&[2], &[2.0, 3.0]);
+        let result = op_div(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![3.0, 3.0]);
+    }
+
+    #[test]
+    fn test_op_div_by_zero() {
+        let a = make_f32_tensor(&[2], &[1.0, -1.0]);
+        let b = make_f32_tensor(&[2], &[0.0, 0.0]);
+        let result = op_div(&[&a, &b]).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(vals[0].is_infinite() && vals[0] > 0.0);
+        assert!(vals[1].is_infinite() && vals[1] < 0.0);
+    }
+
+    // ---- Tier 1: op_gemm tests ----
+
+    #[test]
+    fn test_op_gemm_basic() {
+        // 2x2 identity matrix, alpha=1, beta=0
+        let a = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let identity = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let result = op_gemm(&a, &identity, None, 1.0, 0.0, false, false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_op_gemm_with_bias() {
+        // A = [[1,2],[3,4]], B = [[1,0],[0,1]] (identity), C = [10, 20] (1D bias)
+        // result = 1 * A @ B + 1 * C = [[11, 22], [13, 24]]
+        let a = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let b = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let c = make_f32_tensor(&[2], &[10.0, 20.0]);
+        let result = op_gemm(&a, &b, Some(&c), 1.0, 1.0, false, false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![11.0, 22.0, 13.0, 24.0]);
+    }
+
+    #[test]
+    fn test_op_gemm_transpose() {
+        // A = [[1,3],[2,4]] stored as [1,3,2,4], transA=true -> logical [[1,2],[3,4]]
+        // B = [[1,0],[0,1]] identity
+        // result = [[1,2],[3,4]]
+        let a = make_f32_tensor(&[2, 2], &[1.0, 3.0, 2.0, 4.0]);
+        let b = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let result = op_gemm(&a, &b, None, 1.0, 0.0, true, false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+
+        // transB=true: B stored as [[1,0],[0,1]]^T = [[1,0],[0,1]]
+        // Use a non-identity: B = [[5,6],[7,8]], transB=true -> logical [[5,7],[6,8]]
+        let a2 = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let b2 = make_f32_tensor(&[2, 2], &[5.0, 6.0, 7.0, 8.0]);
+        let result2 = op_gemm(&a2, &b2, None, 1.0, 0.0, false, true).unwrap();
+        let vals2 = read_f32_vec(&result2);
+        // I @ B^T = [[5,7],[6,8]]
+        assert_eq!(vals2, vec![5.0, 7.0, 6.0, 8.0]);
+    }
+
+    #[test]
+    fn test_op_gemm_alpha_beta() {
+        // A = [[1,0],[0,1]], B = [[2,0],[0,2]], C = [[10,10],[10,10]]
+        // result = alpha * A @ B + beta * C = 2 * [[2,0],[0,2]] + 0.5 * [[10,10],[10,10]]
+        //        = [[4,0],[0,4]] + [[5,5],[5,5]] = [[9,5],[5,9]]
+        let a = make_f32_tensor(&[2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let b = make_f32_tensor(&[2, 2], &[2.0, 0.0, 0.0, 2.0]);
+        let c = make_f32_tensor(&[2, 2], &[10.0, 10.0, 10.0, 10.0]);
+        let result = op_gemm(&a, &b, Some(&c), 2.0, 0.5, false, false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![9.0, 5.0, 5.0, 9.0]);
+    }
+
+    // ---- Tier 2: op_sigmoid tests ----
+
+    #[test]
+    fn test_op_sigmoid_zero() {
+        let t = make_f32_tensor(&[1], &[0.0]);
+        let result = op_sigmoid(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            (vals[0] - 0.5).abs() < 1e-4,
+            "sigmoid(0) = {}, expected ~0.5",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn test_op_sigmoid_positive() {
+        let t = make_f32_tensor(&[1], &[10.0]);
+        let result = op_sigmoid(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            (vals[0] - 1.0).abs() < 1e-4,
+            "sigmoid(10) = {}, expected ~1.0",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn test_op_sigmoid_negative() {
+        let t = make_f32_tensor(&[1], &[-10.0]);
+        let result = op_sigmoid(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            vals[0].abs() < 1e-4,
+            "sigmoid(-10) = {}, expected ~0.0",
+            vals[0]
+        );
+    }
+
+    // ---- Tier 2: op_tanh tests ----
+
+    #[test]
+    fn test_op_tanh_zero() {
+        let t = make_f32_tensor(&[1], &[0.0]);
+        let result = op_tanh(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(vals[0].abs() < 1e-4, "tanh(0) = {}, expected ~0.0", vals[0]);
+    }
+
+    #[test]
+    fn test_op_tanh_positive() {
+        let t = make_f32_tensor(&[1], &[10.0]);
+        let result = op_tanh(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            (vals[0] - 1.0).abs() < 1e-4,
+            "tanh(10) = {}, expected ~1.0",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn test_op_tanh_negative() {
+        let t = make_f32_tensor(&[1], &[-10.0]);
+        let result = op_tanh(&t).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!(
+            (vals[0] + 1.0).abs() < 1e-4,
+            "tanh(-10) = {}, expected ~-1.0",
+            vals[0]
+        );
+    }
+
+    #[test]
+    fn test_op_tanh_symmetry() {
+        // tanh(-x) = -tanh(x)
+        let vals_to_check = [0.5, 1.0, 2.0, 3.0];
+        for &x in &vals_to_check {
+            let pos = make_f32_tensor(&[1], &[x]);
+            let neg = make_f32_tensor(&[1], &[-x]);
+            let r_pos = read_f32_vec(&op_tanh(&pos).unwrap());
+            let r_neg = read_f32_vec(&op_tanh(&neg).unwrap());
+            assert!(
+                (r_neg[0] + r_pos[0]).abs() < 1e-4,
+                "tanh(-{}) + tanh({}) = {}, expected ~0.0",
+                x,
+                x,
+                r_neg[0] + r_pos[0]
+            );
+        }
+    }
+
+    // ---- Tier 4: normalization, pooling, reduction tests ----
+
+    #[test]
+    fn test_op_batch_norm_basic() {
+        // NCHW [1,2,1,2]: 2 channels, each with 2 spatial values
+        // Channel 0: [1.0, 2.0], Channel 1: [3.0, 4.0]
+        let input = make_f32_tensor(&[1, 2, 1, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let scale = make_f32_tensor(&[2], &[1.0, 1.0]);
+        let bias = make_f32_tensor(&[2], &[0.0, 0.0]);
+        let mean = make_f32_tensor(&[2], &[1.5, 3.5]);
+        let var = make_f32_tensor(&[2], &[1.0, 1.0]);
+        let eps = 1e-5;
+        let result = op_batch_normalization(&input, &scale, &bias, &mean, &var, eps).unwrap();
+        let vals = read_f32_vec(&result);
+        // Channel 0: (1.0 - 1.5) / sqrt(1.0 + eps) ≈ -0.5, (2.0 - 1.5) / sqrt(1.0 + eps) ≈ 0.5
+        // Channel 1: (3.0 - 3.5) / sqrt(1.0 + eps) ≈ -0.5, (4.0 - 3.5) / sqrt(1.0 + eps) ≈ 0.5
+        assert!((vals[0] - (-0.5)).abs() < 0.01, "ch0[0]={}", vals[0]);
+        assert!((vals[1] - 0.5).abs() < 0.01, "ch0[1]={}", vals[1]);
+        assert!((vals[2] - (-0.5)).abs() < 0.01, "ch1[0]={}", vals[2]);
+        assert!((vals[3] - 0.5).abs() < 0.01, "ch1[1]={}", vals[3]);
+    }
+
+    #[test]
+    fn test_op_layer_norm_basic() {
+        // [2,3] tensor, normalize along axis=-1 (last axis, size 3)
+        // Row 0: [1.0, 2.0, 3.0], Row 1: [4.0, 5.0, 6.0]
+        let input = make_f32_tensor(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let scale = make_f32_tensor(&[3], &[1.0, 1.0, 1.0]);
+        let eps = 1e-5;
+        let result = op_layer_normalization(&input, &scale, None, -1, eps).unwrap();
+        let vals = read_f32_vec(&result);
+        // Each row should have mean ≈ 0 and variance ≈ 1
+        for row in 0..2 {
+            let row_vals = &vals[row * 3..(row + 1) * 3];
+            let row_mean: f32 = row_vals.iter().sum::<f32>() / 3.0;
+            let row_var: f32 = row_vals
+                .iter()
+                .map(|v| (v - row_mean) * (v - row_mean))
+                .sum::<f32>()
+                / 3.0;
+            assert!(row_mean.abs() < 0.01, "row {} mean={}", row, row_mean);
+            assert!((row_var - 1.0).abs() < 0.01, "row {} var={}", row, row_var);
+        }
+    }
+
+    #[test]
+    fn test_op_maxpool_2x2() {
+        // NCHW [1,1,4,4], kernel 2x2, stride 2 -> [1,1,2,2]
+        #[rustfmt::skip]
+        let data = [
+            1.0, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+            9.0, 10.0, 11.0, 12.0,
+            13.0, 14.0, 15.0, 16.0,
+        ];
+        let input = make_f32_tensor(&[1, 1, 4, 4], &data);
+        let result = op_maxpool(&input, &[2, 2], Some(&[2, 2]), None).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 1, 2, 2]);
+        let vals = read_f32_vec(&result);
+        // Top-left 2x2: max(1,2,5,6)=6
+        // Top-right 2x2: max(3,4,7,8)=8
+        // Bottom-left 2x2: max(9,10,13,14)=14
+        // Bottom-right 2x2: max(11,12,15,16)=16
+        assert!((vals[0] - 6.0).abs() < 0.01, "tl={}", vals[0]);
+        assert!((vals[1] - 8.0).abs() < 0.01, "tr={}", vals[1]);
+        assert!((vals[2] - 14.0).abs() < 0.01, "bl={}", vals[2]);
+        assert!((vals[3] - 16.0).abs() < 0.01, "br={}", vals[3]);
+    }
+
+    #[test]
+    fn test_op_averagepool_2x2() {
+        // NCHW [1,1,4,4], kernel 2x2, stride 2 -> [1,1,2,2]
+        #[rustfmt::skip]
+        let data = [
+            1.0, 2.0, 3.0, 4.0,
+            5.0, 6.0, 7.0, 8.0,
+            9.0, 10.0, 11.0, 12.0,
+            13.0, 14.0, 15.0, 16.0,
+        ];
+        let input = make_f32_tensor(&[1, 1, 4, 4], &data);
+        let result = op_averagepool(&input, &[2, 2], Some(&[2, 2]), None).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 1, 2, 2]);
+        let vals = read_f32_vec(&result);
+        // Top-left: avg(1,2,5,6) = 3.5
+        // Top-right: avg(3,4,7,8) = 5.5
+        // Bottom-left: avg(9,10,13,14) = 11.5
+        // Bottom-right: avg(11,12,15,16) = 13.5
+        assert!((vals[0] - 3.5).abs() < 0.01, "tl={}", vals[0]);
+        assert!((vals[1] - 5.5).abs() < 0.01, "tr={}", vals[1]);
+        assert!((vals[2] - 11.5).abs() < 0.01, "bl={}", vals[2]);
+        assert!((vals[3] - 13.5).abs() < 0.01, "br={}", vals[3]);
+    }
+
+    #[test]
+    fn test_op_global_average_pool() {
+        // NCHW [1,2,3,3] -> [1,2,1,1]
+        // Channel 0: 9 values 1..9, mean = 5.0
+        // Channel 1: 9 values 10..18, mean = 14.0
+        #[rustfmt::skip]
+        let data = [
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0,
+            10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0,
+        ];
+        let input = make_f32_tensor(&[1, 2, 3, 3], &data);
+        let result = op_global_average_pool(&input).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 2, 1, 1]);
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 5.0).abs() < 0.01, "ch0 mean={}", vals[0]);
+        assert!((vals[1] - 14.0).abs() < 0.01, "ch1 mean={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_sum_axis0() {
+        // [[1,2],[3,4]] reduce axis 0 -> [4,6]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_sum(&input, &[0], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 4.0).abs() < 0.01, "col0={}", vals[0]);
+        assert!((vals[1] - 6.0).abs() < 0.01, "col1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_sum_axis1() {
+        // [[1,2],[3,4]] reduce axis 1 -> [3,7]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_sum(&input, &[1], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 3.0).abs() < 0.01, "row0={}", vals[0]);
+        assert!((vals[1] - 7.0).abs() < 0.01, "row1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_sum_keepdims() {
+        // [[1,2],[3,4]] reduce axis 0, keepdims=true -> shape [1,2], values [4,6]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_sum(&input, &[0], true).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 2]);
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 4.0).abs() < 0.01, "col0={}", vals[0]);
+        assert!((vals[1] - 6.0).abs() < 0.01, "col1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_mean_axis0() {
+        // [[1,2],[3,4]] reduce axis 0 -> [2,3]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_mean(&input, &[0], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 2.0).abs() < 0.01, "col0={}", vals[0]);
+        assert!((vals[1] - 3.0).abs() < 0.01, "col1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_mean_axis1() {
+        // [[1,2],[3,4]] reduce axis 1 -> [1.5, 3.5]
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_mean(&input, &[1], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert!((vals[0] - 1.5).abs() < 0.01, "row0={}", vals[0]);
+        assert!((vals[1] - 3.5).abs() < 0.01, "row1={}", vals[1]);
+    }
+
+    #[test]
+    fn test_op_reduce_mean_all() {
+        // [[1,2],[3,4]] reduce all axes -> scalar 2.5
+        let input = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_reduce_mean(&input, &[], false).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals.len(), 1);
+        assert!((vals[0] - 2.5).abs() < 0.01, "mean={}", vals[0]);
+    }
+
+    #[test]
+    fn test_sqrt_approx() {
+        assert!(
+            (sqrt_approx(4.0) - 2.0).abs() < 0.01,
+            "sqrt(4)={}",
+            sqrt_approx(4.0)
+        );
+        assert!(
+            (sqrt_approx(9.0) - 3.0).abs() < 0.01,
+            "sqrt(9)={}",
+            sqrt_approx(9.0)
+        );
+        assert!(
+            (sqrt_approx(0.0)).abs() < 0.01,
+            "sqrt(0)={}",
+            sqrt_approx(0.0)
+        );
+        assert!(
+            (sqrt_approx(1.0) - 1.0).abs() < 0.01,
+            "sqrt(1)={}",
+            sqrt_approx(1.0)
+        );
+    }
+
+    // ================================================================
+    // Tier 3 — Shape/data movement operator tests
+    // ================================================================
+
+    // ---- op_transpose tests ----
+
+    #[test]
+    fn test_op_transpose_2d() {
+        // [[1,2],[3,4]] transposed = [[1,3],[2,4]]
+        let t = make_f32_tensor(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let result = op_transpose(&t, Some(&[1, 0])).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 3.0, 2.0, 4.0]);
+    }
+
+    #[test]
+    fn test_op_transpose_identity() {
+        // perm=[0,1] returns same data
+        let t = make_f32_tensor(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let result = op_transpose(&t, Some(&[0, 1])).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    }
+
+    // ---- op_concat tests ----
+
+    #[test]
+    fn test_op_concat_axis0() {
+        // Concat two [1,2] tensors along axis 0 -> [2,2]
+        let a = make_f32_tensor(&[1, 2], &[1.0, 2.0]);
+        let b = make_f32_tensor(&[1, 2], &[3.0, 4.0]);
+        let result = op_concat(&[&a, &b], 0).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_op_concat_axis1() {
+        // Concat two [2,1] tensors along axis 1 -> [2,2]
+        let a = make_f32_tensor(&[2, 1], &[1.0, 3.0]);
+        let b = make_f32_tensor(&[2, 1], &[2.0, 4.0]);
+        let result = op_concat(&[&a, &b], 1).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    // ---- op_flatten tests ----
+
+    #[test]
+    fn test_op_flatten_3d() {
+        // [2,3,4] shape -> [2,12] at axis=1
+        let data: Vec<f32> = (0..24).map(|i| i as f32).collect();
+        let t = make_f32_tensor(&[2, 3, 4], &data);
+        let result = op_flatten(&t, 1).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 12]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, data);
+    }
+
+    // ---- op_squeeze tests ----
+
+    #[test]
+    fn test_op_squeeze_all() {
+        // [1,3,1] -> [3]
+        let t = make_f32_tensor(&[1, 3, 1], &[10.0, 20.0, 30.0]);
+        let result = op_squeeze(&t, None).unwrap();
+        assert_eq!(result.shape.dims, vec![3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn test_op_squeeze_specific() {
+        // [1,3,1] squeeze axis 0 -> [3,1]
+        let t = make_f32_tensor(&[1, 3, 1], &[10.0, 20.0, 30.0]);
+        let result = op_squeeze(&t, Some(&[0])).unwrap();
+        assert_eq!(result.shape.dims, vec![3, 1]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    // ---- op_unsqueeze tests ----
+
+    #[test]
+    fn test_op_unsqueeze() {
+        // [3] unsqueeze axis 0 -> [1,3]
+        let t = make_f32_tensor(&[3], &[10.0, 20.0, 30.0]);
+        let result = op_unsqueeze(&t, &[0]).unwrap();
+        assert_eq!(result.shape.dims, vec![1, 3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    // ---- squeeze/unsqueeze roundtrip ----
+
+    #[test]
+    fn test_op_squeeze_unsqueeze_roundtrip() {
+        // Start with [1,3,1], squeeze all -> [3], unsqueeze at 0 and 2 -> [1,3,1]
+        let t = make_f32_tensor(&[1, 3, 1], &[10.0, 20.0, 30.0]);
+        let squeezed = op_squeeze(&t, None).unwrap();
+        assert_eq!(squeezed.shape.dims, vec![3]);
+        let restored = op_unsqueeze(&squeezed, &[0, 2]).unwrap();
+        assert_eq!(restored.shape.dims, vec![1, 3, 1]);
+        let vals = read_f32_vec(&restored);
+        assert_eq!(vals, vec![10.0, 20.0, 30.0]);
+    }
+
+    // ---- op_cast tests ----
+
+    #[test]
+    fn test_op_cast_f32_to_i32() {
+        // Cast [1.5, -2.7] -> [1, -2] (truncation toward zero)
+        let t = make_f32_tensor(&[2], &[1.5, -2.7]);
+        let result = op_cast(&t, DataType::Int32).unwrap();
+        assert_eq!(result.data_type, DataType::Int32);
+        assert_eq!(result.shape.dims, vec![2]);
+        let v0 = i32::from_le_bytes([
+            result.raw_data[0],
+            result.raw_data[1],
+            result.raw_data[2],
+            result.raw_data[3],
+        ]);
+        let v1 = i32::from_le_bytes([
+            result.raw_data[4],
+            result.raw_data[5],
+            result.raw_data[6],
+            result.raw_data[7],
+        ]);
+        assert_eq!(v0, 1);
+        assert_eq!(v1, -2);
+    }
+
+    #[test]
+    fn test_op_cast_identity() {
+        // Cast f32 to f32 returns same tensor
+        let t = make_f32_tensor(&[3], &[1.0, 2.0, 3.0]);
+        let result = op_cast(&t, DataType::Float).unwrap();
+        assert_eq!(result.data_type, DataType::Float);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    // ---- op_clip tests ----
+
+    #[test]
+    fn test_op_clip_both() {
+        // Clip [-5, 0, 5] to [-2, 2] -> [-2, 0, 2]
+        let t = make_f32_tensor(&[3], &[-5.0, 0.0, 5.0]);
+        let result = op_clip(&t, Some(-2.0), Some(2.0)).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![-2.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn test_op_clip_min_only() {
+        // Clip with min=0 -> relu behavior
+        let t = make_f32_tensor(&[4], &[-3.0, -1.0, 0.0, 5.0]);
+        let result = op_clip(&t, Some(0.0), None).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![0.0, 0.0, 0.0, 5.0]);
+    }
+
+    #[test]
+    fn test_op_clip_max_only() {
+        // Clip with max=1
+        let t = make_f32_tensor(&[4], &[-2.0, 0.5, 1.0, 3.0]);
+        let result = op_clip(&t, None, Some(1.0)).unwrap();
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![-2.0, 0.5, 1.0, 1.0]);
+    }
+
+    // ---- op_pad tests ----
+
+    #[test]
+    fn test_op_pad_1d() {
+        // Pad [1,2,3] with pads=[1,1] constant=0 -> [0,1,2,3,0]
+        let t = make_f32_tensor(&[3], &[1.0, 2.0, 3.0]);
+        let result = op_pad(&t, &[1, 1], "constant", 0.0).unwrap();
+        assert_eq!(result.shape.dims, vec![5]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![0.0, 1.0, 2.0, 3.0, 0.0]);
+    }
+
+    // ---- op_slice tests ----
+
+    #[test]
+    fn test_op_slice_basic() {
+        // Slice [1,2,3,4,5] starts=[1] ends=[4] -> [2,3,4]
+        let t = make_f32_tensor(&[5], &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let result = op_slice(&t, &[1], &[4], None, None).unwrap();
+        assert_eq!(result.shape.dims, vec![3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_op_slice_negative() {
+        // starts=[-3] ends=[-1] on [1,2,3,4,5] -> [3,4]
+        let t = make_f32_tensor(&[5], &[1.0, 2.0, 3.0, 4.0, 5.0]);
+        let result = op_slice(&t, &[-3], &[-1], None, None).unwrap();
+        assert_eq!(result.shape.dims, vec![2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![3.0, 4.0]);
+    }
+
+    // ---- op_gather tests ----
+
+    #[test]
+    fn test_op_gather_1d() {
+        // Gather from [10,20,30,40] indices=[1,3] -> [20,40]
+        let input = make_f32_tensor(&[4], &[10.0, 20.0, 30.0, 40.0]);
+        // Create Int64 index tensor with values [1, 3]
+        let idx_data: Vec<u8> = {
+            let mut d = alloc::vec![0u8; 2 * 8];
+            let b1 = 1i64.to_le_bytes();
+            let b3 = 3i64.to_le_bytes();
+            for j in 0..8 {
+                d[j] = b1[j];
+                d[8 + j] = b3[j];
+            }
+            d
+        };
+        let indices = Tensor {
+            data_type: DataType::Int64,
+            shape: TensorShape::new(vec![2]),
+            name: String::new(),
+            raw_data: idx_data,
+        };
+        let result = op_gather(&input, &indices, 0).unwrap();
+        assert_eq!(result.shape.dims, vec![2]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![20.0, 40.0]);
     }
 }

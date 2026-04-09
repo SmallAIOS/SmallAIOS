@@ -11,7 +11,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::onnx_types::GraphProto;
+use crate::onnx_types::{AttributeProto, GraphProto};
 
 // Re-export for downstream consumers that need the tensor DataType.
 #[allow(unused_imports)]
@@ -102,6 +102,8 @@ pub struct ExecutionNode {
     pub outputs: Vec<String>,
     /// Indices of nodes that must execute before this one.
     pub dependencies: Vec<NodeIndex>,
+    /// Operator-specific attributes from the ONNX NodeProto.
+    pub attributes: Vec<AttributeProto>,
 }
 
 /// A directed acyclic graph of execution nodes with a computed
@@ -159,6 +161,7 @@ fn create_execution_nodes(graph: &GraphProto) -> Vec<ExecutionNode> {
             inputs: node_proto.input.clone(),
             outputs: node_proto.output.clone(),
             dependencies: Vec::new(),
+            attributes: node_proto.attribute.clone(),
         })
         .collect()
 }
