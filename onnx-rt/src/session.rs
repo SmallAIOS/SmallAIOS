@@ -288,9 +288,8 @@ pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
 
 /// Attempts to load and parse an ONNX model from raw bytes.
 ///
-/// Validates the magic byte and minimum size before parsing.
-/// Currently returns `NotImplemented` after validation passes;
-/// full protobuf parsing will be added in a later phase.
+/// Validates the magic byte and minimum size, then decodes the
+/// protobuf payload into a `ModelProto`.
 pub fn load_model(data: &[u8]) -> Result<ModelProto, SessionError> {
     // Verified boot: check model signature before parsing
     #[cfg(feature = "verified-boot")]
@@ -311,8 +310,8 @@ pub fn load_model(data: &[u8]) -> Result<ModelProto, SessionError> {
         )));
     }
 
-    // Stub: full protobuf decoding not yet implemented.
-    Err(SessionError::NotImplemented)
+    crate::protobuf::decode_model(data)
+        .map_err(|e| SessionError::ModelLoadFailed(alloc::format!("protobuf decode error: {}", e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -558,11 +557,32 @@ mod tests {
     }
 
     #[test]
-    fn test_load_model_valid_header_returns_not_implemented() {
-        // Valid magic byte and sufficient size, but stub returns NotImplemented.
-        let data = [0x08, 0x07, 0x12, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    fn test_load_model_valid_header_decodes() {
+        // Valid magic byte and sufficient size — protobuf decoder now runs.
+        // ir_version=7, then some padding bytes that the decoder will try to parse.
+        // Build a minimal valid model: just ir_version field.
+        let mut data = vec![0x08, 0x07]; // field 1, varint 7 = ir_version
+                                         // Pad to MIN_MODEL_SIZE
+        while data.len() < 8 {
+            // Add unknown field (field 99, varint 0) to pad
+            data.push(0x98); // (99 << 3) | 0 = 792, but that's multi-byte...
+                             // Simpler: just use field 15 varint 0 = tag 0x78, value 0x00
+            data.push(0x00);
+        }
+        // Actually, let's build it properly with the encode helpers from protobuf tests.
+        // Just use raw bytes for a minimal model.
+        let data = [
+            0x08, 0x07, // ir_version = 7
+            0x12, 0x04, // field 2, length 4 (opset_import)
+            0x0A, 0x00, // field 1 (domain), length 0
+            0x10, 0x11, // field 2 (version), varint 17
+        ];
         let result = load_model(&data);
-        assert_eq!(result, Err(SessionError::NotImplemented));
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let model = result.unwrap();
+        assert_eq!(model.ir_version, 7);
+        assert_eq!(model.opset_import.len(), 1);
+        assert_eq!(model.opset_import[0].version, 17);
     }
 
     // ---- Session run tests ----
