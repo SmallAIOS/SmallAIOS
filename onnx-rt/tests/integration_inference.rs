@@ -258,11 +258,21 @@ fn load_model_all_zeros_invalid_magic() {
 }
 
 #[test]
-fn load_model_valid_header_returns_not_implemented() {
-    // Valid magic byte (0x08) and sufficient size; stub returns NotImplemented.
-    let data = [0x08, 0x07, 0x12, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+fn load_model_valid_header_decodes_model() {
+    // Valid magic byte (0x08) and sufficient size; decoder now parses protobuf.
+    // Construct a minimal valid model: ir_version=7, opset version 17.
+    let data = [
+        0x08, 0x07, // field 1, varint 7 = ir_version
+        0x72, 0x04, // field 14, length 4 (opset_import)
+        0x0A, 0x00, // field 1 (domain), length 0
+        0x10, 0x11, // field 2 (version), varint 17
+    ];
     let result = load_model(&data);
-    assert_eq!(result, Err(SessionError::NotImplemented));
+    assert!(result.is_ok(), "expected Ok, got {:?}", result);
+    let model = result.unwrap();
+    assert_eq!(model.ir_version, 7);
+    assert_eq!(model.opset_import.len(), 1);
+    assert_eq!(model.opset_import[0].version, 17);
 }
 
 #[test]
