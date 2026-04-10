@@ -154,4 +154,87 @@ mod tests {
         let buf = allocate_tensor_data(5, DataType::Int64);
         assert_eq!(buf.len(), 40);
     }
+
+    #[test]
+    fn test_allocate_tensor_data_int32() {
+        let buf = allocate_tensor_data(4, DataType::Int32);
+        assert_eq!(buf.len(), 16);
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_allocate_tensor_data_double() {
+        let buf = allocate_tensor_data(3, DataType::Double);
+        assert_eq!(buf.len(), 24);
+        assert!(buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn test_allocate_tensor_data_zero_elements() {
+        let buf = allocate_tensor_data(0, DataType::Float);
+        assert_eq!(buf.len(), 0);
+    }
+
+    #[test]
+    fn test_read_i32_negative() {
+        let mut buf = vec![0u8; 4];
+        write_i32(&mut buf, 0, -1);
+        assert_eq!(read_i32(&buf, 0), -1);
+        write_i32(&mut buf, 0, i32::MIN);
+        assert_eq!(read_i32(&buf, 0), i32::MIN);
+    }
+
+    #[test]
+    fn test_write_i32_roundtrip_max() {
+        let mut buf = vec![0u8; 8];
+        write_i32(&mut buf, 0, i32::MAX);
+        write_i32(&mut buf, 1, 0);
+        assert_eq!(read_i32(&buf, 0), i32::MAX);
+        assert_eq!(read_i32(&buf, 1), 0);
+    }
+
+    #[test]
+    fn test_i64_min_max_roundtrip() {
+        let mut buf = vec![0u8; 24];
+        write_i64(&mut buf, 0, i64::MIN);
+        write_i64(&mut buf, 1, i64::MAX);
+        write_i64(&mut buf, 2, 0);
+        assert_eq!(read_i64(&buf, 0), i64::MIN);
+        assert_eq!(read_i64(&buf, 1), i64::MAX);
+        assert_eq!(read_i64(&buf, 2), 0);
+    }
+
+    #[test]
+    fn test_f64_nan_infinity() {
+        let mut buf = vec![0u8; 32];
+        write_f64(&mut buf, 0, f64::NAN);
+        write_f64(&mut buf, 1, f64::INFINITY);
+        write_f64(&mut buf, 2, f64::NEG_INFINITY);
+        write_f64(&mut buf, 3, 0.0);
+        assert!(read_f64(&buf, 0).is_nan());
+        assert_eq!(read_f64(&buf, 1), f64::INFINITY);
+        assert_eq!(read_f64(&buf, 2), f64::NEG_INFINITY);
+        assert_eq!(read_f64(&buf, 3), 0.0);
+    }
+
+    #[test]
+    fn test_f32_special_values() {
+        let mut buf = vec![0u8; 16];
+        write_f32(&mut buf, 0, f32::NAN);
+        write_f32(&mut buf, 1, f32::INFINITY);
+        write_f32(&mut buf, 2, f32::NEG_INFINITY);
+        write_f32(&mut buf, 3, -0.0);
+        assert!(read_f32(&buf, 0).is_nan());
+        assert_eq!(read_f32(&buf, 1), f32::INFINITY);
+        assert_eq!(read_f32(&buf, 2), f32::NEG_INFINITY);
+        assert_eq!(read_f32(&buf, 3), -0.0);
+    }
+
+    #[test]
+    fn test_f32_size_constant() {
+        assert_eq!(F32_SIZE, 4);
+        assert_eq!(I32_SIZE, 4);
+        assert_eq!(I64_SIZE, 8);
+        assert_eq!(F64_SIZE, 8);
+    }
 }

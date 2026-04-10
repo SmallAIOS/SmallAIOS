@@ -1122,4 +1122,267 @@ mod tests {
         let out_data = read_f32_output(&results[0].tensor, 6);
         assert_eq!(out_data, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
+
+    // -----------------------------------------------------------------------
+    // Direct dispatch helper tests — exercise the extracted per-category
+    // dispatch functions without going through `execute_graph`. These exist
+    // primarily to give SonarCloud line coverage on the helpers themselves.
+    // -----------------------------------------------------------------------
+
+    fn make_i64_tensor(name: &str, shape: &[i64], data: &[i64]) -> Tensor {
+        let mut raw = vec![0u8; data.len() * 8];
+        for (i, &v) in data.iter().enumerate() {
+            raw[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
+        }
+        Tensor {
+            data_type: DataType::Int64,
+            shape: TensorShape::new(shape.to_vec()),
+            name: String::from(name),
+            raw_data: raw,
+        }
+    }
+
+    #[test]
+    fn test_read_first_f32_some_value() {
+        let t = make_f32_tensor("c", &[1], &[3.25]);
+        assert_eq!(read_first_f32(Some(&t)), Some(3.25));
+    }
+
+    #[test]
+    fn test_read_first_f32_none() {
+        assert_eq!(read_first_f32(None), None);
+    }
+
+    #[test]
+    fn test_read_first_f32_short_buffer() {
+        let t = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(vec![0]),
+            name: String::from("empty"),
+            raw_data: vec![1, 2, 3], // < 4 bytes
+        };
+        assert_eq!(read_first_f32(Some(&t)), None);
+    }
+
+    #[test]
+    fn test_dispatch_arithmetic_add() {
+        let a = make_f32_tensor("a", &[3], &[1.0, 2.0, 3.0]);
+        let b = make_f32_tensor("b", &[3], &[4.0, 5.0, 6.0]);
+        let inputs = [Some(&a), Some(&b)];
+        let out = dispatch_arithmetic(OpKind::Add, &inputs, &[]).unwrap();
+        assert_eq!(read_f32_output(&out, 3), vec![5.0, 7.0, 9.0]);
+    }
+
+    #[test]
+    fn test_dispatch_arithmetic_sub_mul_div() {
+        let a = make_f32_tensor("a", &[2], &[6.0, 8.0]);
+        let b = make_f32_tensor("b", &[2], &[2.0, 4.0]);
+        let inputs = [Some(&a), Some(&b)];
+        let sub = dispatch_arithmetic(OpKind::Sub, &inputs, &[]).unwrap();
+        assert_eq!(read_f32_output(&sub, 2), vec![4.0, 4.0]);
+        let mul = dispatch_arithmetic(OpKind::Mul, &inputs, &[]).unwrap();
+        assert_eq!(read_f32_output(&mul, 2), vec![12.0, 32.0]);
+        let div = dispatch_arithmetic(OpKind::Div, &inputs, &[]).unwrap();
+        assert_eq!(read_f32_output(&div, 2), vec![3.0, 2.0]);
+    }
+
+    #[test]
+    fn test_dispatch_arithmetic_matmul() {
+        let a = make_f32_tensor("a", &[1, 2], &[1.0, 2.0]);
+        let b = make_f32_tensor("b", &[2, 1], &[3.0, 4.0]);
+        let inputs = [Some(&a), Some(&b)];
+        let out = dispatch_arithmetic(OpKind::MatMul, &inputs, &[]).unwrap();
+        assert_eq!(read_f32_output(&out, 1), vec![11.0]);
+    }
+
+    #[test]
+    fn test_dispatch_arithmetic_wrong_kind_errors() {
+        let a = make_f32_tensor("a", &[1], &[1.0]);
+        let inputs = [Some(&a)];
+        let r = dispatch_arithmetic(OpKind::Relu, &inputs, &[]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_dispatch_activation_relu() {
+        let t = make_f32_tensor("x", &[4], &[-1.0, 0.0, 1.0, 2.0]);
+        let inputs = [Some(&t)];
+        let out = dispatch_activation(OpKind::Relu, &inputs, &[]).unwrap();
+        assert_eq!(read_f32_output(&out, 4), vec![0.0, 0.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn test_dispatch_activation_sigmoid_tanh_softmax() {
+        let t = make_f32_tensor("x", &[3], &[0.0, 0.5, -0.5]);
+        let inputs = [Some(&t)];
+        let sig = dispatch_activation(OpKind::Sigmoid, &inputs, &[]).unwrap();
+        assert!((read_f32_output(&sig, 3)[0] - 0.5).abs() < 1e-5);
+        let tanh = dispatch_activation(OpKind::Tanh, &inputs, &[]).unwrap();
+        assert!(read_f32_output(&tanh, 3)[0].abs() < 1e-5);
+        let sm = dispatch_activation(OpKind::Softmax, &inputs, &[]).unwrap();
+        let sums: f32 = read_f32_output(&sm, 3).iter().sum();
+        assert!((sums - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_dispatch_activation_wrong_kind_errors() {
+        let t = make_f32_tensor("x", &[1], &[1.0]);
+        let inputs = [Some(&t)];
+        let r = dispatch_activation(OpKind::Add, &inputs, &[]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_dispatch_convolution_conv() {
+        // 1x1 identity conv
+        let x = make_f32_tensor("x", &[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let w = make_f32_tensor("w", &[1, 1, 1, 1], &[1.0]);
+        let inputs = [Some(&x), Some(&w)];
+        let out = dispatch_convolution(OpKind::Conv, &inputs, &[]).unwrap();
+        assert_eq!(read_f32_output(&out, 4), vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_dispatch_convolution_wrong_kind_errors() {
+        let x = make_f32_tensor("x", &[1], &[1.0]);
+        let inputs = [Some(&x)];
+        let r = dispatch_convolution(OpKind::Relu, &inputs, &[]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_dispatch_pooling_global_average() {
+        // Global avg pool: [1,1,2,2] with values averaged → [1,1,1,1] = 2.5
+        let x = make_f32_tensor("x", &[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let inputs = [Some(&x)];
+        let out = dispatch_pooling(OpKind::GlobalAveragePool, &inputs, &[]).unwrap();
+        let vals = read_f32_output(&out, 1);
+        assert!((vals[0] - 2.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_dispatch_pooling_wrong_kind_errors() {
+        let x = make_f32_tensor("x", &[1], &[1.0]);
+        let inputs = [Some(&x)];
+        let r = dispatch_pooling(OpKind::Relu, &inputs, &[]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_dispatch_reduction_reduce_mean() {
+        let x = make_f32_tensor("x", &[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let inputs = [Some(&x)];
+        let attrs = vec![AttributeProto {
+            name: "keepdims".to_string(),
+            attr_type: AttributeType::Int,
+            i: 0,
+            ..AttributeProto::default()
+        }];
+        let out = dispatch_reduction(OpKind::ReduceMean, &inputs, &attrs).unwrap();
+        let vals = read_f32_output(&out, 1);
+        assert!((vals[0] - 2.5).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_dispatch_reduction_reduce_sum() {
+        let x = make_f32_tensor("x", &[4], &[1.0, 2.0, 3.0, 4.0]);
+        let inputs = [Some(&x)];
+        let attrs = vec![AttributeProto {
+            name: "keepdims".to_string(),
+            attr_type: AttributeType::Int,
+            i: 0,
+            ..AttributeProto::default()
+        }];
+        let out = dispatch_reduction(OpKind::ReduceSum, &inputs, &attrs).unwrap();
+        let vals = read_f32_output(&out, 1);
+        assert!((vals[0] - 10.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_dispatch_reduction_wrong_kind_errors() {
+        let x = make_f32_tensor("x", &[1], &[1.0]);
+        let inputs = [Some(&x)];
+        let r = dispatch_reduction(OpKind::Relu, &inputs, &[]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_dispatch_normalization_layer_norm() {
+        let x = make_f32_tensor("x", &[1, 4], &[1.0, 2.0, 3.0, 4.0]);
+        let scale = make_f32_tensor("s", &[4], &[1.0, 1.0, 1.0, 1.0]);
+        let inputs = [Some(&x), Some(&scale)];
+        let attrs = vec![AttributeProto {
+            name: "axis".to_string(),
+            attr_type: AttributeType::Int,
+            i: -1,
+            ..AttributeProto::default()
+        }];
+        let out = dispatch_normalization(OpKind::LayerNormalization, &inputs, &attrs).unwrap();
+        // Output should have same shape; check length
+        assert_eq!(out.shape.dims, vec![1, 4]);
+    }
+
+    #[test]
+    fn test_dispatch_normalization_wrong_kind_errors() {
+        let x = make_f32_tensor("x", &[1], &[1.0]);
+        let inputs = [Some(&x)];
+        let r = dispatch_normalization(OpKind::Relu, &inputs, &[]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_dispatch_shape_reshape() {
+        let x = make_f32_tensor("x", &[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let shape = make_i64_tensor("shape", &[2], &[3, 2]);
+        let inputs = [Some(&x), Some(&shape)];
+        let out = dispatch_shape(OpKind::Reshape, &inputs, &[]).unwrap();
+        assert_eq!(out.shape.dims, vec![3, 2]);
+    }
+
+    #[test]
+    fn test_dispatch_shape_flatten() {
+        let x = make_f32_tensor("x", &[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let inputs = [Some(&x)];
+        let out = dispatch_shape(OpKind::Flatten, &inputs, &[]).unwrap();
+        assert_eq!(out.shape.total_elements(), 4);
+    }
+
+    #[test]
+    fn test_dispatch_shape_clip_with_min_max() {
+        let x = make_f32_tensor("x", &[3], &[-5.0, 0.0, 5.0]);
+        let min_t = make_f32_tensor("min", &[1], &[-2.0]);
+        let max_t = make_f32_tensor("max", &[1], &[2.0]);
+        let inputs = [Some(&x), Some(&min_t), Some(&max_t)];
+        let out = dispatch_shape(OpKind::Clip, &inputs, &[]).unwrap();
+        assert_eq!(read_f32_output(&out, 3), vec![-2.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn test_dispatch_shape_cast() {
+        let x = make_f32_tensor("x", &[2], &[1.7, -2.3]);
+        let inputs = [Some(&x)];
+        let attrs = vec![AttributeProto {
+            name: "to".to_string(),
+            attr_type: AttributeType::Int,
+            i: 6, // INT32
+            ..AttributeProto::default()
+        }];
+        let out = dispatch_shape(OpKind::Cast, &inputs, &attrs).unwrap();
+        assert_eq!(out.data_type, DataType::Int32);
+    }
+
+    #[test]
+    fn test_dispatch_shape_wrong_kind_errors() {
+        let x = make_f32_tensor("x", &[1], &[1.0]);
+        let inputs = [Some(&x)];
+        let r = dispatch_shape(OpKind::Relu, &inputs, &[]);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn test_dispatch_shape_concat_empty_errors() {
+        let inputs: [Option<&Tensor>; 0] = [];
+        let r = dispatch_shape(OpKind::Concat, &inputs, &[]);
+        assert!(r.is_err());
+    }
 }

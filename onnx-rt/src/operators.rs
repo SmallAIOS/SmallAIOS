@@ -3804,6 +3804,114 @@ mod tests {
         assert_eq!(vals, vec![1.0, 2.0, 3.0]);
     }
 
+    // ---- cast helper direct tests ----
+
+    fn make_i32_tensor(shape: &[i64], data: &[i32]) -> Tensor {
+        let mut raw = alloc::vec![0u8; data.len() * 4];
+        for (i, &v) in data.iter().enumerate() {
+            let bytes = v.to_le_bytes();
+            raw[i * 4..i * 4 + 4].copy_from_slice(&bytes);
+        }
+        Tensor {
+            data_type: DataType::Int32,
+            shape: TensorShape::new(Vec::from(shape)),
+            name: String::new(),
+            raw_data: raw,
+        }
+    }
+
+    fn make_i64_tensor(shape: &[i64], data: &[i64]) -> Tensor {
+        let mut raw = alloc::vec![0u8; data.len() * 8];
+        for (i, &v) in data.iter().enumerate() {
+            let bytes = v.to_le_bytes();
+            raw[i * 8..i * 8 + 8].copy_from_slice(&bytes);
+        }
+        Tensor {
+            data_type: DataType::Int64,
+            shape: TensorShape::new(Vec::from(shape)),
+            name: String::new(),
+            raw_data: raw,
+        }
+    }
+
+    #[test]
+    fn test_cast_f32_to_i32_truncation() {
+        let t = make_f32_tensor(&[4], &[1.7, -2.3, 0.0, 4.999]);
+        let result = cast_f32_to_i32(&t).unwrap();
+        assert_eq!(result.data_type, DataType::Int32);
+        assert_eq!(result.shape.dims, vec![4]);
+        assert_eq!(read_i32(&result.raw_data, 0), 1);
+        assert_eq!(read_i32(&result.raw_data, 1), -2);
+        assert_eq!(read_i32(&result.raw_data, 2), 0);
+        assert_eq!(read_i32(&result.raw_data, 3), 4);
+    }
+
+    #[test]
+    fn test_cast_i32_to_f32_basic() {
+        let t = make_i32_tensor(&[3], &[5, -7, 0]);
+        let result = cast_i32_to_f32(&t).unwrap();
+        assert_eq!(result.data_type, DataType::Float);
+        assert_eq!(result.shape.dims, vec![3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![5.0, -7.0, 0.0]);
+    }
+
+    #[test]
+    fn test_cast_f32_to_i64_overflow() {
+        // Large but representable values
+        let t = make_f32_tensor(&[3], &[1.0e10, -1.0e10, 42.9]);
+        let result = cast_f32_to_i64(&t).unwrap();
+        assert_eq!(result.data_type, DataType::Int64);
+        assert_eq!(result.shape.dims, vec![3]);
+        assert_eq!(read_i64(&result.raw_data, 0), 10_000_000_000);
+        assert_eq!(read_i64(&result.raw_data, 1), -10_000_000_000);
+        assert_eq!(read_i64(&result.raw_data, 2), 42);
+    }
+
+    #[test]
+    fn test_cast_i64_to_f32_precision() {
+        let t = make_i64_tensor(&[3], &[1, -2, 1_000_000]);
+        let result = cast_i64_to_f32(&t).unwrap();
+        assert_eq!(result.data_type, DataType::Float);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals[0], 1.0);
+        assert_eq!(vals[1], -2.0);
+        // Large values lose precision but should round-trip for 1e6
+        assert!((vals[2] - 1_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_cast_output_preserves_shape_clears_name() {
+        let input = make_f32_tensor(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let raw_data = alloc::vec![0u8; 24];
+        let out = cast_output(&input, DataType::Int64, raw_data);
+        assert_eq!(out.data_type, DataType::Int64);
+        assert_eq!(out.shape.dims, vec![2, 3]);
+        assert_eq!(out.name, String::new());
+        assert_eq!(out.raw_data.len(), 24);
+    }
+
+    #[test]
+    fn test_cast_f32_to_i32_via_op_cast() {
+        // Exercise the op_cast dispatch for f32->i64 and i32->f32 paths
+        let t = make_f32_tensor(&[2], &[3.9, -4.1]);
+        let r = op_cast(&t, DataType::Int64).unwrap();
+        assert_eq!(r.data_type, DataType::Int64);
+        assert_eq!(read_i64(&r.raw_data, 0), 3);
+        assert_eq!(read_i64(&r.raw_data, 1), -4);
+
+        let ti = make_i32_tensor(&[2], &[9, -3]);
+        let rf = op_cast(&ti, DataType::Float).unwrap();
+        assert_eq!(rf.data_type, DataType::Float);
+        let vals = read_f32_vec(&rf);
+        assert_eq!(vals, vec![9.0, -3.0]);
+
+        let tl = make_i64_tensor(&[2], &[11, -22]);
+        let rfl = op_cast(&tl, DataType::Float).unwrap();
+        let vals = read_f32_vec(&rfl);
+        assert_eq!(vals, vec![11.0, -22.0]);
+    }
+
     // ---- op_clip tests ----
 
     #[test]
