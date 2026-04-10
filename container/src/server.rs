@@ -150,16 +150,25 @@ pub fn parse_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
     })
 }
 
-/// A route handler function.
+/// A route handler function (plain function pointer, for simple routes).
 pub type RouteHandler = fn(&HttpRequest) -> HttpResponse;
+
+/// A boxed route handler that can capture state via closures.
+type BoxedHandler = Box<dyn Fn(&HttpRequest) -> HttpResponse + Send + Sync>;
+
+/// A registered route: (HTTP method, path prefix, handler).
+type Route = (String, String, BoxedHandler);
 
 /// Minimal HTTP/1.1 server.
 ///
 /// Routes are matched by exact method and path prefix.
 /// The server runs a blocking accept loop on a single thread.
+///
+/// Supports both plain function pointers (via [`route`]) and closures
+/// that capture state (via [`route_fn`]).
 pub struct HttpServer {
     listener: TcpListener,
-    routes: Vec<(String, String, RouteHandler)>,
+    routes: Vec<Route>,
     shutdown: Arc<AtomicBool>,
 }
 
@@ -176,10 +185,19 @@ impl HttpServer {
         })
     }
 
-    /// Register a route handler for a (method, path_prefix) pair.
+    /// Register a plain function pointer as a route handler.
     pub fn route(&mut self, method: &str, path: &str, handler: RouteHandler) {
         self.routes
-            .push((method.to_uppercase(), path.to_string(), handler));
+            .push((method.to_uppercase(), path.to_string(), Box::new(handler)));
+    }
+
+    /// Register a closure as a route handler (can capture state).
+    pub fn route_fn<F>(&mut self, method: &str, path: &str, handler: F)
+    where
+        F: Fn(&HttpRequest) -> HttpResponse + Send + Sync + 'static,
+    {
+        self.routes
+            .push((method.to_uppercase(), path.to_string(), Box::new(handler)));
     }
 
     /// Return the local address the server is bound to.

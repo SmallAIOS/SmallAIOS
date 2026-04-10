@@ -11,9 +11,13 @@ services:
       - "8080:8080"
     volumes:
       - ./models:/models:ro
+    environment:
+      - SMALLAIOS_MODEL_DIR=/models
+      - SMALLAIOS_PORT=8080
+      - SMALLAIOS_GPU_BACKEND=cpu
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "/smallaios", "--health-check"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -33,10 +37,13 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - SMALLAIOS_MODEL_DIR=/models
+      - SMALLAIOS_PORT=8080
+      - SMALLAIOS_GPU_BACKEND=nvidia
     profiles:
       - gpu
     healthcheck:
-      test: ["CMD", "/smallaios", "--health-check"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3

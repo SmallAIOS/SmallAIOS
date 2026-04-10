@@ -8,6 +8,8 @@
 //! using the host kernel's syscall interface via musl libc.
 
 #[allow(dead_code)]
+mod handlers;
+#[allow(dead_code)]
 mod json;
 #[allow(dead_code)]
 mod model_manager;
@@ -47,14 +49,44 @@ fn main() {
     let shutdown = Arc::new(AtomicBool::new(false));
     setup_signal_handler(Arc::clone(&shutdown));
 
-    // Announce readiness (placeholder until server.rs is wired in).
-    let addr = format!("0.0.0.0:{}", port);
-    println!("Ready. Listening on {}", addr);
+    // Wrap manager in Arc for sharing with route closures.
+    let manager = Arc::new(manager);
 
-    // Block until a shutdown signal arrives.
-    while !shutdown.load(Ordering::Relaxed) {
-        std::thread::park_timeout(std::time::Duration::from_secs(1));
-    }
+    // Build HTTP server and register routes.
+    let addr = format!("0.0.0.0:{}", port);
+    let mut http = match server::HttpServer::bind(&addr, Arc::clone(&shutdown)) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ERROR: failed to bind {}: {}", addr, e);
+            std::process::exit(1);
+        }
+    };
+
+    // Inference
+    let mgr = Arc::clone(&manager);
+    http.route_fn("POST", "/v1/inference", move |req| {
+        handlers::handle_inference(req, &mgr)
+    });
+
+    // Model registry — specific model must be registered before the list
+    // route so the longer prefix matches first.
+    let mgr = Arc::clone(&manager);
+    http.route_fn("GET", "/v1/models/", move |req| {
+        handlers::handle_get_model(req, &mgr)
+    });
+    let mgr = Arc::clone(&manager);
+    http.route_fn("GET", "/v1/models", move |_req| {
+        handlers::handle_list_models(&mgr)
+    });
+
+    // Health / readiness / metrics
+    http.route("GET", "/healthz", |_req| handlers::handle_health());
+    let mgr = Arc::clone(&manager);
+    http.route_fn("GET", "/readyz", move |_req| handlers::handle_ready(&mgr));
+    http.route("GET", "/metrics", |_req| handlers::handle_metrics());
+
+    println!("Ready. Listening on {}", addr);
+    http.run();
     println!("Shutting down...");
 }
 
