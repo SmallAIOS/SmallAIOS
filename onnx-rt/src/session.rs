@@ -288,9 +288,8 @@ pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
 
 /// Attempts to load and parse an ONNX model from raw bytes.
 ///
-/// Validates the magic byte and minimum size before parsing.
-/// Currently returns `NotImplemented` after validation passes;
-/// full protobuf parsing will be added in a later phase.
+/// Validates the magic byte and minimum size, then decodes the
+/// protobuf payload into a `ModelProto`.
 pub fn load_model(data: &[u8]) -> Result<ModelProto, SessionError> {
     // Verified boot: check model signature before parsing
     #[cfg(feature = "verified-boot")]
@@ -574,7 +573,7 @@ mod tests {
         // Just use raw bytes for a minimal model.
         let data = [
             0x08, 0x07, // ir_version = 7
-            0x72, 0x04, // field 14, length 4 (opset_import)
+            0x12, 0x04, // field 2, length 4 (opset_import)
             0x0A, 0x00, // field 1 (domain), length 0
             0x10, 0x11, // field 2 (version), varint 17
         ];

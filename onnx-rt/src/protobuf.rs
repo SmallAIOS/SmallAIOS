@@ -270,6 +270,9 @@ impl<'a> ProtoDecoder<'a> {
         if end > self.data.len() {
             return Err(ProtoError::UnexpectedEof);
         }
+        if !byte_len.is_multiple_of(4) {
+            return Err(ProtoError::BufferTooSmall);
+        }
         let count = byte_len / 4;
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
@@ -283,6 +286,9 @@ impl<'a> ProtoDecoder<'a> {
         let end = self.pos + byte_len;
         if end > self.data.len() {
             return Err(ProtoError::UnexpectedEof);
+        }
+        if !byte_len.is_multiple_of(8) {
+            return Err(ProtoError::BufferTooSmall);
         }
         let count = byte_len / 8;
         let mut values = Vec::with_capacity(count);
@@ -311,10 +317,26 @@ impl<'a> ProtoDecoder<'a> {
         if end > self.data.len() {
             return Err(ProtoError::UnexpectedEof);
         }
+        if !byte_len.is_multiple_of(4) {
+            return Err(ProtoError::BufferTooSmall);
+        }
         let count = byte_len / 4;
         let mut values = Vec::with_capacity(count);
         for _ in 0..count {
             values.push(self.read_fixed32()? as i32);
+        }
+        Ok(values)
+    }
+
+    /// Read packed varint-encoded i32 values.
+    pub fn read_packed_varint_i32(&mut self, byte_len: usize) -> Result<Vec<i32>, ProtoError> {
+        let end = self.pos + byte_len;
+        if end > self.data.len() {
+            return Err(ProtoError::UnexpectedEof);
+        }
+        let mut values = Vec::new();
+        while self.pos < end {
+            values.push(self.read_varint()? as i32);
         }
         Ok(values)
     }
@@ -324,6 +346,9 @@ impl<'a> ProtoDecoder<'a> {
         let end = self.pos + byte_len;
         if end > self.data.len() {
             return Err(ProtoError::UnexpectedEof);
+        }
+        if !byte_len.is_multiple_of(8) {
+            return Err(ProtoError::BufferTooSmall);
         }
         let count = byte_len / 8;
         let mut values = Vec::with_capacity(count);
@@ -399,13 +424,21 @@ pub fn decode_attribute(data: &[u8]) -> Result<AttributeProto, ProtoError> {
                 let bytes = decoder.read_length_delimited()?;
                 attr.s = bytes.to_vec();
             }
+            5 => {
+                // t (TensorProto) — skip for now
+                decoder.skip_field(header.wire_type)?;
+            }
             6 => {
+                // g (GraphProto) — skip for now
+                decoder.skip_field(header.wire_type)?;
+            }
+            7 => {
                 // packed floats
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
                 attr.floats = sub.read_packed_f32(bytes.len())?;
             }
-            7 => {
+            8 => {
                 // packed varint ints
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
@@ -437,7 +470,6 @@ pub fn decode_tensor(data: &[u8]) -> Result<TensorProto, ProtoError> {
                 tensor.dims = sub.read_packed_varint_i64(bytes.len())?;
             }
             2 => tensor.data_type = decoder.read_varint()? as i32,
-            3 => tensor.name = String::from(decoder.read_string()?),
             4 => {
                 // float_data: packed f32
                 let bytes = decoder.read_length_delimited()?;
@@ -445,10 +477,10 @@ pub fn decode_tensor(data: &[u8]) -> Result<TensorProto, ProtoError> {
                 tensor.float_data = sub.read_packed_f32(bytes.len())?;
             }
             5 => {
-                // int32_data: packed i32
+                // int32_data: packed varint i32
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
-                tensor.int32_data = sub.read_packed_i32(bytes.len())?;
+                tensor.int32_data = sub.read_packed_varint_i32(bytes.len())?;
             }
             7 => {
                 // int64_data: packed varint i64
@@ -456,7 +488,8 @@ pub fn decode_tensor(data: &[u8]) -> Result<TensorProto, ProtoError> {
                 let mut sub = ProtoDecoder::new(bytes);
                 tensor.int64_data = sub.read_packed_varint_i64(bytes.len())?;
             }
-            8 => {
+            8 => tensor.name = String::from(decoder.read_string()?),
+            9 => {
                 // raw_data
                 let bytes = decoder.read_length_delimited()?;
                 tensor.raw_data = bytes.to_vec();
@@ -582,7 +615,11 @@ pub fn decode_node(data: &[u8]) -> Result<NodeProto, ProtoError> {
                 let sub_data = decoder.read_length_delimited()?;
                 node.attribute.push(decode_attribute(sub_data)?);
             }
-            6 => node.domain = String::from(decoder.read_string()?),
+            6 => {
+                // doc_string — skip
+                decoder.skip_field(header.wire_type)?;
+            }
+            7 => node.domain = String::from(decoder.read_string()?),
             _ => decoder.skip_field(header.wire_type)?,
         }
     }
@@ -603,15 +640,19 @@ pub fn decode_graph(data: &[u8]) -> Result<GraphProto, ProtoError> {
             2 => graph.name = String::from(decoder.read_string()?),
             5 => {
                 let sub_data = decoder.read_length_delimited()?;
-                graph.input.push(decode_value_info(sub_data)?);
-            }
-            6 => {
-                let sub_data = decoder.read_length_delimited()?;
-                graph.output.push(decode_value_info(sub_data)?);
+                graph.initializer.push(decode_tensor(sub_data)?);
             }
             10 => {
+                // doc_string — skip
+                decoder.skip_field(header.wire_type)?;
+            }
+            11 => {
                 let sub_data = decoder.read_length_delimited()?;
-                graph.initializer.push(decode_tensor(sub_data)?);
+                graph.input.push(decode_value_info(sub_data)?);
+            }
+            12 => {
+                let sub_data = decoder.read_length_delimited()?;
+                graph.output.push(decode_value_info(sub_data)?);
             }
             _ => decoder.skip_field(header.wire_type)?,
         }
@@ -627,6 +668,10 @@ pub fn decode_model(data: &[u8]) -> Result<ModelProto, ProtoError> {
         let header = decoder.read_tag()?;
         match header.field_number {
             1 => model.ir_version = decoder.read_varint()? as i64,
+            2 => {
+                let sub_data = decoder.read_length_delimited()?;
+                model.opset_import.push(decode_opset_import(sub_data)?);
+            }
             3 => model.producer_name = String::from(decoder.read_string()?),
             4 => model.producer_version = String::from(decoder.read_string()?),
             5 => model.domain = String::from(decoder.read_string()?),
@@ -635,10 +680,6 @@ pub fn decode_model(data: &[u8]) -> Result<ModelProto, ProtoError> {
             8 => {
                 let sub_data = decoder.read_length_delimited()?;
                 model.graph = Some(decode_graph(sub_data)?);
-            }
-            14 => {
-                let sub_data = decoder.read_length_delimited()?;
-                model.opset_import.push(decode_opset_import(sub_data)?);
             }
             _ => decoder.skip_field(header.wire_type)?,
         }
@@ -1372,11 +1413,11 @@ mod tests {
     fn decode_attribute_packed_floats() {
         let mut data = Vec::new();
         data.extend(encode_length_delimited(1, b"scales"));
-        // field 6: packed f32 values
+        // field 7: packed f32 values
         let mut float_bytes = Vec::new();
         float_bytes.extend(1.0f32.to_le_bytes());
         float_bytes.extend(2.0f32.to_le_bytes());
-        data.extend(encode_length_delimited(6, &float_bytes));
+        data.extend(encode_length_delimited(7, &float_bytes));
         data.extend(encode_varint_field(20, 6)); // type = Floats
         let attr = decode_attribute(&data).unwrap();
         assert_eq!(attr.floats.len(), 2);
@@ -1388,11 +1429,11 @@ mod tests {
     fn decode_attribute_packed_ints() {
         let mut data = Vec::new();
         data.extend(encode_length_delimited(1, b"kernel_shape"));
-        // field 7: packed varint ints
+        // field 8: packed varint ints
         let mut int_bytes = Vec::new();
         int_bytes.extend(encode_varint(3));
         int_bytes.extend(encode_varint(3));
-        data.extend(encode_length_delimited(7, &int_bytes));
+        data.extend(encode_length_delimited(8, &int_bytes));
         data.extend(encode_varint_field(20, 7)); // type = Ints
         let attr = decode_attribute(&data).unwrap();
         assert_eq!(attr.ints, alloc::vec![3i64, 3]);
@@ -1410,7 +1451,7 @@ mod tests {
         // data_type = 1 (FLOAT)
         data.extend(encode_varint_field(2, 1));
         // name
-        data.extend(encode_length_delimited(3, b"weight"));
+        data.extend(encode_length_delimited(8, b"weight"));
         // float_data: packed f32
         let mut float_bytes = Vec::new();
         for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
@@ -1432,7 +1473,7 @@ mod tests {
         dims_bytes.extend(encode_varint(4));
         data.extend(encode_length_delimited(1, &dims_bytes));
         data.extend(encode_varint_field(2, 2)); // UINT8
-        data.extend(encode_length_delimited(8, &[10, 20, 30, 40]));
+        data.extend(encode_length_delimited(9, &[10, 20, 30, 40]));
         let tensor = decode_tensor(&data).unwrap();
         assert_eq!(tensor.dims, alloc::vec![4i64]);
         assert_eq!(tensor.raw_data, alloc::vec![10u8, 20, 30, 40]);
@@ -1563,8 +1604,8 @@ mod tests {
         let mut graph_data = Vec::new();
         graph_data.extend(encode_length_delimited(1, &node_data));
         graph_data.extend(encode_length_delimited(2, b"relu_graph"));
-        graph_data.extend(encode_length_delimited(5, &input_vi));
-        graph_data.extend(encode_length_delimited(6, &output_vi));
+        graph_data.extend(encode_length_delimited(11, &input_vi));
+        graph_data.extend(encode_length_delimited(12, &output_vi));
 
         // Opset import: default domain, version 17
         let mut opset_data = Vec::new();
@@ -1577,7 +1618,7 @@ mod tests {
         model_data.extend(encode_length_delimited(3, b"test-producer"));
         model_data.extend(encode_length_delimited(4, b"1.0"));
         model_data.extend(encode_length_delimited(8, &graph_data));
-        model_data.extend(encode_length_delimited(14, &opset_data));
+        model_data.extend(encode_length_delimited(2, &opset_data));
 
         model_data
     }
@@ -1614,7 +1655,7 @@ mod tests {
     }
 
     #[test]
-    fn decode_model_empty_fails() {
+    fn decode_model_empty_returns_default() {
         assert!(decode_model(&[]).is_ok()); // empty data = default model
     }
 
@@ -1669,7 +1710,7 @@ mod tests {
         data.extend(encode_length_delimited(1, b"x"));
         data.extend(encode_length_delimited(2, b"y"));
         data.extend(encode_length_delimited(4, b"CustomOp"));
-        data.extend(encode_length_delimited(6, b"ai.custom"));
+        data.extend(encode_length_delimited(7, b"ai.custom"));
         let node = decode_node(&data).unwrap();
         assert_eq!(node.domain, "ai.custom");
     }
@@ -1681,7 +1722,7 @@ mod tests {
         dims_bytes.extend(encode_varint(2));
         tensor_data.extend(encode_length_delimited(1, &dims_bytes));
         tensor_data.extend(encode_varint_field(2, 1)); // FLOAT
-        tensor_data.extend(encode_length_delimited(3, b"bias"));
+        tensor_data.extend(encode_length_delimited(8, b"bias"));
         let mut float_bytes = Vec::new();
         float_bytes.extend(0.1f32.to_le_bytes());
         float_bytes.extend(0.2f32.to_le_bytes());
@@ -1689,7 +1730,7 @@ mod tests {
 
         let mut data = Vec::new();
         data.extend(encode_length_delimited(2, b"g"));
-        data.extend(encode_length_delimited(10, &tensor_data));
+        data.extend(encode_length_delimited(5, &tensor_data));
 
         let graph = decode_graph(&data).unwrap();
         assert_eq!(graph.name, "g");
