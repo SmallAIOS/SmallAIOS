@@ -418,6 +418,141 @@ impl InferenceResponse {
     }
 }
 
+// ---------------------------------------------------------------------------
+// ONNX runtime wiring (feature = "onnx")
+// ---------------------------------------------------------------------------
+
+/// Convert an IPC tensor data type into the ONNX runtime `DataType`.
+#[cfg(feature = "onnx")]
+fn ipc_to_onnx_data_type(dt: TensorDataType) -> smallaios_onnx_rt::tensor::DataType {
+    use smallaios_onnx_rt::tensor::DataType as OnnxDt;
+    match dt {
+        TensorDataType::Float32 => OnnxDt::Float,
+        TensorDataType::Float16 => OnnxDt::Float16,
+        TensorDataType::Int8 => OnnxDt::Int8,
+        TensorDataType::Int32 => OnnxDt::Int32,
+        TensorDataType::Int64 => OnnxDt::Int64,
+        TensorDataType::Uint8 => OnnxDt::Uint8,
+    }
+}
+
+/// Convert an ONNX runtime `DataType` into the IPC wire-format tensor data type.
+#[cfg(feature = "onnx")]
+fn onnx_to_ipc_data_type(
+    dt: smallaios_onnx_rt::tensor::DataType,
+) -> Result<TensorDataType, IpcError> {
+    use smallaios_onnx_rt::tensor::DataType as OnnxDt;
+    match dt {
+        OnnxDt::Float => Ok(TensorDataType::Float32),
+        OnnxDt::Float16 => Ok(TensorDataType::Float16),
+        OnnxDt::Int8 => Ok(TensorDataType::Int8),
+        OnnxDt::Int32 => Ok(TensorDataType::Int32),
+        OnnxDt::Int64 => Ok(TensorDataType::Int64),
+        OnnxDt::Uint8 => Ok(TensorDataType::Uint8),
+        _ => Err(IpcError::InvalidProtocol),
+    }
+}
+
+/// Decode an IPC `TensorData` into an ONNX runtime `Tensor`.
+#[cfg(feature = "onnx")]
+pub fn ipc_tensor_to_onnx(td: &TensorData) -> smallaios_onnx_rt::tensor::Tensor {
+    use smallaios_onnx_rt::tensor::{Tensor, TensorShape};
+    let dims: Vec<i64> = td.shape.iter().map(|&d| d as i64).collect();
+    let mut tensor = Tensor::new(
+        ipc_to_onnx_data_type(td.data_type),
+        TensorShape::new(dims),
+        td.name.clone(),
+    );
+    tensor.raw_data = td.data.clone();
+    tensor
+}
+
+/// Encode an ONNX runtime `Tensor` (with a binding name) into an IPC `TensorData`.
+#[cfg(feature = "onnx")]
+pub fn onnx_tensor_to_ipc(
+    name: String,
+    tensor: &smallaios_onnx_rt::tensor::Tensor,
+) -> Result<TensorData, IpcError> {
+    let data_type = onnx_to_ipc_data_type(tensor.data_type)?;
+    let shape: Vec<u32> = tensor
+        .shape
+        .dims
+        .iter()
+        .map(|&d| if d < 0 { 0 } else { d as u32 })
+        .collect();
+    Ok(TensorData {
+        name,
+        data_type,
+        shape,
+        data: tensor.raw_data.clone(),
+    })
+}
+
+/// Run an inference request against a preloaded ONNX `Session` and build a response.
+///
+/// This is the "wiring" between the IPC inference binary protocol and the
+/// ONNX runtime. The caller owns session lifecycle — this function only
+/// performs the request/response translation.
+///
+/// # Errors
+///
+/// - [`IpcError::NotFound`] if the session cannot process the request because
+///   the referenced model/input names are unknown.
+/// - [`IpcError::InvalidProtocol`] if tensor shapes or data types are
+///   incompatible with the model.
+#[cfg(feature = "onnx")]
+pub fn handle_run_inference_with_session(
+    session: &smallaios_onnx_rt::session::Session,
+    request: &InferenceRequest,
+) -> Result<InferenceResponse, IpcError> {
+    use smallaios_onnx_rt::session::{InferenceInput, SessionError};
+
+    if request.request_type != InferenceRequestType::RunInference {
+        return Err(IpcError::InvalidProtocol);
+    }
+
+    // Build ONNX inputs from the IPC request
+    let inputs: Vec<InferenceInput> = request
+        .inputs
+        .iter()
+        .map(|td| InferenceInput {
+            name: td.name.clone(),
+            tensor: ipc_tensor_to_onnx(td),
+        })
+        .collect();
+
+    // Execute inference. Error mapping:
+    // - Invalid tensor name/shape → `IpcError::InvalidProtocol` (wire contract violated)
+    // - Session not yet initialized or missing graph → `IpcError::NotFound`
+    //   (the referenced model is not loaded/available in this session)
+    // - Everything else (execution failure, unsupported model, internal errors)
+    //   is reported as `IpcError::InvalidProtocol` so callers don't confuse it
+    //   with a transport-level not-found.
+    let outputs = session.run(&inputs).map_err(|e| match e {
+        SessionError::InvalidInput(_) | SessionError::InvalidOutput(_) => IpcError::InvalidProtocol,
+        SessionError::ExecutionFailed(_) => IpcError::NotFound,
+        SessionError::ModelLoadFailed(_)
+        | SessionError::InvalidModel(_)
+        | SessionError::UnsupportedOpset(_)
+        | SessionError::NotImplemented => IpcError::InvalidProtocol,
+        #[cfg(feature = "formal-gate")]
+        SessionError::PolicyViolation(_) => IpcError::InvalidProtocol,
+    })?;
+
+    // Encode outputs into the IPC wire format
+    let mut ipc_outputs = Vec::with_capacity(outputs.len());
+    for out in &outputs {
+        ipc_outputs.push(onnx_tensor_to_ipc(out.name.clone(), &out.tensor)?);
+    }
+
+    Ok(InferenceResponse {
+        request_id: request.request_id,
+        status: ResponseStatus::Ok,
+        outputs: ipc_outputs,
+        elapsed_us: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -731,5 +866,193 @@ mod tests {
             InferenceRequest::decode(truncated),
             Err(IpcError::PacketTooShort)
         );
+    }
+}
+
+#[cfg(all(test, feature = "onnx"))]
+mod onnx_wiring_tests {
+    use super::*;
+    use alloc::string::String;
+    use alloc::vec;
+
+    use smallaios_onnx_rt::onnx_types::{
+        GraphProto, ModelProto, NodeProto, OperatorSetIdProto, ValueInfoProto, CURRENT_IR_VERSION,
+    };
+    use smallaios_onnx_rt::session::{Session, SessionConfig};
+
+    /// Build a one-node Relu model with input `x` and output `y`, shape `[1, 3]`.
+    fn relu_model() -> ModelProto {
+        ModelProto {
+            ir_version: CURRENT_IR_VERSION,
+            opset_import: vec![OperatorSetIdProto {
+                domain: String::new(),
+                version: 17,
+            }],
+            producer_name: String::from("ipc-test"),
+            producer_version: String::from("1.0"),
+            domain: String::new(),
+            model_version: 1,
+            doc_string: String::new(),
+            graph: Some(GraphProto {
+                name: String::from("relu-model"),
+                node: vec![NodeProto {
+                    op_type: String::from("Relu"),
+                    name: String::from("relu0"),
+                    input: vec![String::from("x")],
+                    output: vec![String::from("y")],
+                    ..NodeProto::default()
+                }],
+                input: vec![ValueInfoProto {
+                    name: String::from("x"),
+                    elem_type: 1,
+                    shape: vec![1, 3],
+                }],
+                output: vec![ValueInfoProto {
+                    name: String::from("y"),
+                    elem_type: 1,
+                    shape: vec![1, 3],
+                }],
+                initializer: Vec::new(),
+            }),
+        }
+    }
+
+    fn f32_bytes(vals: &[f32]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(vals.len() * 4);
+        for v in vals {
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
+        bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
+    fn ready_session() -> Session {
+        let mut session = Session::new(SessionConfig::default());
+        session.initialize(&relu_model()).unwrap();
+        session
+    }
+
+    #[test]
+    fn data_type_roundtrip() {
+        let cases = [
+            TensorDataType::Float32,
+            TensorDataType::Float16,
+            TensorDataType::Int8,
+            TensorDataType::Int32,
+            TensorDataType::Int64,
+            TensorDataType::Uint8,
+        ];
+        for dt in &cases {
+            let onnx_dt = ipc_to_onnx_data_type(*dt);
+            let back = onnx_to_ipc_data_type(onnx_dt).unwrap();
+            assert_eq!(back, *dt);
+        }
+    }
+
+    #[test]
+    fn tensor_encode_decode_roundtrip() {
+        let td = TensorData {
+            name: String::from("x"),
+            data_type: TensorDataType::Float32,
+            shape: vec![1, 3],
+            data: f32_bytes(&[1.0, 2.0, 3.0]),
+        };
+        let onnx = ipc_tensor_to_onnx(&td);
+        assert_eq!(onnx.name, "x");
+        assert_eq!(onnx.shape.dims, vec![1, 3]);
+        let back = onnx_tensor_to_ipc(String::from("x"), &onnx).unwrap();
+        assert_eq!(back, td);
+    }
+
+    #[test]
+    fn handle_run_inference_relu_roundtrip() {
+        let session = ready_session();
+        let request = InferenceRequest {
+            request_type: InferenceRequestType::RunInference,
+            request_id: 0x1234,
+            model_id: 1,
+            inputs: vec![TensorData {
+                name: String::from("x"),
+                data_type: TensorDataType::Float32,
+                shape: vec![1, 3],
+                data: f32_bytes(&[-1.0, 0.0, 2.0]),
+            }],
+            timeout_ms: 1_000,
+        };
+
+        // Encode → decode → handle → encode → decode: full round trip
+        let wire = request.encode();
+        let decoded_req = InferenceRequest::decode(&wire).unwrap();
+        let response = handle_run_inference_with_session(&session, &decoded_req).unwrap();
+
+        assert_eq!(response.request_id, 0x1234);
+        assert_eq!(response.status, ResponseStatus::Ok);
+        assert_eq!(response.outputs.len(), 1);
+        assert_eq!(response.outputs[0].name, "y");
+
+        let wire_resp = response.encode();
+        let decoded_resp = InferenceResponse::decode(&wire_resp).unwrap();
+        assert_eq!(decoded_resp, response);
+
+        let out_vals = bytes_to_f32(&decoded_resp.outputs[0].data);
+        assert_eq!(out_vals, vec![0.0, 0.0, 2.0]);
+    }
+
+    #[test]
+    fn handle_run_inference_wrong_request_type_rejected() {
+        let session = ready_session();
+        let request = InferenceRequest {
+            request_type: InferenceRequestType::LoadModel,
+            request_id: 1,
+            model_id: 1,
+            inputs: Vec::new(),
+            timeout_ms: 100,
+        };
+        let err = handle_run_inference_with_session(&session, &request).unwrap_err();
+        assert_eq!(err, IpcError::InvalidProtocol);
+    }
+
+    #[test]
+    fn handle_run_inference_unknown_input_name_maps_to_invalid_protocol() {
+        let session = ready_session();
+        let request = InferenceRequest {
+            request_type: InferenceRequestType::RunInference,
+            request_id: 1,
+            model_id: 1,
+            inputs: vec![TensorData {
+                name: String::from("not_a_real_input"),
+                data_type: TensorDataType::Float32,
+                shape: vec![1, 3],
+                data: f32_bytes(&[0.0, 0.0, 0.0]),
+            }],
+            timeout_ms: 100,
+        };
+        let err = handle_run_inference_with_session(&session, &request).unwrap_err();
+        assert_eq!(err, IpcError::InvalidProtocol);
+    }
+
+    #[test]
+    fn handle_run_inference_uninitialized_session_maps_to_not_found() {
+        let session = Session::new(SessionConfig::default());
+        let request = InferenceRequest {
+            request_type: InferenceRequestType::RunInference,
+            request_id: 1,
+            model_id: 1,
+            inputs: vec![TensorData {
+                name: String::from("x"),
+                data_type: TensorDataType::Float32,
+                shape: vec![1, 3],
+                data: f32_bytes(&[1.0, 2.0, 3.0]),
+            }],
+            timeout_ms: 100,
+        };
+        let err = handle_run_inference_with_session(&session, &request).unwrap_err();
+        assert_eq!(err, IpcError::NotFound);
     }
 }

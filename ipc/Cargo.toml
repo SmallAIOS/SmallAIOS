@@ -10,7 +10,9 @@ publish = false
 [features]
 default = []
 formal-gate = ["smallaios-security/formal-gate"]
+onnx = ["dep:smallaios-onnx-rt"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }
 smallaios-security = { path = "../security" }
+smallaios-onnx-rt = { path = "../onnx-rt", optional = true }

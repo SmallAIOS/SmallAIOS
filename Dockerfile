@@ -36,6 +36,9 @@ COPY --from=builder /app/smallaios /smallaios
 # Default environment configuration
 ENV SMALLAIOS_MODEL_DIR=/models
 ENV SMALLAIOS_PORT=8080
+# Pub/sub dataflow runner: "none" (HTTP only, default), "zenoh", or "dds".
+# See docs/inference-bus.md for topic conventions and client wire format.
+ENV SMALLAIOS_BUS_BACKEND=none
 
 # Expose the inference API port
 EXPOSE 8080
