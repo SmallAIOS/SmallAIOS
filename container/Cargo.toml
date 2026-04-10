@@ -20,3 +20,7 @@ smallaios-posix = { path = "../posix" }
 smallaios-security = { path = "../security" }
 smallaios-net = { path = "../net" }
 smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

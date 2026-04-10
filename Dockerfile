@@ -30,5 +30,17 @@ RUN RUST_TARGET=$(cat /rust_target) && \
     cp "/app/target/${RUST_TARGET}/release/smallaios-container" /app/smallaios
 
 FROM scratch
+
 COPY --from=builder /app/smallaios /smallaios
+
+# Default environment configuration
+ENV SMALLAIOS_MODEL_DIR=/models
+ENV SMALLAIOS_PORT=8080
+
+# Expose the inference API port
+EXPOSE 8080
+
+# Persistent model storage
+VOLUME /models
+
 ENTRYPOINT ["/smallaios"]
