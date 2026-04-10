@@ -103,6 +103,28 @@ pub struct CanStats {
     pub rec: u8,
 }
 
+/// Sink that receives CAN frames asynchronously from a controller.
+///
+/// Implementors process incoming frames (e.g., the inference adapter
+/// batches them into tensors). Multiple sinks can be attached to a
+/// single controller and will receive frames in registration order.
+///
+/// # Integration pattern
+///
+/// The existing [`CanController`] trait is intentionally not extended
+/// to register sinks directly — doing so would require changes to the
+/// MCP2515 and AXI CAN drivers. Instead, whoever owns the controller
+/// (for example, a dataflow runner) is responsible for calling
+/// [`CanController::receive`] in a loop and forwarding each received
+/// frame to all attached sinks via [`CanFrameSink::on_frame`]. This
+/// "caller pattern" keeps driver implementations unchanged while still
+/// allowing higher-level components (e.g., the inference adapter) to
+/// observe CAN traffic.
+pub trait CanFrameSink: Send {
+    /// Called by the caller for each received frame.
+    fn on_frame(&mut self, frame: &CanFrame);
+}
+
 /// Hardware-independent CAN controller driver trait.
 ///
 /// Implementations provide access to a specific CAN controller (SPI,
@@ -424,6 +446,61 @@ mod tests {
         let t1m = CanBitTiming::standard_1mbps();
         assert_eq!(t1m.prescaler, 1);
         assert!(t1m.tseg1 < t500.tseg1); // Faster = shorter segments
+    }
+
+    /// Test sink that counts how many frames it has observed.
+    struct CountingSink {
+        count: usize,
+        last_id: u32,
+    }
+
+    impl CanFrameSink for CountingSink {
+        fn on_frame(&mut self, frame: &CanFrame) {
+            self.count += 1;
+            self.last_id = frame.id;
+        }
+    }
+
+    #[test]
+    fn test_can_frame_sink_counts_frames() {
+        let mut sink = CountingSink {
+            count: 0,
+            last_id: 0,
+        };
+        let f1 = CanFrame::new_standard(0x100, &[0x01]).unwrap();
+        let f2 = CanFrame::new_standard(0x200, &[0x02]).unwrap();
+        let f3 = CanFrame::new_extended(0x1ABCD, &[0x03]).unwrap();
+
+        sink.on_frame(&f1);
+        sink.on_frame(&f2);
+        sink.on_frame(&f3);
+
+        assert_eq!(sink.count, 3);
+        assert_eq!(sink.last_id, 0x1ABCD);
+    }
+
+    #[test]
+    fn test_can_frame_sink_caller_pattern() {
+        // Exercise the "caller drains controller, forwards to sink" pattern
+        // described in the CanFrameSink trait docs.
+        let mut ctrl = MockCanController::new();
+        ctrl.init().unwrap();
+        ctrl.set_mode(CanMode::Normal).unwrap();
+
+        ctrl.inject_rx(CanFrame::new_standard(0x111, &[0xAA]).unwrap());
+        ctrl.inject_rx(CanFrame::new_standard(0x222, &[0xBB]).unwrap());
+
+        let mut sink = CountingSink {
+            count: 0,
+            last_id: 0,
+        };
+
+        while let Some(frame) = ctrl.receive().unwrap() {
+            sink.on_frame(&frame);
+        }
+
+        assert_eq!(sink.count, 2);
+        assert_eq!(sink.last_id, 0x222);
     }
 
     #[test]

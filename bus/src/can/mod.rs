@@ -22,15 +22,21 @@ pub mod crc;
 pub mod fd;
 pub mod filter;
 pub mod frame;
+pub mod inference_adapter;
 pub mod loopback;
 pub mod mcp2515;
 pub mod state;
 
 pub use adapter::CanZenohAdapter;
 pub use canaerospace::{CanaMessage, DataType, MessageType, ServiceCode};
-pub use controller::{CanBitTiming, CanController, CanMode, CanStats, MockCanController};
+pub use controller::{
+    CanBitTiming, CanController, CanFrameSink, CanMode, CanStats, MockCanController,
+};
 pub use crc::{crc15, crc17, crc21};
 pub use fd::{CanFdFrame, FdDlc};
 pub use filter::{AcceptanceFilter, HwFilter, SwFilter};
 pub use frame::{CanFrame, FrameType};
+pub use inference_adapter::{
+    AdapterConfig, BatchTrigger, CanInferenceAdapter, FrameDecoder, OutputRouteSpec, RouteSpec,
+};
 pub use state::{BusEvent, BusState, BusStateMachine, StateChange};
