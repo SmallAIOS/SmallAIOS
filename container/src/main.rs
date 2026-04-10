@@ -33,10 +33,11 @@ fn main() {
     let model_dir = std::env::var("SMALLAIOS_MODEL_DIR").unwrap_or_else(|_| "/models".to_string());
     let port = std::env::var("SMALLAIOS_PORT").unwrap_or_else(|_| "8080".to_string());
     let gpu_backend = std::env::var("SMALLAIOS_GPU_BACKEND").unwrap_or_else(|_| "cpu".to_string());
+    let bus_backend = std::env::var("SMALLAIOS_BUS_BACKEND").unwrap_or_else(|_| "none".to_string());
 
     println!(
-        "Config: model_dir={}, port={}, gpu={}",
-        model_dir, port, gpu_backend
+        "Config: model_dir={}, port={}, gpu={}, bus_backend={}",
+        model_dir, port, gpu_backend, bus_backend
     );
 
     // Boot phase: discover and validate models.
@@ -51,6 +52,10 @@ fn main() {
 
     // Wrap manager in Arc for sharing with route closures.
     let manager = Arc::new(manager);
+
+    // Bus/dataflow runner startup (placeholder until the IPC crate's
+    // `onnx` feature + DataflowRunner land in a follow-up commit).
+    enable_dataflow_runner(&bus_backend, Arc::clone(&manager));
 
     // Build HTTP server and register routes.
     let addr = format!("0.0.0.0:{}", port);
@@ -88,6 +93,49 @@ fn main() {
     println!("Ready. Listening on {}", addr);
     http.run();
     println!("Shutting down...");
+}
+
+/// Start the pub/sub dataflow runner for the configured bus backend.
+///
+/// Recognized values for `SMALLAIOS_BUS_BACKEND`:
+/// - `none`  — HTTP only (default)
+/// - `zenoh` — start a Zenoh-style pub/sub runner (topic
+///   `smallaios/inference/<model>/{input,output,error}`)
+/// - `dds`   — start a DDS runner via the bus::dds Zenoh adapter
+///
+/// This is currently a placeholder: the real runner lives behind the
+/// `onnx` feature in the `ipc` crate (`dataflow_runner` module), which
+/// is still being wired in a parallel change. Once that lands this
+/// function will start the runner in a background thread sharing the
+/// `ModelManager` Arc and hook its shutdown into the signal handler.
+fn enable_dataflow_runner(bus_backend: &str, _manager: Arc<model_manager::ModelManager>) {
+    match bus_backend {
+        "none" => {}
+        "zenoh" => {
+            println!(
+                "Bus: Zenoh dataflow runner requested \
+                 (placeholder — enable once `smallaios-ipc` ships the `onnx` feature)"
+            );
+            println!("  Topics: smallaios/inference/<model>/{{input,output,error}}");
+            // TODO(dataflow-inference-v1 §5.2): start_zenoh_dataflow_runner(_manager);
+        }
+        "dds" => {
+            println!(
+                "Bus: DDS dataflow runner requested \
+                 (placeholder — enable once `smallaios-ipc` ships the `onnx` feature)"
+            );
+            println!(
+                "  Topics: bridged via bus::dds::DdsZenohAdapter → smallaios/inference/<model>/..."
+            );
+            // TODO(dataflow-inference-v1 §5.2): start_dds_dataflow_runner(_manager);
+        }
+        other => {
+            eprintln!(
+                "WARNING: unknown SMALLAIOS_BUS_BACKEND='{}', falling back to HTTP-only",
+                other
+            );
+        }
+    }
 }
 
 /// Register a signal handler that sets the shutdown flag on SIGTERM / SIGINT.

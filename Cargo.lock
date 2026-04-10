@@ -776,6 +776,7 @@ name = "smallaios-ipc"
 version = "0.1.0"
 dependencies = [
  "smallaios-kernel",
+ "smallaios-onnx-rt",
  "smallaios-security",
 ]
 

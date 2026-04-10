@@ -11,6 +11,11 @@ publish = false
 default = []
 nvidia_gpu = ["smallaios-arch-nvidia"]
 formal-gate = ["smallaios-security/formal-gate"]
+# Bus/dataflow runner feature flags. Placeholders until `smallaios-ipc`
+# ships the `onnx` feature and the `DataflowRunner` module — see
+# openspec/changes/dataflow-inference-v1 task groups 1-4.
+bus-zenoh = []
+bus-dds = []
 
 [dependencies]
 smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
