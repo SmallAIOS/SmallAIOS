@@ -165,20 +165,30 @@ just release minor               # execute: 0.1.0 → 0.2.0
 
 - `main` — stable, release-ready code
 - `develop` — integration branch for ongoing work
-- Feature branches merge into `develop` via PR
+- Feature/fix branches merge into `develop` via PR
 - `develop` merges into `main` for releases
 
-### Worktrees + OpenSpec
+### Branch Naming Convention
 
-Each OpenSpec change gets its own branch. Worktrees can be created as needed in `../SmallAIOS-Design-worktrees/`.
+| Branch Type | Pattern | Example |
+|-------------|---------|---------|
+| Feature | `feature/<name>` | `feature/onnx-protobuf-parser` |
+| Bug fix | `fix/<name>` | `fix/gemm-overflow` |
+| OpenSpec change | `change/<openspec-change-name>` | `change/compute-abstraction-v1` |
+| Release | `release/<version>` | `release/0.2.0` |
+| Hotfix | `hotfix/<name>` | `hotfix/critical-boot-fix` |
 
-**Branch naming:** `change/<openspec-change-name>`
+Use `change/` for OpenSpec-tracked work. Use `feature/` or `fix/` for ad-hoc work not tracked by OpenSpec. All branches target `develop` except hotfixes (which target `main`).
+
+### Worktrees
+
+Each active branch gets its own worktree for parallel development. Worktrees live in `../SmallAIOS-Design-worktrees/`.
 
 **Workflow:**
 1. Create branch from `develop`: `git checkout -b change/<name> develop`
-2. Optionally create worktree: `git worktree add ../SmallAIOS-Design-worktrees/<name> change/<name>`
-3. Implement tasks, commit, push, create PR against `develop`
-4. After merge, clean up: `git worktree remove` / `git branch -d`
+2. Create worktree: `git worktree add ../SmallAIOS-Design-worktrees/<name> change/<name>`
+3. Work in the worktree, commit, push, create PR against `develop`
+4. After merge, clean up: `git worktree remove ../SmallAIOS-Design-worktrees/<name> --force && git branch -D change/<name>`
 
 ## OpenSpec Changes
 
