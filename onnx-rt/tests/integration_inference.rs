@@ -263,7 +263,7 @@ fn load_model_valid_header_decodes_model() {
     // Construct a minimal valid model: ir_version=7, opset version 17.
     let data = [
         0x08, 0x07, // field 1, varint 7 = ir_version
-        0x12, 0x04, // field 2, length 4 (opset_import)
+        0x42, 0x04, // field 8, length 4 (opset_import)
         0x0A, 0x00, // field 1 (domain), length 0
         0x10, 0x11, // field 2 (version), varint 17
     ];

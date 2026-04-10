@@ -573,7 +573,7 @@ mod tests {
         // Just use raw bytes for a minimal model.
         let data = [
             0x08, 0x07, // ir_version = 7
-            0x12, 0x04, // field 2, length 4 (opset_import)
+            0x42, 0x04, // field 8, length 4 (opset_import)
             0x0A, 0x00, // field 1 (domain), length 0
             0x10, 0x11, // field 2 (version), varint 17
         ];
