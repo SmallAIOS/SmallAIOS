@@ -668,18 +668,18 @@ pub fn decode_model(data: &[u8]) -> Result<ModelProto, ProtoError> {
         let header = decoder.read_tag()?;
         match header.field_number {
             1 => model.ir_version = decoder.read_varint()? as i64,
-            2 => {
-                let sub_data = decoder.read_length_delimited()?;
-                model.opset_import.push(decode_opset_import(sub_data)?);
-            }
-            3 => model.producer_name = String::from(decoder.read_string()?),
-            4 => model.producer_version = String::from(decoder.read_string()?),
-            5 => model.domain = String::from(decoder.read_string()?),
-            6 => model.model_version = decoder.read_varint()? as i64,
-            7 => model.doc_string = String::from(decoder.read_string()?),
-            8 => {
+            2 => model.producer_name = String::from(decoder.read_string()?),
+            3 => model.producer_version = String::from(decoder.read_string()?),
+            4 => model.domain = String::from(decoder.read_string()?),
+            5 => model.model_version = decoder.read_varint()? as i64,
+            6 => model.doc_string = String::from(decoder.read_string()?),
+            7 => {
                 let sub_data = decoder.read_length_delimited()?;
                 model.graph = Some(decode_graph(sub_data)?);
+            }
+            8 => {
+                let sub_data = decoder.read_length_delimited()?;
+                model.opset_import.push(decode_opset_import(sub_data)?);
             }
             _ => decoder.skip_field(header.wire_type)?,
         }
@@ -1612,13 +1612,14 @@ mod tests {
         opset_data.extend(encode_length_delimited(1, b""));
         opset_data.extend(encode_varint_field(2, 17));
 
-        // Model
+        // Model (field numbers per ONNX spec: 1=ir_version, 2=producer_name,
+        // 3=producer_version, 7=graph, 8=opset_import)
         let mut model_data = Vec::new();
         model_data.extend(encode_varint_field(1, 9)); // ir_version
-        model_data.extend(encode_length_delimited(3, b"test-producer"));
-        model_data.extend(encode_length_delimited(4, b"1.0"));
-        model_data.extend(encode_length_delimited(8, &graph_data));
-        model_data.extend(encode_length_delimited(2, &opset_data));
+        model_data.extend(encode_length_delimited(2, b"test-producer"));
+        model_data.extend(encode_length_delimited(3, b"1.0"));
+        model_data.extend(encode_length_delimited(7, &graph_data));
+        model_data.extend(encode_length_delimited(8, &opset_data));
 
         model_data
     }
