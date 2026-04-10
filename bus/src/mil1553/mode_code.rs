@@ -446,7 +446,7 @@ mod tests {
         match result {
             ModeCodeResult::StatusWithData(_, data) => {
                 // The last command is the TransmitLastCommand itself
-                let expected: u16 = (5 << 11) | (1 << 10) | (0 << 5) | 0b10010;
+                let expected: u16 = (5 << 11) | (1 << 10) | 0b10010;
                 assert_eq!(data, expected);
             }
             _ => panic!("expected StatusWithData"),

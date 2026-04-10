@@ -3212,7 +3212,7 @@ mod tests {
         let sum: f32 = prob_vals.iter().sum();
         assert!((sum - 1.0).abs() < 1e-4, "sum = {}, expected ~1.0", sum);
         for &p in &prob_vals {
-            assert!(p >= 0.0 && p <= 1.0 + 1e-6);
+            assert!((0.0..=1.0 + 1e-6).contains(&p));
         }
     }
 
@@ -3986,10 +3986,8 @@ mod tests {
             let mut d = alloc::vec![0u8; 2 * 8];
             let b1 = 1i64.to_le_bytes();
             let b3 = 3i64.to_le_bytes();
-            for j in 0..8 {
-                d[j] = b1[j];
-                d[8 + j] = b3[j];
-            }
+            d[..8].copy_from_slice(&b1);
+            d[8..16].copy_from_slice(&b3);
             d
         };
         let indices = Tensor {

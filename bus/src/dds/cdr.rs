@@ -477,12 +477,12 @@ mod tests {
     fn test_f32_roundtrip() {
         let mut ser = CdrSerializer::new(Endianness::LittleEndian);
         ser.serialize_f32(0.0);
-        ser.serialize_f32(3.14);
+        ser.serialize_f32(2.5);
         ser.serialize_f32(-1.0e10);
         let data = ser.into_bytes();
         let mut de = CdrDeserializer::new(&data, Endianness::LittleEndian);
         assert_eq!(de.deserialize_f32().unwrap(), 0.0);
-        assert!((de.deserialize_f32().unwrap() - 3.14).abs() < 1e-6);
+        assert!((de.deserialize_f32().unwrap() - 2.5).abs() < 1e-6);
         assert_eq!(de.deserialize_f32().unwrap(), -1.0e10);
     }
 

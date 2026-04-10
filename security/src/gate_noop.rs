@@ -100,7 +100,7 @@ mod tests {
 
     #[test]
     fn noop_default() {
-        let gate = SecurityGate::default();
+        let gate = SecurityGate;
         assert_eq!(gate.check_noop(), GateVerdict::Allowed);
     }
 }

@@ -361,8 +361,10 @@ mod tests {
 
     #[test]
     fn test_validate_zero_workers() {
-        let mut cfg = ContainerConfig::default();
-        cfg.num_workers = 0;
+        let cfg = ContainerConfig {
+            num_workers: 0,
+            ..ContainerConfig::default()
+        };
         assert_eq!(
             cfg.validate(),
             Err(ContainerError::InvalidConfig(String::from(
@@ -385,8 +387,10 @@ mod tests {
 
     #[test]
     fn test_validate_zero_max_memory() {
-        let mut cfg = ContainerConfig::default();
-        cfg.max_memory_mb = 0;
+        let cfg = ContainerConfig {
+            max_memory_mb: 0,
+            ..ContainerConfig::default()
+        };
         assert_eq!(
             cfg.validate(),
             Err(ContainerError::InvalidConfig(String::from(

@@ -303,6 +303,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::clone_on_copy)]
     fn test_backend_type_clone_copy() {
         let a = BackendType::Metal;
         let b = a;
@@ -513,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_cpu_fallback_default() {
-        let fb = CpuFallback::default();
+        let fb = CpuFallback;
         let info = fb.device_info();
         assert_eq!(info.backend_type, BackendType::Cpu);
     }
