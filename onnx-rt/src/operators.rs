@@ -2037,6 +2037,442 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
 }
 
 // ---------------------------------------------------------------------------
+// Parallel operator variants (container mode)
+// ---------------------------------------------------------------------------
+
+use crate::parallel::CorePool;
+
+/// Parallel element-wise unary operation on Float tensors.
+///
+/// Splits the flat element array across threads, applies `f` to each
+/// element. Falls back to sequential if below threshold or pool has 1 thread.
+pub fn parallel_elementwise_unary(
+    pool: &CorePool,
+    input: &Tensor,
+    threshold: usize,
+    f: impl Fn(f32) -> f32 + Send + Sync,
+) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "only supports float32",
+        )));
+    }
+    let total = input.shape.total_elements();
+    if pool.num_threads() <= 1 || total <= threshold {
+        // Sequential: apply f to each element
+        let mut raw_data = alloc::vec![0u8; total * 4];
+        for i in 0..total {
+            let val = read_f32(&input.raw_data, i);
+            write_f32(&mut raw_data, i, f(val));
+        }
+        return Ok(Tensor {
+            data_type: DataType::Float,
+            shape: input.shape.clone(),
+            name: String::new(),
+            raw_data,
+        });
+    }
+
+    // Parallel: each thread computes its chunk and returns (start_idx, bytes)
+    let input_data = &input.raw_data;
+    let results = pool.parallel_for(0..total, |range| {
+        let mut chunk_data = alloc::vec![0u8; range.len() * 4];
+        for (local_i, global_i) in range.clone().enumerate() {
+            let val = read_f32(input_data, global_i);
+            write_f32(&mut chunk_data, local_i, f(val));
+        }
+        (range.start, chunk_data)
+    });
+
+    let mut raw_data = alloc::vec![0u8; total * 4];
+    for (start, chunk) in results {
+        raw_data[start * 4..start * 4 + chunk.len()].copy_from_slice(&chunk);
+    }
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Parallel Relu: `max(0, x)`.
+pub fn op_relu_parallel(
+    pool: &CorePool,
+    input: &Tensor,
+    threshold: usize,
+) -> Result<Tensor, OpError> {
+    parallel_elementwise_unary(pool, input, threshold, |x| if x > 0.0 { x } else { 0.0 })
+}
+
+/// Parallel Sigmoid: `1 / (1 + exp(-x))`.
+pub fn op_sigmoid_parallel(
+    pool: &CorePool,
+    input: &Tensor,
+    threshold: usize,
+) -> Result<Tensor, OpError> {
+    parallel_elementwise_unary(pool, input, threshold, |x| 1.0 / (1.0 + expf_approx(-x)))
+}
+
+/// Parallel Tanh: `(exp(x) - exp(-x)) / (exp(x) + exp(-x))`.
+pub fn op_tanh_parallel(
+    pool: &CorePool,
+    input: &Tensor,
+    threshold: usize,
+) -> Result<Tensor, OpError> {
+    parallel_elementwise_unary(pool, input, threshold, |x| {
+        let ep = expf_approx(x);
+        let en = expf_approx(-x);
+        if ep + en == 0.0 {
+            0.0
+        } else {
+            (ep - en) / (ep + en)
+        }
+    })
+}
+
+/// Parallel Clip: clamp values to [min, max].
+pub fn op_clip_parallel(
+    pool: &CorePool,
+    input: &Tensor,
+    min_val: Option<f32>,
+    max_val: Option<f32>,
+    threshold: usize,
+) -> Result<Tensor, OpError> {
+    parallel_elementwise_unary(pool, input, threshold, move |mut v| {
+        if let Some(lo) = min_val {
+            if v < lo {
+                v = lo;
+            }
+        }
+        if let Some(hi) = max_val {
+            if v > hi {
+                v = hi;
+            }
+        }
+        v
+    })
+}
+
+/// Parallel convolution with output channel decomposition.
+///
+/// Splits output channels across threads. Each thread computes its
+/// assigned output channels independently. Falls back to sequential
+/// [`op_conv`] if below threshold.
+pub fn op_conv_parallel(
+    pool: &CorePool,
+    input: &Tensor,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+    threshold: usize,
+) -> Result<Tensor, OpError> {
+    validate_conv_inputs(input, weight)?;
+
+    let n = input.shape.dims[0] as usize;
+    let c_in = input.shape.dims[1] as usize;
+    let h = input.shape.dims[2] as usize;
+    let w = input.shape.dims[3] as usize;
+
+    let c_out = weight.shape.dims[0] as usize;
+    let kh = weight.shape.dims[2] as usize;
+    let kw = weight.shape.dims[3] as usize;
+
+    let oh = h - kh + 1;
+    let ow = w - kw + 1;
+
+    // Check threshold
+    if pool.num_threads() <= 1 || c_out * oh * ow <= threshold {
+        return op_conv(input, weight, bias);
+    }
+
+    let out_total = n * c_out * oh * ow;
+    let dims = ConvDims { c_in, h, w, kh, kw };
+    let input_data = &input.raw_data;
+    let weight_data = &weight.raw_data;
+
+    // Split output channels across threads
+    let results = pool.parallel_for(0..c_out, |ch_range| {
+        let ch_count = ch_range.end - ch_range.start;
+        let chunk_size = n * ch_count * oh * ow;
+        let mut chunk_data = alloc::vec![0u8; chunk_size * 4];
+
+        for batch in 0..n {
+            for (local_co, global_co) in ch_range.clone().enumerate() {
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let mut sum =
+                            convolve_at(input_data, weight_data, batch, global_co, oy, ox, &dims);
+                        if let Some(b) = bias {
+                            sum += read_f32(&b.raw_data, global_co);
+                        }
+                        let local_idx =
+                            batch * ch_count * oh * ow + local_co * oh * ow + oy * ow + ox;
+                        write_f32(&mut chunk_data, local_idx, sum);
+                    }
+                }
+            }
+        }
+        (ch_range.start, ch_count, chunk_data)
+    });
+
+    // Assemble output
+    let mut raw_data = alloc::vec![0u8; out_total * 4];
+    for (start_co, ch_count, chunk_data) in results {
+        // Copy each batch's channel data to the correct position
+        for batch in 0..n {
+            for local_co in 0..ch_count {
+                let global_co = start_co + local_co;
+                for oy in 0..oh {
+                    for ox in 0..ow {
+                        let src_idx =
+                            batch * ch_count * oh * ow + local_co * oh * ow + oy * ow + ox;
+                        let dst_idx = batch * c_out * oh * ow + global_co * oh * ow + oy * ow + ox;
+                        let val = read_f32(&chunk_data, src_idx);
+                        write_f32(&mut raw_data, dst_idx, val);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(Vec::from([n as i64, c_out as i64, oh as i64, ow as i64])),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Parallel reduce sum: partial sums per chunk, then merge.
+///
+/// This is a simple parallel reduction over the *entire* tensor to a
+/// scalar sum. For axis-based reduction, the sequential op is used.
+/// Falls back to sequential [`op_reduce_sum`] if below threshold or
+/// if axes-based reduction is needed.
+pub fn op_reduce_sum_parallel(
+    pool: &CorePool,
+    input: &Tensor,
+    axes: &[i64],
+    keepdims: bool,
+    threshold: usize,
+) -> Result<Tensor, OpError> {
+    let total = input.shape.total_elements();
+    // For axis-based or small reductions, use sequential
+    if pool.num_threads() <= 1 || total <= threshold || !axes.is_empty() {
+        return op_reduce_sum(input, axes, keepdims);
+    }
+
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "ReduceSum only supports float32",
+        )));
+    }
+
+    // Full reduction to scalar — parallelize partial sums
+    let input_data = &input.raw_data;
+    let partial_sums = pool.parallel_for(0..total, |range| {
+        let mut sum = 0.0f32;
+        for i in range {
+            sum += read_f32(input_data, i);
+        }
+        sum
+    });
+
+    let total_sum: f32 = partial_sums.iter().sum();
+    let mut raw_data = alloc::vec![0u8; 4];
+    write_f32(&mut raw_data, 0, total_sum);
+
+    let out_shape = if keepdims {
+        TensorShape::new(alloc::vec![1i64; input.shape.ndim()])
+    } else {
+        TensorShape::new(alloc::vec![1i64])
+    };
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: out_shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Parallel reduce mean: parallel sum then divide.
+pub fn op_reduce_mean_parallel(
+    pool: &CorePool,
+    input: &Tensor,
+    axes: &[i64],
+    keepdims: bool,
+    threshold: usize,
+) -> Result<Tensor, OpError> {
+    let total = input.shape.total_elements();
+    if pool.num_threads() <= 1 || total <= threshold || !axes.is_empty() {
+        return op_reduce_mean(input, axes, keepdims);
+    }
+
+    let sum_tensor = op_reduce_sum_parallel(pool, input, axes, keepdims, threshold)?;
+    let total_out = sum_tensor.shape.total_elements();
+    let reduce_count = total.checked_div(total_out).unwrap_or(1);
+    let mut raw_data = sum_tensor.raw_data;
+    for i in 0..total_out {
+        let v = read_f32(&raw_data, i);
+        write_f32(&mut raw_data, i, v / reduce_count as f32);
+    }
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: sum_tensor.shape,
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Parallel softmax: parallel max, parallel exp+sum, parallel normalize.
+pub fn op_softmax_parallel(
+    pool: &CorePool,
+    input: &Tensor,
+    axis: i64,
+    threshold: usize,
+) -> Result<Tensor, OpError> {
+    if input.data_type != DataType::Float {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Softmax only supports float32",
+        )));
+    }
+    let total = input.shape.total_elements();
+    // For multi-dimensional or small tensors, use sequential
+    if pool.num_threads() <= 1 || total <= threshold {
+        return op_softmax(input, axis);
+    }
+
+    // Simple case: 1D or last-axis softmax on flat data
+    let ndim = input.shape.ndim();
+    if ndim == 0 {
+        let mut raw_data = alloc::vec![0u8; 4];
+        write_f32(&mut raw_data, 0, 1.0);
+        return Ok(Tensor {
+            data_type: DataType::Float,
+            shape: input.shape.clone(),
+            name: String::new(),
+            raw_data,
+        });
+    }
+
+    let resolved_axis = if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    };
+
+    // For non-last-axis softmax, fall back to sequential (complex strided access)
+    if resolved_axis != ndim - 1 || ndim > 2 {
+        return op_softmax(input, axis);
+    }
+
+    let input_data = &input.raw_data;
+
+    if ndim == 1 {
+        // Single vector softmax — parallelize the 3 passes
+        // Pass 1: parallel max
+        let partial_maxes = pool.parallel_for(0..total, |range| {
+            let mut max_val = f32::NEG_INFINITY;
+            for i in range {
+                let v = read_f32(input_data, i);
+                if v > max_val {
+                    max_val = v;
+                }
+            }
+            max_val
+        });
+        let global_max = partial_maxes
+            .iter()
+            .copied()
+            .fold(f32::NEG_INFINITY, f32::max);
+
+        // Pass 2: parallel exp + partial sum
+        let partial_results = pool.parallel_for(0..total, |range| {
+            let mut local_data = alloc::vec![0u8; range.len() * 4];
+            let mut local_sum = 0.0f32;
+            for (local_i, global_i) in range.clone().enumerate() {
+                let v = read_f32(input_data, global_i);
+                let exp_v = expf_approx(v - global_max);
+                write_f32(&mut local_data, local_i, exp_v);
+                local_sum += exp_v;
+            }
+            (range.start, local_data, local_sum)
+        });
+
+        let global_sum: f32 = partial_results.iter().map(|(_, _, s)| s).sum();
+
+        // Pass 3: normalize (assemble and divide)
+        let mut raw_data = alloc::vec![0u8; total * 4];
+        for (start, chunk, _) in partial_results {
+            let count = chunk.len() / 4;
+            for i in 0..count {
+                let v = read_f32(&chunk, i);
+                write_f32(&mut raw_data, start + i, v / global_sum);
+            }
+        }
+
+        Ok(Tensor {
+            data_type: DataType::Float,
+            shape: input.shape.clone(),
+            name: String::new(),
+            raw_data,
+        })
+    } else {
+        // ndim == 2, axis == 1: each row is independent softmax
+        let num_rows = input.shape.dims[0] as usize;
+        let row_len = input.shape.dims[1] as usize;
+
+        let results = pool.parallel_for(0..num_rows, |row_range| {
+            let mut chunk_data = alloc::vec![0u8; row_range.len() * row_len * 4];
+            for (local_r, global_r) in row_range.clone().enumerate() {
+                let base = global_r * row_len;
+                let out_base = local_r * row_len;
+                // Find max
+                let mut max_val = f32::NEG_INFINITY;
+                for j in 0..row_len {
+                    let v = read_f32(input_data, base + j);
+                    if v > max_val {
+                        max_val = v;
+                    }
+                }
+                // Exp + sum
+                let mut sum = 0.0f32;
+                for j in 0..row_len {
+                    let v = read_f32(input_data, base + j);
+                    let exp_v = expf_approx(v - max_val);
+                    write_f32(&mut chunk_data, out_base + j, exp_v);
+                    sum += exp_v;
+                }
+                // Normalize
+                if sum > 0.0 {
+                    for j in 0..row_len {
+                        let v = read_f32(&chunk_data, out_base + j);
+                        write_f32(&mut chunk_data, out_base + j, v / sum);
+                    }
+                }
+            }
+            (row_range.start, chunk_data)
+        });
+
+        let mut raw_data = alloc::vec![0u8; total * 4];
+        for (start_row, chunk) in results {
+            let offset = start_row * row_len * 4;
+            raw_data[offset..offset + chunk.len()].copy_from_slice(&chunk);
+        }
+
+        Ok(Tensor {
+            data_type: DataType::Float,
+            shape: input.shape.clone(),
+            name: String::new(),
+            raw_data,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Shape inference helpers
 // ---------------------------------------------------------------------------
 
@@ -3439,5 +3875,325 @@ mod tests {
         assert_eq!(result.shape.dims, vec![2]);
         let vals = read_f32_vec(&result);
         assert_eq!(vals, vec![20.0, 40.0]);
+    }
+
+    // ---- Parallel operator tests ----
+
+    fn make_float_tensor(shape: Vec<i64>, data: Vec<f32>) -> Tensor {
+        let mut raw_data = alloc::vec![0u8; data.len() * 4];
+        for (i, &v) in data.iter().enumerate() {
+            let bytes = v.to_le_bytes();
+            raw_data[i * 4] = bytes[0];
+            raw_data[i * 4 + 1] = bytes[1];
+            raw_data[i * 4 + 2] = bytes[2];
+            raw_data[i * 4 + 3] = bytes[3];
+        }
+        Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(shape),
+            name: String::new(),
+            raw_data,
+        }
+    }
+
+    #[test]
+    fn test_parallel_relu_matches_sequential() {
+        use crate::parallel::CorePool;
+        let n = 100_000;
+        let data: Vec<f32> = (0..n).map(|i| (i as f32 - 50_000.0) * 0.01).collect();
+        let tensor = make_float_tensor(vec![n as i64], data);
+
+        let seq = op_relu(&tensor).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_relu_parallel(&pool, &tensor, 0).unwrap(); // threshold=0 forces parallel
+
+        assert_eq!(seq.raw_data.len(), par.raw_data.len());
+        for i in 0..n {
+            let vs = read_f32(&seq.raw_data, i);
+            let vp = read_f32(&par.raw_data, i);
+            assert!(
+                (vs - vp).abs() < 1e-6,
+                "relu mismatch at {}: seq={} par={}",
+                i,
+                vs,
+                vp
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_sigmoid_matches_sequential() {
+        use crate::parallel::CorePool;
+        let n = 100_000;
+        let data: Vec<f32> = (0..n).map(|i| (i as f32 - 50_000.0) * 0.001).collect();
+        let tensor = make_float_tensor(vec![n as i64], data);
+
+        let seq = op_sigmoid(&tensor).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_sigmoid_parallel(&pool, &tensor, 0).unwrap();
+
+        for i in 0..n {
+            let vs = read_f32(&seq.raw_data, i);
+            let vp = read_f32(&par.raw_data, i);
+            assert!(
+                (vs - vp).abs() < 1e-5,
+                "sigmoid mismatch at {}: seq={} par={}",
+                i,
+                vs,
+                vp
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_tanh_matches_sequential() {
+        use crate::parallel::CorePool;
+        let n = 100_000;
+        let data: Vec<f32> = (0..n).map(|i| (i as f32 - 50_000.0) * 0.0001).collect();
+        let tensor = make_float_tensor(vec![n as i64], data);
+
+        let seq = op_tanh(&tensor).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_tanh_parallel(&pool, &tensor, 0).unwrap();
+
+        for i in 0..n {
+            let vs = read_f32(&seq.raw_data, i);
+            let vp = read_f32(&par.raw_data, i);
+            assert!(
+                (vs - vp).abs() < 1e-5,
+                "tanh mismatch at {}: seq={} par={}",
+                i,
+                vs,
+                vp
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_clip_matches_sequential() {
+        use crate::parallel::CorePool;
+        let n = 100_000;
+        let data: Vec<f32> = (0..n).map(|i| (i as f32 - 50_000.0) * 0.01).collect();
+        let tensor = make_float_tensor(vec![n as i64], data);
+
+        let seq = op_clip(&tensor, Some(-100.0), Some(100.0)).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_clip_parallel(&pool, &tensor, Some(-100.0), Some(100.0), 0).unwrap();
+
+        for i in 0..n {
+            let vs = read_f32(&seq.raw_data, i);
+            let vp = read_f32(&par.raw_data, i);
+            assert!(
+                (vs - vp).abs() < 1e-6,
+                "clip mismatch at {}: seq={} par={}",
+                i,
+                vs,
+                vp
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_conv_matches_sequential() {
+        use crate::parallel::CorePool;
+        // [1, 3, 8, 8] input, [16, 3, 3, 3] weight
+        let n = 1;
+        let c_in = 3;
+        let h = 8;
+        let w = 8;
+        let c_out = 16;
+        let kh = 3;
+        let kw = 3;
+
+        let in_size = n * c_in * h * w;
+        let w_size = c_out * c_in * kh * kw;
+        let in_data: Vec<f32> = (0..in_size).map(|i| (i % 7) as f32 * 0.1).collect();
+        let w_data: Vec<f32> = (0..w_size)
+            .map(|i| ((i % 11) as f32 - 5.0) * 0.05)
+            .collect();
+
+        let input = make_float_tensor(vec![n as i64, c_in as i64, h as i64, w as i64], in_data);
+        let weight = make_float_tensor(
+            vec![c_out as i64, c_in as i64, kh as i64, kw as i64],
+            w_data,
+        );
+
+        let seq = op_conv(&input, &weight, None).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_conv_parallel(&pool, &input, &weight, None, 0).unwrap();
+
+        assert_eq!(seq.shape.dims, par.shape.dims);
+        let total = seq.shape.total_elements();
+        for i in 0..total {
+            let vs = read_f32(&seq.raw_data, i);
+            let vp = read_f32(&par.raw_data, i);
+            assert!(
+                (vs - vp).abs() < 1e-4,
+                "conv mismatch at {}: seq={} par={}",
+                i,
+                vs,
+                vp
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_reduce_sum_matches_sequential() {
+        use crate::parallel::CorePool;
+        let n = 100_000;
+        let data: Vec<f32> = (0..n).map(|i| (i % 100) as f32 * 0.01).collect();
+        let tensor = make_float_tensor(vec![n as i64], data);
+
+        let seq = op_reduce_sum(&tensor, &[], true).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_reduce_sum_parallel(&pool, &tensor, &[], true, 0).unwrap();
+
+        let vs = read_f32(&seq.raw_data, 0);
+        let vp = read_f32(&par.raw_data, 0);
+        // f32 accumulation order differs, so allow larger tolerance
+        assert!(
+            (vs - vp).abs() / vs.abs().max(1.0) < 1e-3,
+            "reduce_sum mismatch: seq={} par={}",
+            vs,
+            vp
+        );
+    }
+
+    #[test]
+    fn test_parallel_reduce_mean_matches_sequential() {
+        use crate::parallel::CorePool;
+        let n = 100_000;
+        let data: Vec<f32> = (0..n).map(|i| (i % 100) as f32 * 0.01).collect();
+        let tensor = make_float_tensor(vec![n as i64], data);
+
+        let seq = op_reduce_mean(&tensor, &[], true).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_reduce_mean_parallel(&pool, &tensor, &[], true, 0).unwrap();
+
+        let vs = read_f32(&seq.raw_data, 0);
+        let vp = read_f32(&par.raw_data, 0);
+        assert!(
+            (vs - vp).abs() / vs.abs().max(1.0) < 1e-3,
+            "reduce_mean mismatch: seq={} par={}",
+            vs,
+            vp
+        );
+    }
+
+    #[test]
+    fn test_parallel_softmax_1d_matches_sequential() {
+        use crate::parallel::CorePool;
+        // Use a moderate range to avoid exp underflow to zero
+        let n = 10_000;
+        let data: Vec<f32> = (0..n).map(|i| (i as f32 - 5000.0) * 0.001).collect();
+        let tensor = make_float_tensor(vec![n as i64], data);
+
+        let seq = op_softmax(&tensor, 0).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_softmax_parallel(&pool, &tensor, 0, 0).unwrap();
+
+        for i in 0..n {
+            let vs = read_f32(&seq.raw_data, i);
+            let vp = read_f32(&par.raw_data, i);
+            assert!(
+                (vs - vp).abs() < 1e-5,
+                "softmax 1d mismatch at {}: seq={} par={}",
+                i,
+                vs,
+                vp
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_softmax_2d_matches_sequential() {
+        use crate::parallel::CorePool;
+        let rows = 100;
+        let cols = 200;
+        let data: Vec<f32> = (0..rows * cols)
+            .map(|i| ((i % 50) as f32 - 25.0) * 0.1)
+            .collect();
+        let tensor = make_float_tensor(vec![rows as i64, cols as i64], data);
+
+        let seq = op_softmax(&tensor, 1).unwrap();
+        let pool = CorePool::new(4);
+        let par = op_softmax_parallel(&pool, &tensor, 1, 0).unwrap();
+
+        for i in 0..rows * cols {
+            let vs = read_f32(&seq.raw_data, i);
+            let vp = read_f32(&par.raw_data, i);
+            assert!(
+                (vs - vp).abs() < 1e-5,
+                "softmax 2d mismatch at {}: seq={} par={}",
+                i,
+                vs,
+                vp
+            );
+        }
+    }
+
+    // ---- End-to-end parallel inference test (Task Group 9) ----
+
+    #[test]
+    fn test_parallel_end_to_end_matches_sequential() {
+        use crate::parallel::CorePool;
+
+        // Build a simple pipeline: MatMul -> Add (bias) -> Relu -> MatMul -> Softmax
+        let m = 32;
+        let k1 = 64;
+        let k2 = 32;
+
+        // Input: [32, 64]
+        let input_data: Vec<f32> = (0..m * k1).map(|i| ((i % 13) as f32 - 6.0) * 0.1).collect();
+        let input = make_float_tensor(vec![m as i64, k1 as i64], input_data);
+
+        // W1: [64, 32]
+        let w1_data: Vec<f32> = (0..k1 * k2)
+            .map(|i| ((i % 17) as f32 - 8.0) * 0.05)
+            .collect();
+        let w1 = make_float_tensor(vec![k1 as i64, k2 as i64], w1_data);
+
+        // Bias: [32]
+        let bias_data: Vec<f32> = (0..k2).map(|i| i as f32 * 0.01).collect();
+        let bias = make_float_tensor(vec![k2 as i64], bias_data);
+
+        // W2: [32, 10]
+        let out_classes = 10usize;
+        let w2_data: Vec<f32> = (0..k2 * out_classes)
+            .map(|i| ((i % 11) as f32 - 5.0) * 0.03)
+            .collect();
+        let w2 = make_float_tensor(vec![k2 as i64, out_classes as i64], w2_data);
+
+        // --- Sequential path ---
+        let mm1_seq = op_matmul(&input, &w1).unwrap();
+        let add_seq = op_add(&[&mm1_seq, &bias]).unwrap();
+        let relu_seq = op_relu(&add_seq).unwrap();
+        let mm2_seq = op_matmul(&relu_seq, &w2).unwrap();
+        let out_seq = op_softmax(&mm2_seq, 1).unwrap();
+
+        // --- Parallel path (4 threads) ---
+        let pool = CorePool::new(4);
+        // MatMul1 uses GEMM internally; for parallel, use gemm_f32_parallel
+        // But op_matmul doesn't take a pool — so we verify the building blocks match
+        let mm1_par = op_matmul(&input, &w1).unwrap();
+        let add_par = op_add(&[&mm1_par, &bias]).unwrap();
+        let relu_par = op_relu_parallel(&pool, &add_par, 0).unwrap();
+        let mm2_par = op_matmul(&relu_par, &w2).unwrap();
+        let out_par = op_softmax_parallel(&pool, &mm2_par, 1, 0).unwrap();
+
+        // Verify outputs match
+        let total = out_seq.shape.total_elements();
+        assert_eq!(out_seq.shape.dims, out_par.shape.dims);
+        for i in 0..total {
+            let vs = read_f32(&out_seq.raw_data, i);
+            let vp = read_f32(&out_par.raw_data, i);
+            assert!(
+                (vs - vp).abs() < 1e-5,
+                "e2e mismatch at {}: seq={} par={}",
+                i,
+                vs,
+                vp
+            );
+        }
     }
 }

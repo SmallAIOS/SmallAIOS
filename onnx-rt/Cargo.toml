@@ -10,6 +10,7 @@ publish = false
 [features]
 default = ["cpu"]
 cpu = []
+std = []
 cuda = ["smallaios-arch-nvidia"]
 tegra = ["cuda", "smallaios-arch-nvidia/tegra"]
 formal-gate = ["dep:smallaios-security", "smallaios-security/formal-gate"]
