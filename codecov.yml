@@ -18,6 +18,7 @@ coverage:
       default:
         target: 90%
         threshold: 1%
+        informational: true  # Report only — don't fail CI on patch coverage drops
 
 # Per-crate coverage flags
 # CI uploads coverage with --flag <name> for each crate

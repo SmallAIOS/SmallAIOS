@@ -11,6 +11,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::byte_io::{
+    allocate_tensor_data, read_f32, read_i32, read_i64, write_f32, write_i32, write_i64, I64_SIZE,
+};
 use crate::tensor::{DataType, Tensor, TensorShape};
 
 // ---------------------------------------------------------------------------
@@ -281,12 +284,37 @@ impl OperatorRegistry {
 // Operator stub implementations
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// expf_approx polynomial approximation constants
+// ---------------------------------------------------------------------------
+//
+// Range reduction splits `e^x` as `2^k * e^f` where `f` is small. The tail
+// `e^f` is approximated by a degree-4 Taylor polynomial:
+//     1 + f + f^2/2 + f^3/6 + f^4/24
+// These constants name the coefficients and IEEE-754 magic numbers so the
+// implementation reads as math, not hex.
+
+/// Upper clamp for the input of `expf_approx` (avoids overflow to inf).
+const EXP_CLAMP_MAX: f32 = 88.7;
+/// Lower clamp for the input of `expf_approx` (avoids underflow to 0).
+const EXP_CLAMP_MIN: f32 = -88.7;
+/// Taylor coefficient for `f^2` term in `e^f`.
+const EXP_POLY_C2: f32 = 0.5;
+/// Taylor coefficient for `f^3` term in `e^f`.
+const EXP_POLY_C3: f32 = 1.0 / 6.0;
+/// Taylor coefficient for `f^4` term in `e^f`.
+const EXP_POLY_C4: f32 = 1.0 / 24.0;
+/// IEEE-754 single-precision exponent bias.
+const F32_EXPONENT_BIAS: i32 = 127;
+/// Number of mantissa bits in IEEE-754 single precision.
+const F32_MANTISSA_BITS: u32 = 23;
+
 /// Computes e^x for f32 using range reduction and polynomial approximation.
 ///
 /// Accurate to ~1 ULP for typical inference ranges.
 fn expf_approx(x: f32) -> f32 {
     // Clamp to avoid overflow/underflow
-    let x = x.clamp(-88.7, 88.7);
+    let x = x.clamp(EXP_CLAMP_MIN, EXP_CLAMP_MAX);
 
     // Range reduction: e^x = 2^(x * log2(e)) = 2^k * 2^f where k=floor, f=fraction
     let t = x * core::f32::consts::LOG2_E;
@@ -300,30 +328,12 @@ fn expf_approx(x: f32) -> f32 {
 
     // Polynomial approximation of e^f for f in [-0.5*ln2, 0.5*ln2]
     let f2 = f * f;
-    let p = 1.0 + f + f2 * 0.5 + f2 * f * (1.0 / 6.0) + f2 * f2 * (1.0 / 24.0);
+    let p = 1.0 + f + f2 * EXP_POLY_C2 + f2 * f * EXP_POLY_C3 + f2 * f2 * EXP_POLY_C4;
 
     // Reconstruct: multiply by 2^k using IEEE 754 bit manipulation
-    let bits = ((k + 127) as u32) << 23;
+    let bits = ((k + F32_EXPONENT_BIAS) as u32) << F32_MANTISSA_BITS;
     let scale = f32::from_bits(bits);
     p * scale
-}
-
-/// Reads a little-endian f32 from a raw byte slice at the given element index.
-#[inline]
-fn read_f32(data: &[u8], idx: usize) -> f32 {
-    let off = idx * 4;
-    f32::from_le_bytes([data[off], data[off + 1], data[off + 2], data[off + 3]])
-}
-
-/// Writes a little-endian f32 to a raw byte slice at the given element index.
-#[inline]
-fn write_f32(data: &mut [u8], idx: usize, val: f32) {
-    let off = idx * 4;
-    let bytes = val.to_le_bytes();
-    data[off] = bytes[0];
-    data[off + 1] = bytes[1];
-    data[off + 2] = bytes[2];
-    data[off + 3] = bytes[3];
 }
 
 /// Computes contiguous strides (row-major) for a shape.
@@ -415,7 +425,7 @@ pub fn op_add(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
 
     let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     let a_strides = compute_strides(&a.shape.dims);
     let b_strides = compute_strides(&b.shape.dims);
@@ -456,7 +466,7 @@ pub fn op_relu(input: &Tensor) -> Result<Tensor, OpError> {
         )));
     }
     let total = input.shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     for i in 0..total {
         let val = read_f32(&input.raw_data, i);
@@ -498,7 +508,7 @@ pub fn op_matmul(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
         )));
     }
 
-    let mut raw_data = alloc::vec![0u8; m * n * 4];
+    let mut raw_data = allocate_tensor_data(m * n, DataType::Float);
 
     for i in 0..m {
         for j in 0..n {
@@ -596,7 +606,7 @@ pub fn op_softmax(input: &Tensor, axis: i64) -> Result<Tensor, OpError> {
     }
 
     let total = input.shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     // Compute outer_size * inner_size * axis_size = total
     let axis_size = input.shape.dims[resolved_axis] as usize;
@@ -783,20 +793,17 @@ pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result
     let oh = h - kh + 1;
     let ow = w - kw + 1;
     let out_total = n * c_out * oh * ow;
-    let mut raw_data = alloc::vec![0u8; out_total * 4];
+    let mut raw_data = allocate_tensor_data(out_total, DataType::Float);
     let dims = ConvDims { c_in, h, w, kh, kw };
-
-    conv_compute(
-        &input.raw_data,
-        &weight.raw_data,
-        bias,
-        &dims,
+    let mut params = ConvParams {
         n,
         c_out,
         oh,
         ow,
-        &mut raw_data,
-    );
+        raw_data: &mut raw_data,
+    };
+
+    conv_compute(&input.raw_data, &weight.raw_data, bias, &dims, &mut params);
 
     Ok(Tensor {
         data_type: DataType::Float,
@@ -831,19 +838,33 @@ fn validate_conv_inputs(input: &Tensor, weight: &Tensor) -> Result<(), OpError> 
     Ok(())
 }
 
-/// Execute the Conv inner loops, writing results into `raw_data`.
-#[allow(clippy::too_many_arguments)]
+/// Output-side parameters for `conv_compute`: batch/channels-out/spatial
+/// output dims plus the destination byte buffer. Grouped as a struct so
+/// `conv_compute` stays at 4 args.
+struct ConvParams<'a> {
+    n: usize,
+    c_out: usize,
+    oh: usize,
+    ow: usize,
+    raw_data: &'a mut [u8],
+}
+
+/// Execute the Conv inner loops, writing results into `params.raw_data`.
 fn conv_compute(
     input_data: &[u8],
     weight_data: &[u8],
     bias: Option<&Tensor>,
     dims: &ConvDims,
-    n: usize,
-    c_out: usize,
-    oh: usize,
-    ow: usize,
-    raw_data: &mut [u8],
+    params: &mut ConvParams<'_>,
 ) {
+    let ConvParams {
+        n,
+        c_out,
+        oh,
+        ow,
+        raw_data,
+    } = params;
+    let (n, c_out, oh, ow) = (*n, *c_out, *oh, *ow);
     for batch in 0..n {
         for co in 0..c_out {
             for oy in 0..oh {
@@ -880,7 +901,7 @@ pub fn op_sub(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     }
     let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     let a_strides = compute_strides(&a.shape.dims);
     let b_strides = compute_strides(&b.shape.dims);
     let ndim = out_shape.dims.len();
@@ -923,7 +944,7 @@ pub fn op_mul(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     }
     let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     let a_strides = compute_strides(&a.shape.dims);
     let b_strides = compute_strides(&b.shape.dims);
     let ndim = out_shape.dims.len();
@@ -966,7 +987,7 @@ pub fn op_div(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     }
     let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     let a_strides = compute_strides(&a.shape.dims);
     let b_strides = compute_strides(&b.shape.dims);
     let ndim = out_shape.dims.len();
@@ -1050,7 +1071,7 @@ pub fn op_gemm(
     crate::gemm::gemm_f32(m, n, k, &a_buf, &b_buf, &mut c_buf);
 
     // Apply alpha and add beta * C
-    let mut raw_data = alloc::vec![0u8; m * n * 4];
+    let mut raw_data = allocate_tensor_data(m * n, DataType::Float);
     for i in 0..m {
         for j in 0..n {
             let mut val = alpha * c_buf[i * n + j];
@@ -1091,7 +1112,7 @@ pub fn op_sigmoid(input: &Tensor) -> Result<Tensor, OpError> {
         )));
     }
     let total = input.shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     for i in 0..total {
         let x = read_f32(&input.raw_data, i);
         let val = 1.0 / (1.0 + expf_approx(-x));
@@ -1113,7 +1134,7 @@ pub fn op_tanh(input: &Tensor) -> Result<Tensor, OpError> {
         )));
     }
     let total = input.shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     for i in 0..total {
         let x = read_f32(&input.raw_data, i);
         let ep = expf_approx(x);
@@ -1157,7 +1178,7 @@ pub fn op_transpose(input: &Tensor, perm: Option<&[i64]>) -> Result<Tensor, OpEr
     let out_dims: Vec<i64> = perm_vec.iter().map(|&p| input.shape.dims[p]).collect();
     let out_shape = TensorShape::new(out_dims);
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     let in_strides = compute_strides(&input.shape.dims);
 
@@ -1178,6 +1199,35 @@ pub fn op_transpose(input: &Tensor, perm: Option<&[i64]>) -> Result<Tensor, OpEr
         name: String::new(),
         raw_data,
     })
+}
+
+/// Copies one source tensor's elements into the concat output buffer at
+/// the correct offset along `resolved_axis`.
+fn copy_tensor_to_concat_output(
+    input: &Tensor,
+    out_data: &mut [u8],
+    out_strides: &[usize],
+    resolved_axis: usize,
+    axis_offset: usize,
+    ndim: usize,
+) {
+    let in_total = input.shape.total_elements();
+    let mut in_coord = alloc::vec![0usize; ndim];
+    for i in 0..in_total {
+        if i > 0 {
+            next_coord(&mut in_coord, &input.shape.dims);
+        }
+        let mut out_idx = 0usize;
+        for d in 0..ndim {
+            let c = if d == resolved_axis {
+                in_coord[d] + axis_offset
+            } else {
+                in_coord[d]
+            };
+            out_idx += c * out_strides[d];
+        }
+        write_f32(out_data, out_idx, read_f32(&input.raw_data, i));
+    }
 }
 
 /// Concatenate tensors along axis.
@@ -1206,28 +1256,19 @@ pub fn op_concat(inputs: &[&Tensor], axis: i64) -> Result<Tensor, OpError> {
     out_dims[resolved_axis] = concat_size;
     let out_shape = TensorShape::new(out_dims);
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     let out_strides = compute_strides(&out_shape.dims);
     let mut axis_offset = 0usize;
     for input in inputs {
-        let in_total = input.shape.total_elements();
-        let mut in_coord = alloc::vec![0usize; ndim];
-        for i in 0..in_total {
-            if i > 0 {
-                next_coord(&mut in_coord, &input.shape.dims);
-            }
-            let mut out_idx = 0usize;
-            for d in 0..ndim {
-                let c = if d == resolved_axis {
-                    in_coord[d] + axis_offset
-                } else {
-                    in_coord[d]
-                };
-                out_idx += c * out_strides[d];
-            }
-            write_f32(&mut raw_data, out_idx, read_f32(&input.raw_data, i));
-        }
+        copy_tensor_to_concat_output(
+            input,
+            &mut raw_data,
+            &out_strides,
+            resolved_axis,
+            axis_offset,
+            ndim,
+        );
         axis_offset += input.shape.dims[resolved_axis] as usize;
     }
     Ok(Tensor {
@@ -1320,74 +1361,69 @@ pub fn op_unsqueeze(input: &Tensor, axes: &[i64]) -> Result<Tensor, OpError> {
     })
 }
 
+/// Builds a tensor that shares `input`'s shape but has a new data type and buffer.
+#[inline]
+fn cast_output(input: &Tensor, to: DataType, raw_data: Vec<u8>) -> Tensor {
+    Tensor {
+        data_type: to,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    }
+}
+
+fn cast_f32_to_i32(input: &Tensor) -> Result<Tensor, OpError> {
+    let total = input.shape.total_elements();
+    let mut raw_data = allocate_tensor_data(total, DataType::Int32);
+    for i in 0..total {
+        let v = read_f32(&input.raw_data, i) as i32;
+        write_i32(&mut raw_data, i, v);
+    }
+    Ok(cast_output(input, DataType::Int32, raw_data))
+}
+
+fn cast_i32_to_f32(input: &Tensor) -> Result<Tensor, OpError> {
+    let total = input.shape.total_elements();
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
+    for i in 0..total {
+        let v = read_i32(&input.raw_data, i);
+        write_f32(&mut raw_data, i, v as f32);
+    }
+    Ok(cast_output(input, DataType::Float, raw_data))
+}
+
+fn cast_f32_to_i64(input: &Tensor) -> Result<Tensor, OpError> {
+    let total = input.shape.total_elements();
+    let mut raw_data = allocate_tensor_data(total, DataType::Int64);
+    for i in 0..total {
+        let v = read_f32(&input.raw_data, i) as i64;
+        write_i64(&mut raw_data, i, v);
+    }
+    Ok(cast_output(input, DataType::Int64, raw_data))
+}
+
+fn cast_i64_to_f32(input: &Tensor) -> Result<Tensor, OpError> {
+    let total = input.shape.total_elements();
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
+    for i in 0..total {
+        let v = read_i64(&input.raw_data, i);
+        write_f32(&mut raw_data, i, v as f32);
+    }
+    Ok(cast_output(input, DataType::Float, raw_data))
+}
+
 /// Type cast between data types.
 pub fn op_cast(input: &Tensor, to: DataType) -> Result<Tensor, OpError> {
     if input.data_type == to {
         return Ok(input.clone());
     }
-    let total = input.shape.total_elements();
-    let elem_size = to.element_size();
-    let mut raw_data = alloc::vec![0u8; total * elem_size];
-
-    // f32 → int32
-    if input.data_type == DataType::Float && to == DataType::Int32 {
-        for i in 0..total {
-            let v = read_f32(&input.raw_data, i) as i32;
-            let b = v.to_le_bytes();
-            for j in 0..4 {
-                raw_data[i * 4 + j] = b[j];
-            }
-        }
+    match (input.data_type, to) {
+        (DataType::Float, DataType::Int32) => cast_f32_to_i32(input),
+        (DataType::Int32, DataType::Float) => cast_i32_to_f32(input),
+        (DataType::Float, DataType::Int64) => cast_f32_to_i64(input),
+        (DataType::Int64, DataType::Float) => cast_i64_to_f32(input),
+        _ => Err(OpError::NotImplemented),
     }
-    // int32 → f32
-    else if input.data_type == DataType::Int32 && to == DataType::Float {
-        for i in 0..total {
-            let off = i * 4;
-            let v = i32::from_le_bytes([
-                input.raw_data[off],
-                input.raw_data[off + 1],
-                input.raw_data[off + 2],
-                input.raw_data[off + 3],
-            ]);
-            write_f32(&mut raw_data, i, v as f32);
-        }
-    }
-    // f32 → int64
-    else if input.data_type == DataType::Float && to == DataType::Int64 {
-        for i in 0..total {
-            let v = read_f32(&input.raw_data, i) as i64;
-            let b = v.to_le_bytes();
-            for j in 0..8 {
-                raw_data[i * 8 + j] = b[j];
-            }
-        }
-    }
-    // int64 → f32
-    else if input.data_type == DataType::Int64 && to == DataType::Float {
-        for i in 0..total {
-            let off = i * 8;
-            let v = i64::from_le_bytes([
-                input.raw_data[off],
-                input.raw_data[off + 1],
-                input.raw_data[off + 2],
-                input.raw_data[off + 3],
-                input.raw_data[off + 4],
-                input.raw_data[off + 5],
-                input.raw_data[off + 6],
-                input.raw_data[off + 7],
-            ]);
-            write_f32(&mut raw_data, i, v as f32);
-        }
-    } else {
-        return Err(OpError::NotImplemented);
-    }
-
-    Ok(Tensor {
-        data_type: to,
-        shape: input.shape.clone(),
-        name: String::new(),
-        raw_data,
-    })
 }
 
 /// Gather elements along axis using index tensor.
@@ -1418,25 +1454,18 @@ pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, 
     }
     let out_shape = TensorShape::new(out_dims);
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     let axis_size = input.shape.dims[resolved_axis] as usize;
 
     // Simple 1D gather for common case
     if ndim == 1 {
         for i in 0..num_indices {
-            let off = i * 8;
-            let idx = if indices.data_type == DataType::Int64 && indices.raw_data.len() >= off + 8 {
-                i64::from_le_bytes([
-                    indices.raw_data[off],
-                    indices.raw_data[off + 1],
-                    indices.raw_data[off + 2],
-                    indices.raw_data[off + 3],
-                    indices.raw_data[off + 4],
-                    indices.raw_data[off + 5],
-                    indices.raw_data[off + 6],
-                    indices.raw_data[off + 7],
-                ]) as usize
+            let off = i * I64_SIZE;
+            let idx = if indices.data_type == DataType::Int64
+                && indices.raw_data.len() >= off + I64_SIZE
+            {
+                read_i64(&indices.raw_data, i) as usize
             } else {
                 0
             };
@@ -1534,7 +1563,7 @@ pub fn op_slice(
         .collect();
     let out_shape = TensorShape::new(out_dims);
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     let in_strides = compute_strides(&input.shape.dims);
     let mut out_coord = alloc::vec![0usize; ndim];
@@ -1583,7 +1612,7 @@ pub fn op_pad(
         .collect();
     let out_shape = TensorShape::new(out_dims);
     let total = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     // Fill with constant
     for i in 0..total {
@@ -1624,7 +1653,7 @@ pub fn op_clip(
         )));
     }
     let total = input.shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     for i in 0..total {
         let mut v = read_f32(&input.raw_data, i);
         if let Some(lo) = min_val {
@@ -1690,7 +1719,7 @@ pub fn op_batch_normalization(
         .product::<usize>()
         .max(1);
     let total = input.shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     for ch in 0..c {
         let s = read_f32(&scale.raw_data, ch);
         let b = read_f32(&bias.raw_data, ch);
@@ -1743,7 +1772,7 @@ pub fn op_layer_normalization(
         .product::<usize>()
         .max(1);
     let total = input.shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     for o in 0..outer {
         let base = o * inner;
         let mut sum = 0.0f32;
@@ -1801,7 +1830,7 @@ pub fn op_maxpool(
     let oh = (h + pt + pb - kh) / sh + 1;
     let ow = (w + pl + pr - kw) / sw + 1;
     let out_shape = TensorShape::new(Vec::from([n as i64, c as i64, oh as i64, ow as i64]));
-    let mut raw_data = alloc::vec![0u8; out_shape.total_elements() * 4];
+    let mut raw_data = allocate_tensor_data(out_shape.total_elements(), DataType::Float);
     for bn in 0..n {
         for ch in 0..c {
             for oi in 0..oh {
@@ -1863,7 +1892,7 @@ pub fn op_averagepool(
     let oh = (h + pt + pb - kh) / sh + 1;
     let ow = (w + pl + pr - kw) / sw + 1;
     let out_shape = TensorShape::new(Vec::from([n as i64, c as i64, oh as i64, ow as i64]));
-    let mut raw_data = alloc::vec![0u8; out_shape.total_elements() * 4];
+    let mut raw_data = allocate_tensor_data(out_shape.total_elements(), DataType::Float);
     for bn in 0..n {
         for ch in 0..c {
             for oi in 0..oh {
@@ -1912,7 +1941,7 @@ pub fn op_global_average_pool(input: &Tensor) -> Result<Tensor, OpError> {
     let w = input.shape.dims[3] as usize;
     let spatial = h * w;
     let out_shape = TensorShape::new(Vec::from([n as i64, c as i64, 1, 1]));
-    let mut raw_data = alloc::vec![0u8; n * c * 4];
+    let mut raw_data = allocate_tensor_data(n * c, DataType::Float);
     for bn in 0..n {
         for ch in 0..c {
             let mut sum = 0.0f32;
@@ -1938,12 +1967,7 @@ pub fn op_reduce_mean(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Te
     let reduce_count = total_in.checked_div(total_out).unwrap_or(1);
     let mut raw_data = sum_tensor.raw_data;
     for i in 0..total_out {
-        let v = f32::from_le_bytes([
-            raw_data[i * 4],
-            raw_data[i * 4 + 1],
-            raw_data[i * 4 + 2],
-            raw_data[i * 4 + 3],
-        ]);
+        let v = read_f32(&raw_data, i);
         write_f32(&mut raw_data, i, v / reduce_count as f32);
     }
     Ok(Tensor {
@@ -1995,7 +2019,7 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
         out_dims
     });
     let total_out = out_shape.total_elements();
-    let mut raw_data = alloc::vec![0u8; total_out * 4];
+    let mut raw_data = allocate_tensor_data(total_out, DataType::Float);
 
     let in_total = input.shape.total_elements();
     let out_strides = compute_strides(&out_shape.dims);
@@ -2020,12 +2044,7 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
                 od += 1;
             }
         }
-        let prev = f32::from_le_bytes([
-            raw_data[out_idx * 4],
-            raw_data[out_idx * 4 + 1],
-            raw_data[out_idx * 4 + 2],
-            raw_data[out_idx * 4 + 3],
-        ]);
+        let prev = read_f32(&raw_data, out_idx);
         write_f32(&mut raw_data, out_idx, prev + read_f32(&input.raw_data, i));
     }
     Ok(Tensor {
@@ -2060,7 +2079,7 @@ pub fn parallel_elementwise_unary(
     let total = input.shape.total_elements();
     if pool.num_threads() <= 1 || total <= threshold {
         // Sequential: apply f to each element
-        let mut raw_data = alloc::vec![0u8; total * 4];
+        let mut raw_data = allocate_tensor_data(total, DataType::Float);
         for i in 0..total {
             let val = read_f32(&input.raw_data, i);
             write_f32(&mut raw_data, i, f(val));
@@ -2076,7 +2095,7 @@ pub fn parallel_elementwise_unary(
     // Parallel: each thread computes its chunk and returns (start_idx, bytes)
     let input_data = &input.raw_data;
     let results = pool.parallel_for(0..total, |range| {
-        let mut chunk_data = alloc::vec![0u8; range.len() * 4];
+        let mut chunk_data = allocate_tensor_data(range.len(), DataType::Float);
         for (local_i, global_i) in range.clone().enumerate() {
             let val = read_f32(input_data, global_i);
             write_f32(&mut chunk_data, local_i, f(val));
@@ -2084,7 +2103,7 @@ pub fn parallel_elementwise_unary(
         (range.start, chunk_data)
     });
 
-    let mut raw_data = alloc::vec![0u8; total * 4];
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
     for (start, chunk) in results {
         raw_data[start * 4..start * 4 + chunk.len()].copy_from_slice(&chunk);
     }
@@ -2195,7 +2214,7 @@ pub fn op_conv_parallel(
     let results = pool.parallel_for(0..c_out, |ch_range| {
         let ch_count = ch_range.end - ch_range.start;
         let chunk_size = n * ch_count * oh * ow;
-        let mut chunk_data = alloc::vec![0u8; chunk_size * 4];
+        let mut chunk_data = allocate_tensor_data(chunk_size, DataType::Float);
 
         for batch in 0..n {
             for (local_co, global_co) in ch_range.clone().enumerate() {
@@ -2217,7 +2236,7 @@ pub fn op_conv_parallel(
     });
 
     // Assemble output
-    let mut raw_data = alloc::vec![0u8; out_total * 4];
+    let mut raw_data = allocate_tensor_data(out_total, DataType::Float);
     for (start_co, ch_count, chunk_data) in results {
         // Copy each batch's channel data to the correct position
         for batch in 0..n {
@@ -2391,7 +2410,7 @@ pub fn op_softmax_parallel(
 
         // Pass 2: parallel exp + partial sum
         let partial_results = pool.parallel_for(0..total, |range| {
-            let mut local_data = alloc::vec![0u8; range.len() * 4];
+            let mut local_data = allocate_tensor_data(range.len(), DataType::Float);
             let mut local_sum = 0.0f32;
             for (local_i, global_i) in range.clone().enumerate() {
                 let v = read_f32(input_data, global_i);
@@ -2405,7 +2424,7 @@ pub fn op_softmax_parallel(
         let global_sum: f32 = partial_results.iter().map(|(_, _, s)| s).sum();
 
         // Pass 3: normalize (assemble and divide)
-        let mut raw_data = alloc::vec![0u8; total * 4];
+        let mut raw_data = allocate_tensor_data(total, DataType::Float);
         for (start, chunk, _) in partial_results {
             let count = chunk.len() / 4;
             for i in 0..count {
@@ -2426,7 +2445,7 @@ pub fn op_softmax_parallel(
         let row_len = input.shape.dims[1] as usize;
 
         let results = pool.parallel_for(0..num_rows, |row_range| {
-            let mut chunk_data = alloc::vec![0u8; row_range.len() * row_len * 4];
+            let mut chunk_data = allocate_tensor_data(row_range.len() * row_len, DataType::Float);
             for (local_r, global_r) in row_range.clone().enumerate() {
                 let base = global_r * row_len;
                 let out_base = local_r * row_len;
@@ -2457,7 +2476,7 @@ pub fn op_softmax_parallel(
             (row_range.start, chunk_data)
         });
 
-        let mut raw_data = alloc::vec![0u8; total * 4];
+        let mut raw_data = allocate_tensor_data(total, DataType::Float);
         for (start_row, chunk) in results {
             let offset = start_row * row_len * 4;
             raw_data[offset..offset + chunk.len()].copy_from_slice(&chunk);
@@ -3783,6 +3802,114 @@ mod tests {
         assert_eq!(result.data_type, DataType::Float);
         let vals = read_f32_vec(&result);
         assert_eq!(vals, vec![1.0, 2.0, 3.0]);
+    }
+
+    // ---- cast helper direct tests ----
+
+    fn make_i32_tensor(shape: &[i64], data: &[i32]) -> Tensor {
+        let mut raw = alloc::vec![0u8; data.len() * 4];
+        for (i, &v) in data.iter().enumerate() {
+            let bytes = v.to_le_bytes();
+            raw[i * 4..i * 4 + 4].copy_from_slice(&bytes);
+        }
+        Tensor {
+            data_type: DataType::Int32,
+            shape: TensorShape::new(Vec::from(shape)),
+            name: String::new(),
+            raw_data: raw,
+        }
+    }
+
+    fn make_i64_tensor(shape: &[i64], data: &[i64]) -> Tensor {
+        let mut raw = alloc::vec![0u8; data.len() * 8];
+        for (i, &v) in data.iter().enumerate() {
+            let bytes = v.to_le_bytes();
+            raw[i * 8..i * 8 + 8].copy_from_slice(&bytes);
+        }
+        Tensor {
+            data_type: DataType::Int64,
+            shape: TensorShape::new(Vec::from(shape)),
+            name: String::new(),
+            raw_data: raw,
+        }
+    }
+
+    #[test]
+    fn test_cast_f32_to_i32_truncation() {
+        let t = make_f32_tensor(&[4], &[1.7, -2.3, 0.0, 4.999]);
+        let result = cast_f32_to_i32(&t).unwrap();
+        assert_eq!(result.data_type, DataType::Int32);
+        assert_eq!(result.shape.dims, vec![4]);
+        assert_eq!(read_i32(&result.raw_data, 0), 1);
+        assert_eq!(read_i32(&result.raw_data, 1), -2);
+        assert_eq!(read_i32(&result.raw_data, 2), 0);
+        assert_eq!(read_i32(&result.raw_data, 3), 4);
+    }
+
+    #[test]
+    fn test_cast_i32_to_f32_basic() {
+        let t = make_i32_tensor(&[3], &[5, -7, 0]);
+        let result = cast_i32_to_f32(&t).unwrap();
+        assert_eq!(result.data_type, DataType::Float);
+        assert_eq!(result.shape.dims, vec![3]);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals, vec![5.0, -7.0, 0.0]);
+    }
+
+    #[test]
+    fn test_cast_f32_to_i64_overflow() {
+        // Large but representable values
+        let t = make_f32_tensor(&[3], &[1.0e10, -1.0e10, 42.9]);
+        let result = cast_f32_to_i64(&t).unwrap();
+        assert_eq!(result.data_type, DataType::Int64);
+        assert_eq!(result.shape.dims, vec![3]);
+        assert_eq!(read_i64(&result.raw_data, 0), 10_000_000_000);
+        assert_eq!(read_i64(&result.raw_data, 1), -10_000_000_000);
+        assert_eq!(read_i64(&result.raw_data, 2), 42);
+    }
+
+    #[test]
+    fn test_cast_i64_to_f32_precision() {
+        let t = make_i64_tensor(&[3], &[1, -2, 1_000_000]);
+        let result = cast_i64_to_f32(&t).unwrap();
+        assert_eq!(result.data_type, DataType::Float);
+        let vals = read_f32_vec(&result);
+        assert_eq!(vals[0], 1.0);
+        assert_eq!(vals[1], -2.0);
+        // Large values lose precision but should round-trip for 1e6
+        assert!((vals[2] - 1_000_000.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_cast_output_preserves_shape_clears_name() {
+        let input = make_f32_tensor(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let raw_data = alloc::vec![0u8; 24];
+        let out = cast_output(&input, DataType::Int64, raw_data);
+        assert_eq!(out.data_type, DataType::Int64);
+        assert_eq!(out.shape.dims, vec![2, 3]);
+        assert_eq!(out.name, String::new());
+        assert_eq!(out.raw_data.len(), 24);
+    }
+
+    #[test]
+    fn test_cast_f32_to_i32_via_op_cast() {
+        // Exercise the op_cast dispatch for f32->i64 and i32->f32 paths
+        let t = make_f32_tensor(&[2], &[3.9, -4.1]);
+        let r = op_cast(&t, DataType::Int64).unwrap();
+        assert_eq!(r.data_type, DataType::Int64);
+        assert_eq!(read_i64(&r.raw_data, 0), 3);
+        assert_eq!(read_i64(&r.raw_data, 1), -4);
+
+        let ti = make_i32_tensor(&[2], &[9, -3]);
+        let rf = op_cast(&ti, DataType::Float).unwrap();
+        assert_eq!(rf.data_type, DataType::Float);
+        let vals = read_f32_vec(&rf);
+        assert_eq!(vals, vec![9.0, -3.0]);
+
+        let tl = make_i64_tensor(&[2], &[11, -22]);
+        let rfl = op_cast(&tl, DataType::Float).unwrap();
+        let vals = read_f32_vec(&rfl);
+        assert_eq!(vals, vec![11.0, -22.0]);
     }
 
     // ---- op_clip tests ----

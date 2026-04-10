@@ -435,6 +435,52 @@ impl DhcpMessage {
 // TLV options parser
 // ---------------------------------------------------------------------------
 
+/// Iterate over DHCP options in a raw options buffer.
+///
+/// Each yielded item is `Ok((option_code, option_value_bytes))` for a
+/// well-formed option, or `Err(DhcpError::InvalidOptionLength)` if the
+/// buffer is truncated mid-option. Stops at the END option (0xff) or end
+/// of buffer. Skips PAD options (0x00).
+///
+/// Once an error is yielded, the iterator terminates.
+fn iter_dhcp_options(data: &[u8]) -> impl Iterator<Item = Result<(u8, &[u8]), DhcpError>> + '_ {
+    let mut pos = 0;
+    let mut done = false;
+    core::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        while pos < data.len() {
+            let code = data[pos];
+
+            // PAD option — skip
+            if code == OPT_PAD {
+                pos += 1;
+                continue;
+            }
+            // END option — stop
+            if code == OPT_END {
+                done = true;
+                return None;
+            }
+            // Other options have a length byte
+            if pos + 1 >= data.len() {
+                done = true;
+                return Some(Err(DhcpError::InvalidOptionLength));
+            }
+            let len = data[pos + 1] as usize;
+            if pos + 2 + len > data.len() {
+                done = true;
+                return Some(Err(DhcpError::InvalidOptionLength));
+            }
+            let value = &data[pos + 2..pos + 2 + len];
+            pos += 2 + len;
+            return Some(Ok((code, value)));
+        }
+        None
+    })
+}
+
 /// Parse all TLV options from a raw options byte slice.
 ///
 /// Returns options in a fixed-size array. Stops at the END option (255)
@@ -446,34 +492,13 @@ pub fn parse_options(data: &[u8]) -> Result<([DhcpOption; 16], usize), DhcpError
         data: [0u8; 255],
     }; 16];
     let mut count = 0;
-    let mut i = 0;
 
-    while i < data.len() {
-        let code = data[i];
-
-        if code == OPT_END {
-            break;
-        }
-        if code == OPT_PAD {
-            i += 1;
-            continue;
-        }
-
-        // Need at least one more byte for length
-        if i + 1 >= data.len() {
-            return Err(DhcpError::InvalidOptionLength);
-        }
-        let len = data[i + 1] as usize;
-        if i + 2 + len > data.len() {
-            return Err(DhcpError::InvalidOptionLength);
-        }
-
+    for item in iter_dhcp_options(data) {
+        let (code, value) = item?;
         if count < 16 {
-            opts[count] = DhcpOption::new(code, &data[i + 2..i + 2 + len]);
+            opts[count] = DhcpOption::new(code, value);
             count += 1;
         }
-
-        i += 2 + len;
     }
 
     Ok((opts, count))
@@ -481,29 +506,10 @@ pub fn parse_options(data: &[u8]) -> Result<([DhcpOption; 16], usize), DhcpError
 
 /// Find a specific option by code in a raw options byte slice.
 fn get_option_value(data: &[u8], code: u8) -> Option<DhcpOption> {
-    let mut i = 0;
-    while i < data.len() {
-        let opt_code = data[i];
-        if opt_code == OPT_END {
-            break;
-        }
-        if opt_code == OPT_PAD {
-            i += 1;
-            continue;
-        }
-        if i + 1 >= data.len() {
-            break;
-        }
-        let len = data[i + 1] as usize;
-        if i + 2 + len > data.len() {
-            break;
-        }
-        if opt_code == code {
-            return Some(DhcpOption::new(code, &data[i + 2..i + 2 + len]));
-        }
-        i += 2 + len;
-    }
-    None
+    iter_dhcp_options(data)
+        .filter_map(Result::ok)
+        .find(|(c, _)| *c == code)
+        .map(|(c, v)| DhcpOption::new(c, v))
 }
 
 // ---------------------------------------------------------------------------
@@ -1479,5 +1485,111 @@ mod tests {
         assert_eq!(msg.xid, 0);
         assert_eq!(msg.options_len, 0);
         assert_eq!(msg.yiaddr, [0; 4]);
+    }
+
+    // -----------------------------------------------------------------------
+    // iter_dhcp_options direct tests
+    // -----------------------------------------------------------------------
+
+    use alloc::vec::Vec;
+
+    #[test]
+    fn test_iter_options_empty() {
+        let buf: [u8; 0] = [];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_iter_options_pad_then_end() {
+        // Pad, Pad, End — should yield nothing and terminate cleanly
+        let buf = [OPT_PAD, OPT_PAD, OPT_END];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_iter_options_only_end() {
+        let buf = [OPT_END];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_iter_options_truncated_length() {
+        // Option code present but no length byte
+        let buf = [OPT_SUBNET_MASK];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], Err(DhcpError::InvalidOptionLength)));
+    }
+
+    #[test]
+    fn test_iter_options_truncated_value() {
+        // Option code + length says 4 bytes but only 2 follow
+        let buf = [OPT_SUBNET_MASK, 4, 0xff, 0xff];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert_eq!(items.len(), 1);
+        assert!(matches!(items[0], Err(DhcpError::InvalidOptionLength)));
+    }
+
+    #[test]
+    fn test_iter_options_multiple_options() {
+        // subnet_mask=255.255.255.0, router=192.168.1.1, end
+        let buf = [
+            OPT_SUBNET_MASK,
+            4,
+            255,
+            255,
+            255,
+            0,
+            OPT_ROUTER,
+            4,
+            192,
+            168,
+            1,
+            1,
+            OPT_END,
+        ];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert_eq!(items.len(), 2);
+        let (code0, val0) = items[0].as_ref().unwrap();
+        assert_eq!(*code0, OPT_SUBNET_MASK);
+        assert_eq!(*val0, &[255, 255, 255, 0][..]);
+        let (code1, val1) = items[1].as_ref().unwrap();
+        assert_eq!(*code1, OPT_ROUTER);
+        assert_eq!(*val1, &[192, 168, 1, 1][..]);
+    }
+
+    #[test]
+    fn test_iter_options_pad_between() {
+        // Pad, option, pad, end
+        let buf = [OPT_PAD, OPT_SUBNET_MASK, 4, 1, 2, 3, 4, OPT_PAD, OPT_END];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert_eq!(items.len(), 1);
+        let (code, val) = items[0].as_ref().unwrap();
+        assert_eq!(*code, OPT_SUBNET_MASK);
+        assert_eq!(*val, &[1, 2, 3, 4][..]);
+    }
+
+    #[test]
+    fn test_iter_options_terminates_after_error() {
+        // Truncated option followed by what would be a valid one — iterator
+        // should stop after the error.
+        let buf = [OPT_SUBNET_MASK, 10, 1, 2];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].is_err());
+    }
+
+    #[test]
+    fn test_iter_options_zero_length_value() {
+        // Option with zero-length value
+        let buf = [OPT_SUBNET_MASK, 0, OPT_END];
+        let items: Vec<_> = iter_dhcp_options(&buf).collect();
+        assert_eq!(items.len(), 1);
+        let (code, val) = items[0].as_ref().unwrap();
+        assert_eq!(*code, OPT_SUBNET_MASK);
+        assert_eq!(val.len(), 0);
     }
 }
