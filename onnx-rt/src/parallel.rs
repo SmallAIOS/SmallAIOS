@@ -8,12 +8,12 @@
 //! use the kernel scheduler's per-core RunQueues).
 
 extern crate alloc;
+#[cfg(feature = "std")]
 extern crate std;
 
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Range;
-use std::thread;
 
 /// Thread pool that distributes work across CPU cores.
 ///
@@ -57,26 +57,35 @@ impl CorePool {
             return vec![f(range)];
         }
 
-        // Determine effective thread count (don't spawn more threads than work items)
-        let effective_threads = self.num_threads.min(len);
-        let chunk_size = len.div_ceil(effective_threads);
-        let mut results = Vec::new();
+        #[cfg(feature = "std")]
+        {
+            // Container mode: use std::thread::scope for real parallelism
+            let effective_threads = self.num_threads.min(len);
+            let chunk_size = len.div_ceil(effective_threads);
+            let mut results = Vec::new();
 
-        thread::scope(|s| {
-            let mut handles = Vec::new();
-            let mut pos = range.start;
-            while pos < range.end {
-                let end = (pos + chunk_size).min(range.end);
-                let chunk_range = pos..end;
-                handles.push(s.spawn(|| f(chunk_range)));
-                pos = end;
-            }
-            for h in handles {
-                results.push(h.join().unwrap());
-            }
-        });
+            std::thread::scope(|s| {
+                let mut handles = Vec::new();
+                let mut pos = range.start;
+                while pos < range.end {
+                    let end = (pos + chunk_size).min(range.end);
+                    let chunk_range = pos..end;
+                    handles.push(s.spawn(|| f(chunk_range)));
+                    pos = end;
+                }
+                for h in handles {
+                    results.push(h.join().unwrap());
+                }
+            });
 
-        results
+            results
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            // Kernel mode: sequential fallback (Phase 2 will use RunQueue)
+            vec![f(range)]
+        }
     }
 }
 
