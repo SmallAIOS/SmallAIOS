@@ -122,6 +122,17 @@ just arch           # Full dependency analysis suite
 - **Release profile:** `opt-level = "z"`, LTO enabled, single codegen unit (size-optimized)
 - **Linker scripts:** Custom per bare-metal target (see `.cargo/config.toml`)
 
+## Container Runtime Environment Variables
+
+The `smallaios-container` binary reads the following env vars at startup:
+
+| Variable | Default | Description |
+|---|---|---|
+| `SMALLAIOS_MODEL_DIR` | `/models` | Directory to load ONNX models from on boot |
+| `SMALLAIOS_PORT` | `8080` | TCP port for the HTTP inference API |
+| `SMALLAIOS_GPU_BACKEND` | `cpu` | Inference backend: `cpu`, `nvidia`, `intel`, `amd` |
+| `SMALLAIOS_BUS_BACKEND` | `none` | Pub/sub dataflow runner: `none` (HTTP only), `zenoh`, or `dds`. Topics use `smallaios/inference/<model>/{input,output,error}`. See `docs/inference-bus.md`. |
+
 ## Versioning
 
 **Semantic versioning** with conventional commits for PR titles.
@@ -261,7 +272,7 @@ See `docs/can-inference.md` for the CAN bus inference bridge and
 - `security`: `pqc-hybrid` (default), `pqc-only`, `classical-only`, `formal-gate`, `verified-boot` (boot signature verification APIs)
 - `onnx-rt`: `cpu` (default), `cuda`, `formal-gate`, `verified-boot` (model signature verification at load time)
 - `net`: `ipv4`, `ipv6` (both default)
-- `container`: `nvidia_gpu`, `formal-gate`
-- `ipc`: `formal-gate`
+- `container`: `nvidia_gpu`, `formal-gate`, `bus-zenoh`, `bus-dds` (pub/sub dataflow runner placeholders — see `docs/inference-bus.md`)
+- `ipc`: `formal-gate`, `onnx` (opt-in ONNX runtime integration for the dataflow runner)
 - `arch/nvidia`: `cc_53` through `cc_100` (CUDA compute capabilities)
 - `peripheral`: `i2c`, `spi`, `gpio`, `uart`, `camera-csi`, `audio-i2s`. Bundles: `sensor-io`, `vision`, `audio`, `full-peripheral`. All default OFF.

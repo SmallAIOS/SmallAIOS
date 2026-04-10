@@ -36,7 +36,7 @@ fn main() {
     let bus_backend = std::env::var("SMALLAIOS_BUS_BACKEND").unwrap_or_else(|_| "none".to_string());
 
     println!(
-        "Config: model_dir={}, port={}, gpu={}, bus={}",
+        "Config: model_dir={}, port={}, gpu={}, bus_backend={}",
         model_dir, port, gpu_backend, bus_backend
     );
 
@@ -53,8 +53,8 @@ fn main() {
     // Wrap manager in Arc for sharing with route closures.
     let manager = Arc::new(manager);
 
-    // Optional bus-backed dataflow runner (zenoh/dds/can/none).
-    enable_dataflow_runner(&manager, &bus_backend);
+    // Bus/dataflow runner startup (zenoh/dds/can/none).
+    enable_dataflow_runner(&bus_backend, Arc::clone(&manager));
 
     // Build HTTP server and register routes.
     let addr = format!("0.0.0.0:{}", port);
@@ -94,6 +94,72 @@ fn main() {
     println!("Shutting down...");
 }
 
+/// Start the pub/sub dataflow runner for the configured bus backend.
+///
+/// Recognized values for `SMALLAIOS_BUS_BACKEND`:
+/// - `none`  — HTTP only (default)
+/// - `zenoh` — start a Zenoh-style pub/sub runner (topic
+///   `smallaios/inference/<model>/{input,output,error}`)
+/// - `dds`   — start a DDS runner via the bus::dds Zenoh adapter
+///
+/// This is currently a placeholder: the real runner lives behind the
+/// `onnx` feature in the `ipc` crate (`dataflow_runner` module), which
+/// is still being wired in a parallel change. Once that lands this
+/// function will start the runner in a background thread sharing the
+/// `ModelManager` Arc and hook its shutdown into the signal handler.
+fn enable_dataflow_runner(bus_backend: &str, _manager: Arc<model_manager::ModelManager>) {
+    match bus_backend {
+        "none" => {}
+        "zenoh" => {
+            println!(
+                "Bus: Zenoh dataflow runner requested \
+                 (placeholder — enable once `smallaios-ipc` ships the `onnx` feature)"
+            );
+            println!("  Topics: smallaios/inference/<model>/{{input,output,error}}");
+            // TODO(dataflow-inference-v1 §5.2): start_zenoh_dataflow_runner(_manager);
+        }
+        "dds" => {
+            println!(
+                "Bus: DDS dataflow runner requested \
+                 (placeholder — enable once `smallaios-ipc` ships the `onnx` feature)"
+            );
+            println!(
+                "  Topics: bridged via bus::dds::DdsZenohAdapter → smallaios/inference/<model>/..."
+            );
+            // TODO(dataflow-inference-v1 §5.2): start_dds_dataflow_runner(_manager);
+        }
+        "can" => {
+            let device =
+                std::env::var("SMALLAIOS_CAN_DEVICE").unwrap_or_else(|_| String::from("loopback"));
+            let routing = std::env::var("SMALLAIOS_CAN_ROUTING").unwrap_or_default();
+            println!(
+                "Bus: CAN dataflow runner requested: device={}, routing={}",
+                device,
+                if routing.is_empty() {
+                    "<none>"
+                } else {
+                    &routing
+                }
+            );
+            match parse_can_device(&device) {
+                Ok(spec) => {
+                    println!("  CAN device parsed: {:?}", spec);
+                    // TODO(can-inference-bridge-v1 §5.3): instantiate controller, attach adapter
+                }
+                Err(e) => {
+                    eprintln!("ERROR: invalid SMALLAIOS_CAN_DEVICE: {}", e);
+                }
+            }
+        }
+        other => {
+            eprintln!(
+                "WARNING: unknown SMALLAIOS_BUS_BACKEND='{}', falling back to HTTP-only",
+                other
+            );
+        }
+    }
+}
+
 /// Register a signal handler that sets the shutdown flag on SIGTERM / SIGINT.
 ///
 /// Uses raw `libc::signal` on Unix to avoid pulling in external crates.
@@ -124,51 +190,6 @@ fn setup_signal_handler(shutdown: Arc<AtomicBool>) {
     #[cfg(not(unix))]
     {
         let _ = shutdown; // suppress unused-variable warning
-    }
-}
-
-/// Enable an optional bus-backed dataflow runner.
-///
-/// Dispatches on `SMALLAIOS_BUS_BACKEND`:
-/// - `zenoh` / `dds` — placeholder for future pub/sub integrations
-/// - `can`           — CAN bus inference bridge (see `docs/can-inference.md`)
-/// - `none`          — no bus runner (default)
-fn enable_dataflow_runner(_manager: &Arc<model_manager::ModelManager>, backend: &str) {
-    match backend {
-        "zenoh" => {
-            println!("Starting Zenoh dataflow runner (placeholder — needs ipc onnx feature)");
-            // TODO(dataflow-inference-v1 §5.2): start_zenoh_dataflow_runner(_manager);
-        }
-        "dds" => {
-            println!("Starting DDS dataflow runner (placeholder — needs ipc onnx feature)");
-            // TODO(dataflow-inference-v1 §5.2): start_dds_dataflow_runner(_manager);
-        }
-        "can" => {
-            let device =
-                std::env::var("SMALLAIOS_CAN_DEVICE").unwrap_or_else(|_| String::from("loopback"));
-            let routing = std::env::var("SMALLAIOS_CAN_ROUTING").unwrap_or_default();
-            println!(
-                "Starting CAN dataflow runner: device={}, routing={}",
-                device,
-                if routing.is_empty() {
-                    "<none>"
-                } else {
-                    &routing
-                }
-            );
-
-            match parse_can_device(&device) {
-                Ok(spec) => {
-                    println!("  CAN device parsed: {:?}", spec);
-                    // TODO(can-inference-bridge-v1 §5.3): instantiate controller, attach adapter
-                }
-                Err(e) => {
-                    eprintln!("ERROR: invalid SMALLAIOS_CAN_DEVICE: {}", e);
-                }
-            }
-        }
-        "none" => {}
-        other => eprintln!("WARNING: unknown bus backend: {}", other),
     }
 }
 
