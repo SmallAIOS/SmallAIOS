@@ -15,7 +15,7 @@ build_std := "-Z build-std=core,compiler_builtins,alloc -Z build-std-features=co
 max_kernel_size_mb := "15"
 
 # Host-testable crates for module-level analysis
-host_crates := "smallaios-kernel smallaios-security smallaios-onnx-rt smallaios-ipc smallaios-net smallaios-posix smallaios-container smallaios-bus smallaios-peripheral smallaios-usb smallaios-sdr smallaios-bench"
+host_crates := "smallaios-kernel smallaios-security smallaios-compute smallaios-onnx-rt smallaios-ipc smallaios-net smallaios-posix smallaios-container smallaios-bus smallaios-peripheral smallaios-usb smallaios-sdr smallaios-bench"
 
 # === Container Mode (Library OS) ===
 
@@ -167,6 +167,7 @@ test:
     {{cargo}} test \
         -p smallaios-kernel \
         -p smallaios-security \
+        -p smallaios-compute \
         -p smallaios-onnx-rt \
         -p smallaios-ipc \
         -p smallaios-net \
@@ -180,6 +181,7 @@ clippy:
     {{cargo}} clippy \
         -p smallaios-kernel \
         -p smallaios-security \
+        -p smallaios-compute \
         -p smallaios-onnx-rt \
         -p smallaios-ipc \
         -p smallaios-net \
@@ -196,6 +198,10 @@ fmt:
 # Check code formatting
 fmt-check:
     {{cargo}} fmt --all -- --check
+
+# Test Metal backend (macOS only)
+test-metal:
+    {{cargo}} test -p smallaios-arch-apple
 
 # === TLA+ Formal Verification ===
 

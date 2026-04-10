@@ -2,12 +2,14 @@
 resolver = "2"
 members = [
     "kernel",
+    "compute",
     "arch/x86_64",
     "arch/aarch64",
     "arch/riscv64",
     "arch/nvidia",
     "arch/intel_gpu",
     "arch/amd",
+    "arch/apple",
     "onnx-rt",
     "ipc",
     "net",

@@ -87,13 +87,13 @@ Install with `just setup-hooks`. Run manually with `just check` (quick) or `just
 
 ## Workspace Architecture
 
-18-crate Rust workspace (`#![no_std]`, edition 2021). Strict 4-layer acyclic dependency model (see `docs/architecture.md` for full details):
+20-crate Rust workspace (`#![no_std]`, edition 2021). Strict 4-layer acyclic dependency model (see `docs/architecture.md` for full details):
 
 ```
 Layer 3 — Integration:  container, bench
-Layer 2 — HAL/Drivers:  arch/{x86_64,aarch64,riscv64,nvidia,intel_gpu,amd}, peripheral, bus, sdr
+Layer 2 — HAL/Drivers:  arch/{x86_64,aarch64,riscv64,nvidia,intel_gpu,amd,apple}, peripheral, bus, sdr
 Layer 1 — Core Services: net, ipc, posix, onnx-rt, usb
-Layer 0 — Foundation:    kernel → security
+Layer 0 — Foundation:    kernel → security, compute
 ```
 
 **Dependency rules:** Higher layers depend on same or lower layers only. Zero production-dependency cycles. The DSM analysis tool (`tools/dsm/`) computes propagation cost, fan-in/out, coupling clusters, and layering violations from `build/analysis/dsm-matrix.json`.
@@ -146,7 +146,7 @@ just arch           # Full dependency analysis suite
 
 ### Releasing
 
-Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release), configured in `release.toml`. All 18 crates share a single version and are bumped together. See `docs/release-runbook.md` for the full step-by-step process.
+Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release), configured in `release.toml`. All 20 crates share a single version and are bumped together. See `docs/release-runbook.md` for the full step-by-step process.
 
 ```bash
 just changelog                   # regenerate CHANGELOG.md via git-cliff

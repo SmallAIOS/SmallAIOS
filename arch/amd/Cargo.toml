@@ -20,3 +20,4 @@ gfx1100 = []  # RDNA 3 (RX 7800/7900)
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
+smallaios-compute = { path = "../../compute" }

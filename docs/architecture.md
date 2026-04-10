@@ -1,6 +1,6 @@
 # SmallAIOS Architecture
 
-SmallAIOS is an 18-crate `#![no_std]` Rust workspace organized into a strict 4-layer dependency model. Higher layers may depend on same-layer or lower-layer crates only. This document covers the layer model, dependency structure, design rationale, and acyclicity guarantees.
+SmallAIOS is a 20-crate `#![no_std]` Rust workspace organized into a strict 4-layer dependency model. Higher layers may depend on same-layer or lower-layer crates only. This document covers the layer model, dependency structure, design rationale, and acyclicity guarantees.
 
 ## 4-Layer Model
 
@@ -21,6 +21,9 @@ SmallAIOS is an 18-crate `#![no_std]` Rust workspace organized into a strict 4-l
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐                       │
 │  │ arch/nvidia│ │  arch/amd  │ │arch/intel  │  GPU HALs (stubs)     │
 │  └────────────┘ └────────────┘ └────────────┘                       │
+│  ┌────────────┐                                                     │
+│  │ arch/apple │  Apple Metal HAL (macOS)                             │
+│  └────────────┘                                                     │
 │  ┌────────────┐ ┌────────────┐ ┌────────────┐                       │
 │  │ peripheral │ │    bus     │ │    sdr     │  Device drivers        │
 │  └────────────┘ └────────────┘ └────────────┘                       │
@@ -38,6 +41,11 @@ SmallAIOS is an 18-crate `#![no_std]` Rust workspace organized into a strict 4-l
 │  │  scheduler, ~46 syscalls  │  │  ML-KEM, ML-DSA, Ed25519,     │   │
 │  │                           │  │  X25519), formal gate          │   │
 │  └───────────────────────────┘  └───────────────────────────────┘   │
+│  ┌───────────────────────────┐                                      │
+│  │  compute                  │  Unified compute abstraction:        │
+│  │  CPU/GPU/NPU backends,    │  device registry, kernel dispatch,   │
+│  │  tensor buffer management │  backend trait hierarchy             │
+│  └───────────────────────────┘                                      │
 │           kernel ──depends-on──▶ security                           │
 └─────────────────────────────────────────────────────────────────────┘
 
@@ -51,6 +59,7 @@ SmallAIOS is an 18-crate `#![no_std]` Rust workspace organized into a strict 4-l
 |-------|-------|------|
 | 0 | `smallaios-kernel` | Memory management, cooperative scheduler, syscall interface |
 | 0 | `smallaios-security` | Capability system, PQC crypto stack, formal verification gate |
+| 0 | `smallaios-compute` | Unified compute abstraction: device registry, kernel dispatch, tensor buffers |
 | 1 | `smallaios-net` | IPv4/IPv6, TCP/UDP, ARP/NDP, QUIC/HTTP3, TLS 1.3 |
 | 1 | `smallaios-ipc` | Zenoh-inspired pub/sub messaging |
 | 1 | `smallaios-posix` | Minimal POSIX compatibility layer |
@@ -62,6 +71,7 @@ SmallAIOS is an 18-crate `#![no_std]` Rust workspace organized into a strict 4-l
 | 2 | `smallaios-arch-nvidia` | NVIDIA GPU HAL stub: PCIe, GPU init, compute, DMA |
 | 2 | `smallaios-arch-amd` | AMD RDNA/CDNA GPU HAL stub |
 | 2 | `smallaios-arch-intel-gpu` | Intel Xe GPU HAL stub |
+| 2 | `smallaios-arch-apple` | Apple Metal GPU HAL (macOS only) |
 | 2 | `smallaios-peripheral` | I2C, SPI, GPIO, UART, CSI camera, I2S audio |
 | 2 | `smallaios-bus` | CAN, ARINC 429/664, MIL-STD-1553, SpaceWire |
 | 2 | `smallaios-sdr` | Software-defined radio: HackRF One, ADALM-Pluto |
@@ -79,7 +89,7 @@ Propagation cost measures the percentage of crates affected when a crate changes
 | Crate | Propagation Cost | Notes |
 |-------|-----------------|-------|
 | `security` | 100% | Foundation — all crates transitively affected |
-| `kernel` | 94% | 16 of 18 crates depend on it directly |
+| `kernel` | 94% | 18 of 20 crates depend on it directly |
 | `arch/nvidia` | 22% | Used by onnx-rt and aarch64 |
 | `net` | 17% | Used by container and posix |
 | `onnx-rt` | 17% | Used by container and aarch64 |
@@ -134,7 +144,7 @@ The scheduler is cooperative, not preemptive. Tasks yield at ONNX operator bound
 
 ### `#![no_std]` Throughout
 
-All 18 crates are `#![no_std]`. This enables bare-metal deployment on x86-64, ARM64, and RISC-V without a host OS. The same crates also compile for musl targets for container deployment, giving a single codebase for both deployment modes.
+All 20 crates are `#![no_std]`. This enables bare-metal deployment on x86-64, ARM64, and RISC-V without a host OS. The same crates also compile for musl targets for container deployment, giving a single codebase for both deployment modes.
 
 ### Size Goals
 
