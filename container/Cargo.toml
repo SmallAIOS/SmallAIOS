@@ -14,7 +14,7 @@ formal-gate = ["smallaios-security/formal-gate"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
-smallaios-onnx-rt = { path = "../onnx-rt" }
+smallaios-onnx-rt = { path = "../onnx-rt", features = ["std"] }
 smallaios-ipc = { path = "../ipc" }
 smallaios-posix = { path = "../posix" }
 smallaios-security = { path = "../security" }
