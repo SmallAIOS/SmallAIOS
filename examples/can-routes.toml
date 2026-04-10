@@ -1,0 +1,77 @@
+# SmallAIOS CAN inference routing — Automotive ADAS example
+# Maps CAN sensor frames to a perception model's input tensor.
+
+[topic.perception]
+tensor_size = 24  # 6 float32 sensors
+batch_trigger = { type = "frame_count", value = 6 }
+# Alternatively: { type = "time_window", value_us = 10000 }
+
+# Input routes: CAN ID -> tensor position
+[[input]]
+can_id = 0x100
+topic = "smallaios/inference/perception/input"
+offset = 0
+size = 4
+decoder = "raw_bytes"
+# Steering angle (float32, big-endian)
+
+[[input]]
+can_id = 0x101
+topic = "smallaios/inference/perception/input"
+offset = 4
+size = 4
+decoder = "raw_bytes"
+# Vehicle speed
+
+[[input]]
+can_id = 0x102
+topic = "smallaios/inference/perception/input"
+offset = 8
+size = 4
+decoder = "raw_bytes"
+# Yaw rate
+
+[[input]]
+can_id = 0x103
+topic = "smallaios/inference/perception/input"
+offset = 12
+size = 4
+decoder = "canaerospace_float32"
+# Lateral acceleration (CANaerospace formatted)
+
+[[input]]
+can_id = 0x104
+topic = "smallaios/inference/perception/input"
+offset = 16
+size = 4
+decoder = "canaerospace_float32"
+# Longitudinal acceleration
+
+[[input]]
+can_id = 0x105
+topic = "smallaios/inference/perception/input"
+offset = 20
+size = 4
+decoder = "raw_bytes"
+# Brake pressure
+
+# Output routes: tensor position -> CAN ID
+[[output]]
+source_topic = "smallaios/inference/perception/output"
+offset = 0
+size = 4
+can_id = 0x200
+encoder = "raw_bytes"
+# Steering command
+
+[[output]]
+source_topic = "smallaios/inference/perception/output"
+offset = 4
+size = 4
+can_id = 0x201
+encoder = "canaerospace_float32"
+# Brake command (CANaerospace formatted for ECU consumption)
+
+# Freshness window: drop batches with frames older than this
+[settings]
+freshness_window_us = 50000  # 50 ms — reject if any sensor stale

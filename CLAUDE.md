@@ -238,6 +238,23 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` an
 
 **Required secrets:** `CODECOV_TOKEN`, `SONAR_TOKEN`
 
+## Container Environment Variables
+
+The container binary (`smallaios-container`) reads runtime configuration
+from environment variables:
+
+| Variable | Values | Purpose |
+|----------|--------|---------|
+| `SMALLAIOS_MODEL_DIR` | path | Directory of ONNX models to load at boot |
+| `SMALLAIOS_PORT` | port | HTTP listen port (default `8080`) |
+| `SMALLAIOS_GPU_BACKEND` | `cpu`, `cuda`, ... | Inference backend |
+| `SMALLAIOS_BUS_BACKEND` | `none`, `zenoh`, `dds`, `can` | Optional bus-backed dataflow runner |
+| `SMALLAIOS_CAN_DEVICE` | `loopback`, `mcp2515:<path>`, `axi:<addr>` | CAN controller for `bus_backend=can` |
+| `SMALLAIOS_CAN_ROUTING` | path | TOML routing table for CAN inference |
+
+See `docs/can-inference.md` for the CAN bus inference bridge and
+`examples/can-routes.toml` for a routing table example.
+
 ## Crate Feature Flags
 
 - `kernel`: `verbose-boot`, `no-global-alloc`, `large-memory` (64 GiB page tracking; default 1 GiB), `verified-boot` (boot integrity verification + measurement log)

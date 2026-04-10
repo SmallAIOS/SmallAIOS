@@ -33,10 +33,11 @@ fn main() {
     let model_dir = std::env::var("SMALLAIOS_MODEL_DIR").unwrap_or_else(|_| "/models".to_string());
     let port = std::env::var("SMALLAIOS_PORT").unwrap_or_else(|_| "8080".to_string());
     let gpu_backend = std::env::var("SMALLAIOS_GPU_BACKEND").unwrap_or_else(|_| "cpu".to_string());
+    let bus_backend = std::env::var("SMALLAIOS_BUS_BACKEND").unwrap_or_else(|_| "none".to_string());
 
     println!(
-        "Config: model_dir={}, port={}, gpu={}",
-        model_dir, port, gpu_backend
+        "Config: model_dir={}, port={}, gpu={}, bus={}",
+        model_dir, port, gpu_backend, bus_backend
     );
 
     // Boot phase: discover and validate models.
@@ -51,6 +52,9 @@ fn main() {
 
     // Wrap manager in Arc for sharing with route closures.
     let manager = Arc::new(manager);
+
+    // Optional bus-backed dataflow runner (zenoh/dds/can/none).
+    enable_dataflow_runner(&manager, &bus_backend);
 
     // Build HTTP server and register routes.
     let addr = format!("0.0.0.0:{}", port);
@@ -120,5 +124,144 @@ fn setup_signal_handler(shutdown: Arc<AtomicBool>) {
     #[cfg(not(unix))]
     {
         let _ = shutdown; // suppress unused-variable warning
+    }
+}
+
+/// Enable an optional bus-backed dataflow runner.
+///
+/// Dispatches on `SMALLAIOS_BUS_BACKEND`:
+/// - `zenoh` / `dds` — placeholder for future pub/sub integrations
+/// - `can`           — CAN bus inference bridge (see `docs/can-inference.md`)
+/// - `none`          — no bus runner (default)
+fn enable_dataflow_runner(_manager: &Arc<model_manager::ModelManager>, backend: &str) {
+    match backend {
+        "zenoh" => {
+            println!("Starting Zenoh dataflow runner (placeholder — needs ipc onnx feature)");
+            // TODO(dataflow-inference-v1 §5.2): start_zenoh_dataflow_runner(_manager);
+        }
+        "dds" => {
+            println!("Starting DDS dataflow runner (placeholder — needs ipc onnx feature)");
+            // TODO(dataflow-inference-v1 §5.2): start_dds_dataflow_runner(_manager);
+        }
+        "can" => {
+            let device =
+                std::env::var("SMALLAIOS_CAN_DEVICE").unwrap_or_else(|_| String::from("loopback"));
+            let routing = std::env::var("SMALLAIOS_CAN_ROUTING").unwrap_or_default();
+            println!(
+                "Starting CAN dataflow runner: device={}, routing={}",
+                device,
+                if routing.is_empty() {
+                    "<none>"
+                } else {
+                    &routing
+                }
+            );
+
+            match parse_can_device(&device) {
+                Ok(spec) => {
+                    println!("  CAN device parsed: {:?}", spec);
+                    // TODO(can-inference-bridge-v1 §5.3): instantiate controller, attach adapter
+                }
+                Err(e) => {
+                    eprintln!("ERROR: invalid SMALLAIOS_CAN_DEVICE: {}", e);
+                }
+            }
+        }
+        "none" => {}
+        other => eprintln!("WARNING: unknown bus backend: {}", other),
+    }
+}
+
+/// Parsed form of `SMALLAIOS_CAN_DEVICE`.
+#[derive(Debug, PartialEq, Eq)]
+enum CanDeviceSpec {
+    /// In-process loopback for testing / CI.
+    Loopback,
+    /// MCP2515 SPI controller; inner is the SPI device path.
+    Mcp2515(String),
+    /// Xilinx AXI CAN IP; inner is the MMIO base address.
+    AxiCan(u64),
+}
+
+/// Parse `SMALLAIOS_CAN_DEVICE` into a [`CanDeviceSpec`].
+///
+/// Accepted forms:
+/// - `loopback`
+/// - `mcp2515:<spi-path>`  e.g. `mcp2515:/dev/spidev0.0`
+/// - `axi:<hex-addr>`      e.g. `axi:0x40000000`
+fn parse_can_device(spec: &str) -> Result<CanDeviceSpec, String> {
+    if spec == "loopback" {
+        return Ok(CanDeviceSpec::Loopback);
+    }
+    if let Some(path) = spec.strip_prefix("mcp2515:") {
+        if path.is_empty() {
+            return Err("mcp2515: requires an SPI device path".to_string());
+        }
+        return Ok(CanDeviceSpec::Mcp2515(path.to_string()));
+    }
+    if let Some(addr) = spec.strip_prefix("axi:") {
+        let addr_clean = addr.trim_start_matches("0x").trim_start_matches("0X");
+        let parsed = u64::from_str_radix(addr_clean, 16)
+            .map_err(|e| format!("invalid hex address '{}': {}", addr, e))?;
+        return Ok(CanDeviceSpec::AxiCan(parsed));
+    }
+    Err(format!("unknown device spec: '{}'", spec))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_can_device_loopback() {
+        assert_eq!(
+            parse_can_device("loopback").unwrap(),
+            CanDeviceSpec::Loopback
+        );
+    }
+
+    #[test]
+    fn parse_can_device_mcp2515() {
+        assert_eq!(
+            parse_can_device("mcp2515:/dev/spidev0.0").unwrap(),
+            CanDeviceSpec::Mcp2515("/dev/spidev0.0".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_can_device_mcp2515_empty_path_errors() {
+        assert!(parse_can_device("mcp2515:").is_err());
+    }
+
+    #[test]
+    fn parse_can_device_axi_hex() {
+        assert_eq!(
+            parse_can_device("axi:0x40000000").unwrap(),
+            CanDeviceSpec::AxiCan(0x4000_0000)
+        );
+    }
+
+    #[test]
+    fn parse_can_device_axi_bare_hex() {
+        assert_eq!(
+            parse_can_device("axi:deadbeef").unwrap(),
+            CanDeviceSpec::AxiCan(0xdead_beef)
+        );
+    }
+
+    #[test]
+    fn parse_can_device_axi_bad_hex_errors() {
+        assert!(parse_can_device("axi:not-hex").is_err());
+    }
+
+    #[test]
+    fn parse_can_device_invalid_prefix_errors() {
+        let err = parse_can_device("usb:/dev/ttyUSB0").unwrap_err();
+        assert!(err.contains("unknown device spec"));
+    }
+
+    #[test]
+    fn parse_can_device_empty_errors() {
+        assert!(parse_can_device("").is_err());
     }
 }
