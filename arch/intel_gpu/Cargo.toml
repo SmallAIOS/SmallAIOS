@@ -15,3 +15,4 @@ xe_hpc = []    # Xe-HPC (Data Center GPU Max / Ponte Vecchio)
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
+smallaios-compute = { path = "../../compute" }

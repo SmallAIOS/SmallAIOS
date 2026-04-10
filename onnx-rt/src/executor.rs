@@ -15,17 +15,22 @@ use crate::operators::{self, OpError, OpKind};
 use crate::session::{InferenceOutput, SessionError};
 use crate::tensor::{DataType, Tensor, TensorShape};
 
-/// Executes an ONNX graph end-to-end on CPU.
+/// Executes an ONNX graph end-to-end.
 ///
 /// Iterates the topologically-sorted execution order, resolving each node's
 /// inputs from `value_map`, dispatching to the corresponding operator, and
 /// storing outputs back into the map. After all nodes execute, the graph's
 /// declared outputs are extracted and returned.
+///
+/// When the `gpu` feature is enabled and a [`GpuBackend`] is provided,
+/// operators that the backend supports will be dispatched to GPU (once
+/// fully implemented). Currently falls through to CPU for all ops.
 pub fn execute_graph(
     graph: &ExecutionGraph,
     inputs: &[(String, Tensor)],
     initializers: &[TensorProto],
     yield_fn: Option<fn()>,
+    #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
 ) -> Result<Vec<InferenceOutput>, SessionError> {
     let mut value_map: BTreeMap<String, Tensor> = BTreeMap::new();
 
@@ -59,8 +64,14 @@ pub fn execute_graph(
             .collect();
 
         // Dispatch operator
-        let outputs = dispatch_node(&node.op_type, &input_tensors, &node.attributes)
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
+        let outputs = dispatch_node(
+            &node.op_type,
+            &input_tensors,
+            &node.attributes,
+            #[cfg(feature = "gpu")]
+            gpu_backend,
+        )
+        .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
 
         // Store outputs in value map
         for (i, output_name) in node.outputs.iter().enumerate() {
@@ -176,7 +187,12 @@ fn get_attr_ints<'a>(attrs: &'a [AttributeProto], name: &str) -> Option<&'a [i64
 // Operator dispatch
 // ---------------------------------------------------------------------------
 
-/// Dispatches a single graph node to the appropriate CPU operator function.
+/// Dispatches a single graph node to the appropriate operator function.
+///
+/// If a GPU backend is available and supports the operator, a future
+/// implementation would dispatch to the GPU path. Currently, GPU support
+/// is checked but all execution falls through to the CPU path since the
+/// GPU backends are architectural stubs.
 ///
 /// Matches the node's `op_type` to an `OpKind` and calls the corresponding
 /// `op_*` function with the resolved input tensors and attributes.
@@ -185,7 +201,16 @@ fn dispatch_node(
     op_type: &str,
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
+    #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
 ) -> Result<Vec<Tensor>, OpError> {
+    // Check if GPU backend can handle this operator. If so, a real
+    // implementation would transfer tensors to device, launch the GPU
+    // kernel, and transfer results back. For now we note the support
+    // and fall through to CPU execution.
+    #[cfg(feature = "gpu")]
+    let _gpu_supported = gpu_backend
+        .map(|gb| gb.supports_op(op_type))
+        .unwrap_or(false);
     let kind =
         OpKind::parse_str(op_type).ok_or_else(|| OpError::UnsupportedOp(String::from(op_type)))?;
 

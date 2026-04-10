@@ -20,3 +20,4 @@ cc_100 = []   # Blackwell (B200, DGX Spark)
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
+smallaios-compute = { path = "../../compute" }
