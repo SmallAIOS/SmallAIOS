@@ -18,6 +18,7 @@
 
 extern crate alloc;
 
+pub mod byte_io;
 pub mod executor;
 pub mod gemm;
 pub mod graph;

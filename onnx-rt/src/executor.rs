@@ -9,6 +9,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::byte_io::{self, allocate_tensor_data, I64_SIZE};
 use crate::graph::ExecutionGraph;
 use crate::onnx_types::{AttributeProto, AttributeType, TensorProto};
 use crate::operators::{self, OpError, OpKind};
@@ -114,31 +115,21 @@ fn tensor_from_proto(proto: &TensorProto) -> Option<Tensor> {
     let raw_data = if !proto.raw_data.is_empty() {
         proto.raw_data.clone()
     } else if !proto.float_data.is_empty() {
-        let mut bytes = alloc::vec![0u8; proto.float_data.len() * 4];
+        let mut bytes = allocate_tensor_data(proto.float_data.len(), DataType::Float);
         for (i, &val) in proto.float_data.iter().enumerate() {
-            let b = val.to_le_bytes();
-            bytes[i * 4] = b[0];
-            bytes[i * 4 + 1] = b[1];
-            bytes[i * 4 + 2] = b[2];
-            bytes[i * 4 + 3] = b[3];
+            byte_io::write_f32(&mut bytes, i, val);
         }
         bytes
     } else if !proto.int64_data.is_empty() {
-        let mut bytes = alloc::vec![0u8; proto.int64_data.len() * 8];
+        let mut bytes = allocate_tensor_data(proto.int64_data.len(), DataType::Int64);
         for (i, &val) in proto.int64_data.iter().enumerate() {
-            let b = val.to_le_bytes();
-            for j in 0..8 {
-                bytes[i * 8 + j] = b[j];
-            }
+            byte_io::write_i64(&mut bytes, i, val);
         }
         bytes
     } else if !proto.int32_data.is_empty() {
-        let mut bytes = alloc::vec![0u8; proto.int32_data.len() * 4];
+        let mut bytes = allocate_tensor_data(proto.int32_data.len(), DataType::Int32);
         for (i, &val) in proto.int32_data.iter().enumerate() {
-            let b = val.to_le_bytes();
-            for j in 0..4 {
-                bytes[i * 4 + j] = b[j];
-            }
+            byte_io::write_i32(&mut bytes, i, val);
         }
         bytes
     } else {
@@ -187,6 +178,21 @@ fn get_attr_ints<'a>(attrs: &'a [AttributeProto], name: &str) -> Option<&'a [i64
 // Operator dispatch
 // ---------------------------------------------------------------------------
 
+/// Reads an f32 from the first 4 bytes of an optional tensor's raw data.
+///
+/// Returns `None` if the tensor is absent or its buffer is shorter than 4
+/// bytes. Used for extracting scalar `min`/`max`/`constant_value` inputs
+/// from the shape-operator dispatchers.
+fn read_first_f32(tensor: Option<&Tensor>) -> Option<f32> {
+    tensor.and_then(|t| {
+        if t.raw_data.len() >= 4 {
+            Some(byte_io::read_f32(&t.raw_data, 0))
+        } else {
+            None
+        }
+    })
+}
+
 /// Dispatches a single graph node to the appropriate operator function.
 ///
 /// If a GPU backend is available and supports the operator, a future
@@ -194,9 +200,10 @@ fn get_attr_ints<'a>(attrs: &'a [AttributeProto], name: &str) -> Option<&'a [i64
 /// is checked but all execution falls through to the CPU path since the
 /// GPU backends are architectural stubs.
 ///
-/// Matches the node's `op_type` to an `OpKind` and calls the corresponding
-/// `op_*` function with the resolved input tensors and attributes.
-/// Returns a vector of output tensors (most operators produce exactly one).
+/// Matches the node's `op_type` to an `OpKind`, then delegates to a
+/// category-specific dispatcher (`dispatch_arithmetic`,
+/// `dispatch_activation`, etc.) to reduce cognitive complexity. Returns
+/// a vector of output tensors (most operators produce exactly one).
 fn dispatch_node(
     op_type: &str,
     inputs: &[Option<&Tensor>],
@@ -215,7 +222,43 @@ fn dispatch_node(
         OpKind::parse_str(op_type).ok_or_else(|| OpError::UnsupportedOp(String::from(op_type)))?;
 
     let result = match kind {
-        // Arithmetic
+        OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div | OpKind::MatMul | OpKind::Gemm => {
+            dispatch_arithmetic(kind, inputs, attrs)
+        }
+        OpKind::Relu | OpKind::Sigmoid | OpKind::Tanh | OpKind::Softmax => {
+            dispatch_activation(kind, inputs, attrs)
+        }
+        OpKind::Conv => dispatch_convolution(kind, inputs, attrs),
+        OpKind::BatchNormalization | OpKind::LayerNormalization => {
+            dispatch_normalization(kind, inputs, attrs)
+        }
+        OpKind::MaxPool | OpKind::AveragePool | OpKind::GlobalAveragePool => {
+            dispatch_pooling(kind, inputs, attrs)
+        }
+        OpKind::ReduceMean | OpKind::ReduceSum => dispatch_reduction(kind, inputs, attrs),
+        OpKind::Reshape
+        | OpKind::Transpose
+        | OpKind::Flatten
+        | OpKind::Squeeze
+        | OpKind::Unsqueeze
+        | OpKind::Concat
+        | OpKind::Gather
+        | OpKind::Slice
+        | OpKind::Pad
+        | OpKind::Cast
+        | OpKind::Clip => dispatch_shape(kind, inputs, attrs),
+    };
+
+    result.map(|t| alloc::vec![t])
+}
+
+/// Dispatches arithmetic operators: Add, Sub, Mul, Div, MatMul, Gemm.
+fn dispatch_arithmetic(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
         OpKind::Add => {
             let refs = require_inputs(inputs, 2, "Add")?;
             operators::op_add(&refs)
@@ -246,16 +289,17 @@ fn dispatch_node(
             let trans_b = get_attr_int(attrs, "transB", 0) != 0;
             operators::op_gemm(a, b, c, alpha, beta, trans_a, trans_b)
         }
+        _ => Err(OpError::UnsupportedOp(String::from("arithmetic"))),
+    }
+}
 
-        // Convolution
-        OpKind::Conv => {
-            let input = require_input(inputs, 0, "Conv")?;
-            let weight = require_input(inputs, 1, "Conv")?;
-            let bias = optional_input(inputs, 2);
-            operators::op_conv(input, weight, bias)
-        }
-
-        // Activations
+/// Dispatches activation operators: Relu, Sigmoid, Tanh, Softmax.
+fn dispatch_activation(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
         OpKind::Relu => {
             let t = require_input(inputs, 0, "Relu")?;
             operators::op_relu(t)
@@ -273,11 +317,124 @@ fn dispatch_node(
             let axis = get_attr_int(attrs, "axis", -1);
             operators::op_softmax(t, axis)
         }
+        _ => Err(OpError::UnsupportedOp(String::from("activation"))),
+    }
+}
 
-        // Shape manipulation
+/// Dispatches convolution operators: Conv.
+fn dispatch_convolution(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    _attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Conv => {
+            let input = require_input(inputs, 0, "Conv")?;
+            let weight = require_input(inputs, 1, "Conv")?;
+            let bias = optional_input(inputs, 2);
+            operators::op_conv(input, weight, bias)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("convolution"))),
+    }
+}
+
+/// Dispatches normalization operators: BatchNormalization, LayerNormalization.
+fn dispatch_normalization(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::BatchNormalization => {
+            let x = require_input(inputs, 0, "BatchNormalization")?;
+            let scale = require_input(inputs, 1, "BatchNormalization")?;
+            let bias = require_input(inputs, 2, "BatchNormalization")?;
+            let mean = require_input(inputs, 3, "BatchNormalization")?;
+            let var = require_input(inputs, 4, "BatchNormalization")?;
+            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
+            operators::op_batch_normalization(x, scale, bias, mean, var, epsilon)
+        }
+        OpKind::LayerNormalization => {
+            let x = require_input(inputs, 0, "LayerNormalization")?;
+            let scale = require_input(inputs, 1, "LayerNormalization")?;
+            let bias = optional_input(inputs, 2);
+            let axis = get_attr_int(attrs, "axis", -1);
+            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
+            operators::op_layer_normalization(x, scale, bias, axis, epsilon)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("normalization"))),
+    }
+}
+
+/// Dispatches pooling operators: MaxPool, AveragePool, GlobalAveragePool.
+fn dispatch_pooling(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::MaxPool => {
+            let x = require_input(inputs, 0, "MaxPool")?;
+            let kernel_shape = get_attr_ints(attrs, "kernel_shape").ok_or_else(|| {
+                OpError::InvalidAttribute(String::from("MaxPool requires kernel_shape"))
+            })?;
+            let strides = get_attr_ints(attrs, "strides");
+            let pads = get_attr_ints(attrs, "pads");
+            operators::op_maxpool(x, kernel_shape, strides, pads)
+        }
+        OpKind::AveragePool => {
+            let x = require_input(inputs, 0, "AveragePool")?;
+            let kernel_shape = get_attr_ints(attrs, "kernel_shape").ok_or_else(|| {
+                OpError::InvalidAttribute(String::from("AveragePool requires kernel_shape"))
+            })?;
+            let strides = get_attr_ints(attrs, "strides");
+            let pads = get_attr_ints(attrs, "pads");
+            operators::op_averagepool(x, kernel_shape, strides, pads)
+        }
+        OpKind::GlobalAveragePool => {
+            let x = require_input(inputs, 0, "GlobalAveragePool")?;
+            operators::op_global_average_pool(x)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("pooling"))),
+    }
+}
+
+/// Dispatches reduction operators: ReduceMean, ReduceSum.
+fn dispatch_reduction(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::ReduceMean => {
+            let x = require_input(inputs, 0, "ReduceMean")?;
+            let axes = get_attr_ints(attrs, "axes").unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            operators::op_reduce_mean(x, axes, keepdims)
+        }
+        OpKind::ReduceSum => {
+            let x = require_input(inputs, 0, "ReduceSum")?;
+            // Opset 13+: axes from second input; older: from attribute
+            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_attr = get_attr_ints(attrs, "axes");
+            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            operators::op_reduce_sum(x, axes, keepdims)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("reduction"))),
+    }
+}
+
+/// Dispatches shape-manipulation operators: Reshape, Transpose, Flatten,
+/// Squeeze, Unsqueeze, Concat, Gather, Slice, Pad, Cast, Clip.
+fn dispatch_shape(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
         OpKind::Reshape => {
             let t = require_input(inputs, 0, "Reshape")?;
-            // Shape tensor is the second input
             let shape_tensor = require_input(inputs, 1, "Reshape")?;
             let shape = read_i64_tensor(shape_tensor);
             operators::op_reshape(t, &shape)
@@ -294,14 +451,12 @@ fn dispatch_node(
         }
         OpKind::Squeeze => {
             let t = require_input(inputs, 0, "Squeeze")?;
-            // In opset 13+, axes come from second input tensor
             let axes_tensor = optional_input(inputs, 1);
             let axes = axes_tensor.map(read_i64_tensor);
             operators::op_squeeze(t, axes.as_deref())
         }
         OpKind::Unsqueeze => {
             let t = require_input(inputs, 0, "Unsqueeze")?;
-            // In opset 13+, axes come from second input tensor
             let axes_tensor = require_input(inputs, 1, "Unsqueeze")?;
             let axes = read_i64_tensor(axes_tensor);
             operators::op_unsqueeze(t, &axes)
@@ -345,50 +500,13 @@ fn dispatch_node(
                 .map(|a| a.s.as_slice())
                 .unwrap_or(b"constant");
             let mode_str = core::str::from_utf8(mode_bytes).unwrap_or("constant");
-            let constant_value = constant_tensor
-                .and_then(|ct| {
-                    if ct.raw_data.len() >= 4 {
-                        Some(f32::from_le_bytes([
-                            ct.raw_data[0],
-                            ct.raw_data[1],
-                            ct.raw_data[2],
-                            ct.raw_data[3],
-                        ]))
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or(0.0);
+            let constant_value = read_first_f32(constant_tensor).unwrap_or(0.0);
             operators::op_pad(t, &pads, mode_str, constant_value)
         }
         OpKind::Clip => {
             let t = require_input(inputs, 0, "Clip")?;
-            let min_tensor = optional_input(inputs, 1);
-            let max_tensor = optional_input(inputs, 2);
-            let min_val = min_tensor.and_then(|mt| {
-                if mt.raw_data.len() >= 4 {
-                    Some(f32::from_le_bytes([
-                        mt.raw_data[0],
-                        mt.raw_data[1],
-                        mt.raw_data[2],
-                        mt.raw_data[3],
-                    ]))
-                } else {
-                    None
-                }
-            });
-            let max_val = max_tensor.and_then(|mt| {
-                if mt.raw_data.len() >= 4 {
-                    Some(f32::from_le_bytes([
-                        mt.raw_data[0],
-                        mt.raw_data[1],
-                        mt.raw_data[2],
-                        mt.raw_data[3],
-                    ]))
-                } else {
-                    None
-                }
-            });
+            let min_val = read_first_f32(optional_input(inputs, 1));
+            let max_val = read_first_f32(optional_input(inputs, 2));
             operators::op_clip(t, min_val, max_val)
         }
         OpKind::Cast => {
@@ -399,69 +517,8 @@ fn dispatch_node(
             })?;
             operators::op_cast(t, target)
         }
-
-        // Normalization
-        OpKind::BatchNormalization => {
-            let x = require_input(inputs, 0, "BatchNormalization")?;
-            let scale = require_input(inputs, 1, "BatchNormalization")?;
-            let bias = require_input(inputs, 2, "BatchNormalization")?;
-            let mean = require_input(inputs, 3, "BatchNormalization")?;
-            let var = require_input(inputs, 4, "BatchNormalization")?;
-            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
-            operators::op_batch_normalization(x, scale, bias, mean, var, epsilon)
-        }
-        OpKind::LayerNormalization => {
-            let x = require_input(inputs, 0, "LayerNormalization")?;
-            let scale = require_input(inputs, 1, "LayerNormalization")?;
-            let bias = optional_input(inputs, 2);
-            let axis = get_attr_int(attrs, "axis", -1);
-            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
-            operators::op_layer_normalization(x, scale, bias, axis, epsilon)
-        }
-
-        // Pooling
-        OpKind::MaxPool => {
-            let x = require_input(inputs, 0, "MaxPool")?;
-            let kernel_shape = get_attr_ints(attrs, "kernel_shape").ok_or_else(|| {
-                OpError::InvalidAttribute(String::from("MaxPool requires kernel_shape"))
-            })?;
-            let strides = get_attr_ints(attrs, "strides");
-            let pads = get_attr_ints(attrs, "pads");
-            operators::op_maxpool(x, kernel_shape, strides, pads)
-        }
-        OpKind::AveragePool => {
-            let x = require_input(inputs, 0, "AveragePool")?;
-            let kernel_shape = get_attr_ints(attrs, "kernel_shape").ok_or_else(|| {
-                OpError::InvalidAttribute(String::from("AveragePool requires kernel_shape"))
-            })?;
-            let strides = get_attr_ints(attrs, "strides");
-            let pads = get_attr_ints(attrs, "pads");
-            operators::op_averagepool(x, kernel_shape, strides, pads)
-        }
-        OpKind::GlobalAveragePool => {
-            let x = require_input(inputs, 0, "GlobalAveragePool")?;
-            operators::op_global_average_pool(x)
-        }
-
-        // Reduction
-        OpKind::ReduceMean => {
-            let x = require_input(inputs, 0, "ReduceMean")?;
-            let axes = get_attr_ints(attrs, "axes").unwrap_or(&[]);
-            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
-            operators::op_reduce_mean(x, axes, keepdims)
-        }
-        OpKind::ReduceSum => {
-            let x = require_input(inputs, 0, "ReduceSum")?;
-            // Opset 13+: axes from second input; older: from attribute
-            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
-            let axes_attr = get_attr_ints(attrs, "axes");
-            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
-            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
-            operators::op_reduce_sum(x, axes, keepdims)
-        }
-    };
-
-    result.map(|t| alloc::vec![t])
+        _ => Err(OpError::UnsupportedOp(String::from("shape"))),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -508,22 +565,10 @@ fn require_inputs<'a>(
 
 /// Reads an i64 tensor's raw_data as a Vec<i64>.
 fn read_i64_tensor(tensor: &Tensor) -> Vec<i64> {
-    if tensor.data_type == DataType::Int64 && tensor.raw_data.len() >= 8 {
-        let count = tensor.raw_data.len() / 8;
+    if tensor.data_type == DataType::Int64 && tensor.raw_data.len() >= I64_SIZE {
+        let count = tensor.raw_data.len() / I64_SIZE;
         (0..count)
-            .map(|i| {
-                let off = i * 8;
-                i64::from_le_bytes([
-                    tensor.raw_data[off],
-                    tensor.raw_data[off + 1],
-                    tensor.raw_data[off + 2],
-                    tensor.raw_data[off + 3],
-                    tensor.raw_data[off + 4],
-                    tensor.raw_data[off + 5],
-                    tensor.raw_data[off + 6],
-                    tensor.raw_data[off + 7],
-                ])
-            })
+            .map(|i| byte_io::read_i64(&tensor.raw_data, i))
             .collect()
     } else {
         Vec::new()

@@ -435,6 +435,52 @@ impl DhcpMessage {
 // TLV options parser
 // ---------------------------------------------------------------------------
 
+/// Iterate over DHCP options in a raw options buffer.
+///
+/// Each yielded item is `Ok((option_code, option_value_bytes))` for a
+/// well-formed option, or `Err(DhcpError::InvalidOptionLength)` if the
+/// buffer is truncated mid-option. Stops at the END option (0xff) or end
+/// of buffer. Skips PAD options (0x00).
+///
+/// Once an error is yielded, the iterator terminates.
+fn iter_dhcp_options(data: &[u8]) -> impl Iterator<Item = Result<(u8, &[u8]), DhcpError>> + '_ {
+    let mut pos = 0;
+    let mut done = false;
+    core::iter::from_fn(move || {
+        if done {
+            return None;
+        }
+        while pos < data.len() {
+            let code = data[pos];
+
+            // PAD option — skip
+            if code == OPT_PAD {
+                pos += 1;
+                continue;
+            }
+            // END option — stop
+            if code == OPT_END {
+                done = true;
+                return None;
+            }
+            // Other options have a length byte
+            if pos + 1 >= data.len() {
+                done = true;
+                return Some(Err(DhcpError::InvalidOptionLength));
+            }
+            let len = data[pos + 1] as usize;
+            if pos + 2 + len > data.len() {
+                done = true;
+                return Some(Err(DhcpError::InvalidOptionLength));
+            }
+            let value = &data[pos + 2..pos + 2 + len];
+            pos += 2 + len;
+            return Some(Ok((code, value)));
+        }
+        None
+    })
+}
+
 /// Parse all TLV options from a raw options byte slice.
 ///
 /// Returns options in a fixed-size array. Stops at the END option (255)
@@ -446,34 +492,13 @@ pub fn parse_options(data: &[u8]) -> Result<([DhcpOption; 16], usize), DhcpError
         data: [0u8; 255],
     }; 16];
     let mut count = 0;
-    let mut i = 0;
 
-    while i < data.len() {
-        let code = data[i];
-
-        if code == OPT_END {
-            break;
-        }
-        if code == OPT_PAD {
-            i += 1;
-            continue;
-        }
-
-        // Need at least one more byte for length
-        if i + 1 >= data.len() {
-            return Err(DhcpError::InvalidOptionLength);
-        }
-        let len = data[i + 1] as usize;
-        if i + 2 + len > data.len() {
-            return Err(DhcpError::InvalidOptionLength);
-        }
-
+    for item in iter_dhcp_options(data) {
+        let (code, value) = item?;
         if count < 16 {
-            opts[count] = DhcpOption::new(code, &data[i + 2..i + 2 + len]);
+            opts[count] = DhcpOption::new(code, value);
             count += 1;
         }
-
-        i += 2 + len;
     }
 
     Ok((opts, count))
@@ -481,29 +506,10 @@ pub fn parse_options(data: &[u8]) -> Result<([DhcpOption; 16], usize), DhcpError
 
 /// Find a specific option by code in a raw options byte slice.
 fn get_option_value(data: &[u8], code: u8) -> Option<DhcpOption> {
-    let mut i = 0;
-    while i < data.len() {
-        let opt_code = data[i];
-        if opt_code == OPT_END {
-            break;
-        }
-        if opt_code == OPT_PAD {
-            i += 1;
-            continue;
-        }
-        if i + 1 >= data.len() {
-            break;
-        }
-        let len = data[i + 1] as usize;
-        if i + 2 + len > data.len() {
-            break;
-        }
-        if opt_code == code {
-            return Some(DhcpOption::new(code, &data[i + 2..i + 2 + len]));
-        }
-        i += 2 + len;
-    }
-    None
+    iter_dhcp_options(data)
+        .filter_map(Result::ok)
+        .find(|(c, _)| *c == code)
+        .map(|(c, v)| DhcpOption::new(c, v))
 }
 
 // ---------------------------------------------------------------------------
