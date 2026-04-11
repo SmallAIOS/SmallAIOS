@@ -22,6 +22,7 @@ members = [
     "sdr",
     "bench",
     "sched-types",
+    "tools/coverage-probe",
 ]
 
 [workspace.package]

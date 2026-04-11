@@ -773,6 +773,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallaios-coverage-probe"
+version = "0.2.1"
+dependencies = [
+ "serde",
+ "serde_json",
+ "smallaios-onnx-rt",
+]
+
+[[package]]
 name = "smallaios-ipc"
 version = "0.2.1"
 dependencies = [

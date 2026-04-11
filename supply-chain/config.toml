@@ -4,6 +4,12 @@
 [cargo-vet]
 version = "0.10"
 
+# The coverage-probe is a developer / CI tool that ships only as a host
+# binary. It does not run inside the unikernel or container image, so its
+# transitive deps only need safe-to-run audits, not safe-to-deploy.
+[policy."smallaios-coverage-probe"]
+criteria = "safe-to-run"
+
 [[exemptions.aho-corasick]]
 version = "1.1.4"
 criteria = "safe-to-run"
