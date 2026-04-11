@@ -16,6 +16,7 @@ on x86-64, ARM64, and RISC-V platforms.
 - **6 architectures** — x86-64, AArch64, RISC-V 64, NVIDIA GPU, AMD GPU, Intel GPU
 - **Post-quantum crypto** — ML-KEM-768 + ML-DSA-65 hybrid mode by default
 - **Full network stack** — IPv4/IPv6, TCP/UDP, QUIC/HTTP3, TLS 1.3
+- **65 ONNX operators** — see the [coverage roadmap](docs/onnx-coverage-roadmap.md) for the path to full standard-spec coverage
 - **Formally verified** — 19 TLA+ models, SPIN protocols, Lean 4 proofs
 - **4,143 tests** — Zero clippy warnings, MC/DC coverage on safety-critical paths
 - **< 15 MB** — Release binary per architecture
