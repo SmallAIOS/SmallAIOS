@@ -1,0 +1,11 @@
+[package]
+name = "smallaios-sched-types"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Shared scheduler primitive types for SmallAIOS"
+publish = false
+
+[dependencies]
+# None — pure type definitions

@@ -22,6 +22,7 @@ verified-boot = ["dep:smallaios-security", "smallaios-security/verified-boot"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }
+smallaios-sched-types = { path = "../sched-types" }
 smallaios-compute = { path = "../compute", optional = true }
 smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }
 smallaios-security = { path = "../security", optional = true }
