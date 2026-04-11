@@ -512,45 +512,8 @@ pub fn op_scatter_nd(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ops::common::test_helpers::{make_f32, make_i64, read_all_f32, read_all_i64};
     use alloc::vec;
-
-    fn make_f32(dims: &[i64], vals: &[f32]) -> Tensor {
-        let mut data = allocate_tensor_data(vals.len(), DataType::Float);
-        for (i, &v) in vals.iter().enumerate() {
-            write_f32(&mut data, i, v);
-        }
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(dims.to_vec()),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
-
-    fn make_i64(dims: &[i64], vals: &[i64]) -> Tensor {
-        let mut data = alloc::vec![0u8; vals.len() * I64_SIZE];
-        for (i, &v) in vals.iter().enumerate() {
-            write_i64(&mut data, i, v);
-        }
-        Tensor {
-            data_type: DataType::Int64,
-            shape: TensorShape::new(dims.to_vec()),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
-
-    fn read_all_f32(t: &Tensor) -> Vec<f32> {
-        (0..t.shape.total_elements())
-            .map(|i| read_f32(&t.raw_data, i))
-            .collect()
-    }
-
-    fn read_all_i64(t: &Tensor) -> Vec<i64> {
-        (0..t.shape.total_elements())
-            .map(|i| read_i64(&t.raw_data, i))
-            .collect()
-    }
 
     #[test]
     fn test_shape_basic() {

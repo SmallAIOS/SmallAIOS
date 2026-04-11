@@ -281,33 +281,8 @@ pub fn op_arg_min(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::byte_io::read_i64;
+    use crate::ops::common::test_helpers::{make_f32, read_all_f32, read_all_i64};
     use alloc::vec;
-
-    fn make_f32(dims: &[i64], vals: &[f32]) -> Tensor {
-        let mut data = allocate_tensor_data(vals.len(), DataType::Float);
-        for (i, &v) in vals.iter().enumerate() {
-            write_f32(&mut data, i, v);
-        }
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(dims.to_vec()),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
-
-    fn read_all_f32(t: &Tensor) -> Vec<f32> {
-        (0..t.shape.total_elements())
-            .map(|i| read_f32(&t.raw_data, i))
-            .collect()
-    }
-
-    fn read_all_i64(t: &Tensor) -> Vec<i64> {
-        (0..t.shape.total_elements())
-            .map(|i| read_i64(&t.raw_data, i))
-            .collect()
-    }
 
     #[test]
     fn test_reduce_max_axis0() {

@@ -289,51 +289,10 @@ pub fn op_qlinear_conv(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::byte_io::{write_f32, write_i32};
+    use crate::byte_io::write_i32;
+    use crate::ops::common::test_helpers::{make_f32, scalar_f32, scalar_i8, scalar_u8};
     use crate::tensor::TensorShape;
     use alloc::vec::Vec;
-
-    fn make_f32(dims: &[i64], vals: &[f32]) -> Tensor {
-        let mut data = allocate_tensor_data(vals.len(), DataType::Float);
-        for (i, &v) in vals.iter().enumerate() {
-            write_f32(&mut data, i, v);
-        }
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(dims.to_vec()),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
-
-    fn scalar_f32(v: f32) -> Tensor {
-        let mut data = alloc::vec![0u8; 4];
-        write_f32(&mut data, 0, v);
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(alloc::vec![1]),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
-
-    fn scalar_i8(v: i8) -> Tensor {
-        Tensor {
-            data_type: DataType::Int8,
-            shape: TensorShape::new(alloc::vec![1]),
-            name: String::new(),
-            raw_data: alloc::vec![v as u8],
-        }
-    }
-
-    fn scalar_u8(v: u8) -> Tensor {
-        Tensor {
-            data_type: DataType::Uint8,
-            shape: TensorShape::new(alloc::vec![1]),
-            name: String::new(),
-            raw_data: alloc::vec![v],
-        }
-    }
 
     fn read_int8(t: &Tensor) -> Vec<i8> {
         t.raw_data.iter().map(|&b| b as i8).collect()

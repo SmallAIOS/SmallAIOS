@@ -40,29 +40,9 @@ pub fn op_swish(input: &Tensor) -> Result<Tensor, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::String;
-
-    use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
+    use crate::ops::common::test_helpers::{make_f32, read_all_f32 as read_all};
     use crate::tensor::{DataType, TensorShape};
-
-    fn make_f32(dims: &[i64], vals: &[f32]) -> Tensor {
-        let mut data = allocate_tensor_data(vals.len(), DataType::Float);
-        for (i, &v) in vals.iter().enumerate() {
-            write_f32(&mut data, i, v);
-        }
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(dims.to_vec()),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
-
-    fn read_all(t: &Tensor) -> alloc::vec::Vec<f32> {
-        (0..t.shape.total_elements())
-            .map(|i| read_f32(&t.raw_data, i))
-            .collect()
-    }
+    use alloc::string::String;
 
     #[test]
     fn test_gelu_at_zero() {

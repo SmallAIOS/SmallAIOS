@@ -600,19 +600,7 @@ pub fn op_gru(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_f32(dims: &[i64], vals: &[f32]) -> Tensor {
-        let mut data = allocate_tensor_data(vals.len(), DataType::Float);
-        for (i, &v) in vals.iter().enumerate() {
-            write_f32(&mut data, i, v);
-        }
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(dims.to_vec()),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
+    use crate::ops::common::test_helpers::make_f32;
 
     #[test]
     fn test_rnn_forward_shape() {

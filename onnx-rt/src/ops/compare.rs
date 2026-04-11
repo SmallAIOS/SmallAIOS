@@ -202,39 +202,9 @@ pub fn op_not(input: &Tensor) -> Result<Tensor, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn make_f32(dims: &[i64], vals: &[f32]) -> Tensor {
-        let mut data = allocate_tensor_data(vals.len(), DataType::Float);
-        for (i, &v) in vals.iter().enumerate() {
-            write_f32(&mut data, i, v);
-        }
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(dims.to_vec()),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
-
-    fn make_bool(dims: &[i64], vals: &[bool]) -> Tensor {
-        let data: Vec<u8> = vals.iter().map(|&b| if b { 1 } else { 0 }).collect();
-        Tensor {
-            data_type: DataType::Bool,
-            shape: TensorShape::new(dims.to_vec()),
-            name: String::new(),
-            raw_data: data,
-        }
-    }
-
-    fn read_bool_all(t: &Tensor) -> Vec<bool> {
-        t.raw_data.iter().map(|&b| b != 0).collect()
-    }
-
-    fn read_f32_all(t: &Tensor) -> Vec<f32> {
-        (0..t.shape.total_elements())
-            .map(|i| read_f32(&t.raw_data, i))
-            .collect()
-    }
+    use crate::ops::common::test_helpers::{
+        make_bool, make_f32, read_all_bool as read_bool_all, read_all_f32 as read_f32_all,
+    };
 
     #[test]
     fn test_equal() {
