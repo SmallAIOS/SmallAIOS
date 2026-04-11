@@ -81,9 +81,20 @@ pub fn classify_op(op_type: &str) -> OperatorClass {
         // Tier 2 transformer shape ops
         | "Split" | "Expand" | "Tile" | "OneHot"
         // Tier 2 quantization conversion
-        | "QuantizeLinear" | "DequantizeLinear" => OperatorClass::Elementwise,
+        | "QuantizeLinear" | "DequantizeLinear"
+        // Tier 3 Phase 1 element-wise math / bool
+        | "Mod" | "Sin" | "Cos" | "Reciprocal" | "Sign" | "Sum" | "Mean"
+        | "And" | "Or"
+        // Tier 3 Phase 1 shape / data-movement
+        | "Shape" | "Size" | "Identity" | "Constant" | "ConstantOfShape"
+        | "Range" | "Trilu" | "CumSum" | "GatherND" | "ScatterND" => {
+            OperatorClass::Elementwise
+        }
         "Softmax" | "LayerNormalization" | "BatchNormalization" | "MaxPool" | "AveragePool"
-        | "GlobalAveragePool" | "ReduceMean" | "ReduceSum" => OperatorClass::Reduction,
+        | "GlobalAveragePool" | "ReduceMean" | "ReduceSum"
+        // Tier 3 Phase 1 reductions
+        | "ReduceMax" | "ReduceMin" | "ReduceProd" | "ArgMax" | "ArgMin"
+        | "LogSoftmax" => OperatorClass::Reduction,
         "MatMul" | "Gemm" | "Conv"
         // Tier 2: Einsum is matmul-like; quantized GEMM/Conv same.
         | "Einsum" | "QLinearMatMul" | "QLinearConv" => OperatorClass::Gemm,

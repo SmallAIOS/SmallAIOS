@@ -294,7 +294,13 @@ fn dispatch_node(
         OpKind::MaxPool | OpKind::AveragePool | OpKind::GlobalAveragePool => {
             dispatch_pooling(kind, inputs, attrs)
         }
-        OpKind::ReduceMean | OpKind::ReduceSum => dispatch_reduction(kind, inputs, attrs),
+        OpKind::ReduceMean
+        | OpKind::ReduceSum
+        | OpKind::ReduceMax
+        | OpKind::ReduceMin
+        | OpKind::ReduceProd
+        | OpKind::ArgMax
+        | OpKind::ArgMin => dispatch_reduction(kind, inputs, attrs),
         OpKind::Reshape
         | OpKind::Transpose
         | OpKind::Flatten
@@ -315,7 +321,17 @@ fn dispatch_node(
         | OpKind::Abs
         | OpKind::Floor
         | OpKind::Ceil
-        | OpKind::Round => dispatch_math(kind, inputs, attrs),
+        | OpKind::Round
+        | OpKind::Mod
+        | OpKind::Sin
+        | OpKind::Cos
+        | OpKind::Reciprocal
+        | OpKind::Sign
+        | OpKind::Sum
+        | OpKind::Mean
+        | OpKind::And
+        | OpKind::Or
+        | OpKind::LogSoftmax => dispatch_math(kind, inputs, attrs),
         OpKind::Equal
         | OpKind::NotEqual
         | OpKind::Less
@@ -326,6 +342,16 @@ fn dispatch_node(
         | OpKind::Min
         | OpKind::Max
         | OpKind::Not => dispatch_compare(kind, inputs, attrs),
+        OpKind::Shape
+        | OpKind::Size
+        | OpKind::Identity
+        | OpKind::Constant
+        | OpKind::ConstantOfShape
+        | OpKind::Range
+        | OpKind::Trilu
+        | OpKind::CumSum
+        | OpKind::GatherND
+        | OpKind::ScatterND => dispatch_shape_data(kind, inputs, attrs),
         OpKind::Gelu | OpKind::LeakyRelu | OpKind::Elu | OpKind::Swish => {
             dispatch_composite_activation(kind, inputs, attrs)
         }
@@ -347,11 +373,11 @@ fn dispatch_node(
 // Tier 2 dispatch helpers
 // ---------------------------------------------------------------------------
 
-/// Dispatches Tier 2 element-wise math primitives.
+/// Dispatches Tier 2/3 element-wise math primitives.
 fn dispatch_math(
     kind: OpKind,
     inputs: &[Option<&Tensor>],
-    _attrs: &[AttributeProto],
+    attrs: &[AttributeProto],
 ) -> Result<Tensor, OpError> {
     match kind {
         OpKind::Pow => {
@@ -368,6 +394,39 @@ fn dispatch_math(
         OpKind::Floor => ops::math::op_floor(require_input(inputs, 0, "Floor")?),
         OpKind::Ceil => ops::math::op_ceil(require_input(inputs, 0, "Ceil")?),
         OpKind::Round => ops::math::op_round(require_input(inputs, 0, "Round")?),
+        OpKind::Mod => {
+            let a = require_input(inputs, 0, "Mod")?;
+            let b = require_input(inputs, 1, "Mod")?;
+            let fmod = get_attr_int(attrs, "fmod", 0) != 0;
+            ops::math::op_mod(a, b, fmod)
+        }
+        OpKind::Sin => ops::math::op_sin(require_input(inputs, 0, "Sin")?),
+        OpKind::Cos => ops::math::op_cos(require_input(inputs, 0, "Cos")?),
+        OpKind::Reciprocal => ops::math::op_reciprocal(require_input(inputs, 0, "Reciprocal")?),
+        OpKind::Sign => ops::math::op_sign(require_input(inputs, 0, "Sign")?),
+        OpKind::Sum => {
+            let refs: Vec<&Tensor> = inputs.iter().filter_map(|i| *i).collect();
+            ops::math::op_sum(&refs)
+        }
+        OpKind::Mean => {
+            let refs: Vec<&Tensor> = inputs.iter().filter_map(|i| *i).collect();
+            ops::math::op_mean(&refs)
+        }
+        OpKind::And => {
+            let a = require_input(inputs, 0, "And")?;
+            let b = require_input(inputs, 1, "And")?;
+            ops::math::op_and(a, b)
+        }
+        OpKind::Or => {
+            let a = require_input(inputs, 0, "Or")?;
+            let b = require_input(inputs, 1, "Or")?;
+            ops::math::op_or(a, b)
+        }
+        OpKind::LogSoftmax => {
+            let x = require_input(inputs, 0, "LogSoftmax")?;
+            let axis = get_attr_int(attrs, "axis", -1);
+            ops::math::op_log_softmax(x, axis)
+        }
         _ => Err(OpError::UnsupportedOp(String::from("math"))),
     }
 }
@@ -788,7 +847,166 @@ fn dispatch_reduction(
             let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
             operators::op_reduce_sum(x, axes, keepdims)
         }
+        OpKind::ReduceMax => {
+            let x = require_input(inputs, 0, "ReduceMax")?;
+            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_attr = get_attr_ints(attrs, "axes");
+            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::reduction::op_reduce_max(x, axes, keepdims)
+        }
+        OpKind::ReduceMin => {
+            let x = require_input(inputs, 0, "ReduceMin")?;
+            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_attr = get_attr_ints(attrs, "axes");
+            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::reduction::op_reduce_min(x, axes, keepdims)
+        }
+        OpKind::ReduceProd => {
+            let x = require_input(inputs, 0, "ReduceProd")?;
+            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_attr = get_attr_ints(attrs, "axes");
+            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::reduction::op_reduce_prod(x, axes, keepdims)
+        }
+        OpKind::ArgMax => {
+            let x = require_input(inputs, 0, "ArgMax")?;
+            let axis = get_attr_int(attrs, "axis", 0);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            let select_last = get_attr_int(attrs, "select_last_index", 0) != 0;
+            ops::reduction::op_arg_max(x, axis, keepdims, select_last)
+        }
+        OpKind::ArgMin => {
+            let x = require_input(inputs, 0, "ArgMin")?;
+            let axis = get_attr_int(attrs, "axis", 0);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            let select_last = get_attr_int(attrs, "select_last_index", 0) != 0;
+            ops::reduction::op_arg_min(x, axis, keepdims, select_last)
+        }
         _ => Err(OpError::UnsupportedOp(String::from("reduction"))),
+    }
+}
+
+/// Dispatches Tier 3 shape / data-movement operators.
+fn dispatch_shape_data(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Shape => ops::shape_data::op_shape(require_input(inputs, 0, "Shape")?),
+        OpKind::Size => ops::shape_data::op_size(require_input(inputs, 0, "Size")?),
+        OpKind::Identity => ops::shape_data::op_identity(require_input(inputs, 0, "Identity")?),
+        OpKind::Constant => {
+            // ONNX Constant carries its payload in a 'value' attribute
+            // (TensorProto). SmallAIOS's AttributeProto does not model
+            // tensor attributes yet, so at runtime we fall back to
+            // either an explicit input tensor (treating Constant as an
+            // Identity pass-through of a graph initializer) or a single
+            // float / int scalar decoded from the float / int attribute
+            // fields.
+            if let Some(t) = optional_input(inputs, 0) {
+                return ops::shape_data::op_identity(t);
+            }
+            if let Some(a) = attrs
+                .iter()
+                .find(|a| a.name == "value_float" && a.attr_type == AttributeType::Float)
+            {
+                return ops::shape_data::op_constant_of_shape(&[1], a.f);
+            }
+            if let Some(a) = attrs
+                .iter()
+                .find(|a| a.name == "value_int" && a.attr_type == AttributeType::Int)
+            {
+                return ops::shape_data::op_constant_of_shape(&[1], a.i as f32);
+            }
+            Err(OpError::InvalidAttribute(String::from(
+                "Constant requires a 'value' attribute",
+            )))
+        }
+        OpKind::ConstantOfShape => {
+            let shape_tensor = require_input(inputs, 0, "ConstantOfShape")?;
+            let shape = read_i64_tensor(shape_tensor);
+            // SmallAIOS can't yet decode tensor-typed attributes, so we
+            // accept a scalar fill via 'value_float' / 'value_int' or
+            // default to 0.0.
+            let value = attrs
+                .iter()
+                .find_map(|a| match (a.name.as_str(), a.attr_type) {
+                    ("value_float", AttributeType::Float) => Some(a.f),
+                    ("value_int", AttributeType::Int) => Some(a.i as f32),
+                    _ => None,
+                })
+                .unwrap_or(0.0);
+            ops::shape_data::op_constant_of_shape(&shape, value)
+        }
+        OpKind::Range => {
+            let start_t = require_input(inputs, 0, "Range")?;
+            let limit_t = require_input(inputs, 1, "Range")?;
+            let delta_t = require_input(inputs, 2, "Range")?;
+            let start = read_scalar_f32(start_t)?;
+            let limit = read_scalar_f32(limit_t)?;
+            let delta = read_scalar_f32(delta_t)?;
+            ops::shape_data::op_range(start, limit, delta)
+        }
+        OpKind::Trilu => {
+            let x = require_input(inputs, 0, "Trilu")?;
+            // k is an optional second input (Int64 scalar)
+            let k = optional_input(inputs, 1)
+                .map(|t| {
+                    if t.data_type == DataType::Int64 && t.raw_data.len() >= I64_SIZE {
+                        byte_io::read_i64(&t.raw_data, 0)
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(0);
+            let upper = get_attr_int(attrs, "upper", 1) != 0;
+            ops::shape_data::op_trilu(x, k, upper)
+        }
+        OpKind::CumSum => {
+            let x = require_input(inputs, 0, "CumSum")?;
+            let axis_tensor = require_input(inputs, 1, "CumSum")?;
+            let axis = if axis_tensor.data_type == DataType::Int64
+                && axis_tensor.raw_data.len() >= I64_SIZE
+            {
+                byte_io::read_i64(&axis_tensor.raw_data, 0)
+            } else {
+                0
+            };
+            let exclusive = get_attr_int(attrs, "exclusive", 0) != 0;
+            let reverse = get_attr_int(attrs, "reverse", 0) != 0;
+            ops::shape_data::op_cumsum(x, axis, exclusive, reverse)
+        }
+        OpKind::GatherND => {
+            let data = require_input(inputs, 0, "GatherND")?;
+            let idx = require_input(inputs, 1, "GatherND")?;
+            let batch_dims = get_attr_int(attrs, "batch_dims", 0);
+            ops::shape_data::op_gather_nd(data, idx, batch_dims)
+        }
+        OpKind::ScatterND => {
+            let data = require_input(inputs, 0, "ScatterND")?;
+            let idx = require_input(inputs, 1, "ScatterND")?;
+            let upd = require_input(inputs, 2, "ScatterND")?;
+            ops::shape_data::op_scatter_nd(data, idx, upd)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("shape_data"))),
+    }
+}
+
+/// Reads a scalar f32 from a 1-element tensor (Float or Int64).
+fn read_scalar_f32(t: &Tensor) -> Result<f32, OpError> {
+    match t.data_type {
+        DataType::Float if t.raw_data.len() >= 4 => Ok(byte_io::read_f32(&t.raw_data, 0)),
+        DataType::Int64 if t.raw_data.len() >= I64_SIZE => {
+            Ok(byte_io::read_i64(&t.raw_data, 0) as f32)
+        }
+        DataType::Int32 if t.raw_data.len() >= 4 => Ok(byte_io::read_i32(&t.raw_data, 0) as f32),
+        _ => Err(OpError::ShapeMismatch(String::from(
+            "expected scalar numeric tensor",
+        ))),
     }
 }
 

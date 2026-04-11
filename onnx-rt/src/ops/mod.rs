@@ -20,4 +20,6 @@ pub mod compare;
 pub mod math;
 pub mod quantized;
 pub mod recurrent;
+pub mod reduction;
+pub mod shape_data;
 pub mod transformer;

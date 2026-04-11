@@ -212,6 +212,62 @@ pub enum OpKind {
     QLinearMatMul,
     /// Quantized convolution.
     QLinearConv,
+
+    // ---- Tier 3 (Phase 1): transformer-model math ----
+    /// Element-wise modulo.
+    Mod,
+    /// Element-wise sine.
+    Sin,
+    /// Element-wise cosine.
+    Cos,
+    /// Element-wise reciprocal (1/x).
+    Reciprocal,
+    /// Element-wise sign function.
+    Sign,
+    /// Variadic element-wise sum.
+    Sum,
+    /// Variadic element-wise mean.
+    Mean,
+    /// Element-wise boolean AND.
+    And,
+    /// Element-wise boolean OR.
+    Or,
+    /// Numerically-stable log-softmax.
+    LogSoftmax,
+
+    // ---- Tier 3 (Phase 1): reductions ----
+    /// Reduce by maximum.
+    ReduceMax,
+    /// Reduce by minimum.
+    ReduceMin,
+    /// Reduce by product.
+    ReduceProd,
+    /// Argmax (index of max).
+    ArgMax,
+    /// Argmin (index of min).
+    ArgMin,
+
+    // ---- Tier 3 (Phase 1): shape / data movement ----
+    /// Runtime tensor shape.
+    Shape,
+    /// Runtime tensor element count.
+    Size,
+    /// Identity pass-through.
+    Identity,
+    /// Constant value (attribute-decoded).
+    Constant,
+    /// Broadcast a scalar to a shape.
+    ConstantOfShape,
+    /// Construct a 1-D arithmetic sequence.
+    Range,
+    /// Upper/lower triangular mask.
+    Trilu,
+    /// Cumulative sum along an axis.
+    CumSum,
+    /// N-dimensional gather.
+    GatherND,
+    /// N-dimensional scatter.
+    ScatterND,
 }
 
 impl OpKind {
@@ -291,6 +347,34 @@ impl OpKind {
             "DequantizeLinear" => Some(OpKind::DequantizeLinear),
             "QLinearMatMul" => Some(OpKind::QLinearMatMul),
             "QLinearConv" => Some(OpKind::QLinearConv),
+            // Tier 3 Phase 1: math
+            "Mod" => Some(OpKind::Mod),
+            "Sin" => Some(OpKind::Sin),
+            "Cos" => Some(OpKind::Cos),
+            "Reciprocal" => Some(OpKind::Reciprocal),
+            "Sign" => Some(OpKind::Sign),
+            "Sum" => Some(OpKind::Sum),
+            "Mean" => Some(OpKind::Mean),
+            "And" => Some(OpKind::And),
+            "Or" => Some(OpKind::Or),
+            "LogSoftmax" => Some(OpKind::LogSoftmax),
+            // Tier 3 Phase 1: reductions
+            "ReduceMax" => Some(OpKind::ReduceMax),
+            "ReduceMin" => Some(OpKind::ReduceMin),
+            "ReduceProd" => Some(OpKind::ReduceProd),
+            "ArgMax" => Some(OpKind::ArgMax),
+            "ArgMin" => Some(OpKind::ArgMin),
+            // Tier 3 Phase 1: shape / data
+            "Shape" => Some(OpKind::Shape),
+            "Size" => Some(OpKind::Size),
+            "Identity" => Some(OpKind::Identity),
+            "Constant" => Some(OpKind::Constant),
+            "ConstantOfShape" => Some(OpKind::ConstantOfShape),
+            "Range" => Some(OpKind::Range),
+            "Trilu" => Some(OpKind::Trilu),
+            "CumSum" => Some(OpKind::CumSum),
+            "GatherND" => Some(OpKind::GatherND),
+            "ScatterND" => Some(OpKind::ScatterND),
             _ => None,
         }
     }
@@ -363,6 +447,31 @@ impl OpKind {
             OpKind::DequantizeLinear => "DequantizeLinear",
             OpKind::QLinearMatMul => "QLinearMatMul",
             OpKind::QLinearConv => "QLinearConv",
+            OpKind::Mod => "Mod",
+            OpKind::Sin => "Sin",
+            OpKind::Cos => "Cos",
+            OpKind::Reciprocal => "Reciprocal",
+            OpKind::Sign => "Sign",
+            OpKind::Sum => "Sum",
+            OpKind::Mean => "Mean",
+            OpKind::And => "And",
+            OpKind::Or => "Or",
+            OpKind::LogSoftmax => "LogSoftmax",
+            OpKind::ReduceMax => "ReduceMax",
+            OpKind::ReduceMin => "ReduceMin",
+            OpKind::ReduceProd => "ReduceProd",
+            OpKind::ArgMax => "ArgMax",
+            OpKind::ArgMin => "ArgMin",
+            OpKind::Shape => "Shape",
+            OpKind::Size => "Size",
+            OpKind::Identity => "Identity",
+            OpKind::Constant => "Constant",
+            OpKind::ConstantOfShape => "ConstantOfShape",
+            OpKind::Range => "Range",
+            OpKind::Trilu => "Trilu",
+            OpKind::CumSum => "CumSum",
+            OpKind::GatherND => "GatherND",
+            OpKind::ScatterND => "ScatterND",
         }
     }
 }
@@ -439,6 +548,32 @@ const ALL_OPS: &[OpKind] = &[
     OpKind::DequantizeLinear,
     OpKind::QLinearMatMul,
     OpKind::QLinearConv,
+    // Tier 3 Phase 1
+    OpKind::Mod,
+    OpKind::Sin,
+    OpKind::Cos,
+    OpKind::Reciprocal,
+    OpKind::Sign,
+    OpKind::Sum,
+    OpKind::Mean,
+    OpKind::And,
+    OpKind::Or,
+    OpKind::LogSoftmax,
+    OpKind::ReduceMax,
+    OpKind::ReduceMin,
+    OpKind::ReduceProd,
+    OpKind::ArgMax,
+    OpKind::ArgMin,
+    OpKind::Shape,
+    OpKind::Size,
+    OpKind::Identity,
+    OpKind::Constant,
+    OpKind::ConstantOfShape,
+    OpKind::Range,
+    OpKind::Trilu,
+    OpKind::CumSum,
+    OpKind::GatherND,
+    OpKind::ScatterND,
 ];
 
 /// Registry of supported ONNX operators.
@@ -478,6 +613,341 @@ impl OperatorRegistry {
         self.ops.len()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Operator coverage inventory
+// ---------------------------------------------------------------------------
+
+/// Coverage roadmap phases for standard ONNX operators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phase {
+    /// Phase 1 — transformer models (e.g., BERT).
+    P1,
+    /// Phase 2 — generative / control-flow operators.
+    P2,
+    /// Phase 3 — audio + detection models.
+    P3,
+    /// Phase 4 — long tail (rarely used operators).
+    P4,
+}
+
+/// Status of an ONNX operator within SmallAIOS's coverage roadmap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorStatus {
+    /// Implemented and dispatched by the runtime today.
+    Implemented,
+    /// Listed in a future roadmap phase.
+    Planned(Phase),
+    /// Requires a subsystem we have not yet built (sequence types,
+    /// optional types, control-flow executor, string tensors, ONNX-ML, ...).
+    DeferredSubsystem(&'static str),
+    /// Training-only operator; SmallAIOS is inference-only.
+    SkippedTraining,
+    /// Replaced by a newer ONNX operator.
+    SkippedDeprecated,
+    /// Vendor (non-standard) operator.
+    #[allow(dead_code)]
+    SkippedVendor,
+}
+
+/// Complete inventory of standard ONNX operators recognised by SmallAIOS's
+/// coverage roadmap.
+///
+/// Used by the `test_inventory_matches_registry` unit test to prevent
+/// drift between the runtime dispatch registry and the planning document.
+/// Every entry marked [`OperatorStatus::Implemented`] must correspond to a
+/// real [`OpKind`] variant and vice-versa.
+pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
+    // ---------------- Implemented (Tier 1 + Tier 2 + Tier 3 Phase 1) ----
+    ("Add", OperatorStatus::Implemented),
+    ("Sub", OperatorStatus::Implemented),
+    ("Mul", OperatorStatus::Implemented),
+    ("Div", OperatorStatus::Implemented),
+    ("MatMul", OperatorStatus::Implemented),
+    ("Relu", OperatorStatus::Implemented),
+    ("Sigmoid", OperatorStatus::Implemented),
+    ("Tanh", OperatorStatus::Implemented),
+    ("Softmax", OperatorStatus::Implemented),
+    ("Conv", OperatorStatus::Implemented),
+    ("MaxPool", OperatorStatus::Implemented),
+    ("AveragePool", OperatorStatus::Implemented),
+    ("BatchNormalization", OperatorStatus::Implemented),
+    ("Reshape", OperatorStatus::Implemented),
+    ("Transpose", OperatorStatus::Implemented),
+    ("Flatten", OperatorStatus::Implemented),
+    ("Squeeze", OperatorStatus::Implemented),
+    ("Unsqueeze", OperatorStatus::Implemented),
+    ("Concat", OperatorStatus::Implemented),
+    ("Gather", OperatorStatus::Implemented),
+    ("Slice", OperatorStatus::Implemented),
+    ("Pad", OperatorStatus::Implemented),
+    ("Gemm", OperatorStatus::Implemented),
+    ("GlobalAveragePool", OperatorStatus::Implemented),
+    ("LayerNormalization", OperatorStatus::Implemented),
+    ("Cast", OperatorStatus::Implemented),
+    ("Clip", OperatorStatus::Implemented),
+    ("ReduceMean", OperatorStatus::Implemented),
+    ("ReduceSum", OperatorStatus::Implemented),
+    ("Pow", OperatorStatus::Implemented),
+    ("Sqrt", OperatorStatus::Implemented),
+    ("Exp", OperatorStatus::Implemented),
+    ("Log", OperatorStatus::Implemented),
+    ("Erf", OperatorStatus::Implemented),
+    ("Neg", OperatorStatus::Implemented),
+    ("Abs", OperatorStatus::Implemented),
+    ("Floor", OperatorStatus::Implemented),
+    ("Ceil", OperatorStatus::Implemented),
+    ("Round", OperatorStatus::Implemented),
+    ("Equal", OperatorStatus::Implemented),
+    ("NotEqual", OperatorStatus::Implemented),
+    ("Less", OperatorStatus::Implemented),
+    ("LessOrEqual", OperatorStatus::Implemented),
+    ("Greater", OperatorStatus::Implemented),
+    ("GreaterOrEqual", OperatorStatus::Implemented),
+    ("Where", OperatorStatus::Implemented),
+    ("Min", OperatorStatus::Implemented),
+    ("Max", OperatorStatus::Implemented),
+    ("Not", OperatorStatus::Implemented),
+    ("Gelu", OperatorStatus::Implemented),
+    ("LeakyRelu", OperatorStatus::Implemented),
+    ("Elu", OperatorStatus::Implemented),
+    ("Swish", OperatorStatus::Implemented),
+    ("RNN", OperatorStatus::Implemented),
+    ("LSTM", OperatorStatus::Implemented),
+    ("GRU", OperatorStatus::Implemented),
+    ("Split", OperatorStatus::Implemented),
+    ("Expand", OperatorStatus::Implemented),
+    ("Tile", OperatorStatus::Implemented),
+    ("OneHot", OperatorStatus::Implemented),
+    ("Einsum", OperatorStatus::Implemented),
+    ("QuantizeLinear", OperatorStatus::Implemented),
+    ("DequantizeLinear", OperatorStatus::Implemented),
+    ("QLinearMatMul", OperatorStatus::Implemented),
+    ("QLinearConv", OperatorStatus::Implemented),
+    ("Mod", OperatorStatus::Implemented),
+    ("Sin", OperatorStatus::Implemented),
+    ("Cos", OperatorStatus::Implemented),
+    ("Reciprocal", OperatorStatus::Implemented),
+    ("Sign", OperatorStatus::Implemented),
+    ("Sum", OperatorStatus::Implemented),
+    ("Mean", OperatorStatus::Implemented),
+    ("And", OperatorStatus::Implemented),
+    ("Or", OperatorStatus::Implemented),
+    ("LogSoftmax", OperatorStatus::Implemented),
+    ("ReduceMax", OperatorStatus::Implemented),
+    ("ReduceMin", OperatorStatus::Implemented),
+    ("ReduceProd", OperatorStatus::Implemented),
+    ("ArgMax", OperatorStatus::Implemented),
+    ("ArgMin", OperatorStatus::Implemented),
+    ("Shape", OperatorStatus::Implemented),
+    ("Size", OperatorStatus::Implemented),
+    ("Identity", OperatorStatus::Implemented),
+    ("Constant", OperatorStatus::Implemented),
+    ("ConstantOfShape", OperatorStatus::Implemented),
+    ("Range", OperatorStatus::Implemented),
+    ("Trilu", OperatorStatus::Implemented),
+    ("CumSum", OperatorStatus::Implemented),
+    ("GatherND", OperatorStatus::Implemented),
+    ("ScatterND", OperatorStatus::Implemented),
+    // ---------------- Phase 2: generative / control-flow ----
+    ("If", OperatorStatus::Planned(Phase::P2)),
+    ("Loop", OperatorStatus::Planned(Phase::P2)),
+    ("Scan", OperatorStatus::Planned(Phase::P2)),
+    ("TopK", OperatorStatus::Planned(Phase::P2)),
+    ("NonZero", OperatorStatus::Planned(Phase::P2)),
+    ("Compress", OperatorStatus::Planned(Phase::P2)),
+    ("Unique", OperatorStatus::Planned(Phase::P2)),
+    ("DynamicQuantizeLinear", OperatorStatus::Planned(Phase::P2)),
+    ("Attention", OperatorStatus::Planned(Phase::P2)),
+    ("MatMulInteger", OperatorStatus::Planned(Phase::P2)),
+    ("ConvInteger", OperatorStatus::Planned(Phase::P2)),
+    ("Multinomial", OperatorStatus::Planned(Phase::P2)),
+    // ---------------- Phase 3: audio + detection ----
+    ("NonMaxSuppression", OperatorStatus::Planned(Phase::P3)),
+    ("RoiAlign", OperatorStatus::Planned(Phase::P3)),
+    ("Resize", OperatorStatus::Planned(Phase::P3)),
+    ("GridSample", OperatorStatus::Planned(Phase::P3)),
+    ("STFT", OperatorStatus::Planned(Phase::P3)),
+    ("DFT", OperatorStatus::Planned(Phase::P3)),
+    ("MelWeightMatrix", OperatorStatus::Planned(Phase::P3)),
+    ("HammingWindow", OperatorStatus::Planned(Phase::P3)),
+    ("HannWindow", OperatorStatus::Planned(Phase::P3)),
+    ("BlackmanWindow", OperatorStatus::Planned(Phase::P3)),
+    ("ConvTranspose", OperatorStatus::Planned(Phase::P3)),
+    ("DepthToSpace", OperatorStatus::Planned(Phase::P3)),
+    ("SpaceToDepth", OperatorStatus::Planned(Phase::P3)),
+    ("GatherElements", OperatorStatus::Planned(Phase::P3)),
+    ("ScatterElements", OperatorStatus::Planned(Phase::P3)),
+    // ---------------- Phase 4: long tail ----
+    ("BitShift", OperatorStatus::Planned(Phase::P4)),
+    ("BitwiseAnd", OperatorStatus::Planned(Phase::P4)),
+    ("BitwiseOr", OperatorStatus::Planned(Phase::P4)),
+    ("BitwiseXor", OperatorStatus::Planned(Phase::P4)),
+    ("BitwiseNot", OperatorStatus::Planned(Phase::P4)),
+    ("Xor", OperatorStatus::Planned(Phase::P4)),
+    ("Asin", OperatorStatus::Planned(Phase::P4)),
+    ("Acos", OperatorStatus::Planned(Phase::P4)),
+    ("Atan", OperatorStatus::Planned(Phase::P4)),
+    ("Sinh", OperatorStatus::Planned(Phase::P4)),
+    ("Cosh", OperatorStatus::Planned(Phase::P4)),
+    ("Asinh", OperatorStatus::Planned(Phase::P4)),
+    ("Acosh", OperatorStatus::Planned(Phase::P4)),
+    ("Atanh", OperatorStatus::Planned(Phase::P4)),
+    ("Tan", OperatorStatus::Planned(Phase::P4)),
+    ("IsNaN", OperatorStatus::Planned(Phase::P4)),
+    ("IsInf", OperatorStatus::Planned(Phase::P4)),
+    ("ReduceL1", OperatorStatus::Planned(Phase::P4)),
+    ("ReduceL2", OperatorStatus::Planned(Phase::P4)),
+    ("ReduceLogSum", OperatorStatus::Planned(Phase::P4)),
+    ("ReduceLogSumExp", OperatorStatus::Planned(Phase::P4)),
+    ("ReduceSumSquare", OperatorStatus::Planned(Phase::P4)),
+    ("HardSigmoid", OperatorStatus::Planned(Phase::P4)),
+    ("HardSwish", OperatorStatus::Planned(Phase::P4)),
+    ("Selu", OperatorStatus::Planned(Phase::P4)),
+    ("Softplus", OperatorStatus::Planned(Phase::P4)),
+    ("Softsign", OperatorStatus::Planned(Phase::P4)),
+    ("ThresholdedRelu", OperatorStatus::Planned(Phase::P4)),
+    ("PRelu", OperatorStatus::Planned(Phase::P4)),
+    ("CastLike", OperatorStatus::Planned(Phase::P4)),
+    ("EyeLike", OperatorStatus::Planned(Phase::P4)),
+    ("Shrink", OperatorStatus::Planned(Phase::P4)),
+    ("LpNormalization", OperatorStatus::Planned(Phase::P4)),
+    ("LpPool", OperatorStatus::Planned(Phase::P4)),
+    ("GlobalMaxPool", OperatorStatus::Planned(Phase::P4)),
+    ("GlobalLpPool", OperatorStatus::Planned(Phase::P4)),
+    ("InstanceNormalization", OperatorStatus::Planned(Phase::P4)),
+    ("GroupNormalization", OperatorStatus::Planned(Phase::P4)),
+    (
+        "MeanVarianceNormalization",
+        OperatorStatus::Planned(Phase::P4),
+    ),
+    // ---------------- Deferred: needs subsystems we haven't built ----
+    (
+        "SequenceConstruct",
+        OperatorStatus::DeferredSubsystem("sequence types"),
+    ),
+    (
+        "SequenceEmpty",
+        OperatorStatus::DeferredSubsystem("sequence types"),
+    ),
+    (
+        "SequenceAt",
+        OperatorStatus::DeferredSubsystem("sequence types"),
+    ),
+    (
+        "SequenceInsert",
+        OperatorStatus::DeferredSubsystem("sequence types"),
+    ),
+    (
+        "SequenceErase",
+        OperatorStatus::DeferredSubsystem("sequence types"),
+    ),
+    (
+        "SequenceLength",
+        OperatorStatus::DeferredSubsystem("sequence types"),
+    ),
+    (
+        "SplitToSequence",
+        OperatorStatus::DeferredSubsystem("sequence types"),
+    ),
+    (
+        "ConcatFromSequence",
+        OperatorStatus::DeferredSubsystem("sequence types"),
+    ),
+    (
+        "Optional",
+        OperatorStatus::DeferredSubsystem("optional types"),
+    ),
+    (
+        "OptionalGetElement",
+        OperatorStatus::DeferredSubsystem("optional types"),
+    ),
+    (
+        "OptionalHasElement",
+        OperatorStatus::DeferredSubsystem("optional types"),
+    ),
+    (
+        "StringNormalizer",
+        OperatorStatus::DeferredSubsystem("string tensors"),
+    ),
+    (
+        "StringConcat",
+        OperatorStatus::DeferredSubsystem("string tensors"),
+    ),
+    (
+        "StringSplit",
+        OperatorStatus::DeferredSubsystem("string tensors"),
+    ),
+    (
+        "RegexFullMatch",
+        OperatorStatus::DeferredSubsystem("string tensors"),
+    ),
+    ("LabelEncoder", OperatorStatus::DeferredSubsystem("ONNX-ML")),
+    (
+        "CategoryMapper",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    (
+        "DictVectorizer",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    (
+        "FeatureVectorizer",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    ("Imputer", OperatorStatus::DeferredSubsystem("ONNX-ML")),
+    (
+        "LinearClassifier",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    (
+        "LinearRegressor",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    ("Normalizer", OperatorStatus::DeferredSubsystem("ONNX-ML")),
+    (
+        "OneHotEncoder",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    (
+        "SVMClassifier",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    ("SVMRegressor", OperatorStatus::DeferredSubsystem("ONNX-ML")),
+    ("Scaler", OperatorStatus::DeferredSubsystem("ONNX-ML")),
+    (
+        "TreeEnsembleClassifier",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    (
+        "TreeEnsembleRegressor",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    ("ZipMap", OperatorStatus::DeferredSubsystem("ONNX-ML")),
+    (
+        "ArrayFeatureExtractor",
+        OperatorStatus::DeferredSubsystem("ONNX-ML"),
+    ),
+    ("Binarizer", OperatorStatus::DeferredSubsystem("ONNX-ML")),
+    // ---------------- Skipped: training-only ----
+    ("Gradient", OperatorStatus::SkippedTraining),
+    ("GradientDescent", OperatorStatus::SkippedTraining),
+    ("Momentum", OperatorStatus::SkippedTraining),
+    ("Adagrad", OperatorStatus::SkippedTraining),
+    ("Adam", OperatorStatus::SkippedTraining),
+    ("SoftmaxCrossEntropyLoss", OperatorStatus::SkippedTraining),
+    ("NegativeLogLikelihoodLoss", OperatorStatus::SkippedTraining),
+    ("Dropout", OperatorStatus::SkippedTraining),
+    // ---------------- Skipped: deprecated / replaced ----
+    ("Upsample", OperatorStatus::SkippedDeprecated),
+    ("Scatter", OperatorStatus::SkippedDeprecated),
+    ("GivensGather", OperatorStatus::SkippedDeprecated),
+    ("ImageScaler", OperatorStatus::SkippedDeprecated),
+    ("Crop", OperatorStatus::SkippedDeprecated),
+    ("ParametricSoftplus", OperatorStatus::SkippedDeprecated),
+    ("ScaledTanh", OperatorStatus::SkippedDeprecated),
+    ("Affine", OperatorStatus::SkippedDeprecated),
+];
 
 // ---------------------------------------------------------------------------
 // Operator stub implementations
@@ -2855,7 +3325,62 @@ mod tests {
     #[test]
     fn test_registry_supported_count() {
         let registry = OperatorRegistry::new();
-        assert_eq!(registry.supported_count(), 65);
+        assert_eq!(registry.supported_count(), 90);
+    }
+
+    #[test]
+    fn test_inventory_matches_registry() {
+        // Every Implemented inventory entry must parse to an OpKind.
+        // Every entry in ALL_OPS must appear in the inventory as Implemented.
+        use alloc::collections::BTreeSet;
+
+        let impl_names: BTreeSet<&str> = SUPPORTED_OPS_INVENTORY
+            .iter()
+            .filter(|(_, s)| *s == OperatorStatus::Implemented)
+            .map(|(n, _)| *n)
+            .collect();
+
+        let registry_names: BTreeSet<&str> = ALL_OPS.iter().map(|k| k.name()).collect();
+
+        for name in &impl_names {
+            assert!(
+                OpKind::parse_str(name).is_some(),
+                "inventory lists '{}' as Implemented but parse_str returned None",
+                name
+            );
+        }
+
+        // Every ALL_OPS entry must be listed Implemented.
+        for name in &registry_names {
+            assert!(
+                impl_names.contains(name),
+                "registry contains '{}' but inventory does not mark it Implemented",
+                name
+            );
+        }
+        // And no Implemented inventory entry should be missing from ALL_OPS.
+        for name in &impl_names {
+            assert!(
+                registry_names.contains(name),
+                "inventory marks '{}' Implemented but it is not in ALL_OPS",
+                name
+            );
+        }
+
+        // Sanity: must match the advertised 90-op count.
+        assert_eq!(impl_names.len(), 90);
+
+        // No duplicate entries in the inventory.
+        let mut all_names: alloc::vec::Vec<&str> =
+            SUPPORTED_OPS_INVENTORY.iter().map(|(n, _)| *n).collect();
+        all_names.sort_unstable();
+        let orig = all_names.len();
+        all_names.dedup();
+        assert_eq!(
+            orig,
+            all_names.len(),
+            "duplicate entry in SUPPORTED_OPS_INVENTORY"
+        );
     }
 
     #[test]

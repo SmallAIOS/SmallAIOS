@@ -327,13 +327,14 @@ mod tests {
         assert_eq!(result.nodes_fused, 0);
     }
 
-    /// Verify the operator registry covers Tier 1 (29) plus Tier 2 (36) ops.
+    /// Verify the operator registry covers Tier 1 (29) plus Tier 2 (36)
+    /// plus Tier 3 Phase 1 (25) ops.
     #[test]
     fn test_operator_registry_covers_tier1() {
         use smallaios_onnx_rt::operators::{OpKind, OperatorRegistry};
 
         let registry = OperatorRegistry::new();
-        assert_eq!(registry.supported_count(), 65);
+        assert_eq!(registry.supported_count(), 90);
 
         // Verify critical operators are present.
         let critical_ops = [

@@ -1,13 +1,16 @@
 // Copyright 2026 SmallAIOS Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-//! Tier 2 element-wise math primitives.
+//! Tier 2 / Tier 3 element-wise math primitives.
 //!
-//! Implements Pow, Sqrt, Exp, Log, Erf, Neg, Abs, Floor, Ceil, Round.
-//! All operators consume f32 tensors and produce f32 tensors. Pow supports
-//! NumPy-style broadcasting; the rest are unary element-wise.
+//! Implements Pow, Sqrt, Exp, Log, Erf, Neg, Abs, Floor, Ceil, Round and
+//! the Phase 1 transformer math additions (Mod, Sin, Cos, Reciprocal,
+//! Sign, Sum, Mean, And, Or, LogSoftmax). All operators consume f32 (or
+//! Bool) tensors. Binary/variadic ops use NumPy-style broadcasting; unary
+//! ops preserve input shape.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
 use crate::operators::{expf_approx, sqrt_approx, OpError};
@@ -264,6 +267,312 @@ fn ceil_f32(x: f32) -> f32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Phase 1 transformer math ops
+// ---------------------------------------------------------------------------
+
+/// Range-reduced degree-7 sine approximation on the full real line.
+/// Accurate to ~1e-5 for typical transformer activation ranges.
+pub(crate) fn sinf_approx(x: f32) -> f32 {
+    // Reduce to [-pi, pi] using floor (truncation toward zero is wrong
+    // for negative x).
+    let two_pi = 2.0 * core::f32::consts::PI;
+    let mut y = x - floor_f32((x + core::f32::consts::PI) / two_pi) * two_pi;
+    // y is now in [-pi, pi]; clamp any numeric fuzz.
+    if y > core::f32::consts::PI {
+        y -= two_pi;
+    } else if y < -core::f32::consts::PI {
+        y += two_pi;
+    }
+    // Reduce further using sin(pi - y) = sin(y)
+    if y > core::f32::consts::FRAC_PI_2 {
+        y = core::f32::consts::PI - y;
+    } else if y < -core::f32::consts::FRAC_PI_2 {
+        y = -core::f32::consts::PI - y;
+    }
+    // Taylor series around 0: y - y^3/6 + y^5/120 - y^7/5040
+    let y2 = y * y;
+    let y3 = y2 * y;
+    let y5 = y3 * y2;
+    let y7 = y5 * y2;
+    y - y3 / 6.0 + y5 / 120.0 - y7 / 5040.0
+}
+
+/// Cosine via cos(x) = sin(x + pi/2).
+pub(crate) fn cosf_approx(x: f32) -> f32 {
+    sinf_approx(x + core::f32::consts::FRAC_PI_2)
+}
+
+/// Python-style modulo: result has the sign of the divisor.
+fn pymod(a: f32, b: f32) -> f32 {
+    let r = a - floor_f32(a / b) * b;
+    if r != 0.0 && ((r < 0.0) != (b < 0.0)) {
+        r + b
+    } else {
+        r
+    }
+}
+
+/// C-style fmod: result has the sign of the dividend.
+fn cfmod(a: f32, b: f32) -> f32 {
+    let q = (a / b) as i64 as f32;
+    a - q * b
+}
+
+/// Element-wise modulo with broadcasting.
+///
+/// If `fmod` is true, uses C-style fmod semantics (result sign follows
+/// dividend). If false, uses Python-style modulo (result sign follows
+/// divisor) — this is the ONNX default for integer Mod.
+pub fn op_mod(a: &Tensor, b: &Tensor, fmod: bool) -> Result<Tensor, OpError> {
+    require_float(a, "Mod")?;
+    require_float(b, "Mod")?;
+    let out_dims = broadcast_shape(&a.shape.dims, &b.shape.dims)?;
+    let total: usize = out_dims
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let mut data = allocate_tensor_data(total, DataType::Float);
+    let ndim = out_dims.len();
+    let mut coord = alloc::vec![0usize; ndim];
+    for flat in 0..total {
+        let ai = broadcast_index(&coord, &a.shape.dims);
+        let bi = broadcast_index(&coord, &b.shape.dims);
+        let av = read_f32(&a.raw_data, ai);
+        let bv = read_f32(&b.raw_data, bi);
+        let v = if bv == 0.0 {
+            f32::NAN
+        } else if fmod {
+            cfmod(av, bv)
+        } else {
+            pymod(av, bv)
+        };
+        write_f32(&mut data, flat, v);
+        if flat + 1 < total {
+            next_coord(&mut coord, &out_dims);
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(out_dims),
+        name: String::new(),
+        raw_data: data,
+    })
+}
+
+/// Element-wise sine.
+pub fn op_sin(input: &Tensor) -> Result<Tensor, OpError> {
+    unary(input, "Sin", sinf_approx)
+}
+
+/// Element-wise cosine.
+pub fn op_cos(input: &Tensor) -> Result<Tensor, OpError> {
+    unary(input, "Cos", cosf_approx)
+}
+
+/// Element-wise reciprocal (1/x). Returns +/-inf for zero inputs.
+pub fn op_reciprocal(input: &Tensor) -> Result<Tensor, OpError> {
+    unary(input, "Reciprocal", |x| 1.0 / x)
+}
+
+/// Element-wise sign: -1, 0, or +1.
+pub fn op_sign(input: &Tensor) -> Result<Tensor, OpError> {
+    unary(input, "Sign", |x| {
+        if x > 0.0 {
+            1.0
+        } else if x < 0.0 {
+            -1.0
+        } else {
+            0.0
+        }
+    })
+}
+
+/// Variadic element-wise reducer helper. `acc_init` is the starting value
+/// at every output cell; `f` combines a value with the accumulator.
+fn variadic_broadcast<F: Fn(f32, f32) -> f32>(
+    inputs: &[&Tensor],
+    op: &str,
+    acc_init: f32,
+    f: F,
+) -> Result<(Vec<i64>, Vec<u8>), OpError> {
+    if inputs.is_empty() {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "{} requires at least one input",
+            op
+        )));
+    }
+    for t in inputs {
+        require_float(t, op)?;
+    }
+    // Compute output broadcast shape by folding.
+    let mut out_dims = inputs[0].shape.dims.clone();
+    for t in inputs.iter().skip(1) {
+        out_dims = broadcast_shape(&out_dims, &t.shape.dims)?;
+    }
+    let total: usize = out_dims
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let mut data = allocate_tensor_data(total, DataType::Float);
+    let ndim = out_dims.len();
+    let mut coord = alloc::vec![0usize; ndim];
+    for flat in 0..total {
+        let mut acc = acc_init;
+        for t in inputs {
+            let idx = broadcast_index(&coord, &t.shape.dims);
+            acc = f(acc, read_f32(&t.raw_data, idx));
+        }
+        write_f32(&mut data, flat, acc);
+        if flat + 1 < total {
+            next_coord(&mut coord, &out_dims);
+        }
+    }
+    Ok((out_dims, data))
+}
+
+/// Variadic element-wise sum with broadcasting.
+pub fn op_sum(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
+    let (out_dims, data) = variadic_broadcast(inputs, "Sum", 0.0, |acc, v| acc + v)?;
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(out_dims),
+        name: String::new(),
+        raw_data: data,
+    })
+}
+
+/// Variadic element-wise mean with broadcasting.
+pub fn op_mean(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
+    let (out_dims, mut data) = variadic_broadcast(inputs, "Mean", 0.0, |acc, v| acc + v)?;
+    let n = inputs.len() as f32;
+    let total = data.len() / 4;
+    for i in 0..total {
+        let v = read_f32(&data, i) / n;
+        write_f32(&mut data, i, v);
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(out_dims),
+        name: String::new(),
+        raw_data: data,
+    })
+}
+
+/// Element-wise Bool helper with broadcasting.
+fn bool_binary<F: Fn(bool, bool) -> bool>(
+    a: &Tensor,
+    b: &Tensor,
+    op: &str,
+    f: F,
+) -> Result<Tensor, OpError> {
+    if a.data_type != DataType::Bool || b.data_type != DataType::Bool {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "{} requires Bool inputs",
+            op
+        )));
+    }
+    let out_dims = broadcast_shape(&a.shape.dims, &b.shape.dims)?;
+    let total: usize = out_dims
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let mut data = alloc::vec![0u8; total];
+    let ndim = out_dims.len();
+    let mut coord = alloc::vec![0usize; ndim];
+    for (flat, slot) in data.iter_mut().enumerate().take(total) {
+        let ai = broadcast_index(&coord, &a.shape.dims);
+        let bi = broadcast_index(&coord, &b.shape.dims);
+        let av = a.raw_data[ai] != 0;
+        let bv = b.raw_data[bi] != 0;
+        *slot = u8::from(f(av, bv));
+        if flat + 1 < total {
+            next_coord(&mut coord, &out_dims);
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Bool,
+        shape: TensorShape::new(out_dims),
+        name: String::new(),
+        raw_data: data,
+    })
+}
+
+/// Element-wise boolean AND with broadcasting.
+pub fn op_and(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
+    bool_binary(a, b, "And", |x, y| x && y)
+}
+
+/// Element-wise boolean OR with broadcasting.
+pub fn op_or(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
+    bool_binary(a, b, "Or", |x, y| x || y)
+}
+
+/// Numerically-stable log-softmax along a single axis.
+///
+/// Computes `x - max - log(sum(exp(x - max)))` along `axis`.
+pub fn op_log_softmax(input: &Tensor, axis: i64) -> Result<Tensor, OpError> {
+    require_float(input, "LogSoftmax")?;
+    let ndim = input.shape.ndim() as i64;
+    let axis = if axis < 0 { ndim + axis } else { axis };
+    if axis < 0 || axis >= ndim {
+        return Err(OpError::InvalidAttribute(String::from(
+            "LogSoftmax axis out of range",
+        )));
+    }
+    let dims = &input.shape.dims;
+    let axis = axis as usize;
+    // Compute outer/axis/inner factor sizes.
+    let outer: usize = dims[..axis]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let axis_size = dims[axis] as usize;
+    let inner: usize = dims[axis + 1..]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let total = outer * axis_size * inner;
+    let mut out = allocate_tensor_data(total, DataType::Float);
+
+    for o in 0..outer {
+        for i in 0..inner {
+            // Find max along axis
+            let mut maxv = f32::NEG_INFINITY;
+            for a in 0..axis_size {
+                let idx = (o * axis_size + a) * inner + i;
+                let v = read_f32(&input.raw_data, idx);
+                if v > maxv {
+                    maxv = v;
+                }
+            }
+            // Sum of exp(x - max)
+            let mut sum = 0.0_f32;
+            for a in 0..axis_size {
+                let idx = (o * axis_size + a) * inner + i;
+                sum += expf_approx(read_f32(&input.raw_data, idx) - maxv);
+            }
+            let log_sum = lnf_approx(sum);
+            for a in 0..axis_size {
+                let idx = (o * axis_size + a) * inner + i;
+                let v = read_f32(&input.raw_data, idx) - maxv - log_sum;
+                write_f32(&mut out, idx, v);
+            }
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data: out,
+    })
+}
+
 fn round_half_even(x: f32) -> f32 {
     let f = floor_f32(x);
     let frac = x - f;
@@ -451,6 +760,210 @@ mod tests {
         let exp = make_f32(&[1], &[0.0]);
         let v = read_all(&op_pow(&base, &exp).unwrap());
         assert_eq!(v[0], 1.0);
+    }
+
+    fn make_bool(dims: &[i64], vals: &[bool]) -> Tensor {
+        let data: alloc::vec::Vec<u8> = vals.iter().map(|&b| u8::from(b)).collect();
+        Tensor {
+            data_type: DataType::Bool,
+            shape: TensorShape::new(dims.to_vec()),
+            name: String::new(),
+            raw_data: data,
+        }
+    }
+
+    fn read_bool_all(t: &Tensor) -> alloc::vec::Vec<bool> {
+        t.raw_data.iter().map(|&b| b != 0).collect()
+    }
+
+    // ---- Mod ----
+    #[test]
+    fn test_mod_python_style() {
+        let a = make_f32(&[4], &[7.0, -7.0, 7.0, -7.0]);
+        let b = make_f32(&[4], &[3.0, 3.0, -3.0, -3.0]);
+        let v = read_all(&op_mod(&a, &b, false).unwrap());
+        // Python: 7%3=1, -7%3=2, 7%-3=-2, -7%-3=-1
+        assert!((v[0] - 1.0).abs() < 1e-5);
+        assert!((v[1] - 2.0).abs() < 1e-5);
+        assert!((v[2] - -2.0).abs() < 1e-5);
+        assert!((v[3] - -1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_mod_fmod_style() {
+        let a = make_f32(&[2], &[7.0, -7.0]);
+        let b = make_f32(&[2], &[3.0, 3.0]);
+        let v = read_all(&op_mod(&a, &b, true).unwrap());
+        // fmod: 7%3=1, -7%3=-1 (sign of dividend)
+        assert!((v[0] - 1.0).abs() < 1e-5);
+        assert!((v[1] - -1.0).abs() < 1e-5);
+    }
+
+    // ---- Sin/Cos ----
+    #[test]
+    fn test_sin_known_values() {
+        let t = make_f32(
+            &[4],
+            &[
+                0.0,
+                core::f32::consts::FRAC_PI_2,
+                core::f32::consts::PI,
+                -core::f32::consts::FRAC_PI_2,
+            ],
+        );
+        let v = read_all(&op_sin(&t).unwrap());
+        assert!(v[0].abs() < 1e-3);
+        assert!((v[1] - 1.0).abs() < 1e-3, "sin(pi/2) = {}", v[1]);
+        assert!(v[2].abs() < 1e-3);
+        assert!((v[3] + 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_sin_range_reduction_large() {
+        // sin(10*pi) = 0
+        let t = make_f32(&[1], &[10.0 * core::f32::consts::PI]);
+        let v = read_all(&op_sin(&t).unwrap());
+        assert!(v[0].abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_cos_known_values() {
+        let t = make_f32(
+            &[3],
+            &[0.0, core::f32::consts::FRAC_PI_2, core::f32::consts::PI],
+        );
+        let v = read_all(&op_cos(&t).unwrap());
+        assert!((v[0] - 1.0).abs() < 1e-3, "cos(0) = {}", v[0]);
+        assert!(v[1].abs() < 1e-3);
+        assert!((v[2] + 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_cos_scalar() {
+        let t = make_f32(&[1], &[0.0]);
+        let v = read_all(&op_cos(&t).unwrap());
+        assert!((v[0] - 1.0).abs() < 1e-3);
+    }
+
+    // ---- Reciprocal ----
+    #[test]
+    fn test_reciprocal() {
+        let t = make_f32(&[3], &[1.0, 2.0, 4.0]);
+        let v = read_all(&op_reciprocal(&t).unwrap());
+        assert!((v[0] - 1.0).abs() < 1e-6);
+        assert!((v[1] - 0.5).abs() < 1e-6);
+        assert!((v[2] - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_reciprocal_negative() {
+        let t = make_f32(&[2], &[-1.0, -2.0]);
+        let v = read_all(&op_reciprocal(&t).unwrap());
+        assert!((v[0] + 1.0).abs() < 1e-6);
+        assert!((v[1] + 0.5).abs() < 1e-6);
+    }
+
+    // ---- Sign ----
+    #[test]
+    fn test_sign_basic() {
+        let t = make_f32(&[5], &[3.0, -2.0, 0.0, 7.5, -0.1]);
+        let v = read_all(&op_sign(&t).unwrap());
+        assert_eq!(v, vec![1.0, -1.0, 0.0, 1.0, -1.0]);
+    }
+
+    #[test]
+    fn test_sign_all_zero() {
+        let t = make_f32(&[3], &[0.0, 0.0, 0.0]);
+        let v = read_all(&op_sign(&t).unwrap());
+        assert_eq!(v, vec![0.0, 0.0, 0.0]);
+    }
+
+    // ---- Sum/Mean ----
+    #[test]
+    fn test_sum_variadic() {
+        let a = make_f32(&[3], &[1.0, 2.0, 3.0]);
+        let b = make_f32(&[3], &[4.0, 5.0, 6.0]);
+        let c = make_f32(&[3], &[7.0, 8.0, 9.0]);
+        let v = read_all(&op_sum(&[&a, &b, &c]).unwrap());
+        assert_eq!(v, vec![12.0, 15.0, 18.0]);
+    }
+
+    #[test]
+    fn test_sum_broadcast() {
+        let a = make_f32(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let b = make_f32(&[1], &[10.0]);
+        let v = read_all(&op_sum(&[&a, &b]).unwrap());
+        assert_eq!(v, vec![11.0, 12.0, 13.0, 14.0]);
+    }
+
+    #[test]
+    fn test_mean_variadic() {
+        let a = make_f32(&[2], &[2.0, 4.0]);
+        let b = make_f32(&[2], &[4.0, 8.0]);
+        let v = read_all(&op_mean(&[&a, &b]).unwrap());
+        assert_eq!(v, vec![3.0, 6.0]);
+    }
+
+    #[test]
+    fn test_mean_single_input() {
+        let a = make_f32(&[3], &[1.0, 2.0, 3.0]);
+        let v = read_all(&op_mean(&[&a]).unwrap());
+        assert_eq!(v, vec![1.0, 2.0, 3.0]);
+    }
+
+    // ---- And/Or ----
+    #[test]
+    fn test_and_basic() {
+        let a = make_bool(&[4], &[true, true, false, false]);
+        let b = make_bool(&[4], &[true, false, true, false]);
+        let v = read_bool_all(&op_and(&a, &b).unwrap());
+        assert_eq!(v, vec![true, false, false, false]);
+    }
+
+    #[test]
+    fn test_or_broadcast() {
+        let a = make_bool(&[2, 2], &[true, false, false, true]);
+        let b = make_bool(&[1], &[true]);
+        let v = read_bool_all(&op_or(&a, &b).unwrap());
+        assert_eq!(v, vec![true, true, true, true]);
+    }
+
+    #[test]
+    fn test_and_rejects_float() {
+        let a = make_f32(&[1], &[1.0]);
+        let b = make_bool(&[1], &[true]);
+        assert!(op_and(&a, &b).is_err());
+    }
+
+    // ---- LogSoftmax ----
+    #[test]
+    fn test_log_softmax_axis_last() {
+        // For [1.0, 2.0, 3.0] log-softmax = x - log(sum(exp(x)))
+        let t = make_f32(&[1, 3], &[1.0, 2.0, 3.0]);
+        let v = read_all(&op_log_softmax(&t, -1).unwrap());
+        // sum = e^1+e^2+e^3 ≈ 30.19; log ≈ 3.407
+        // log_softmax ≈ [-2.407, -1.407, -0.407]
+        assert!((v[0] + 2.407).abs() < 1e-2);
+        assert!((v[1] + 1.407).abs() < 1e-2);
+        assert!((v[2] + 0.407).abs() < 1e-2);
+    }
+
+    #[test]
+    fn test_log_softmax_sums_to_zero_exp() {
+        // exp of log_softmax should sum to 1 along the axis.
+        let t = make_f32(&[2, 3], &[1.0, 2.0, 3.0, -1.0, 0.0, 1.0]);
+        let out = op_log_softmax(&t, 1).unwrap();
+        let v = read_all(&out);
+        let row0: f32 = (0..3).map(|i| v[i].exp()).sum();
+        let row1: f32 = (3..6).map(|i| v[i].exp()).sum();
+        assert!((row0 - 1.0).abs() < 1e-3);
+        assert!((row1 - 1.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_log_softmax_invalid_axis() {
+        let t = make_f32(&[2], &[1.0, 2.0]);
+        assert!(op_log_softmax(&t, 5).is_err());
     }
 
     #[test]
