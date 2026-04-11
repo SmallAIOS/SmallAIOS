@@ -34,7 +34,7 @@ The ONNX runtime SHALL implement the `Loop` operator with full ONNX termination 
 - **WHEN** a `Loop` node is dispatched with `M = 64` and a body whose `cond_out` returns `false` at iteration 32
 - **THEN** the loop MUST stop at the end of iteration 32
 - **AND** the outputs MUST be iteration 32's carried values
-- **AND** iterations 33..64 MUST NOT execute
+- **AND** iterations 33..63 MUST NOT execute (no further iterations execute)
 
 #### Scenario: External `cond = false` skips the loop entirely
 - **WHEN** a `Loop` node is dispatched with `cond = false`
@@ -105,12 +105,12 @@ The ONNX runtime SHALL implement the following generative, normalization, and re
 - **THEN** the output MUST be a tensor of indices each in `[0, vocab_size)`
 
 ### Requirement: Phase 2 Inventory Flip
-The `SUPPORTED_OPS_INVENTORY` table added by Phase 1 SHALL be updated such that the 21 Phase 2 operators (3 control-flow plus 18 generative/norm) are marked `OperatorStatus::Implemented` upon completion of this change.
+The `SUPPORTED_OPS_INVENTORY` table added by Phase 1 SHALL be updated such that the 22 Phase 2 operators (3 control-flow plus 19 generative/norm) are marked `OperatorStatus::Implemented` upon completion of this change.
 
 #### Scenario: Inventory reflects Phase 2 completion
 - **WHEN** the Phase 2 change is fully implemented
 - **THEN** the inventory MUST contain `(OpKind::Loop, OperatorStatus::Implemented)`
 - **AND** MUST contain `(OpKind::If, OperatorStatus::Implemented)`
 - **AND** MUST contain `(OpKind::Scan, OperatorStatus::Implemented)`
-- **AND** MUST contain `OperatorStatus::Implemented` entries for each of the 18 generative/norm operators
+- **AND** MUST contain `OperatorStatus::Implemented` entries for each of the 19 generative/norm operators
 - **AND** no Phase 2 operator SHALL remain as `Planned(Phase::P2)`

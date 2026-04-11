@@ -13,7 +13,7 @@ These three pieces have to ship together. Shipping `Loop` without real int8 kern
 ## Goals / Non-Goals
 
 **Goals:**
-- Add 21 new operators (3 control-flow, 18 generative/norm) to the CPU runtime.
+- Add 22 new operators (3 control-flow, 19 generative/norm) to the CPU runtime.
 - Add a sub-graph executor that recursively evaluates inner graphs from `If`, `Loop`, `Scan` bodies.
 - Replace the dequant-compute-requant body of `op_qlinear_matmul` / `op_qlinear_conv` with a real tiled i32-accumulator kernel.
 - Integrate the sub-graph executor with the existing WCET budget enforcement in `profile.rs` and `sched-types`.
@@ -148,12 +148,12 @@ Parent-path annotation preserves the inner detail without exploding the table si
 
 **Decision.** Replace the `op_qlinear_matmul` body (Tier 2 dequant-compute-requant shim) with a tiled kernel that:
 
-1. **Accumulates in `i32`** rather than `f32`. For an `M×K × K×N` matmul with `i8` inputs, each accumulator slot needs to hold up to `K * i8::MAX * i8::MAX = K * 16129`, which for `K ≤ 131071` fits in `i32` without overflow. LLM K values are well under that.
+1. **Accumulates in `i32`** rather than `f32`. For an `M×K × K×N` matmul with `i8` inputs, the signed worst case is `i8::MIN * i8::MIN = (-128) * (-128) = 16384` (larger in magnitude than `i8::MAX * i8::MAX = 16129`). Each accumulator slot therefore needs to hold up to `K * 16384`, which fits in signed `i32` (`i32::MAX = 2_147_483_647`) as long as `K ≤ floor(i32::MAX / 16384) = 131_071`. LLM K values (e.g. 4096 for LLaMA-7B attention projections) are well under that bound.
 2. **Folds zero-points at the edges.** The math is `output[i,j] = a_scale * b_scale / y_scale * sum_k((a[i,k] - a_zp) * (b[k,j] - b_zp)) + y_zp`. Expanding the inner product and precomputing the three zero-point correction sums lets the hot loop stay `acc += a[i,k] * b[k,j]` with no per-element subtractions.
 3. **Saturates on store.** The final `i32` result is clamped to `[i8::MIN, i8::MAX]` before writing to output.
 4. **Uses the same cache-blocked tile sizes** as `gemm_f32` (8×8 inner, 64×64 outer) so the micro-architecture story stays consistent.
 
-**Rationale.** The dequant-compute-requant shim accumulates `f32` rounding error across the K reduction. For long-sequence LLM matmuls (K=4096 for LLaMA-7B attention projections) this error compounds. An `i32` accumulator is exact up to the saturation point, so the output is bit-equivalent (within ±1 ULP after the final scale-multiply, which is all that's achievable) to the reference Python `onnxruntime` implementation.
+**Rationale.** The dequant-compute-requant shim accumulates `f32` rounding error across the K reduction. For long-sequence LLM matmuls (K=4096 for LLaMA-7B attention projections) this error compounds. An `i32` accumulator is exact up to the saturation point, so the output matches the reference Python `onnxruntime` implementation within ±1 in the quantized integer domain (i.e. at most 1 quantized-step difference per output element, which is all that's achievable after the final scale-multiply-and-saturate step).
 
 The shim also does twice the memory bandwidth of a real kernel (read i8, write f32, read f32, write i8) and gives up the 4× memory density advantage of int8. The real kernel reads and writes i8 only, and keeps the f32 scales in registers.
 
@@ -164,7 +164,7 @@ The shim also does twice the memory bandwidth of a real kernel (read i8, write f
 **Decision.**
 
 - `onnx-rt/src/ops/control_flow.rs` — `op_if`, `op_loop`, `op_scan`. New file.
-- `onnx-rt/src/ops/generative.rs` — the 18 generative/norm ops. New file.
+- `onnx-rt/src/ops/generative.rs` — the 19 generative/norm ops. New file.
 - `onnx-rt/src/ops/quantized.rs` — modified; real int8 kernel replaces the shim.
 - `onnx-rt/src/sub_executor.rs` — the sub-graph executor itself. **New top-level file in `onnx-rt/src/`, not under `ops/`.**
 
@@ -184,6 +184,23 @@ The sub-executor is not an operator; it is infrastructure that operators (`If`/`
 Phase 2 does not touch the inventory machinery itself (struct, table shape, reporting API).
 
 **Rationale.** Coordination. Two concurrent PRs that both edit the inventory struct would conflict. By drawing a clean boundary — "Phase 1 owns inventory machinery, Phase 2 owns the Phase-2 entries" — we avoid rebase churn.
+
+### D9: Hard safety bound on `Loop` iterations (`MAX_LOOP_ITERATIONS`)
+
+**Decision.** The sub-executor enforces a compile-time-hard-coded absolute maximum iteration count for any `Loop` body, independent of the per-operator WCET budget and independent of the model-supplied `M` trip count. Phase 2 sets this constant to `1_000_000`:
+
+```rust
+// In onnx-rt/src/sub_executor.rs
+const MAX_LOOP_ITERATIONS: i64 = 1_000_000;
+```
+
+If a `Loop` reaches this bound, the sub-executor returns `SessionError::ExecutionFailed("Loop exceeded compile-time safety limit")` and the containing `Session::run()` fails cleanly.
+
+**Rationale.** The value is set high enough that no legitimate ONNX-exported Loop will ever hit it (the longest realistic decoder generation is `max_new_tokens ≈ 8192` today; even scan over a 100k-token document is two orders of magnitude below the cap), but low enough that a runaway loop — from a malformed model, a bug in our termination logic, or an adversarial input — fails in bounded time (seconds of wall clock, megabytes of inner value-map churn) rather than wedging the scheduler and exhausting memory.
+
+This is a belt-and-suspenders safety net that complements — but does not replace — the WCET budget enforcement from D5. The budget check bounds *time*; `MAX_LOOP_ITERATIONS` bounds *count*. Either can fire first, and either failure is a clean `SessionError::ExecutionFailed`.
+
+**Alternative considered.** Expose `MAX_LOOP_ITERATIONS` as a `Session` configuration knob. Rejected for Phase 2 — a hard-coded constant is easier to reason about formally (the TLA+ Loop model would otherwise have to track a per-session parameter) and the value is already far above any realistic use. Making it tunable is open for Phase 3 if a use case surfaces.
 
 ## Alternatives Considered
 

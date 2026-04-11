@@ -17,11 +17,11 @@ All three pieces (control-flow, generative ops, int8 kernels) are bundled into a
 
 - **3 control-flow operators:** `If`, `Loop`, `Scan`. Each wraps an inner `GraphProto` that the sub-graph executor compiles once (at `Session` load time) and dispatches N times during inference. `Loop` implements the full ONNX termination semantics (`M` / `cond` / `cond_out`).
 
-- **18 generative / normalization operators:** `RMSNormalization`, `MatMulInteger`, `DynamicQuantizeLinear`, `RandomNormal`, `RandomNormalLike`, `RandomUniform`, `RandomUniformLike`, `Multinomial`, `Bernoulli`, `Dropout`, `EyeLike`, `ReduceL1`, `ReduceL2`, `ReduceLogSum`, `ReduceLogSumExp`, `ReduceSumSquare`, `LpNormalization`, `MeanVarianceNormalization`, `Softplus`.
+- **19 generative / normalization operators:** `RMSNormalization`, `MatMulInteger`, `DynamicQuantizeLinear`, `RandomNormal`, `RandomNormalLike`, `RandomUniform`, `RandomUniformLike`, `Multinomial`, `Bernoulli`, `Dropout`, `EyeLike`, `ReduceL1`, `ReduceL2`, `ReduceLogSum`, `ReduceLogSumExp`, `ReduceSumSquare`, `LpNormalization`, `MeanVarianceNormalization`, `Softplus`.
 
-- **Real INT8 GEMM kernel.** Replace the dequant-compute-requant body of `op_qlinear_matmul` (and `op_qlinear_conv`'s im2col->gemm path) with a tiled kernel that accumulates in `i32`, folds zero-points at the edges, saturates on store, and produces output bit-equivalent to a reference Python ORT implementation within ±1 ULP.
+- **Real INT8 GEMM kernel.** Replace the dequant-compute-requant body of `op_qlinear_matmul` (and `op_qlinear_conv`'s im2col->gemm path) with a tiled kernel that accumulates in `i32`, folds zero-points at the edges, saturates on store, and produces output within ±1 in the quantized integer domain of a reference Python ORT implementation.
 
-- **Inventory updates.** Flip the 21 new operators from `OperatorStatus::Planned(Phase::P2)` to `OperatorStatus::Implemented` in the `SUPPORTED_OPS_INVENTORY` table that Phase 1 adds. Phase 2 does not invent the inventory machinery — it consumes it.
+- **Inventory updates.** Flip the 22 new operators from `OperatorStatus::Planned(Phase::P2)` to `OperatorStatus::Implemented` in the `SUPPORTED_OPS_INVENTORY` table that Phase 1 adds. Phase 2 does not invent the inventory machinery — it consumes it.
 
 ## Capabilities
 
@@ -34,15 +34,15 @@ All three pieces (control-flow, generative ops, int8 kernels) are bundled into a
 - **Code:**
   - `onnx-rt/src/sub_executor.rs` — new file, ~1500 LOC (the largest single addition). Recursive graph executor, sub-graph compilation cache, scope management, budget plumbing.
   - `onnx-rt/src/ops/control_flow.rs` — new file, `op_if`, `op_loop`, `op_scan`.
-  - `onnx-rt/src/ops/generative.rs` — new file, 18 generative ops.
+  - `onnx-rt/src/ops/generative.rs` — new file, 19 generative/norm ops.
   - `onnx-rt/src/ops/quantized.rs` — modified, real i8 GEMM body.
   - `onnx-rt/src/executor.rs` — modified, `dispatch_node` gains three new cases (If/Loop/Scan) that hand off to `sub_executor`.
   - `onnx-rt/src/graph.rs` — modified, `ExecutionGraph` extended to carry compiled sub-graphs.
-  - `onnx-rt/src/operators.rs` — modified, 21 new `OpKind` variants; inventory flips.
+  - `onnx-rt/src/operators.rs` — modified, 22 new `OpKind` variants; inventory flips.
 
 - **APIs:** No breaking changes to `Session` public API. The addition is internal: `ExecutionGraph` now carries sub-graph state, and the executor recurses.
 
-- **Risk:** The sub-graph executor is the largest single piece of new runtime code since the project's initial commit and touches the hot dispatch path. Mitigation: full test suite of bounded loops, nested `If`, three-level-deep `Scan`, plus an end-to-end GPT-2-small single-call generation test. The real int8 kernel carries bit-equivalence risk versus reference ORT; mitigation is a ±1 ULP test against hand-computed reference vectors.
+- **Risk:** The sub-graph executor is the largest single piece of new runtime code since the project's initial commit and touches the hot dispatch path. Mitigation: full test suite of bounded loops, nested `If`, three-level-deep `Scan`, plus an end-to-end GPT-2-small single-call generation test. The real int8 kernel carries bit-equivalence risk versus reference ORT; mitigation is a ±1 quantized-step test against hand-computed reference vectors.
 
 - **WCET:** `Loop` as a single accounting unit in the budget table, not per-iteration. Hard-limit aborts the whole loop. Sub-graph operators that exceed their own inner budget bubble up a hard-limit error to the parent `Loop`.
 
@@ -55,7 +55,7 @@ All three pieces (control-flow, generative ops, int8 kernels) are bundled into a
 Phase 2 is deliberately narrow. The following are explicitly **not** in this change and will land in Phase 3, Phase 4, or are deferred entirely:
 
 - **Audio ops** (MelSpectrogram, STFT, DFT, HannWindow, HammingWindow, BlackmanWindow) — Phase 3.
-- **Detection ops** (NonMaxSuppression, RoiAlign, TopK) — Phase 3.
+- **Additional detection-specific ops beyond Phase 1** (e.g., NonMaxSuppression, MaxRoiPool) — Phase 3. Note: `RoiAlign` and `TopK` already land in Phase 1 (`vision-transformers-v1`, PR #76).
 - **ONNX-ML classical ML ops** (TreeEnsemble, LinearClassifier, SVMClassifier, Imputer, Scaler) — Phase 4 or deferred.
 - **Sequence and Optional types** (SequenceConstruct, SequenceAt, OptionalGetElement) — deferred; modern LLMs don't use them.
 - **String tensors** (Tokenizer, StringSplit, RegexFullMatch) — deferred; tokenization stays host-side.

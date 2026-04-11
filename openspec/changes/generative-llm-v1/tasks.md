@@ -49,7 +49,7 @@
 - [ ] 3.18 Implement `op_lp_normalization`: normalize by Lp norm along specified axis
 - [ ] 3.19 Implement `op_mean_variance_normalization`: subtract mean and divide by sqrt(variance)
 - [ ] 3.20 Implement `op_softplus`: `log(1 + exp(x))` with overflow-safe form
-- [ ] 3.21 Add `OpKind` variants and dispatch cases for all 18 generative/norm ops
+- [ ] 3.21 Add `OpKind` variants and dispatch cases for all 19 generative/norm ops
 - [ ] 3.22 Unit tests for each op with known reference values (one test per op minimum)
 - [ ] 3.23 Unit test: RMSNormalization matches PyTorch `nn.RMSNorm` within 1e-5
 - [ ] 3.24 Unit test: RandomUniform is reproducible across two invocations with the same seed
@@ -66,14 +66,14 @@
 - [ ] 4.8 Unit test: zero-point = 0 case matches plain i32 accumulation
 - [ ] 4.9 Unit test: non-zero zero-point case matches full formula
 - [ ] 4.10 Unit test: saturation on overflow produces `i8::MAX` / `i8::MIN`, not wrap
-- [ ] 4.11 Unit test: output within ±1 ULP of a reference-ORT vector (checked-in test vectors)
+- [ ] 4.11 Unit test: output within ±1 quantized step of a reference-ORT vector for both i8 and u8 outputs (checked-in test vectors)
 
 ## 5. Inventory Updates
 
 - [ ] 5.1 Flip `(OpKind::Loop, Planned(Phase::P2))` → `Implemented` in `SUPPORTED_OPS_INVENTORY`
 - [ ] 5.2 Flip `(OpKind::If, Planned(Phase::P2))` → `Implemented`
 - [ ] 5.3 Flip `(OpKind::Scan, Planned(Phase::P2))` → `Implemented`
-- [ ] 5.4 Flip all 18 generative/norm ops from `Planned(Phase::P2)` → `Implemented`
+- [ ] 5.4 Flip all 19 generative/norm ops from `Planned(Phase::P2)` → `Implemented`
 - [ ] 5.5 Verify no Phase 2 op remains as `Planned(Phase::P2)` in the inventory
 
 ## 6. Validation
