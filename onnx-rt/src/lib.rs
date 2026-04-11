@@ -31,6 +31,7 @@ pub mod onnx_types;
 pub mod operators;
 pub mod optimizer;
 pub mod parallel;
+pub mod profile;
 pub mod protobuf;
 pub mod session;
 pub mod tensor;

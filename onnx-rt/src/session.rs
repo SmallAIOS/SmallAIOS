@@ -427,9 +427,75 @@ impl Session {
             &input_pairs,
             initializers,
             None,
+            None,
+            &crate::profile::OperatorBudget::DEFAULT,
+            &crate::profile::NullTimeSource,
             #[cfg(feature = "gpu")]
             self.gpu_backend.as_ref(),
         )
+    }
+
+    /// Runs inference and returns a per-operator timing profile alongside
+    /// the outputs.
+    ///
+    /// Uses [`crate::profile::StdTimeSource`] for wall-clock measurement.
+    /// Only available when the `std` feature is enabled (container mode).
+    ///
+    /// If any operator exceeds its hard time limit
+    /// ([`crate::profile::BudgetResult::HardLimit`]), execution is aborted
+    /// with a [`SessionError::ExecutionFailed`] and the partial profile is
+    /// not returned.
+    #[cfg(feature = "std")]
+    pub fn run_with_profile(
+        &self,
+        inputs: &[InferenceInput],
+    ) -> Result<(Vec<InferenceOutput>, crate::profile::InferenceProfile), SessionError> {
+        if !self.is_initialized {
+            return Err(SessionError::ExecutionFailed(String::from(
+                "session not initialized",
+            )));
+        }
+
+        if inputs.is_empty() {
+            return Err(SessionError::InvalidInput(String::from(
+                "no inputs provided",
+            )));
+        }
+
+        for input in inputs {
+            if !self.input_names.contains(&input.name) {
+                return Err(SessionError::InvalidInput(input.name.clone()));
+            }
+        }
+
+        let graph = self
+            .graph
+            .as_ref()
+            .ok_or_else(|| SessionError::ExecutionFailed(String::from("no execution graph")))?;
+
+        let input_pairs: Vec<(String, Tensor)> = inputs
+            .iter()
+            .map(|i| (i.name.clone(), i.tensor.clone()))
+            .collect();
+
+        let initializers = &self.initializers;
+
+        let mut profile = crate::profile::InferenceProfile::default();
+        let budget = crate::profile::OperatorBudget::DEFAULT;
+        let time_source = crate::profile::StdTimeSource::new();
+
+        let outputs = crate::executor::execute_graph(
+            graph,
+            &input_pairs,
+            initializers,
+            None,
+            Some(&mut profile),
+            &budget,
+            &time_source,
+            #[cfg(feature = "gpu")]
+            self.gpu_backend.as_ref(),
+        )?;
+        Ok((outputs, profile))
     }
 
     /// Returns the names of the model's expected inputs.

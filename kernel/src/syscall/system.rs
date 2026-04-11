@@ -125,9 +125,15 @@ pub fn sys_info(args: &SyscallArgs) -> SyscallResult {
 /// Args: [0, 0, 0, 0, 0, 0]
 /// Returns: nanoseconds since boot (positive value).
 pub fn sys_time(_args: &SyscallArgs) -> SyscallResult {
-    // TODO: Read from architecture timer (TSC on x86-64, CNTPCT_EL0 on ARM64)
-    // For now, return 0 (boot time)
-    SyscallError::Success.as_i64()
+    // Read the architecture high-resolution timer. On x86-64 this returns
+    // TSC cycles, on ARM64 CNTPCT_EL0 ticks, on RISC-V CLINT mtime. On host
+    // test builds this is a monotonic tick counter. The unit (cycles vs ns)
+    // depends on whether TIMER_FREQ_HZ has been calibrated — callers that
+    // need nanoseconds should multiply by the calibrated frequency.
+    let now = crate::sched::timer::Timestamp::now();
+    // Clamp to the positive i64 range so it encodes as a success value in
+    // the syscall ABI (negative values are reserved for errors).
+    (now.as_u64() & (i64::MAX as u64)) as SyscallResult
 }
 
 /// Shut down the system.
@@ -262,9 +268,18 @@ mod tests {
     }
 
     #[test]
-    fn test_sys_time_returns_success() {
+    fn test_sys_time_returns_non_negative() {
         let args = SyscallArgs::zero(0x51);
-        assert_eq!(sys_time(&args), SyscallError::Success.as_i64());
+        let t = sys_time(&args);
+        assert!(t >= 0, "sys_time returned negative value: {}", t);
+    }
+
+    #[test]
+    fn test_sys_time_monotonic() {
+        let args = SyscallArgs::zero(0x51);
+        let a = sys_time(&args);
+        let b = sys_time(&args);
+        assert!(b >= a, "sys_time not monotonic: {} -> {}", a, b);
     }
 
     #[test]
