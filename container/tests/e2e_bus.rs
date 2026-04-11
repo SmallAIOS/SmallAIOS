@@ -19,12 +19,12 @@ use std::process::{Child, Command};
 use std::time::Duration;
 
 /// Find the built binary path.
+///
+/// Uses Cargo's built-in `CARGO_BIN_EXE_<bin-name>` env var which is
+/// populated for integration tests and works under `cargo test`,
+/// `cargo llvm-cov`, and other test runners.
 fn binary_path() -> String {
-    let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    let target_dir = format!("{}/../target/debug/smallaios-container", manifest_dir);
-    std::fs::canonicalize(&target_dir)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or(target_dir)
+    env!("CARGO_BIN_EXE_smallaios-container").to_string()
 }
 
 /// Start the server with a specific bus backend and port.
