@@ -70,10 +70,36 @@ pub fn classify_op(op_type: &str) -> OperatorClass {
     match op_type {
         "Add" | "Sub" | "Mul" | "Div" | "Relu" | "Sigmoid" | "Tanh" | "Clip" | "Cast"
         | "Reshape" | "Flatten" | "Squeeze" | "Unsqueeze" | "Transpose" | "Concat" | "Slice"
-        | "Pad" | "Gather" => OperatorClass::Elementwise,
+        | "Pad" | "Gather"
+        // Tier 2 element-wise math
+        | "Pow" | "Sqrt" | "Exp" | "Log" | "Erf" | "Neg" | "Abs" | "Floor" | "Ceil" | "Round"
+        // Tier 2 comparison/selection
+        | "Equal" | "NotEqual" | "Less" | "LessOrEqual" | "Greater" | "GreaterOrEqual"
+        | "Where" | "Min" | "Max" | "Not"
+        // Tier 2 composite activations
+        | "Gelu" | "LeakyRelu" | "Elu" | "Swish"
+        // Tier 2 transformer shape ops
+        | "Split" | "Expand" | "Tile" | "OneHot"
+        // Tier 2 quantization conversion
+        | "QuantizeLinear" | "DequantizeLinear"
+        // Tier 3 Phase 1 element-wise math / bool
+        | "Mod" | "Sin" | "Cos" | "Reciprocal" | "Sign" | "Sum" | "Mean"
+        | "And" | "Or"
+        // Tier 3 Phase 1 shape / data-movement
+        | "Shape" | "Size" | "Identity" | "Constant" | "ConstantOfShape"
+        | "Range" | "Trilu" | "CumSum" | "GatherND" | "ScatterND" => {
+            OperatorClass::Elementwise
+        }
         "Softmax" | "LayerNormalization" | "BatchNormalization" | "MaxPool" | "AveragePool"
-        | "GlobalAveragePool" | "ReduceMean" | "ReduceSum" => OperatorClass::Reduction,
-        "MatMul" | "Gemm" | "Conv" => OperatorClass::Gemm,
+        | "GlobalAveragePool" | "ReduceMean" | "ReduceSum"
+        // Tier 3 Phase 1 reductions
+        | "ReduceMax" | "ReduceMin" | "ReduceProd" | "ArgMax" | "ArgMin"
+        | "LogSoftmax" => OperatorClass::Reduction,
+        "MatMul" | "Gemm" | "Conv"
+        // Tier 2: Einsum is matmul-like; quantized GEMM/Conv same.
+        | "Einsum" | "QLinearMatMul" | "QLinearConv" => OperatorClass::Gemm,
+        // Recurrent layers do many GEMMs across time; classify as Attention budget.
+        "RNN" | "LSTM" | "GRU" => OperatorClass::Attention,
         _ => OperatorClass::Elementwise,
     }
 }

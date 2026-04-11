@@ -13,6 +13,7 @@ use crate::byte_io::{self, allocate_tensor_data, I64_SIZE};
 use crate::graph::ExecutionGraph;
 use crate::onnx_types::{AttributeProto, AttributeType, TensorProto};
 use crate::operators::{self, OpError, OpKind};
+use crate::ops;
 #[cfg(test)]
 use crate::profile::NullTimeSource;
 use crate::profile::{
@@ -79,6 +80,7 @@ pub fn execute_graph(
                 &node.op_type,
                 &input_tensors,
                 &node.attributes,
+                node.outputs.len(),
                 #[cfg(feature = "gpu")]
                 gpu_backend,
             )
@@ -117,6 +119,7 @@ pub fn execute_graph(
                 &node.op_type,
                 &input_tensors,
                 &node.attributes,
+                node.outputs.len(),
                 #[cfg(feature = "gpu")]
                 gpu_backend,
             )
@@ -257,6 +260,7 @@ fn dispatch_node(
     op_type: &str,
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
+    output_count: usize,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
 ) -> Result<Vec<Tensor>, OpError> {
     // Check if GPU backend can handle this operator. If so, a real
@@ -269,6 +273,15 @@ fn dispatch_node(
         .unwrap_or(false);
     let kind =
         OpKind::parse_str(op_type).ok_or_else(|| OpError::UnsupportedOp(String::from(op_type)))?;
+
+    // Multi-output ops bypass the single-tensor wrapper.
+    match kind {
+        OpKind::Split => return dispatch_split(inputs, attrs, output_count),
+        OpKind::LSTM => return dispatch_lstm(inputs, attrs),
+        OpKind::GRU => return dispatch_gru(inputs, attrs),
+        OpKind::RNN => return dispatch_rnn(inputs, attrs),
+        _ => {}
+    }
 
     let result = match kind {
         OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div | OpKind::MatMul | OpKind::Gemm => {
@@ -284,7 +297,13 @@ fn dispatch_node(
         OpKind::MaxPool | OpKind::AveragePool | OpKind::GlobalAveragePool => {
             dispatch_pooling(kind, inputs, attrs)
         }
-        OpKind::ReduceMean | OpKind::ReduceSum => dispatch_reduction(kind, inputs, attrs),
+        OpKind::ReduceMean
+        | OpKind::ReduceSum
+        | OpKind::ReduceMax
+        | OpKind::ReduceMin
+        | OpKind::ReduceProd
+        | OpKind::ArgMax
+        | OpKind::ArgMin => dispatch_reduction(kind, inputs, attrs),
         OpKind::Reshape
         | OpKind::Transpose
         | OpKind::Flatten
@@ -296,9 +315,424 @@ fn dispatch_node(
         | OpKind::Pad
         | OpKind::Cast
         | OpKind::Clip => dispatch_shape(kind, inputs, attrs),
+        OpKind::Pow
+        | OpKind::Sqrt
+        | OpKind::Exp
+        | OpKind::Log
+        | OpKind::Erf
+        | OpKind::Neg
+        | OpKind::Abs
+        | OpKind::Floor
+        | OpKind::Ceil
+        | OpKind::Round
+        | OpKind::Mod
+        | OpKind::Sin
+        | OpKind::Cos
+        | OpKind::Reciprocal
+        | OpKind::Sign
+        | OpKind::Sum
+        | OpKind::Mean
+        | OpKind::And
+        | OpKind::Or
+        | OpKind::LogSoftmax => dispatch_math(kind, inputs, attrs),
+        OpKind::Equal
+        | OpKind::NotEqual
+        | OpKind::Less
+        | OpKind::LessOrEqual
+        | OpKind::Greater
+        | OpKind::GreaterOrEqual
+        | OpKind::Where
+        | OpKind::Min
+        | OpKind::Max
+        | OpKind::Not => dispatch_compare(kind, inputs, attrs),
+        OpKind::Shape
+        | OpKind::Size
+        | OpKind::Identity
+        | OpKind::Constant
+        | OpKind::ConstantOfShape
+        | OpKind::Range
+        | OpKind::Trilu
+        | OpKind::CumSum
+        | OpKind::GatherND
+        | OpKind::ScatterND => dispatch_shape_data(kind, inputs, attrs),
+        OpKind::Gelu | OpKind::LeakyRelu | OpKind::Elu | OpKind::Swish => {
+            dispatch_composite_activation(kind, inputs, attrs)
+        }
+        OpKind::Expand | OpKind::Tile | OpKind::OneHot | OpKind::Einsum => {
+            dispatch_transformer(kind, inputs, attrs)
+        }
+        OpKind::QuantizeLinear
+        | OpKind::DequantizeLinear
+        | OpKind::QLinearMatMul
+        | OpKind::QLinearConv => dispatch_quantized(kind, inputs, attrs),
+        // Multi-output kinds handled above and returned early.
+        OpKind::Split | OpKind::LSTM | OpKind::GRU | OpKind::RNN => unreachable!(),
     };
 
     result.map(|t| alloc::vec![t])
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2 dispatch helpers
+// ---------------------------------------------------------------------------
+
+/// Dispatches Tier 2/3 element-wise math primitives.
+fn dispatch_math(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Pow => {
+            let base = require_input(inputs, 0, "Pow")?;
+            let exp = require_input(inputs, 1, "Pow")?;
+            ops::math::op_pow(base, exp)
+        }
+        OpKind::Sqrt => ops::math::op_sqrt(require_input(inputs, 0, "Sqrt")?),
+        OpKind::Exp => ops::math::op_exp(require_input(inputs, 0, "Exp")?),
+        OpKind::Log => ops::math::op_log(require_input(inputs, 0, "Log")?),
+        OpKind::Erf => ops::math::op_erf(require_input(inputs, 0, "Erf")?),
+        OpKind::Neg => ops::math::op_neg(require_input(inputs, 0, "Neg")?),
+        OpKind::Abs => ops::math::op_abs(require_input(inputs, 0, "Abs")?),
+        OpKind::Floor => ops::math::op_floor(require_input(inputs, 0, "Floor")?),
+        OpKind::Ceil => ops::math::op_ceil(require_input(inputs, 0, "Ceil")?),
+        OpKind::Round => ops::math::op_round(require_input(inputs, 0, "Round")?),
+        OpKind::Mod => {
+            let a = require_input(inputs, 0, "Mod")?;
+            let b = require_input(inputs, 1, "Mod")?;
+            let fmod = get_attr_int(attrs, "fmod", 0) != 0;
+            ops::math::op_mod(a, b, fmod)
+        }
+        OpKind::Sin => ops::math::op_sin(require_input(inputs, 0, "Sin")?),
+        OpKind::Cos => ops::math::op_cos(require_input(inputs, 0, "Cos")?),
+        OpKind::Reciprocal => ops::math::op_reciprocal(require_input(inputs, 0, "Reciprocal")?),
+        OpKind::Sign => ops::math::op_sign(require_input(inputs, 0, "Sign")?),
+        OpKind::Sum => {
+            let refs: Vec<&Tensor> = inputs.iter().filter_map(|i| *i).collect();
+            ops::math::op_sum(&refs)
+        }
+        OpKind::Mean => {
+            let refs: Vec<&Tensor> = inputs.iter().filter_map(|i| *i).collect();
+            ops::math::op_mean(&refs)
+        }
+        OpKind::And => {
+            let a = require_input(inputs, 0, "And")?;
+            let b = require_input(inputs, 1, "And")?;
+            ops::math::op_and(a, b)
+        }
+        OpKind::Or => {
+            let a = require_input(inputs, 0, "Or")?;
+            let b = require_input(inputs, 1, "Or")?;
+            ops::math::op_or(a, b)
+        }
+        OpKind::LogSoftmax => {
+            let x = require_input(inputs, 0, "LogSoftmax")?;
+            let axis = get_attr_int(attrs, "axis", -1);
+            ops::math::op_log_softmax(x, axis)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("math"))),
+    }
+}
+
+/// Dispatches Tier 2 comparison/selection operators.
+fn dispatch_compare(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    _attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Equal => {
+            let a = require_input(inputs, 0, "Equal")?;
+            let b = require_input(inputs, 1, "Equal")?;
+            ops::compare::op_equal(a, b)
+        }
+        OpKind::NotEqual => {
+            let a = require_input(inputs, 0, "NotEqual")?;
+            let b = require_input(inputs, 1, "NotEqual")?;
+            ops::compare::op_not_equal(a, b)
+        }
+        OpKind::Less => {
+            let a = require_input(inputs, 0, "Less")?;
+            let b = require_input(inputs, 1, "Less")?;
+            ops::compare::op_less(a, b)
+        }
+        OpKind::LessOrEqual => {
+            let a = require_input(inputs, 0, "LessOrEqual")?;
+            let b = require_input(inputs, 1, "LessOrEqual")?;
+            ops::compare::op_less_or_equal(a, b)
+        }
+        OpKind::Greater => {
+            let a = require_input(inputs, 0, "Greater")?;
+            let b = require_input(inputs, 1, "Greater")?;
+            ops::compare::op_greater(a, b)
+        }
+        OpKind::GreaterOrEqual => {
+            let a = require_input(inputs, 0, "GreaterOrEqual")?;
+            let b = require_input(inputs, 1, "GreaterOrEqual")?;
+            ops::compare::op_greater_or_equal(a, b)
+        }
+        OpKind::Where => {
+            let cond = require_input(inputs, 0, "Where")?;
+            let x = require_input(inputs, 1, "Where")?;
+            let y = require_input(inputs, 2, "Where")?;
+            ops::compare::op_where(cond, x, y)
+        }
+        OpKind::Min => {
+            let a = require_input(inputs, 0, "Min")?;
+            let b = require_input(inputs, 1, "Min")?;
+            ops::compare::op_min(a, b)
+        }
+        OpKind::Max => {
+            let a = require_input(inputs, 0, "Max")?;
+            let b = require_input(inputs, 1, "Max")?;
+            ops::compare::op_max(a, b)
+        }
+        OpKind::Not => ops::compare::op_not(require_input(inputs, 0, "Not")?),
+        _ => Err(OpError::UnsupportedOp(String::from("compare"))),
+    }
+}
+
+/// Dispatches Tier 2 composite activations.
+fn dispatch_composite_activation(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Gelu => ops::activations::op_gelu(require_input(inputs, 0, "Gelu")?),
+        OpKind::LeakyRelu => {
+            let x = require_input(inputs, 0, "LeakyRelu")?;
+            let alpha = get_attr_float(attrs, "alpha", 0.01);
+            ops::activations::op_leaky_relu(x, alpha)
+        }
+        OpKind::Elu => {
+            let x = require_input(inputs, 0, "Elu")?;
+            let alpha = get_attr_float(attrs, "alpha", 1.0);
+            ops::activations::op_elu(x, alpha)
+        }
+        OpKind::Swish => ops::activations::op_swish(require_input(inputs, 0, "Swish")?),
+        _ => Err(OpError::UnsupportedOp(String::from("composite-activation"))),
+    }
+}
+
+/// Dispatches transformer building-block ops (Expand/Tile/OneHot/Einsum).
+fn dispatch_transformer(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Expand => {
+            let x = require_input(inputs, 0, "Expand")?;
+            let shape_tensor = require_input(inputs, 1, "Expand")?;
+            let shape = read_i64_tensor(shape_tensor)?;
+            ops::transformer::op_expand(x, &shape)
+        }
+        OpKind::Tile => {
+            let x = require_input(inputs, 0, "Tile")?;
+            let repeats_tensor = require_input(inputs, 1, "Tile")?;
+            let repeats = read_i64_tensor(repeats_tensor)?;
+            ops::transformer::op_tile(x, &repeats)
+        }
+        OpKind::OneHot => {
+            let indices = require_input(inputs, 0, "OneHot")?;
+            let depth_tensor = require_input(inputs, 1, "OneHot")?;
+            let values = require_input(inputs, 2, "OneHot")?;
+            let depth = read_i64_tensor(depth_tensor)?
+                .first()
+                .copied()
+                .ok_or_else(|| OpError::InvalidAttribute(String::from("OneHot depth missing")))?;
+            let axis = get_attr_int(attrs, "axis", -1);
+            ops::transformer::op_one_hot(indices, depth, values, axis)
+        }
+        OpKind::Einsum => {
+            let equation_bytes = attrs
+                .iter()
+                .find(|a| a.name == "equation")
+                .map(|a| a.s.as_slice())
+                .ok_or_else(|| {
+                    OpError::InvalidAttribute(String::from("Einsum requires 'equation'"))
+                })?;
+            let equation = core::str::from_utf8(equation_bytes)
+                .map_err(|_| OpError::InvalidAttribute(String::from("Einsum equation utf-8")))?;
+            let refs: Vec<&Tensor> = inputs.iter().filter_map(|i| *i).collect();
+            ops::transformer::op_einsum(equation, &refs)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("transformer"))),
+    }
+}
+
+/// Dispatches quantized operators.
+fn dispatch_quantized(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::QuantizeLinear => {
+            let x = require_input(inputs, 0, "QuantizeLinear")?;
+            let scale = require_input(inputs, 1, "QuantizeLinear")?;
+            let zero_point = optional_input(inputs, 2);
+            ops::quantized::op_quantize_linear(x, scale, zero_point)
+        }
+        OpKind::DequantizeLinear => {
+            let x = require_input(inputs, 0, "DequantizeLinear")?;
+            let scale = require_input(inputs, 1, "DequantizeLinear")?;
+            let zero_point = optional_input(inputs, 2);
+            ops::quantized::op_dequantize_linear(x, scale, zero_point)
+        }
+        OpKind::QLinearMatMul => {
+            let a = require_input(inputs, 0, "QLinearMatMul")?;
+            let a_scale = require_input(inputs, 1, "QLinearMatMul")?;
+            let a_zp = require_input(inputs, 2, "QLinearMatMul")?;
+            let b = require_input(inputs, 3, "QLinearMatMul")?;
+            let b_scale = require_input(inputs, 4, "QLinearMatMul")?;
+            let b_zp = require_input(inputs, 5, "QLinearMatMul")?;
+            let y_scale = require_input(inputs, 6, "QLinearMatMul")?;
+            let y_zp = require_input(inputs, 7, "QLinearMatMul")?;
+            ops::quantized::op_qlinear_matmul(a, a_scale, a_zp, b, b_scale, b_zp, y_scale, y_zp)
+        }
+        OpKind::QLinearConv => {
+            let x = require_input(inputs, 0, "QLinearConv")?;
+            let x_scale = require_input(inputs, 1, "QLinearConv")?;
+            let x_zp = require_input(inputs, 2, "QLinearConv")?;
+            let w = require_input(inputs, 3, "QLinearConv")?;
+            let w_scale = require_input(inputs, 4, "QLinearConv")?;
+            let w_zp = require_input(inputs, 5, "QLinearConv")?;
+            let y_scale = require_input(inputs, 6, "QLinearConv")?;
+            let y_zp = require_input(inputs, 7, "QLinearConv")?;
+            let bias = optional_input(inputs, 8);
+            let pads = get_attr_ints(attrs, "pads");
+            let strides = get_attr_ints(attrs, "strides");
+            let dilations = get_attr_ints(attrs, "dilations");
+            let group = get_attr_int(attrs, "group", 1);
+            ops::quantized::op_qlinear_conv(
+                x, x_scale, x_zp, w, w_scale, w_zp, y_scale, y_zp, bias, pads, strides, dilations,
+                group,
+            )
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("quantized"))),
+    }
+}
+
+/// Dispatches Split (multi-output).
+fn dispatch_split(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+    output_count: usize,
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "Split")?;
+    let axis = get_attr_int(attrs, "axis", 0);
+    // Opset 13+: 'split' is an input tensor (i64).
+    // Older: 'split' is an int list attribute.
+    let split_input = match optional_input(inputs, 1) {
+        Some(t) => Some(read_i64_tensor(t)?),
+        None => None,
+    };
+    let split_attr = get_attr_ints(attrs, "split").map(|s| s.to_vec());
+    let split_sizes = split_input.or(split_attr);
+    // ONNX Split with no explicit sizes derives num_outputs from the
+    // node's output arity.
+    let num_outputs = if split_sizes.is_some() {
+        None
+    } else {
+        Some(output_count)
+    };
+    ops::transformer::op_split(x, axis, split_sizes.as_deref(), num_outputs)
+}
+
+/// Dispatches LSTM (multi-output).
+///
+/// Phase 1 limitations: `sequence_lens` (input 4) and `P` peephole
+/// weights (input 7) are not yet implemented and are rejected rather
+/// than silently ignored. Phase 4 will plumb them through.
+fn dispatch_lstm(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "LSTM")?;
+    let w = require_input(inputs, 1, "LSTM")?;
+    let r = require_input(inputs, 2, "LSTM")?;
+    let b = optional_input(inputs, 3);
+    if optional_input(inputs, 4).is_some() {
+        return Err(OpError::InvalidAttribute(String::from(
+            "LSTM: variable sequence_lens not yet supported",
+        )));
+    }
+    let h0 = optional_input(inputs, 5);
+    let c0 = optional_input(inputs, 6);
+    if optional_input(inputs, 7).is_some() {
+        return Err(OpError::InvalidAttribute(String::from(
+            "LSTM: peephole weights (P) not yet supported",
+        )));
+    }
+    let direction_bytes = attrs
+        .iter()
+        .find(|a| a.name == "direction")
+        .map(|a| a.s.as_slice())
+        .unwrap_or(b"forward");
+    let direction = core::str::from_utf8(direction_bytes).unwrap_or("forward");
+    ops::recurrent::op_lstm(x, w, r, b, h0, c0, direction)
+}
+
+/// Dispatches GRU (multi-output).
+///
+/// Phase 1 limitations: `sequence_lens` (input 4) and the
+/// `linear_before_reset` attribute are rejected rather than silently
+/// ignored. Phase 4 will implement both.
+fn dispatch_gru(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "GRU")?;
+    let w = require_input(inputs, 1, "GRU")?;
+    let r = require_input(inputs, 2, "GRU")?;
+    let b = optional_input(inputs, 3);
+    if optional_input(inputs, 4).is_some() {
+        return Err(OpError::InvalidAttribute(String::from(
+            "GRU: variable sequence_lens not yet supported",
+        )));
+    }
+    let h0 = optional_input(inputs, 5);
+    if get_attr_int(attrs, "linear_before_reset", 0) != 0 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "GRU: linear_before_reset=1 not yet supported",
+        )));
+    }
+    let direction_bytes = attrs
+        .iter()
+        .find(|a| a.name == "direction")
+        .map(|a| a.s.as_slice())
+        .unwrap_or(b"forward");
+    let direction = core::str::from_utf8(direction_bytes).unwrap_or("forward");
+    ops::recurrent::op_gru(x, w, r, b, h0, direction)
+}
+
+/// Dispatches RNN (multi-output).
+///
+/// Phase 1 limitation: `sequence_lens` (input 4) is rejected rather
+/// than silently ignored. Phase 4 will implement it.
+fn dispatch_rnn(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "RNN")?;
+    let w = require_input(inputs, 1, "RNN")?;
+    let r = require_input(inputs, 2, "RNN")?;
+    let b = optional_input(inputs, 3);
+    if optional_input(inputs, 4).is_some() {
+        return Err(OpError::InvalidAttribute(String::from(
+            "RNN: variable sequence_lens not yet supported",
+        )));
+    }
+    let h0 = optional_input(inputs, 5);
+    let direction_bytes = attrs
+        .iter()
+        .find(|a| a.name == "direction")
+        .map(|a| a.s.as_slice())
+        .unwrap_or(b"forward");
+    let direction = core::str::from_utf8(direction_bytes).unwrap_or("forward");
+    ops::recurrent::op_rnn(x, w, r, b, h0, direction)
 }
 
 /// Dispatches arithmetic operators: Add, Sub, Mul, Div, MatMul, Gemm.
@@ -464,13 +898,185 @@ fn dispatch_reduction(
         OpKind::ReduceSum => {
             let x = require_input(inputs, 0, "ReduceSum")?;
             // Opset 13+: axes from second input; older: from attribute
-            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_from_input = match optional_input(inputs, 1) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
             let axes_attr = get_attr_ints(attrs, "axes");
             let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
             let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
             operators::op_reduce_sum(x, axes, keepdims)
         }
+        OpKind::ReduceMax => {
+            let x = require_input(inputs, 0, "ReduceMax")?;
+            let axes_from_input = match optional_input(inputs, 1) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
+            let axes_attr = get_attr_ints(attrs, "axes");
+            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::reduction::op_reduce_max(x, axes, keepdims)
+        }
+        OpKind::ReduceMin => {
+            let x = require_input(inputs, 0, "ReduceMin")?;
+            let axes_from_input = match optional_input(inputs, 1) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
+            let axes_attr = get_attr_ints(attrs, "axes");
+            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::reduction::op_reduce_min(x, axes, keepdims)
+        }
+        OpKind::ReduceProd => {
+            let x = require_input(inputs, 0, "ReduceProd")?;
+            let axes_from_input = match optional_input(inputs, 1) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
+            let axes_attr = get_attr_ints(attrs, "axes");
+            let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::reduction::op_reduce_prod(x, axes, keepdims)
+        }
+        OpKind::ArgMax => {
+            let x = require_input(inputs, 0, "ArgMax")?;
+            let axis = get_attr_int(attrs, "axis", 0);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            let select_last = get_attr_int(attrs, "select_last_index", 0) != 0;
+            ops::reduction::op_arg_max(x, axis, keepdims, select_last)
+        }
+        OpKind::ArgMin => {
+            let x = require_input(inputs, 0, "ArgMin")?;
+            let axis = get_attr_int(attrs, "axis", 0);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            let select_last = get_attr_int(attrs, "select_last_index", 0) != 0;
+            ops::reduction::op_arg_min(x, axis, keepdims, select_last)
+        }
         _ => Err(OpError::UnsupportedOp(String::from("reduction"))),
+    }
+}
+
+/// Dispatches Tier 3 shape / data-movement operators.
+fn dispatch_shape_data(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Shape => ops::shape_data::op_shape(require_input(inputs, 0, "Shape")?),
+        OpKind::Size => ops::shape_data::op_size(require_input(inputs, 0, "Size")?),
+        OpKind::Identity => ops::shape_data::op_identity(require_input(inputs, 0, "Identity")?),
+        OpKind::Constant => {
+            // ONNX Constant carries its payload in a 'value' attribute
+            // (TensorProto). SmallAIOS's AttributeProto does not model
+            // tensor attributes yet, so at runtime we fall back to
+            // either an explicit input tensor (treating Constant as an
+            // Identity pass-through of a graph initializer) or a single
+            // float / int scalar decoded from the float / int attribute
+            // fields. Scalar attributes produce a true 0-D tensor.
+            if let Some(t) = optional_input(inputs, 0) {
+                return ops::shape_data::op_identity(t);
+            }
+            if let Some(a) = attrs
+                .iter()
+                .find(|a| a.name == "value_float" && a.attr_type == AttributeType::Float)
+            {
+                return ops::shape_data::op_constant_of_shape(&[], a.f);
+            }
+            if let Some(a) = attrs
+                .iter()
+                .find(|a| a.name == "value_int" && a.attr_type == AttributeType::Int)
+            {
+                return ops::shape_data::op_constant_of_shape(&[], a.i as f32);
+            }
+            Err(OpError::InvalidAttribute(String::from(
+                "Constant requires one of: 'value' (TensorProto), \
+                 'value_float', 'value_int', or an input initializer",
+            )))
+        }
+        OpKind::ConstantOfShape => {
+            let shape_tensor = require_input(inputs, 0, "ConstantOfShape")?;
+            let shape = read_i64_tensor(shape_tensor)?;
+            // SmallAIOS can't yet decode tensor-typed attributes, so we
+            // accept a scalar fill via 'value_float' / 'value_int' or
+            // default to 0.0.
+            let value = attrs
+                .iter()
+                .find_map(|a| match (a.name.as_str(), a.attr_type) {
+                    ("value_float", AttributeType::Float) => Some(a.f),
+                    ("value_int", AttributeType::Int) => Some(a.i as f32),
+                    _ => None,
+                })
+                .unwrap_or(0.0);
+            ops::shape_data::op_constant_of_shape(&shape, value)
+        }
+        OpKind::Range => {
+            let start_t = require_input(inputs, 0, "Range")?;
+            let limit_t = require_input(inputs, 1, "Range")?;
+            let delta_t = require_input(inputs, 2, "Range")?;
+            let start = read_scalar_f32(start_t)?;
+            let limit = read_scalar_f32(limit_t)?;
+            let delta = read_scalar_f32(delta_t)?;
+            ops::shape_data::op_range(start, limit, delta)
+        }
+        OpKind::Trilu => {
+            let x = require_input(inputs, 0, "Trilu")?;
+            // k is an optional second input (Int64 scalar)
+            let k = optional_input(inputs, 1)
+                .map(|t| {
+                    if t.data_type == DataType::Int64 && t.raw_data.len() >= I64_SIZE {
+                        byte_io::read_i64(&t.raw_data, 0)
+                    } else {
+                        0
+                    }
+                })
+                .unwrap_or(0);
+            let upper = get_attr_int(attrs, "upper", 1) != 0;
+            ops::shape_data::op_trilu(x, k, upper)
+        }
+        OpKind::CumSum => {
+            let x = require_input(inputs, 0, "CumSum")?;
+            let axis_tensor = require_input(inputs, 1, "CumSum")?;
+            let axis = if axis_tensor.data_type == DataType::Int64
+                && axis_tensor.raw_data.len() >= I64_SIZE
+            {
+                byte_io::read_i64(&axis_tensor.raw_data, 0)
+            } else {
+                0
+            };
+            let exclusive = get_attr_int(attrs, "exclusive", 0) != 0;
+            let reverse = get_attr_int(attrs, "reverse", 0) != 0;
+            ops::shape_data::op_cumsum(x, axis, exclusive, reverse)
+        }
+        OpKind::GatherND => {
+            let data = require_input(inputs, 0, "GatherND")?;
+            let idx = require_input(inputs, 1, "GatherND")?;
+            let batch_dims = get_attr_int(attrs, "batch_dims", 0);
+            ops::shape_data::op_gather_nd(data, idx, batch_dims)
+        }
+        OpKind::ScatterND => {
+            let data = require_input(inputs, 0, "ScatterND")?;
+            let idx = require_input(inputs, 1, "ScatterND")?;
+            let upd = require_input(inputs, 2, "ScatterND")?;
+            ops::shape_data::op_scatter_nd(data, idx, upd)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("shape_data"))),
+    }
+}
+
+/// Reads a scalar f32 from a 1-element tensor (Float or Int64).
+fn read_scalar_f32(t: &Tensor) -> Result<f32, OpError> {
+    match t.data_type {
+        DataType::Float if t.raw_data.len() >= 4 => Ok(byte_io::read_f32(&t.raw_data, 0)),
+        DataType::Int64 if t.raw_data.len() >= I64_SIZE => {
+            Ok(byte_io::read_i64(&t.raw_data, 0) as f32)
+        }
+        DataType::Int32 if t.raw_data.len() >= 4 => Ok(byte_io::read_i32(&t.raw_data, 0) as f32),
+        _ => Err(OpError::ShapeMismatch(String::from(
+            "expected scalar numeric tensor",
+        ))),
     }
 }
 
@@ -485,7 +1091,7 @@ fn dispatch_shape(
         OpKind::Reshape => {
             let t = require_input(inputs, 0, "Reshape")?;
             let shape_tensor = require_input(inputs, 1, "Reshape")?;
-            let shape = read_i64_tensor(shape_tensor);
+            let shape = read_i64_tensor(shape_tensor)?;
             operators::op_reshape(t, &shape)
         }
         OpKind::Transpose => {
@@ -500,14 +1106,16 @@ fn dispatch_shape(
         }
         OpKind::Squeeze => {
             let t = require_input(inputs, 0, "Squeeze")?;
-            let axes_tensor = optional_input(inputs, 1);
-            let axes = axes_tensor.map(read_i64_tensor);
+            let axes = match optional_input(inputs, 1) {
+                Some(at) => Some(read_i64_tensor(at)?),
+                None => None,
+            };
             operators::op_squeeze(t, axes.as_deref())
         }
         OpKind::Unsqueeze => {
             let t = require_input(inputs, 0, "Unsqueeze")?;
             let axes_tensor = require_input(inputs, 1, "Unsqueeze")?;
-            let axes = read_i64_tensor(axes_tensor);
+            let axes = read_i64_tensor(axes_tensor)?;
             operators::op_unsqueeze(t, &axes)
         }
         OpKind::Concat => {
@@ -530,19 +1138,23 @@ fn dispatch_shape(
             let t = require_input(inputs, 0, "Slice")?;
             let starts_tensor = require_input(inputs, 1, "Slice")?;
             let ends_tensor = require_input(inputs, 2, "Slice")?;
-            let axes_tensor = optional_input(inputs, 3);
-            let steps_tensor = optional_input(inputs, 4);
-            let starts = read_i64_tensor(starts_tensor);
-            let ends = read_i64_tensor(ends_tensor);
-            let axes = axes_tensor.map(read_i64_tensor);
-            let steps = steps_tensor.map(read_i64_tensor);
+            let starts = read_i64_tensor(starts_tensor)?;
+            let ends = read_i64_tensor(ends_tensor)?;
+            let axes = match optional_input(inputs, 3) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
+            let steps = match optional_input(inputs, 4) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
             operators::op_slice(t, &starts, &ends, axes.as_deref(), steps.as_deref())
         }
         OpKind::Pad => {
             let t = require_input(inputs, 0, "Pad")?;
             let pads_tensor = require_input(inputs, 1, "Pad")?;
             let constant_tensor = optional_input(inputs, 2);
-            let pads = read_i64_tensor(pads_tensor);
+            let pads = read_i64_tensor(pads_tensor)?;
             let mode_bytes = attrs
                 .iter()
                 .find(|a| a.name == "mode")
@@ -612,15 +1224,28 @@ fn require_inputs<'a>(
     Ok(refs)
 }
 
-/// Reads an i64 tensor's raw_data as a Vec<i64>.
-fn read_i64_tensor(tensor: &Tensor) -> Vec<i64> {
-    if tensor.data_type == DataType::Int64 && tensor.raw_data.len() >= I64_SIZE {
-        let count = tensor.raw_data.len() / I64_SIZE;
-        (0..count)
-            .map(|i| byte_io::read_i64(&tensor.raw_data, i))
-            .collect()
-    } else {
-        Vec::new()
+/// Reads an integer tensor's raw_data as a `Vec<i64>`.
+///
+/// Accepts Int64 (native) and Int32 (converted). Returns an error for
+/// other dtypes so callers such as Expand/Tile/Reshape fail fast rather
+/// than silently no-op'ing on an unexpected dtype.
+fn read_i64_tensor(tensor: &Tensor) -> Result<Vec<i64>, OpError> {
+    match tensor.data_type {
+        DataType::Int64 => {
+            let count = tensor.raw_data.len() / I64_SIZE;
+            Ok((0..count)
+                .map(|i| byte_io::read_i64(&tensor.raw_data, i))
+                .collect())
+        }
+        DataType::Int32 => {
+            let count = tensor.raw_data.len() / 4;
+            Ok((0..count)
+                .map(|i| byte_io::read_i32(&tensor.raw_data, i) as i64)
+                .collect())
+        }
+        _ => Err(OpError::ShapeMismatch(String::from(
+            "expected Int32 or Int64 tensor",
+        ))),
     }
 }
 
@@ -1188,7 +1813,7 @@ mod tests {
         assert_eq!(tensor.raw_data.len(), 24); // 3 × 8 bytes
 
         // Verify round-trip: read back the i64 values
-        let vals = read_i64_tensor(&tensor);
+        let vals = read_i64_tensor(&tensor).unwrap();
         assert_eq!(vals, vec![10, 20, 30]);
     }
 

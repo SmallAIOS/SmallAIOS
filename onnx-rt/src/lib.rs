@@ -29,6 +29,7 @@ pub mod model_policy;
 pub mod model_verify;
 pub mod onnx_types;
 pub mod operators;
+pub mod ops;
 pub mod optimizer;
 pub mod parallel;
 pub mod profile;
