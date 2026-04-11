@@ -482,6 +482,7 @@ mod tests {
     /// real timing leak.
     const DUDECT_THRESHOLD: f64 = 10.0;
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn dudect_ct_eq_byte_constant_time() {
         // Class A: compare byte to itself (equal)
@@ -536,6 +537,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn dudect_ct_eq_slices_constant_time() {
         let iterations = 5_000;
@@ -588,6 +590,7 @@ mod tests {
         );
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn dudect_ct_select_byte_constant_time() {
         let iterations = 5_000;
@@ -635,5 +638,67 @@ mod tests {
             t,
             DUDECT_THRESHOLD
         );
+    }
+}
+
+// ─── Kani Proofs ────────────────────────────────────────────────────────────
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove: ct_eq_byte(a, a) is always TRUE for all a.
+    #[kani::proof]
+    fn ct_eq_byte_reflexive() {
+        let a: u8 = kani::any();
+        assert!(ct_eq_byte(a, a).to_bool());
+    }
+
+    /// Prove: ct_eq_byte(a, b) == ct_eq_byte(b, a) for all a, b.
+    #[kani::proof]
+    fn ct_eq_byte_symmetric() {
+        let a: u8 = kani::any();
+        let b: u8 = kani::any();
+        assert_eq!(ct_eq_byte(a, b).mask(), ct_eq_byte(b, a).mask());
+    }
+
+    /// Prove: ct_eq_byte returns only valid CtBool values (0x00 or 0xFF).
+    #[kani::proof]
+    fn ct_eq_byte_valid_output() {
+        let a: u8 = kani::any();
+        let b: u8 = kani::any();
+        let result = ct_eq_byte(a, b).mask();
+        assert!(result == 0x00 || result == 0xFF);
+    }
+
+    /// Prove: ct_select_byte returns exactly a or b.
+    #[kani::proof]
+    fn ct_select_byte_correct() {
+        let a: u8 = kani::any();
+        let b: u8 = kani::any();
+        assert_eq!(ct_select_byte(CtBool::TRUE, a, b), a);
+        assert_eq!(ct_select_byte(CtBool::FALSE, a, b), b);
+    }
+
+    /// Prove: CtBool::from_bool produces only valid mask values.
+    #[kani::proof]
+    fn ct_bool_from_bool_valid() {
+        let b: bool = kani::any();
+        let ct = CtBool::from_bool(b);
+        assert!(ct.mask() == 0x00 || ct.mask() == 0xFF);
+        assert_eq!(ct.to_bool(), b);
+    }
+
+    /// Prove: ct_is_zero returns only 0x00 or 0xFF for any input.
+    #[kani::proof]
+    fn ct_is_zero_valid_output() {
+        let x: u8 = kani::any();
+        let result = ct_is_zero(x);
+        assert!(result == 0x00 || result == 0xFF);
+        if x == 0 {
+            assert_eq!(result, 0xFF);
+        } else {
+            assert_eq!(result, 0x00);
+        }
     }
 }

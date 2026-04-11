@@ -12,9 +12,10 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::graph::{build_execution_graph, ExecutionGraph};
-use crate::onnx_types::{ModelProto, CURRENT_IR_VERSION};
+use crate::onnx_types::{ModelProto, TensorProto, CURRENT_IR_VERSION};
 use crate::operators::OperatorRegistry;
 use crate::optimizer::{optimize, OptimizationLevel, OptimizerConfig};
+use crate::parallel::ParallelConfig;
 use crate::tensor::Tensor;
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,8 @@ pub struct SessionConfig {
     pub max_batch_size: usize,
     /// Number of intra-operator threads for parallel computation.
     pub thread_count: usize,
+    /// Parallel execution configuration for operator-level parallelism.
+    pub parallel: ParallelConfig,
 }
 
 impl Default for SessionConfig {
@@ -100,6 +103,7 @@ impl Default for SessionConfig {
             enable_profiling: false,
             max_batch_size: 1,
             thread_count: 1,
+            parallel: ParallelConfig::default(),
         }
     }
 }
@@ -165,8 +169,13 @@ pub struct Session {
     pub input_names: Vec<String>,
     /// Names of expected model outputs, in order.
     pub output_names: Vec<String>,
+    /// Model initializer tensors (weights, biases).
+    pub initializers: Vec<TensorProto>,
     /// Whether the session has been fully initialized with a model.
     is_initialized: bool,
+    /// Optional GPU backend for accelerated operator dispatch.
+    #[cfg(feature = "gpu")]
+    pub gpu_backend: Option<smallaios_compute::GpuBackend>,
 }
 
 /// ONNX model file magic bytes: `\x08` (field 1, varint wire type).
@@ -279,9 +288,8 @@ pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
 
 /// Attempts to load and parse an ONNX model from raw bytes.
 ///
-/// Validates the magic byte and minimum size before parsing.
-/// Currently returns `NotImplemented` after validation passes;
-/// full protobuf parsing will be added in a later phase.
+/// Validates the magic byte and minimum size, then decodes the
+/// protobuf payload into a `ModelProto`.
 pub fn load_model(data: &[u8]) -> Result<ModelProto, SessionError> {
     // Verified boot: check model signature before parsing
     #[cfg(feature = "verified-boot")]
@@ -302,8 +310,8 @@ pub fn load_model(data: &[u8]) -> Result<ModelProto, SessionError> {
         )));
     }
 
-    // Stub: full protobuf decoding not yet implemented.
-    Err(SessionError::NotImplemented)
+    crate::protobuf::decode_model(data)
+        .map_err(|e| SessionError::ModelLoadFailed(alloc::format!("protobuf decode error: {}", e)))
 }
 
 // ---------------------------------------------------------------------------
@@ -327,7 +335,10 @@ impl Session {
             graph: None,
             input_names: Vec::new(),
             output_names: Vec::new(),
+            initializers: Vec::new(),
             is_initialized: false,
+            #[cfg(feature = "gpu")]
+            gpu_backend: None,
         }
     }
 
@@ -363,6 +374,7 @@ impl Session {
         self.model_name = graph.name.clone();
         self.input_names = graph.input.iter().map(|vi| vi.name.clone()).collect();
         self.output_names = graph.output.iter().map(|vi| vi.name.clone()).collect();
+        self.initializers = graph.initializer.clone();
         self.graph = Some(exec_graph);
         self.is_initialized = true;
 
@@ -396,11 +408,94 @@ impl Session {
             }
         }
 
-        // Stub: graph traversal and operator dispatch not yet wired.
-        // The execution graph is built and optimized, but node-by-node
-        // execution requires connecting each node's OpKind to the
-        // corresponding operator function with tensor I/O plumbing.
-        Err(SessionError::NotImplemented)
+        let graph = self
+            .graph
+            .as_ref()
+            .ok_or_else(|| SessionError::ExecutionFailed(String::from("no execution graph")))?;
+
+        // Build input pairs for the executor
+        let input_pairs: Vec<(String, Tensor)> = inputs
+            .iter()
+            .map(|i| (i.name.clone(), i.tensor.clone()))
+            .collect();
+
+        // Get initializers from the model (stored during initialize)
+        let initializers = &self.initializers;
+
+        crate::executor::execute_graph(
+            graph,
+            &input_pairs,
+            initializers,
+            None,
+            None,
+            &crate::profile::OperatorBudget::DEFAULT,
+            &crate::profile::NullTimeSource,
+            #[cfg(feature = "gpu")]
+            self.gpu_backend.as_ref(),
+        )
+    }
+
+    /// Runs inference and returns a per-operator timing profile alongside
+    /// the outputs.
+    ///
+    /// Uses [`crate::profile::StdTimeSource`] for wall-clock measurement.
+    /// Only available when the `std` feature is enabled (container mode).
+    ///
+    /// If any operator exceeds its hard time limit
+    /// ([`crate::profile::BudgetResult::HardLimit`]), execution is aborted
+    /// with a [`SessionError::ExecutionFailed`] and the partial profile is
+    /// not returned.
+    #[cfg(feature = "std")]
+    pub fn run_with_profile(
+        &self,
+        inputs: &[InferenceInput],
+    ) -> Result<(Vec<InferenceOutput>, crate::profile::InferenceProfile), SessionError> {
+        if !self.is_initialized {
+            return Err(SessionError::ExecutionFailed(String::from(
+                "session not initialized",
+            )));
+        }
+
+        if inputs.is_empty() {
+            return Err(SessionError::InvalidInput(String::from(
+                "no inputs provided",
+            )));
+        }
+
+        for input in inputs {
+            if !self.input_names.contains(&input.name) {
+                return Err(SessionError::InvalidInput(input.name.clone()));
+            }
+        }
+
+        let graph = self
+            .graph
+            .as_ref()
+            .ok_or_else(|| SessionError::ExecutionFailed(String::from("no execution graph")))?;
+
+        let input_pairs: Vec<(String, Tensor)> = inputs
+            .iter()
+            .map(|i| (i.name.clone(), i.tensor.clone()))
+            .collect();
+
+        let initializers = &self.initializers;
+
+        let mut profile = crate::profile::InferenceProfile::default();
+        let budget = crate::profile::OperatorBudget::DEFAULT;
+        let time_source = crate::profile::StdTimeSource::new();
+
+        let outputs = crate::executor::execute_graph(
+            graph,
+            &input_pairs,
+            initializers,
+            None,
+            Some(&mut profile),
+            &budget,
+            &time_source,
+            #[cfg(feature = "gpu")]
+            self.gpu_backend.as_ref(),
+        )?;
+        Ok((outputs, profile))
     }
 
     /// Returns the names of the model's expected inputs.
@@ -478,11 +573,13 @@ mod tests {
             enable_profiling: true,
             max_batch_size: 8,
             thread_count: 4,
+            parallel: crate::parallel::ParallelConfig::default_for_cores(4),
         };
         assert_eq!(config.optimization_level, OptimizationLevel::Extended);
         assert!(config.enable_profiling);
         assert_eq!(config.max_batch_size, 8);
         assert_eq!(config.thread_count, 4);
+        assert_eq!(config.parallel.max_threads, 4);
     }
 
     // ---- load_model tests ----
@@ -526,11 +623,32 @@ mod tests {
     }
 
     #[test]
-    fn test_load_model_valid_header_returns_not_implemented() {
-        // Valid magic byte and sufficient size, but stub returns NotImplemented.
-        let data = [0x08, 0x07, 0x12, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+    fn test_load_model_valid_header_decodes() {
+        // Valid magic byte and sufficient size — protobuf decoder now runs.
+        // ir_version=7, then some padding bytes that the decoder will try to parse.
+        // Build a minimal valid model: just ir_version field.
+        let mut data = vec![0x08, 0x07]; // field 1, varint 7 = ir_version
+                                         // Pad to MIN_MODEL_SIZE
+        while data.len() < 8 {
+            // Add unknown field (field 99, varint 0) to pad
+            data.push(0x98); // (99 << 3) | 0 = 792, but that's multi-byte...
+                             // Simpler: just use field 15 varint 0 = tag 0x78, value 0x00
+            data.push(0x00);
+        }
+        // Actually, let's build it properly with the encode helpers from protobuf tests.
+        // Just use raw bytes for a minimal model.
+        let data = [
+            0x08, 0x07, // ir_version = 7
+            0x42, 0x04, // field 8, length 4 (opset_import)
+            0x0A, 0x00, // field 1 (domain), length 0
+            0x10, 0x11, // field 2 (version), varint 17
+        ];
         let result = load_model(&data);
-        assert_eq!(result, Err(SessionError::NotImplemented));
+        assert!(result.is_ok(), "expected Ok, got {:?}", result);
+        let model = result.unwrap();
+        assert_eq!(model.ir_version, 7);
+        assert_eq!(model.opset_import.len(), 1);
+        assert_eq!(model.opset_import[0].version, 17);
     }
 
     // ---- Session run tests ----
@@ -747,23 +865,49 @@ mod tests {
     }
 
     #[test]
-    fn test_session_run_after_init_returns_not_implemented() {
+    fn test_session_run_after_init_executes_relu() {
         let model = make_simple_model();
         let mut session = Session::new(SessionConfig::default());
         session.initialize(&model).unwrap();
 
+        // Create input tensor with actual data
+        let mut raw_data = vec![0u8; 3 * 4]; // 3 floats
+        for (i, &val) in [-1.0f32, 0.0, 2.0].iter().enumerate() {
+            let bytes = val.to_le_bytes();
+            raw_data[i * 4] = bytes[0];
+            raw_data[i * 4 + 1] = bytes[1];
+            raw_data[i * 4 + 2] = bytes[2];
+            raw_data[i * 4 + 3] = bytes[3];
+        }
+        let mut tensor = Tensor::new(
+            DataType::Float,
+            TensorShape::new(vec![1, 3]),
+            String::from("x"),
+        );
+        tensor.raw_data = raw_data;
+
         let input = InferenceInput {
             name: String::from("x"),
-            tensor: Tensor::new(
-                DataType::Float,
-                TensorShape::new(vec![1, 3]),
-                String::from("x"),
-            ),
+            tensor,
         };
         let result = session.run(&[input]);
-        // Session is initialized but run still returns NotImplemented
-        // because operator dispatch is not yet wired
-        assert!(matches!(result, Err(SessionError::NotImplemented)));
+        assert!(result.is_ok(), "Expected Ok, got {:?}", result);
+        let outputs = result.unwrap();
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].name, "y");
+
+        // Relu of [-1, 0, 2] = [0, 0, 2]
+        let out_data: Vec<f32> = (0..3)
+            .map(|i| {
+                f32::from_le_bytes([
+                    outputs[0].tensor.raw_data[i * 4],
+                    outputs[0].tensor.raw_data[i * 4 + 1],
+                    outputs[0].tensor.raw_data[i * 4 + 2],
+                    outputs[0].tensor.raw_data[i * 4 + 3],
+                ])
+            })
+            .collect();
+        assert_eq!(out_data, vec![0.0, 0.0, 2.0]);
     }
 
     #[test]

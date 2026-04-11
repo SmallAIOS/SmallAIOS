@@ -1,0 +1,17 @@
+[package]
+name = "smallaios-compute"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "SmallAIOS unified compute abstraction: ComputeProvider trait for GPU backends"
+publish = false
+
+[features]
+default = []
+cuda = []
+rocm = []
+level-zero = []
+metal = []
+
+[dependencies]

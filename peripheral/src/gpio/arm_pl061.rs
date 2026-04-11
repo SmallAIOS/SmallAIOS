@@ -271,4 +271,151 @@ mod tests {
         let _ = drv.configure(3, config);
         assert_ne!(drv.dir_shadow & (1 << 3), 0);
     }
+
+    #[test]
+    fn test_constructor_fields() {
+        let drv = Pl061Gpio::new(0xBEEF_0000, 99);
+        assert_eq!(drv.base_addr(), 0xBEEF_0000);
+        assert_eq!(drv.irq, 99);
+        assert_eq!(drv.dir_shadow, 0);
+        assert_eq!(drv.output_shadow, 0);
+        assert_eq!(drv.ie_shadow, 0);
+    }
+
+    #[test]
+    fn test_pin_validation_8_pins() {
+        let drv = Pl061Gpio::new(0x4000_A000, 10);
+        // Pins 0..7 are valid, pin 8+ is out of range.
+        assert_eq!(drv.read(0), Err(HalError::MmioError));
+        assert_eq!(drv.read(7), Err(HalError::MmioError));
+        assert_eq!(drv.read(8), Err(HalError::OutOfRange));
+        assert_eq!(drv.read(31), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_dir_shadow_input_clears_bit() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        // Set pin 5 as output (sets dir bit).
+        let out_config = GpioConfig {
+            mode: GpioPinMode::Output,
+            pull: GpioPull::None,
+            interrupt: None,
+            debounce_us: 0,
+        };
+        let _ = drv.configure(5, out_config);
+        assert_ne!(drv.dir_shadow & (1 << 5), 0);
+
+        // Set pin 5 as input (clears dir bit).
+        let in_config = GpioConfig {
+            mode: GpioPinMode::Input,
+            pull: GpioPull::None,
+            interrupt: None,
+            debounce_us: 0,
+        };
+        let _ = drv.configure(5, in_config);
+        assert_eq!(drv.dir_shadow & (1 << 5), 0);
+    }
+
+    #[test]
+    fn test_output_shadow_set_high_low() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        let _ = drv.set_high(3);
+        assert_ne!(drv.output_shadow & (1 << 3), 0);
+        let _ = drv.set_low(3);
+        assert_eq!(drv.output_shadow & (1 << 3), 0);
+    }
+
+    #[test]
+    fn test_output_shadow_set_high_out_of_range() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        assert_eq!(drv.set_high(8), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_set_mask_shadow() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        // set bits 0 and 2
+        let _ = drv.set_mask(0x05, 0x00);
+        assert_eq!(drv.output_shadow, 0x05);
+        // clear bit 0
+        let _ = drv.set_mask(0x00, 0x01);
+        assert_eq!(drv.output_shadow, 0x04);
+    }
+
+    #[test]
+    fn test_set_mask_truncates_to_8_bits() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        // Bits above 7 should be masked off for the 8-pin PL061.
+        let _ = drv.set_mask(0xFF00, 0x0000);
+        assert_eq!(drv.output_shadow, 0x00); // Upper bits are masked away
+    }
+
+    #[test]
+    fn test_ie_shadow_enable_disable() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        let _ = drv.enable_interrupt(5);
+        assert_ne!(drv.ie_shadow & (1 << 5), 0);
+
+        let _ = drv.disable_interrupt(5);
+        assert_eq!(drv.ie_shadow & (1 << 5), 0);
+    }
+
+    #[test]
+    fn test_ie_shadow_multiple_pins() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        let _ = drv.enable_interrupt(0);
+        let _ = drv.enable_interrupt(7);
+        assert_eq!(drv.ie_shadow, (1 << 0) | (1 << 7));
+
+        let _ = drv.disable_interrupt(0);
+        assert_eq!(drv.ie_shadow, 1 << 7);
+    }
+
+    #[test]
+    fn test_enable_interrupt_out_of_range() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        assert_eq!(drv.enable_interrupt(8), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_reset_clears_all_shadows() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        drv.dir_shadow = 0xFF;
+        drv.output_shadow = 0xFF;
+        drv.ie_shadow = 0xFF;
+
+        let _ = drv.reset();
+        assert_eq!(drv.dir_shadow, 0);
+        assert_eq!(drv.output_shadow, 0);
+        assert_eq!(drv.ie_shadow, 0);
+    }
+
+    #[test]
+    fn test_open_drain_sets_dir_as_output() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        let config = GpioConfig {
+            mode: GpioPinMode::OpenDrain,
+            pull: GpioPull::None,
+            interrupt: None,
+            debounce_us: 0,
+        };
+        let _ = drv.configure(2, config);
+        assert_ne!(drv.dir_shadow & (1 << 2), 0);
+    }
+
+    #[test]
+    fn test_data_addr_for_mask_single_pins() {
+        // Each pin mask should produce a unique address.
+        for pin in 0..8u8 {
+            let mask = 1u8 << pin;
+            let addr = Pl061Gpio::data_addr_for_mask(mask);
+            assert_eq!(addr, (mask as u32) << 2);
+        }
+    }
+
+    #[test]
+    fn test_toggle_out_of_range() {
+        let mut drv = Pl061Gpio::new(0x4000_A000, 10);
+        assert_eq!(drv.toggle(8), Err(HalError::OutOfRange));
+    }
 }

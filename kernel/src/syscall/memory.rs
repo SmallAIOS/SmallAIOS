@@ -388,7 +388,7 @@ mod tests {
         let args = SyscallArgs::new(0x00, [4096, 0, 0, 0, 0, 0]);
         let result = sys_mem_alloc(&args);
         // Allocator not initialized, so expect OutOfMemory or a valid pointer
-        assert!(result < 0 || result > 0);
+        assert!(result != 0);
     }
 
     #[test]
@@ -396,7 +396,7 @@ mod tests {
         let args = SyscallArgs::new(0x00, [4096, 16, 0, 0, 0, 0]);
         let result = sys_mem_alloc(&args);
         // Allocator not initialized, will return an error
-        assert!(result < 0 || result > 0);
+        assert!(result != 0);
     }
 
     #[test]

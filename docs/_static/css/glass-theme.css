@@ -1,0 +1,90 @@
+/* SmallAIOS Glass Theme — translucent dark UI */
+/* Applied on top of Furo dark mode */
+
+/* === Sidebar === */
+.sidebar-drawer {
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    background: rgba(30, 30, 40, 0.75) !important;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* === Content area === */
+.main .content {
+    background: rgba(25, 25, 45, 0.65);
+    border-left: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* === Cards and admonitions === */
+.admonition {
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    background: rgba(40, 40, 60, 0.6) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+}
+
+.admonition > .admonition-title {
+    background: rgba(100, 255, 218, 0.1) !important;
+}
+
+/* === Code blocks === */
+pre {
+    background: rgba(20, 20, 35, 0.8) !important;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 6px;
+}
+
+/* === Links === */
+a {
+    color: #64ffda;
+}
+
+a:hover {
+    color: #a7ffeb;
+}
+
+/* === Scrollbar === */
+::-webkit-scrollbar {
+    width: 6px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(0, 0, 0, 0.1);
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(100, 255, 218, 0.3);
+    border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(100, 255, 218, 0.5);
+}
+
+/* === Sphinx-needs items === */
+.needs_container {
+    background: rgba(35, 35, 55, 0.7) !important;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    padding: 0.5rem;
+}
+
+.needs_table_head {
+    background: rgba(22, 33, 62, 0.8) !important;
+}
+
+/* === @supports fallback for no backdrop-filter === */
+@supports not (backdrop-filter: blur(1px)) {
+    .sidebar-drawer {
+        background: #1e1e28 !important;
+    }
+
+    .main .content {
+        background: #19192d;
+    }
+
+    .admonition {
+        background: #28283c !important;
+    }
+}

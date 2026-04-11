@@ -301,3 +301,38 @@ mod tests {
         }
     }
 }
+
+// ─── Kani Proofs ────────────────────────────────────────────────────────────
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Prove: size_class_index never panics for any input.
+    #[kani::proof]
+    fn slab_size_class_no_panic() {
+        let size: usize = kani::any();
+        kani::assume(size <= 8192);
+        let _ = size_class_index(size);
+    }
+
+    /// Prove: size_class_index returns correct class for valid sizes.
+    #[kani::proof]
+    fn slab_size_class_correct() {
+        let size: usize = kani::any();
+        kani::assume(size > 0 && size <= 2048);
+        let idx = size_class_index(size).unwrap();
+        assert!(SIZE_CLASSES[idx] >= size);
+        if idx > 0 {
+            assert!(SIZE_CLASSES[idx - 1] < size);
+        }
+    }
+
+    /// Prove: actual_size never panics for any input.
+    #[kani::proof]
+    fn slab_actual_size_no_panic() {
+        let size: usize = kani::any();
+        kani::assume(size <= 8192);
+        let _ = SlabAllocator::actual_size(size);
+    }
+}

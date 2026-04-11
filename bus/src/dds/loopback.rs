@@ -119,7 +119,7 @@ mod tests {
         // Step 1: CDR serialize payload
         let mut ser = CdrSerializer::new(Endianness::LittleEndian);
         ser.serialize_u32(42);
-        ser.serialize_f32(3.14);
+        ser.serialize_f32(2.5);
         let cdr_payload = ser.into_bytes();
 
         // Step 2: Writer publishes
@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(samples.len(), 1);
         let mut de = CdrDeserializer::new(&samples[0], Endianness::LittleEndian);
         assert_eq!(de.deserialize_u32().unwrap(), 42);
-        assert_eq!(de.deserialize_f32().unwrap(), 3.14);
+        assert_eq!(de.deserialize_f32().unwrap(), 2.5);
     }
 
     // -----------------------------------------------------------------------

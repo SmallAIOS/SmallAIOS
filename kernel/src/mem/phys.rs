@@ -170,13 +170,13 @@ const MB2_MEM_ACPI_RECLAIMABLE: u32 = 3;
 /// # Safety
 /// `mb_info_addr` must point to a valid Multiboot2 boot information structure.
 pub unsafe fn parse_multiboot2(mb_info_addr: usize, map: &mut PhysMemoryMap) {
-    let total_size = *(mb_info_addr as *const u32);
+    let total_size = core::ptr::read_unaligned(mb_info_addr as *const u32);
     let mut offset: usize = 8; // Skip total_size and reserved fields
 
     while offset < total_size as usize {
         let tag_ptr = (mb_info_addr + offset) as *const u32;
-        let tag_type = *tag_ptr;
-        let tag_size = *tag_ptr.add(1);
+        let tag_type = core::ptr::read_unaligned(tag_ptr);
+        let tag_size = core::ptr::read_unaligned(tag_ptr.add(1));
 
         if tag_type == MB2_TAG_END {
             break;
@@ -197,7 +197,7 @@ pub unsafe fn parse_multiboot2(mb_info_addr: usize, map: &mut PhysMemoryMap) {
 /// `tag_addr` must point to a valid Multiboot2 memory map tag.
 unsafe fn parse_mb2_mmap_tag(tag_addr: usize, tag_size: usize, map: &mut PhysMemoryMap) {
     // Tag header: type(4) + size(4) + entry_size(4) + entry_version(4)
-    let entry_size = *((tag_addr + 8) as *const u32) as usize;
+    let entry_size = core::ptr::read_unaligned((tag_addr + 8) as *const u32) as usize;
     if entry_size == 0 {
         return;
     }
@@ -208,9 +208,9 @@ unsafe fn parse_mb2_mmap_tag(tag_addr: usize, tag_size: usize, map: &mut PhysMem
 
     while entry_addr + entry_size <= entries_end {
         // Entry: base_addr(8) + length(8) + type(4) + reserved(4)
-        let base = *((entry_addr) as *const u64) as usize;
-        let length = *((entry_addr + 8) as *const u64) as usize;
-        let mem_type = *((entry_addr + 16) as *const u32);
+        let base = core::ptr::read_unaligned(entry_addr as *const u64) as usize;
+        let length = core::ptr::read_unaligned((entry_addr + 8) as *const u64) as usize;
+        let mem_type = core::ptr::read_unaligned((entry_addr + 16) as *const u32);
 
         let kind = match mem_type {
             MB2_MEM_AVAILABLE => RegionKind::Usable,
@@ -626,7 +626,7 @@ mod tests {
 
     /// Pad buffer to 4-byte alignment.
     fn pad4(buf: &mut Vec<u8>) {
-        while buf.len() % 4 != 0 {
+        while !buf.len().is_multiple_of(4) {
             buf.push(0);
         }
     }
@@ -858,7 +858,7 @@ mod tests {
         buf[tag_size_offset..tag_size_offset + 4].copy_from_slice(&tag_size.to_le_bytes());
 
         // Pad to 8-byte alignment before end tag
-        while buf.len() % 8 != 0 {
+        while !buf.len().is_multiple_of(8) {
             buf.push(0);
         }
 
@@ -924,6 +924,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::manual_c_str_literals)]
     fn test_cstr_helpers() {
         // cstr_len: simple string
         let s = b"hello\0";
@@ -954,6 +955,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::manual_c_str_literals)]
     fn test_is_memory_node() {
         // Exact "memory" (length 6)
         assert!(unsafe { is_memory_node(b"memory\0".as_ptr(), 6) });
@@ -1045,7 +1047,7 @@ mod tests {
         buf[tag_size_offset..tag_size_offset + 4].copy_from_slice(&tag_size.to_le_bytes());
 
         // Pad to 8-byte alignment
-        while buf.len() % 8 != 0 {
+        while !buf.len().is_multiple_of(8) {
             buf.push(0);
         }
 
@@ -1091,7 +1093,7 @@ mod tests {
         let tag_size = (buf.len() - tag_start) as u32;
         buf[tag_size_offset..tag_size_offset + 4].copy_from_slice(&tag_size.to_le_bytes());
 
-        while buf.len() % 8 != 0 {
+        while !buf.len().is_multiple_of(8) {
             buf.push(0);
         }
 

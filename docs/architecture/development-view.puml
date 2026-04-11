@@ -1,0 +1,77 @@
+@startuml SmallAIOS Development View
+!theme plain
+title SmallAIOS Development View — CI Pipeline & Build Matrix
+
+skinparam defaultFontName "Segoe UI"
+skinparam shadowing false
+
+' === Source Control ===
+frame "Git (Gitflow)" as git {
+  rectangle "feature/*" as feat
+  rectangle "develop" as dev
+  rectangle "main" as main
+  feat -right-> dev : "PR (squash)"
+  dev -right-> main : "Release PR\n(squash)"
+  main -left-> dev : "Sync back\n(merge)"
+}
+
+' === CI Pipeline ===
+frame "GitHub Actions CI" as ci {
+  rectangle "Format Check\n(cargo fmt)" as fmt
+  rectangle "Clippy Lint\n(-D warnings)" as clip
+  rectangle "Unit Tests\n(12 crates)" as test
+  rectangle "Formal-Gate\nTests" as fgate
+  rectangle "Verified-Boot\nTests" as vboot
+
+  rectangle "Build Matrix" as build {
+    rectangle "x86-64\n(unknown-none)" as bx86
+    rectangle "AArch64\n(unknown-none)" as barm
+    rectangle "Jetson\n(tegra-x1)" as bjet
+    rectangle "RISC-V\n(none-elf)" as brv
+  }
+
+  rectangle "QEMU Smoke\n(RISC-V)" as qemu
+  rectangle "Image Size\n(<15 MB)" as size
+  rectangle "TLA+ Verify\n(22 models)" as tla
+  rectangle "SPIN Verify\n(Promela)" as spin
+  rectangle "Coverage\n(cargo-llvm-cov)" as cov
+  rectangle "SonarCloud\n(SAST)" as sonar
+  rectangle "CodeQL\n(security)" as codeql
+  rectangle "cargo-deny\n(supply chain)" as deny
+  rectangle "Docker Build\n(594 KB)" as docker
+  rectangle "Semver Check\n(PR title)" as semver
+
+  rectangle "Change Gates" as gates
+
+  fmt -[hidden]-> clip
+  test --> cov
+  cov --> sonar
+  build --> qemu
+  build --> size
+}
+
+' === Dependencies ===
+git --> ci : "push / PR"
+
+test --> gates
+clip --> gates
+fmt --> gates
+build --> gates
+fgate --> gates
+docker --> gates
+semver --> gates
+
+' === Outputs ===
+frame "Artifacts" as art {
+  rectangle "GitHub Release\n(kernel binaries)" as rel
+  rectangle "GHCR Docker\n(multi-arch)" as ghcr
+  rectangle "Codecov Report" as codecov
+  rectangle "Coverage Report" as covrep
+}
+
+main --> rel : "v* tag"
+main --> ghcr : "v* tag"
+cov --> codecov
+sonar --> covrep
+
+@enduml

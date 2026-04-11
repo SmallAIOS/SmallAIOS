@@ -256,4 +256,282 @@ mod tests {
         drv.reset().unwrap();
         assert!(!drv.is_configured());
     }
+
+    // --- constructor field access ---
+
+    #[test]
+    fn test_constructor_base_addr() {
+        let drv = AxiUartLite::new(MockFpgaFabric::new(), 0x1234_5678);
+        assert_eq!(drv.base_addr(), 0x1234_5678);
+        assert!(!drv.is_configured());
+    }
+
+    // --- not-configured error checks ---
+
+    #[test]
+    fn test_read_not_configured() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        let mut buf = [0u8; 4];
+        assert_eq!(drv.read(&mut buf), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_read_exact_not_configured() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        let mut buf = [0u8; 4];
+        assert_eq!(drv.read_exact(&mut buf), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_read_until_not_configured() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        let mut buf = [0u8; 4];
+        assert_eq!(drv.read_until(b'\n', &mut buf), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_flush_not_configured() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        assert_eq!(drv.flush(), Err(HalError::InitFailed));
+    }
+
+    #[test]
+    fn test_write_all_not_configured() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        assert_eq!(drv.write_all(&[0x41]), Err(HalError::InitFailed));
+    }
+
+    // --- baud rate validation ---
+
+    #[test]
+    fn test_init_invalid_baud_zero() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        let config = UartConfig {
+            baud_rate: 0,
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_baud_too_low() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        let config = UartConfig {
+            baud_rate: 100,
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_invalid_baud_too_high() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        let config = UartConfig {
+            baud_rate: 5_000_000,
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert_eq!(drv.init(config), Err(HalError::InvalidConfig));
+    }
+
+    #[test]
+    fn test_init_valid_baud_boundary_low() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        let config = UartConfig {
+            baud_rate: 300, // minimum valid
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert!(drv.init(config).is_ok());
+    }
+
+    #[test]
+    fn test_init_valid_baud_boundary_high() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        let config = UartConfig {
+            baud_rate: 4_000_000, // maximum valid
+            data_bits: 8,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+            flow_control: smallaios_kernel::hal::UartFlowControl::None,
+            rx_mode: smallaios_kernel::hal::UartRxMode::Polling,
+            timeout_us: 1000,
+        };
+        assert!(drv.init(config).is_ok());
+    }
+
+    // --- status polling / flush / rx_available with mock fabric ---
+
+    #[test]
+    fn test_flush_tx_empty() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        // Set STAT_TX_EMPTY in STAT_REG (offset 0x08, index 2)
+        drv.fabric.regs[2] = STAT_TX_EMPTY;
+        assert!(drv.flush().is_ok());
+    }
+
+    #[test]
+    fn test_flush_tx_not_empty() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        // STAT_REG = 0 means TX not empty
+        drv.fabric.regs[2] = 0;
+        assert_eq!(drv.flush(), Err(HalError::Timeout));
+    }
+
+    #[test]
+    fn test_rx_available_with_data() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        // Set STAT_RX_VALID in STAT_REG
+        drv.fabric.regs[2] = STAT_RX_VALID;
+        assert_eq!(drv.rx_available(), 1);
+    }
+
+    #[test]
+    fn test_rx_available_no_data() {
+        let drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        assert_eq!(drv.rx_available(), 0);
+    }
+
+    // --- write with TX_FULL status ---
+
+    #[test]
+    fn test_write_tx_full() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        // Set STAT_TX_FULL
+        drv.fabric.regs[2] = STAT_TX_FULL;
+        assert_eq!(drv.write(&[0x41]), Err(HalError::TxFifoFull));
+    }
+
+    // --- read with RX data available ---
+
+    #[test]
+    fn test_read_with_data() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        // Set RX_VALID in status and data in RX_FIFO
+        drv.fabric.regs[2] = STAT_RX_VALID;
+        drv.fabric.regs[0] = 0x42; // RX_FIFO at offset 0x00, index 0
+        let mut buf = [0u8; 1];
+        let count = drv.read(&mut buf).unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(buf[0], 0x42);
+    }
+
+    #[test]
+    fn test_read_no_data() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        // STAT_RX_VALID not set
+        drv.fabric.regs[2] = 0;
+        let mut buf = [0u8; 4];
+        let count = drv.read(&mut buf).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // --- irq_handler with mock status ---
+
+    #[test]
+    fn test_irq_handler_overrun() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.fabric.regs[2] = STAT_OVERRUN;
+        assert_eq!(drv.irq_handler(), Ok(UartIrqSource::Overrun));
+    }
+
+    #[test]
+    fn test_irq_handler_frame_error() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.fabric.regs[2] = STAT_FRAME_ERR;
+        assert_eq!(drv.irq_handler(), Ok(UartIrqSource::FramingError));
+    }
+
+    #[test]
+    fn test_irq_handler_parity_error() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.fabric.regs[2] = STAT_PARITY_ERR;
+        assert_eq!(drv.irq_handler(), Ok(UartIrqSource::ParityError));
+    }
+
+    #[test]
+    fn test_irq_handler_rx_data_available() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.fabric.regs[2] = STAT_RX_VALID;
+        assert_eq!(drv.irq_handler(), Ok(UartIrqSource::RxDataAvailable));
+    }
+
+    #[test]
+    fn test_irq_handler_tx_empty() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.fabric.regs[2] = STAT_TX_EMPTY;
+        assert_eq!(drv.irq_handler(), Ok(UartIrqSource::TxEmpty));
+    }
+
+    #[test]
+    fn test_irq_handler_no_interrupt() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.fabric.regs[2] = 0;
+        assert_eq!(drv.irq_handler(), Err(HalError::InterruptError));
+    }
+
+    // --- write_all after init ---
+
+    #[test]
+    fn test_write_all_after_init() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        assert!(drv.write_all(&[0x41, 0x42, 0x43]).is_ok());
+    }
+
+    // --- read_until with delimiter ---
+
+    #[test]
+    fn test_read_until_no_data() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        drv.fabric.regs[2] = 0; // no RX_VALID
+        let mut buf = [0u8; 4];
+        let count = drv.read_until(b'\n', &mut buf).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    // --- double init ---
+
+    #[test]
+    fn test_double_init() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        assert!(drv.is_configured());
+        drv.init(make_config()).unwrap();
+        assert!(drv.is_configured());
+    }
+
+    // --- reset then write fails ---
+
+    #[test]
+    fn test_reset_then_write_fails() {
+        let mut drv = AxiUartLite::new(MockFpgaFabric::new(), 0x4060_0000);
+        drv.init(make_config()).unwrap();
+        drv.reset().unwrap();
+        assert_eq!(drv.write(&[0x41]), Err(HalError::InitFailed));
+    }
 }

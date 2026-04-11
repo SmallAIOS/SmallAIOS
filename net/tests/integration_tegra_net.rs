@@ -15,6 +15,10 @@ use alloc::vec::Vec;
 use smallaios_net::dhcp::{DhcpClient, DhcpMessage, MSG_TYPE_ACK, MSG_TYPE_OFFER};
 use smallaios_net::ethernet::{EthernetFrame, MacAddress, ETHERTYPE_ARP, ETHERTYPE_IPV4};
 use smallaios_net::static_ip::{InterfaceConfig, StaticIpConfig};
+use std::sync::Mutex;
+
+/// Serialize tests that mutate global static IP state.
+static STATIC_IP_LOCK: Mutex<()> = Mutex::new(());
 
 // ─── 12.8: Full DHCP flow ───────────────────────────────────────────────────
 
@@ -91,6 +95,7 @@ fn test_dhcp_message_serialize_roundtrip() {
 
 #[test]
 fn test_static_ip_config_applied() {
+    let _lock = STATIC_IP_LOCK.lock().unwrap();
     smallaios_net::static_ip::clear_config();
 
     let cfg = StaticIpConfig::new(
@@ -112,6 +117,7 @@ fn test_static_ip_config_applied() {
 
 #[test]
 fn test_static_ip_with_ipv6_dual_stack() {
+    let _lock = STATIC_IP_LOCK.lock().unwrap();
     smallaios_net::static_ip::clear_config();
 
     let cfg = StaticIpConfig::new(

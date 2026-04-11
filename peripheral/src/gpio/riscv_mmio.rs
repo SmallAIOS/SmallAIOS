@@ -294,4 +294,204 @@ mod tests {
         let _ = drv.toggle(10);
         assert_eq!(drv.output_val_shadow & (1 << 10), 0);
     }
+
+    #[test]
+    fn test_pin_count_returns_32() {
+        let drv = SiFiveGpio::new(0x1006_0000, 7);
+        assert_eq!(drv.pin_count(), 32);
+    }
+
+    #[test]
+    fn test_validate_pin_0_first_valid() {
+        let drv = SiFiveGpio::new(0x1006_0000, 7);
+        // Pin 0 is a valid pin and should not return OutOfRange.
+        // read_reg will fail with MmioError, but not OutOfRange.
+        assert_eq!(drv.read(0), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_validate_pin_31_last_valid() {
+        let drv = SiFiveGpio::new(0x1006_0000, 7);
+        // Pin 31 is the last valid pin (0..31 for 32 pins).
+        assert_eq!(drv.read(31), Err(HalError::MmioError));
+    }
+
+    #[test]
+    fn test_clear_interrupt_config_clears_all_edges() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        // Set all four interrupt shadow registers for pin 3.
+        drv.rise_ie_shadow |= 1 << 3;
+        drv.fall_ie_shadow |= 1 << 3;
+        drv.high_ie_shadow |= 1 << 3;
+        drv.low_ie_shadow |= 1 << 3;
+
+        drv.clear_interrupt_config(3);
+
+        assert_eq!(drv.rise_ie_shadow & (1 << 3), 0);
+        assert_eq!(drv.fall_ie_shadow & (1 << 3), 0);
+        assert_eq!(drv.high_ie_shadow & (1 << 3), 0);
+        assert_eq!(drv.low_ie_shadow & (1 << 3), 0);
+    }
+
+    #[test]
+    fn test_clear_interrupt_config_preserves_other_pins() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        drv.rise_ie_shadow = 0xFFFF_FFFF;
+        drv.fall_ie_shadow = 0xFFFF_FFFF;
+
+        drv.clear_interrupt_config(5);
+
+        // Pin 5 should be cleared, all others remain set.
+        assert_eq!(drv.rise_ie_shadow & (1 << 5), 0);
+        assert_ne!(drv.rise_ie_shadow & (1 << 4), 0);
+        assert_ne!(drv.rise_ie_shadow & (1 << 6), 0);
+    }
+
+    #[test]
+    fn test_set_interrupt_config_rising() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        drv.set_interrupt_config(10, GpioInterruptEdge::Rising);
+        assert_ne!(drv.rise_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.fall_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.high_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.low_ie_shadow & (1 << 10), 0);
+    }
+
+    #[test]
+    fn test_set_interrupt_config_falling() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        drv.set_interrupt_config(10, GpioInterruptEdge::Falling);
+        assert_eq!(drv.rise_ie_shadow & (1 << 10), 0);
+        assert_ne!(drv.fall_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.high_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.low_ie_shadow & (1 << 10), 0);
+    }
+
+    #[test]
+    fn test_set_interrupt_config_both() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        drv.set_interrupt_config(10, GpioInterruptEdge::Both);
+        assert_ne!(drv.rise_ie_shadow & (1 << 10), 0);
+        assert_ne!(drv.fall_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.high_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.low_ie_shadow & (1 << 10), 0);
+    }
+
+    #[test]
+    fn test_set_interrupt_config_level_high() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        drv.set_interrupt_config(10, GpioInterruptEdge::LevelHigh);
+        assert_eq!(drv.rise_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.fall_ie_shadow & (1 << 10), 0);
+        assert_ne!(drv.high_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.low_ie_shadow & (1 << 10), 0);
+    }
+
+    #[test]
+    fn test_set_interrupt_config_level_low() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        drv.set_interrupt_config(10, GpioInterruptEdge::LevelLow);
+        assert_eq!(drv.rise_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.fall_ie_shadow & (1 << 10), 0);
+        assert_eq!(drv.high_ie_shadow & (1 << 10), 0);
+        assert_ne!(drv.low_ie_shadow & (1 << 10), 0);
+    }
+
+    #[test]
+    fn test_set_interrupt_config_clears_previous() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        // First set Rising, then switch to Falling — Rising should be cleared.
+        drv.set_interrupt_config(7, GpioInterruptEdge::Rising);
+        assert_ne!(drv.rise_ie_shadow & (1 << 7), 0);
+
+        drv.set_interrupt_config(7, GpioInterruptEdge::Falling);
+        assert_eq!(drv.rise_ie_shadow & (1 << 7), 0);
+        assert_ne!(drv.fall_ie_shadow & (1 << 7), 0);
+    }
+
+    #[test]
+    fn test_set_mask_operations() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        // Set bits 0, 1, 2.
+        let _ = drv.set_mask(0x07, 0x00);
+        assert_eq!(drv.output_val_shadow & 0x07, 0x07);
+
+        // Clear bit 1, keep 0 and 2.
+        let _ = drv.set_mask(0x00, 0x02);
+        assert_eq!(drv.output_val_shadow & 0x07, 0x05);
+    }
+
+    #[test]
+    fn test_set_mask_simultaneous_set_and_clear() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        // Set bits 0..3 and clear bits 2..5 simultaneously.
+        // Result: set first → 0x0F, then clear → 0x0F & !0x3C = 0x03.
+        let _ = drv.set_mask(0x0F, 0x3C);
+        assert_eq!(drv.output_val_shadow, 0x03);
+    }
+
+    #[test]
+    fn test_reset_clears_all_shadows() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        // Pollute all shadow registers.
+        drv.output_en_shadow = 0xAAAA_AAAA;
+        drv.output_val_shadow = 0x5555_5555;
+        drv.rise_ie_shadow = 0xFFFF_FFFF;
+        drv.fall_ie_shadow = 0xFFFF_FFFF;
+        drv.high_ie_shadow = 0xFFFF_FFFF;
+        drv.low_ie_shadow = 0xFFFF_FFFF;
+
+        // reset will fail at write_reg (MmioError) but shadows are cleared first.
+        let _ = drv.reset();
+        assert_eq!(drv.output_en_shadow, 0);
+        assert_eq!(drv.output_val_shadow, 0);
+        assert_eq!(drv.rise_ie_shadow, 0);
+        assert_eq!(drv.fall_ie_shadow, 0);
+        assert_eq!(drv.high_ie_shadow, 0);
+        assert_eq!(drv.low_ie_shadow, 0);
+    }
+
+    #[test]
+    fn test_constructor_fields() {
+        let drv = SiFiveGpio::new(0xDEAD_BEEF, 42);
+        assert_eq!(drv.base_addr(), 0xDEAD_BEEF);
+        assert_eq!(drv.irq_base, 42);
+        assert_eq!(drv.output_en_shadow, 0);
+        assert_eq!(drv.output_val_shadow, 0);
+        assert_eq!(drv.rise_ie_shadow, 0);
+        assert_eq!(drv.fall_ie_shadow, 0);
+        assert_eq!(drv.high_ie_shadow, 0);
+        assert_eq!(drv.low_ie_shadow, 0);
+    }
+
+    #[test]
+    fn test_set_high_out_of_range() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        assert_eq!(drv.set_high(32), Err(HalError::OutOfRange));
+        assert_eq!(drv.set_high(255), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_set_low_out_of_range() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        assert_eq!(drv.set_low(32), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_toggle_out_of_range() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        assert_eq!(drv.toggle(32), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_enable_interrupt_out_of_range() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        assert_eq!(drv.enable_interrupt(32), Err(HalError::OutOfRange));
+    }
+
+    #[test]
+    fn test_disable_interrupt_out_of_range() {
+        let mut drv = SiFiveGpio::new(0x1006_0000, 7);
+        assert_eq!(drv.disable_interrupt(32), Err(HalError::OutOfRange));
+    }
 }

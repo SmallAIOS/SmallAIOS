@@ -30,5 +30,20 @@ RUN RUST_TARGET=$(cat /rust_target) && \
     cp "/app/target/${RUST_TARGET}/release/smallaios-container" /app/smallaios
 
 FROM scratch
+
 COPY --from=builder /app/smallaios /smallaios
+
+# Default environment configuration
+ENV SMALLAIOS_MODEL_DIR=/models
+ENV SMALLAIOS_PORT=8080
+# Pub/sub dataflow runner: "none" (HTTP only, default), "zenoh", or "dds".
+# See docs/inference-bus.md for topic conventions and client wire format.
+ENV SMALLAIOS_BUS_BACKEND=none
+
+# Expose the inference API port
+EXPOSE 8080
+
+# Persistent model storage
+VOLUME /models
+
 ENTRYPOINT ["/smallaios"]

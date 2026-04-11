@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# SmallAIOS pre-commit hook
+# Runs format check, clippy lint, safety audits, and cycle checks.
+# Install: just setup-hooks  (or: git config core.hooksPath .githooks)
+#
+# To skip (emergency only): git commit --no-verify
+
+set -euo pipefail
+
+# Only check if Rust files are staged
+RUST_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$' || true)
+TOML_STAGED=$(git diff --cached --name-only --diff-filter=ACM | grep 'Cargo\.toml$' || true)
+
+if [ -z "$RUST_STAGED" ] && [ -z "$TOML_STAGED" ]; then
+    exit 0
+fi
+
+echo "=== SmallAIOS pre-commit checks ==="
+
+if command -v cargo >/dev/null 2>&1; then
+    # 1. Format check (fast, catches most issues)
+    echo "[1/7] cargo fmt --check"
+    if ! cargo fmt --all -- --check 2>/dev/null; then
+        echo ""
+        echo "ERROR: Code is not formatted. Run 'cargo fmt --all' or 'just fmt' to fix."
+        exit 1
+    fi
+
+    # 2. Clippy lint (catches unused vars, lifetime issues, etc.)
+    echo "[2/7] cargo clippy (host crates)"
+    if ! cargo clippy \
+        -p smallaios-kernel \
+        -p smallaios-security \
+        -p smallaios-onnx-rt \
+        -p smallaios-ipc \
+        -p smallaios-net \
+        -p smallaios-posix \
+        -p smallaios-container \
+        -p smallaios-bus \
+        -p smallaios-peripheral \
+        -p smallaios-usb \
+        -p smallaios-sdr \
+        -p smallaios-bench \
+        -- -D warnings 2>&1 | tail -5; then
+        echo ""
+        echo "ERROR: Clippy lint failed. Fix warnings above before committing."
+        exit 1
+    fi
+
+    # 3. Unsafe audit — warn on new unsafe blocks
+    if command -v cargo-geiger >/dev/null 2>&1; then
+        echo "[3/7] cargo-geiger (unsafe audit)"
+        cargo geiger --output-format ascii --update-readme=false 2>/dev/null | tail -3 || true
+    else
+        echo "[3/7] cargo-geiger (skipped — not installed)"
+    fi
+
+    # 4. Known vulnerability check
+    if command -v cargo-audit >/dev/null 2>&1; then
+        echo "[4/7] cargo-audit (CVE check)"
+        if ! cargo audit --quiet 2>/dev/null; then
+            echo "WARNING: Known vulnerabilities in dependencies. Run 'cargo audit' for details."
+        fi
+    else
+        echo "[4/7] cargo-audit (skipped — not installed)"
+    fi
+
+    # 5. API breakage check
+    if command -v cargo-semver-checks >/dev/null 2>&1; then
+        echo "[5/7] cargo-semver-checks (API breakage)"
+        cargo semver-checks check-release --baseline-rev origin/develop \
+            -p smallaios-kernel -p smallaios-security -p smallaios-onnx-rt 2>/dev/null || \
+            echo "WARNING: Possible API breaking changes detected. Review before pushing."
+    else
+        echo "[5/7] cargo-semver-checks (skipped — not installed)"
+    fi
+
+    # 6. Cycle check (if Cargo.toml changed)
+    if [ -n "$TOML_STAGED" ]; then
+        echo "[6/7] Checking dependency cycles"
+        if [ -f scripts/check-cycles.sh ]; then
+            if ! bash scripts/check-cycles.sh 2>/dev/null; then
+                echo ""
+                echo "ERROR: Dependency cycle detected. See output above."
+                exit 1
+            fi
+        fi
+    else
+        echo "[6/7] Cycle check (skipped — no Cargo.toml changes)"
+    fi
+
+    # 7. Module-level acyclicity (if cargo-modules available)
+    if command -v cargo-modules >/dev/null 2>&1; then
+        echo "[7/7] Module acyclicity check"
+        just arch-check 2>/dev/null || echo "WARNING: Module cycle detected (advisory)"
+    else
+        echo "[7/7] Module acyclicity (skipped — cargo-modules not installed)"
+    fi
+
+    echo "=== All pre-commit checks passed ==="
+else
+    echo "WARNING: cargo not found — skipping pre-commit checks."
+    echo "Install Rust toolchain to enable local checks."
+fi

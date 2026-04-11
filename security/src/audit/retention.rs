@@ -196,7 +196,7 @@ mod tests {
     fn should_not_retain_past_window() {
         let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge);
         let now = 10 * NS_PER_DAY;
-        let batch_ts = 1 * NS_PER_DAY;
+        let batch_ts = NS_PER_DAY;
         assert!(!policy.should_retain(batch_ts, now)); // 9 days old > 7 day limit
     }
 
@@ -206,7 +206,7 @@ mod tests {
         let now = 20 * NS_PER_DAY;
         // Batches at day 1, 5, 10, 15, 18
         let timestamps = [
-            1 * NS_PER_DAY,
+            NS_PER_DAY,
             5 * NS_PER_DAY,
             10 * NS_PER_DAY,
             15 * NS_PER_DAY,
@@ -226,12 +226,7 @@ mod tests {
         let policy = RetentionPolicy::for_deployment(DeploymentClass::Edge).with_max_batches(3);
         let now = 5 * NS_PER_DAY;
         // All within retention window, but too many
-        let timestamps = [
-            1 * NS_PER_DAY,
-            2 * NS_PER_DAY,
-            3 * NS_PER_DAY,
-            4 * NS_PER_DAY,
-        ];
+        let timestamps = [NS_PER_DAY, 2 * NS_PER_DAY, 3 * NS_PER_DAY, 4 * NS_PER_DAY];
         let prune = policy.batches_to_prune(&timestamps, now, 4);
         assert_eq!(prune, 1); // 4 - 3 = 1 excess
     }

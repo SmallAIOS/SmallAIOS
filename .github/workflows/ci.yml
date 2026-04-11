@@ -2,9 +2,12 @@ name: SmallAIOS CI
 
 on:
   push:
-    branches: [main, develop, "claude/**", "change/**"]
+    branches: [main, develop]
   pull_request:
     branches: [main, develop]
+  schedule:
+    - cron: '0 6 * * 1'  # Weekly Monday 06:00 UTC (Miri)
+  workflow_dispatch: {}
 
 env:
   CARGO_TERM_COLOR: always
@@ -280,7 +283,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 17
@@ -361,30 +364,100 @@ jobs:
           components: rust-src, llvm-tools
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
-      - name: Generate coverage report
-        run: >-
-          cargo llvm-cov
-          --lcov --output-path lcov.info
-          -p smallaios-kernel
-          -p smallaios-security
-          -p smallaios-onnx-rt
-          -p smallaios-ipc
-          -p smallaios-net
-          -p smallaios-posix
-          -p smallaios-container
-          -p smallaios-bus
-          -p smallaios-peripheral --features smallaios-peripheral/full-peripheral
-          -p smallaios-usb
-          -p smallaios-sdr
-      - name: Upload to Codecov
+      - name: Generate per-crate coverage reports
+        run: |
+          CRATES=(kernel security onnx-rt ipc net posix container bus peripheral usb sdr)
+          EXTRA_FLAGS=""
+          for crate in "${CRATES[@]}"; do
+            pkg="smallaios-${crate}"
+            outfile="lcov-${crate}.info"
+            flags=""
+            if [ "$crate" = "peripheral" ]; then
+              flags="--features smallaios-peripheral/full-peripheral"
+            fi
+            cargo llvm-cov --lcov --output-path "$outfile" -p "$pkg" $flags
+          done
+      - name: Upload per-crate coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
+          files: lcov-kernel.info
+          flags: kernel
           fail_ci_if_error: false
+      - name: Upload security coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-security.info
+          flags: security
+          fail_ci_if_error: false
+      - name: Upload onnx-rt coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-onnx-rt.info
+          flags: onnx-rt
+          fail_ci_if_error: false
+      - name: Upload net coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-net.info
+          flags: net
+          fail_ci_if_error: false
+      - name: Upload ipc coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-ipc.info
+          flags: ipc
+          fail_ci_if_error: false
+      - name: Upload container coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-container.info
+          flags: container
+          fail_ci_if_error: false
+      - name: Upload bus coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-bus.info
+          flags: bus
+          fail_ci_if_error: false
+      - name: Upload peripheral coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-peripheral.info
+          flags: peripheral
+          fail_ci_if_error: false
+      - name: Upload usb coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-usb.info
+          flags: usb
+          fail_ci_if_error: false
+      - name: Upload sdr coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-sdr.info
+          flags: sdr
+          fail_ci_if_error: false
+      - name: Upload posix coverage
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-posix.info
+          flags: posix
+          fail_ci_if_error: false
+      - name: Merge all coverage for SonarCloud
+        run: cat lcov-*.info > lcov.info
       - name: Convert LCOV to SonarCloud generic format
-        run: |
-          python3 scripts/lcov-to-sonar.py lcov.info > sonar-coverage.xml
+        run: python3 scripts/lcov-to-sonar.py lcov.info > sonar-coverage.xml
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -491,11 +564,448 @@ jobs:
               labels: [`semver:${bump}`],
             });
 
+  cargo-deny:
+    name: Supply Chain Security (cargo-deny)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  cargo-geiger:
+    name: Unsafe Usage Report (cargo-geiger)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install cargo-geiger
+        run: cargo install cargo-geiger --locked || true
+      - name: Generate unsafe usage report
+        run: |
+          cargo geiger --all-features --output-format ascii 2>&1 | tee geiger-report.txt || true
+          echo "=== Unsafe Usage Summary ==="
+          grep -c "unsafe" geiger-report.txt || echo "0 unsafe usages found"
+      - name: Upload geiger report
+        uses: actions/upload-artifact@v4
+        with:
+          name: geiger-report
+          path: geiger-report.txt
+          retention-days: 30
+
+  check-cycles:
+    name: Cyclic Dependency Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+      - name: Check for cyclic dependencies
+        run: ./scripts/check-cycles.sh
+
+  kani-verify:
+    name: Kani Model Checking
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      - name: Run Kani proofs (kernel)
+        run: cargo kani -p smallaios-kernel --tests 2>&1 | tee kani-kernel.txt || true
+      - name: Run Kani proofs (security)
+        run: cargo kani -p smallaios-security --tests 2>&1 | tee kani-security.txt || true
+      - name: Upload Kani reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: kani-reports
+          path: kani-*.txt
+          retention-days: 30
+
+  spin-verify:
+    name: SPIN Model Verification
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install SPIN
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y spin || {
+            # Build from source if package unavailable
+            git clone https://github.com/nimble-code/Spin.git /tmp/spin-src
+            cd /tmp/spin-src/Src
+            make
+            sudo cp spin /usr/local/bin/
+          }
+      - name: Verify all Promela models
+        run: |
+          failed=()
+          timed_out=()
+          for model in formal/spin/*.pml formal/promela/*.pml; do
+            [ -f "$model" ] || continue
+            name=$(basename "$model" .pml)
+            echo "=== Verifying $name ==="
+            set +e
+
+            # Generate verifier
+            spin -a "$model" 2>&1
+            if [ $? -ne 0 ]; then
+              echo "WARNING: $name failed to generate verifier (syntax error?)"
+              failed+=("$name")
+              rm -f pan.* *.trail
+              continue
+            fi
+
+            # Compile verifier
+            cc -DMEMLIM=1024 -DVECTORSZ=4096 -o pan pan.c 2>&1
+            if [ $? -ne 0 ]; then
+              echo "WARNING: $name failed to compile verifier"
+              failed+=("$name")
+              rm -f pan.* *.trail
+              continue
+            fi
+
+            # Run verification with 5 min timeout
+            timeout 300 ./pan -a 2>&1
+            rc=$?
+            set -e
+
+            if [ $rc -eq 124 ]; then
+              echo "WARNING: $name timed out (5 min limit)"
+              timed_out+=("$name")
+            elif [ $rc -ne 0 ]; then
+              echo "FAIL: $name verification found errors (exit $rc)"
+              failed+=("$name")
+            else
+              echo "OK: $name verified"
+            fi
+            rm -f pan.* *.trail
+          done
+
+          echo ""
+          echo "=== SPIN Summary ==="
+          echo "Timed out (${#timed_out[@]}): ${timed_out[*]:-none}"
+          echo "Failed (${#failed[@]}): ${failed[*]:-none}"
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "WARNING: ${#failed[@]} model(s) had issues"
+          fi
+          echo "SPIN verification complete."
+
+  mutation-testing:
+    name: Mutation Testing (on-demand)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+      - name: Run mutation testing on crypto
+        run: |
+          cargo mutants -p smallaios-security --file security/src/crypto/constant_time.rs -- --lib 2>&1 | tee mutants-crypto.txt || true
+      - name: Run mutation testing on memory
+        run: |
+          cargo mutants -p smallaios-kernel --file kernel/src/mem/buddy.rs --file kernel/src/mem/slab.rs -- --lib 2>&1 | tee mutants-memory.txt || true
+      - name: Upload mutation reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-reports
+          path: mutants-*.txt
+          retention-days: 30
+
+  miri:
+    name: Miri UB Detection
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: miri, rust-src
+      - name: Run Miri on host-testable crates
+        run: >-
+          cargo miri test
+          -p smallaios-kernel
+          -p smallaios-security
+          -p smallaios-ipc
+          -p smallaios-net
+          -p smallaios-posix
+          -p smallaios-bus
+          -p smallaios-bench
+        env:
+          MIRIFLAGS: "-Zmiri-disable-isolation"
+
+  fuzz:
+    name: Fuzz Testing
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Run fuzz targets (60s each)
+        run: |
+          targets=(fuzz_onnx_protobuf fuzz_tcp_packet fuzz_udp_packet fuzz_usb_descriptor fuzz_ipc_message fuzz_onnx_tensor)
+          failed=()
+          for target in "${targets[@]}"; do
+            echo "=== Fuzzing $target ==="
+            set +e
+            cargo fuzz run "$target" -- -max_total_time=60 2>&1
+            rc=$?
+            set -e
+            if [ $rc -ne 0 ]; then
+              echo "FAIL: $target found a crash"
+              failed+=("$target")
+            else
+              echo "OK: $target completed"
+            fi
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "FAIL: ${#failed[@]} fuzz target(s) found crashes: ${failed[*]}"
+            exit 1
+          fi
+          echo "All fuzz targets completed without crashes."
+
+  bench:
+    name: Benchmark Regression Check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Run benchmarks
+        run: cargo bench -p smallaios-bench
+      - name: Check for regressions
+        run: ./scripts/bench-regression.sh 10
+        continue-on-error: true
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: target/criterion/
+          retention-days: 30
+
+  dependency-analysis:
+    name: Dependency Analysis
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install just
+        uses: taiki-e/install-action@just
+      - name: Install analysis tools
+        run: |
+          cargo install cargo-depgraph --locked
+          cargo install cargo-modules --locked
+          sudo apt-get update && sudo apt-get install -y graphviz
+      - name: Generate crate-level dependency graph
+        run: just depgraph
+      - name: Module-level acyclicity check
+        continue-on-error: true
+        run: just arch-check
+      - name: Generate DSM matrix
+        run: just dsm
+      - name: Run DSM analysis
+        run: just dsm-analyze
+        continue-on-error: true
+      - name: Upload analysis artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-analysis
+          path: build/analysis/
+          retention-days: 30
+
+  # --- Safety-Critical Tooling ---
+
+  semver-api-check:
+    name: API Semver Check (cargo-semver-checks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks --locked
+      - name: Check for API breakage
+        id: semver
+        continue-on-error: true
+        run: |
+          cargo semver-checks check-release \
+            --baseline-rev origin/${{ github.base_ref }} \
+            -p smallaios-kernel \
+            -p smallaios-security \
+            -p smallaios-onnx-rt \
+            -p smallaios-net \
+            -p smallaios-ipc \
+            -p smallaios-posix \
+            -p smallaios-container \
+            2>&1 | tee semver-report.txt
+      - name: Gate or warn based on PR title
+        if: steps.semver.outcome == 'failure'
+        run: |
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          if echo "$PR_TITLE" | grep -q '!'; then
+            echo "::warning::API breaking changes detected — allowed because PR title contains '!'"
+            echo "Breaking changes are intentional per semver convention."
+          else
+            echo "::error::API breaking changes detected but PR title does not contain '!'"
+            echo "Either fix the breaking change or add '!' to the PR title (e.g., feat!: rename API)"
+            cat semver-report.txt
+            exit 1
+          fi
+      - name: Upload semver report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semver-api-report
+          path: semver-report.txt
+          retention-days: 30
+
+  cargo-vet-check:
+    name: Dependency Audit (cargo-vet)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+      - name: Install cargo-vet
+        run: cargo install cargo-vet --locked
+      - name: Check dependency audits
+        run: cargo vet check
+
+  careful-test:
+    name: Careful UB Testing (cargo-careful)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: Install cargo-careful
+        run: cargo install cargo-careful --locked
+      - name: Run careful tests
+        run: |
+          cargo careful test \
+            -p smallaios-kernel \
+            -p smallaios-security \
+            -p smallaios-onnx-rt \
+            -p smallaios-ipc \
+            -p smallaios-net \
+            -p smallaios-posix \
+            -p smallaios-container \
+            -p smallaios-bus \
+            -p smallaios-bench \
+            2>&1 | tee careful-report.txt
+      - name: Upload careful report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: careful-report
+          path: careful-report.txt
+          retention-days: 30
+
+  coverage-threshold:
+    name: Coverage Threshold (80%)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: llvm-tools
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --locked
+      - name: Check coverage threshold
+        # Threshold ratcheting schedule:
+        #   80% — initial (2026-04-05)
+        #   85% — after onnx-cpu-runtime-v1 tests complete
+        #   90% — after cpu-parallel-inference-v1
+        #   93% — parity with Codecov target
+        run: |
+          cargo llvm-cov \
+            --fail-under-lines 80 \
+            -p smallaios-kernel \
+            -p smallaios-security \
+            -p smallaios-onnx-rt \
+            -p smallaios-ipc \
+            -p smallaios-net \
+            -p smallaios-posix \
+            -p smallaios-container \
+            -p smallaios-bus \
+            -p smallaios-bench \
+            2>&1 | tee coverage-threshold.txt
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-threshold-report
+          path: coverage-threshold.txt
+          retention-days: 30
+
   change-gates:
     name: Change Gates
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check]
+    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check, cargo-deny, check-cycles, semver-api-check, coverage-threshold]
     if: github.event_name == 'pull_request'
     steps:
       - name: All gates passed

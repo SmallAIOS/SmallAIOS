@@ -10,12 +10,18 @@ publish = false
 [features]
 default = ["cpu"]
 cpu = []
-cuda = ["smallaios-arch-nvidia"]
+std = []
+cuda = ["smallaios-arch-nvidia", "gpu"]
 tegra = ["cuda", "smallaios-arch-nvidia/tegra"]
+rocm = ["gpu"]
+level-zero = ["gpu"]
+metal = ["gpu"]
+gpu = ["dep:smallaios-compute"]
 formal-gate = ["dep:smallaios-security", "smallaios-security/formal-gate"]
 verified-boot = ["dep:smallaios-security", "smallaios-security/verified-boot"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }
+smallaios-compute = { path = "../compute", optional = true }
 smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }
 smallaios-security = { path = "../security", optional = true }

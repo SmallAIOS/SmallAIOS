@@ -18,6 +18,8 @@
 
 extern crate alloc;
 
+pub mod byte_io;
+pub mod executor;
 pub mod gemm;
 pub mod graph;
 pub mod memory_planner;
@@ -28,6 +30,8 @@ pub mod model_verify;
 pub mod onnx_types;
 pub mod operators;
 pub mod optimizer;
+pub mod parallel;
+pub mod profile;
 pub mod protobuf;
 pub mod session;
 pub mod tensor;

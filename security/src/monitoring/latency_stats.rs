@@ -310,7 +310,7 @@ mod tests {
         }
         let p50 = tracker.p50_ns();
         // Median of 10,20,...,1000 should be around 500-510
-        assert!(p50 >= 490 && p50 <= 510, "p50={}", p50);
+        assert!((490..=510).contains(&p50), "p50={}", p50);
     }
 
     #[test]
@@ -321,7 +321,7 @@ mod tests {
         }
         let p99 = tracker.p99_ns();
         // p99 of 1..=1000 should be around 990
-        assert!(p99 >= 985 && p99 <= 1000, "p99={}", p99);
+        assert!((985..=1000).contains(&p99), "p99={}", p99);
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
         }
         let p999 = tracker.p999_ns();
         // p999 of 1..=1000 should be very close to 1000
-        assert!(p999 >= 998 && p999 <= 1000, "p999={}", p999);
+        assert!((998..=1000).contains(&p999), "p999={}", p999);
     }
 
     #[test]

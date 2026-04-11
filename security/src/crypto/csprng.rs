@@ -183,21 +183,58 @@ impl Csprng {
             }
         }
 
-        #[cfg(target_arch = "aarch64")]
+        // On AArch64 bare-metal, use RNDR (ARMv8.5-RNG) directly.
+        // On hosted operating systems (macOS, Linux), RNDR is not accessible
+        // from userspace — reading s3_3_c2_c4_0 traps as SIGILL. Fall back
+        // to OS entropy via getentropy(3) / /dev/urandom.
+        #[cfg(all(target_arch = "aarch64", target_os = "none"))]
         {
-            // Use RNDR (ARMv8.5-RNG) to fill the seed buffer
-            for chunk in hw_seed.chunks_mut(8) {
-                let val: u64;
-                unsafe {
-                    core::arch::asm!(
-                        "mrs {val}, s3_3_c2_c4_0", // RNDR register
-                        val = out(reg) val,
-                    );
-                }
-                let bytes = val.to_le_bytes();
-                let len = chunk.len();
-                chunk.copy_from_slice(&bytes[..len]);
+            // Bare-metal: RNDR is privileged-accessible on ARMv8.5-RNG.
+            // Check ID_AA64ISAR0_EL1.RNDR before executing to avoid SIGILL
+            // on chips that don't implement the feature.
+            let id_isar0: u64;
+            unsafe {
+                core::arch::asm!(
+                    "mrs {id}, id_aa64isar0_el1",
+                    id = out(reg) id_isar0,
+                );
             }
+            // RNDR field is bits [63:60]; non-zero means implemented.
+            if (id_isar0 >> 60) & 0xF != 0 {
+                for chunk in hw_seed.chunks_mut(8) {
+                    let val: u64;
+                    unsafe {
+                        core::arch::asm!(
+                            "mrs {val}, s3_3_c2_c4_0", // RNDR register
+                            val = out(reg) val,
+                        );
+                    }
+                    let bytes = val.to_le_bytes();
+                    let len = chunk.len();
+                    chunk.copy_from_slice(&bytes[..len]);
+                }
+            }
+            // If RNDR not implemented, seed stays zeros — caller should use
+            // software entropy mixing or TRNG peripheral.
+        }
+
+        // On hosted AArch64 (macOS, Linux), use libc::getentropy which wraps
+        // the OS's CSPRNG (Apple's SecRandomCopyBytes, Linux getrandom(2)).
+        #[cfg(all(target_arch = "aarch64", not(target_os = "none")))]
+        {
+            // getentropy() fills buffer up to 256 bytes; 32 is well under.
+            #[cfg(any(target_os = "macos", target_os = "linux", target_os = "freebsd"))]
+            unsafe {
+                extern "C" {
+                    fn getentropy(buf: *mut u8, buflen: usize) -> i32;
+                }
+                let rc = getentropy(hw_seed.as_mut_ptr(), hw_seed.len());
+                if rc != 0 {
+                    // On failure, seed stays zeros.
+                }
+            }
+            // Other hosted OSes (Windows, etc.): zero seed, acceptable for
+            // tests but not production.
         }
 
         // On architectures without hardware RNG, the seed is all-zeros.
@@ -494,6 +531,7 @@ mod tests {
         assert_eq!(format!("{}", CsprngError::NotSeeded), "CSPRNG not seeded");
     }
 
+    #[cfg_attr(miri, ignore)]
     #[test]
     fn csprng_seed_from_hardware() {
         let mut rng = Csprng::new();

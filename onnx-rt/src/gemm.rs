@@ -63,6 +63,59 @@ pub fn gemm_f32(m: usize, n: usize, k: usize, a: &[f32], b: &[f32], c: &mut [f32
     }
 }
 
+// ---------------------------------------------------------------------------
+// Parallel GEMM
+// ---------------------------------------------------------------------------
+
+use crate::parallel::CorePool;
+
+/// Default threshold: parallelize GEMM only when `m * k * n > GEMM_PARALLEL_THRESHOLD`.
+pub const GEMM_PARALLEL_THRESHOLD: usize = 65_536;
+
+/// Performs a cache-blocked parallel GEMM: C = A * B, splitting rows across threads.
+///
+/// If the pool has 1 thread or the work is below the threshold, delegates
+/// to the sequential [`gemm_f32`].
+///
+/// A is [m x k], B is [k x n], C is [m x n]. Row-major f32.
+pub fn gemm_f32_parallel(
+    pool: &CorePool,
+    m: usize,
+    n: usize,
+    k: usize,
+    a: &[f32],
+    b: &[f32],
+    c: &mut [f32],
+) {
+    if pool.num_threads() <= 1 || m * n * k <= GEMM_PARALLEL_THRESHOLD || m == 0 {
+        gemm_f32(m, n, k, a, b, c);
+        return;
+    }
+
+    // Zero the output
+    for val in c.iter_mut() {
+        *val = 0.0;
+    }
+
+    // Each thread computes its band of rows of C independently.
+    // We collect (start_row, local_c) pairs and copy back.
+    let results = pool.parallel_for(0..m, |row_range| {
+        let row_count = row_range.end - row_range.start;
+        let mut local_c = alloc::vec![0.0f32; row_count * n];
+        // Use the sequential tiled GEMM on the sub-matrix
+        // A_sub is rows [row_range] of A, B is the full B matrix
+        let a_sub = &a[row_range.start * k..row_range.end * k];
+        gemm_f32(row_count, n, k, a_sub, b, &mut local_c);
+        (row_range.start, local_c)
+    });
+
+    // Copy results back into the output buffer
+    for (start_row, local_c) in results {
+        let offset = start_row * n;
+        c[offset..offset + local_c.len()].copy_from_slice(&local_c);
+    }
+}
+
 /// Computes a single tile of the GEMM using micro-kernel dispatch.
 #[allow(clippy::too_many_arguments)]
 fn gemm_tile(
@@ -337,11 +390,11 @@ mod tests {
             let mut a = vec![0.0f32; m * k];
             let mut b = vec![0.0f32; k * n];
             // Fill with deterministic values
-            for i in 0..a.len() {
-                a[i] = ((i % 7) as f32 - 3.0) * 0.1;
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = ((i % 7) as f32 - 3.0) * 0.1;
             }
-            for i in 0..b.len() {
-                b[i] = ((i % 11) as f32 - 5.0) * 0.1;
+            for (i, v) in b.iter_mut().enumerate() {
+                *v = ((i % 11) as f32 - 5.0) * 0.1;
             }
 
             let mut c_opt = vec![0.0f32; m * n];
@@ -375,11 +428,11 @@ mod tests {
             let k = size;
             let mut a = vec![1.0f32; m * k];
             let mut b = vec![1.0f32; k * n];
-            for i in 0..a.len() {
-                a[i] = (i % 100) as f32 * 0.01;
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = (i % 100) as f32 * 0.01;
             }
-            for i in 0..b.len() {
-                b[i] = (i % 100) as f32 * 0.01;
+            for (i, v) in b.iter_mut().enumerate() {
+                *v = (i % 100) as f32 * 0.01;
             }
             let mut c = vec![0.0f32; m * n];
 
@@ -458,6 +511,135 @@ mod tests {
                     c_naive[i]
                 );
             }
+        }
+    }
+
+    // --- Parallel GEMM tests ---
+
+    #[test]
+    fn test_parallel_gemm_matches_sequential_64x64() {
+        let n = 64;
+        let pool = CorePool::new(4);
+        let mut a = vec![0.0f32; n * n];
+        let mut b = vec![0.0f32; n * n];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = ((i % 7) as f32 - 3.0) * 0.1;
+        }
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = ((i % 11) as f32 - 5.0) * 0.1;
+        }
+        let mut c_seq = vec![0.0f32; n * n];
+        let mut c_par = vec![0.0f32; n * n];
+
+        gemm_f32(n, n, n, &a, &b, &mut c_seq);
+        gemm_f32_parallel(&pool, n, n, n, &a, &b, &mut c_par);
+
+        for i in 0..n * n {
+            assert!(
+                (c_seq[i] - c_par[i]).abs() < 1e-4,
+                "64x64 mismatch at {}: seq={} par={}",
+                i,
+                c_seq[i],
+                c_par[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_gemm_matches_sequential_128x128() {
+        let n = 128;
+        let pool = CorePool::new(4);
+        let mut a = vec![0.0f32; n * n];
+        let mut b = vec![0.0f32; n * n];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = ((i % 13) as f32 - 6.0) * 0.05;
+        }
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = ((i % 17) as f32 - 8.0) * 0.05;
+        }
+        let mut c_seq = vec![0.0f32; n * n];
+        let mut c_par = vec![0.0f32; n * n];
+
+        gemm_f32(n, n, n, &a, &b, &mut c_seq);
+        gemm_f32_parallel(&pool, n, n, n, &a, &b, &mut c_par);
+
+        for i in 0..n * n {
+            assert!(
+                (c_seq[i] - c_par[i]).abs() < 1e-3,
+                "128x128 mismatch at {}: seq={} par={}",
+                i,
+                c_seq[i],
+                c_par[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_gemm_matches_sequential_256x256() {
+        let n = 256;
+        let pool = CorePool::new(4);
+        let mut a = vec![0.0f32; n * n];
+        let mut b = vec![0.0f32; n * n];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = ((i % 19) as f32 - 9.0) * 0.02;
+        }
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = ((i % 23) as f32 - 11.0) * 0.02;
+        }
+        let mut c_seq = vec![0.0f32; n * n];
+        let mut c_par = vec![0.0f32; n * n];
+
+        gemm_f32(n, n, n, &a, &b, &mut c_seq);
+        gemm_f32_parallel(&pool, n, n, n, &a, &b, &mut c_par);
+
+        for i in 0..n * n {
+            assert!(
+                (c_seq[i] - c_par[i]).abs() < 1e-2,
+                "256x256 mismatch at {}: seq={} par={}",
+                i,
+                c_seq[i],
+                c_par[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_parallel_gemm_small_falls_back_to_sequential() {
+        // Below threshold: should still produce correct results
+        let pool = CorePool::new(4);
+        let a = vec![1.0f32, 2.0, 3.0, 4.0];
+        let b = vec![1.0, 0.0, 0.0, 1.0];
+        let mut c = vec![0.0; 4];
+        gemm_f32_parallel(&pool, 2, 2, 2, &a, &b, &mut c);
+        assert_eq!(c, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn test_parallel_gemm_two_threads() {
+        let n = 64;
+        let pool = CorePool::new(2);
+        let mut a = vec![0.0f32; n * n];
+        let mut b = vec![0.0f32; n * n];
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = ((i % 7) as f32 - 3.0) * 0.1;
+        }
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = ((i % 11) as f32 - 5.0) * 0.1;
+        }
+        let mut c_seq = vec![0.0f32; n * n];
+        let mut c_par = vec![0.0f32; n * n];
+
+        gemm_f32(n, n, n, &a, &b, &mut c_seq);
+        gemm_f32_parallel(&pool, n, n, n, &a, &b, &mut c_par);
+
+        for i in 0..n * n {
+            assert!(
+                (c_seq[i] - c_par[i]).abs() < 1e-4,
+                "2-thread 64x64 mismatch at {}: seq={} par={}",
+                i,
+                c_seq[i],
+                c_par[i]
+            );
         }
     }
 }

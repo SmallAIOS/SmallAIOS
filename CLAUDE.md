@@ -10,64 +10,105 @@ SmallAIOS is a minimal, secure, Rust-based OS kernel purpose-built for AI infere
 
 ## Build Commands
 
-Requires Rust nightly (pinned in `rust-toolchain.toml`). Uses `make` as the primary build interface.
+Requires Rust nightly (pinned in `rust-toolchain.toml`). Uses `just` as the task runner wrapping Cargo commands. Run `just --list` to see all available recipes.
 
 ```bash
 # Container mode (library OS)
-make build-container-x86    # x86_64-unknown-linux-musl
-make build-container-arm    # aarch64-unknown-linux-musl
+just build-container-x86    # x86_64-unknown-linux-musl
+just build-container-arm    # aarch64-unknown-linux-musl
 
 # Kernel mode (VM/bare metal)
-make build-kernel-x86       # x86_64-unknown-none
-make build-kernel-arm       # aarch64-unknown-none
+just build-kernel-x86       # x86_64-unknown-none
+just build-kernel-arm       # aarch64-unknown-none
 
 # Testing
-make test                   # cargo test --workspace
-make clippy                 # cargo clippy -- -D warnings
-make fmt                    # cargo fmt
-make fmt-check              # cargo fmt -- --check
+just test                   # cargo test --workspace
+just clippy                 # cargo clippy -- -D warnings
+just fmt                    # cargo fmt
+just fmt-check              # cargo fmt -- --check
 
 # QEMU
-make run-x86                # Boot in QEMU x86-64
-make run-arm                # Boot in QEMU ARM64
+just run-x86                # Boot in QEMU x86-64
+just run-arm                # Boot in QEMU ARM64
 
 # Docker
-make docker-build           # Multi-arch container build
+just docker-build           # Multi-arch container build
+
+# Dependency analysis (requires cargo-depgraph, cargo-modules, graphviz)
+just depgraph               # Crate-level DOT/SVG dependency graph
+just modgraph               # Module-level graphs for all host crates
+just modgraph smallaios-kernel  # Single crate module graph
+just arch-check             # Module-level acyclicity check
+just dsm                    # DSM adjacency matrix (JSON + CSV)
+just dsm-analyze            # DSM + propagation cost, fan-in/out, clusters
+just arch                   # All of the above
 
 # Release (requires cargo-release)
-make release-dry-run BUMP=patch  # preview version bump
-make release BUMP=minor          # execute bump + commit + tag
+just release-dry-run patch  # preview version bump
+just release minor          # execute bump + commit + tag
 ```
+
+### Dev Tool Dependencies
+
+```bash
+# Required
+rustup toolchain install nightly-2026-02-01
+cargo install just --locked                          # task runner
+
+# Pre-commit hooks (run once after clone)
+just setup-hooks
+
+# Safety-critical tooling (recommended)
+cargo install cargo-audit --locked                   # CVE vulnerability check
+cargo install cargo-geiger --locked                  # unsafe code audit
+cargo install cargo-deny --locked                    # supply chain security
+cargo install cargo-semver-checks --locked           # API breakage detection
+cargo install cargo-vet --locked                     # dependency review audit trail
+cargo install cargo-careful --locked                 # extra UB detection
+cargo install cargo-llvm-cov --locked                # coverage threshold gate
+
+# Optional analysis tools
+cargo install cargo-depgraph cargo-modules --locked  # dependency visualization
+sudo apt install graphviz                            # SVG graph rendering
+```
+
+### Pre-Commit Hooks
+
+Git hooks at `.githooks/pre-commit` run before each commit:
+1. `cargo fmt --check` — formatting (blocking)
+2. `cargo clippy -D warnings` — lint (blocking)
+3. `cargo-geiger` — unsafe code audit (advisory)
+4. `cargo-audit` — CVE vulnerability check (advisory)
+5. `cargo-semver-checks` — API breakage detection (advisory)
+6. Dependency cycle check (blocking, on Cargo.toml changes)
+7. Module acyclicity check (advisory)
+
+Install with `just setup-hooks`. Run manually with `just check` (quick) or `just audit` (full safety audit).
 
 ## Workspace Architecture
 
-18-crate Rust workspace (`#![no_std]`, edition 2021). Dependency flow:
+20-crate Rust workspace (`#![no_std]`, edition 2021). Strict 4-layer acyclic dependency model (see `docs/architecture.md` for full details):
 
 ```
-kernel (foundation: memory, scheduler, syscall interface)
-├── security (capability-based access, PQC crypto, formal gate)
-├── arch/x86_64 (HAL: boot, GDT, IDT, APIC, paging, syscall)
-├── arch/aarch64 (HAL: boot, GICv3, paging, SVE, PSCI)
-├── arch/riscv64 (HAL: boot, SBI, trap handling, paging)
-├── arch/nvidia (HAL stub: PCIe, GPU init, compute, DMA)
-├── arch/intel_gpu (HAL stub: Xe-LP/HPG/HPC interfaces)
-├── arch/amd (HAL stub: RDNA/CDNA interfaces)
-├── onnx-rt (parser, optimizer, execution providers)
-├── ipc (Zenoh-inspired pub/sub messaging)
-├── net (IPv4/IPv6, TCP/UDP native stack)
-├── posix (minimal POSIX compat layer)
-├── bus (CAN, ARINC 429, MIL-STD-1553, SpaceWire)
-├── peripheral (I2C, SPI, GPIO, UART, CSI camera, I2S audio)
-├── usb (USB core stack, xHCI host controller)
-├── sdr (Software-defined radio drivers)
-├── bench (benchmarks)
-└── container (entry point, config, health, metrics)
+Layer 3 — Integration:  container, bench
+Layer 2 — HAL/Drivers:  arch/{x86_64,aarch64,riscv64,nvidia,intel_gpu,amd,apple}, peripheral, bus, sdr
+Layer 1 — Core Services: net, ipc, posix, onnx-rt, usb
+Layer 0 — Foundation:    kernel → security, compute
+```
+
+**Dependency rules:** Higher layers depend on same or lower layers only. Zero production-dependency cycles. The DSM analysis tool (`tools/dsm/`) computes propagation cost, fan-in/out, coupling clusters, and layering violations from `build/analysis/dsm-matrix.json`.
+
+```
+just dsm-analyze    # Generate DSM + run analysis
+just arch-check     # Module-level acyclicity check
+just arch           # Full dependency analysis suite
 ```
 
 ## Key Design Decisions
 
 - **Unikernel** — single address space, no microkernel IPC overhead
-- **Cooperative async scheduling** — yields at ONNX operator boundaries
+- **Cooperative async scheduling** — yields at ONNX operator boundaries (see `docs/scheduling-model.md` for POSIX/RTOS alignment)
+- **AMP multi-core** — Core 0 for System/IPC, Cores 1-N for inference data parallelism; no SMP
 - **Clean-room ONNX runtime** — from-scratch `#![no_std]` Rust, no external C deps
 - **Post-quantum crypto default** — ML-KEM-768 + ML-DSA-65 hybrid mode
 - **DO-178C DAL A compliance target** — MC/DC 100% coverage on safety-critical paths
@@ -101,17 +142,22 @@ kernel (foundation: memory, scheduler, syscall interface)
 
 **Scripts:**
 - `./scripts/check-pr-semver.sh "<title>"` — validate and print bump level
+- `./scripts/suggest-release-bump.sh` — scan commits since last tag, suggest aggregate bump level
 
 ### Releasing
 
-Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release), configured in `release.toml`. All 18 crates share a single version and are bumped together.
+Releases use [`cargo-release`](https://github.com/crate-ci/cargo-release), configured in `release.toml`. All 20 crates share a single version and are bumped together. See `docs/release-runbook.md` for the full step-by-step process.
 
 ```bash
-make release-dry-run BUMP=patch   # preview: 0.1.0 → 0.1.1
-make release BUMP=minor           # execute: 0.1.0 → 0.2.0
+just changelog                   # regenerate CHANGELOG.md via git-cliff
+./scripts/suggest-release-bump.sh  # check suggested bump level
+just release-dry-run patch       # preview: 0.1.0 → 0.1.1
+just release minor               # execute: 0.1.0 → 0.2.0
 ```
 
-`cargo-release` bumps workspace version, updates `Cargo.lock`, commits, and tags. `push = false` so you review before pushing. Releases are only allowed from `main` (enforced by `allow-branch`).
+`cargo-release` bumps workspace version, updates `Cargo.lock`, commits, and tags. The pre-release hook runs tests and generates the changelog via `git-cliff`. `push = false` so you review before pushing. Releases are only allowed from `main` (enforced by `allow-branch`).
+
+**Development dependencies for releases:** `git-cliff` (changelog generation), `cargo-release` (version management).
 
 ## Git Workflow
 
@@ -119,35 +165,41 @@ make release BUMP=minor           # execute: 0.1.0 → 0.2.0
 
 - `main` — stable, release-ready code
 - `develop` — integration branch for ongoing work
-- Feature branches merge into `develop` via PR
+- Feature/fix branches merge into `develop` via PR
 - `develop` merges into `main` for releases
 
-### Worktrees + OpenSpec
+### Branch Naming Convention
 
-Each OpenSpec change gets its own branch. Worktrees can be created as needed in `../SmallAIOS-Design-worktrees/`.
+| Branch Type | Pattern | Example |
+|-------------|---------|---------|
+| Feature | `feature/<name>` | `feature/onnx-protobuf-parser` |
+| Bug fix | `fix/<name>` | `fix/gemm-overflow` |
+| OpenSpec change | `change/<openspec-change-name>` | `change/compute-abstraction-v1` |
+| Release | `release/<version>` | `release/0.2.0` |
+| Hotfix | `hotfix/<name>` | `hotfix/critical-boot-fix` |
 
-**Branch naming:** `change/<openspec-change-name>`
+Use `change/` for OpenSpec-tracked work. Use `feature/` or `fix/` for ad-hoc work not tracked by OpenSpec. All branches target `develop` except hotfixes (which target `main`).
+
+### Worktrees
+
+Each active branch gets its own worktree for parallel development. Worktrees live in `../SmallAIOS-Design-worktrees/`.
 
 **Workflow:**
 1. Create branch from `develop`: `git checkout -b change/<name> develop`
-2. Optionally create worktree: `git worktree add ../SmallAIOS-Design-worktrees/<name> change/<name>`
-3. Implement tasks, commit, push, create PR against `develop`
-4. After merge, clean up: `git worktree remove` / `git branch -d`
+2. Create worktree: `git worktree add ../SmallAIOS-Design-worktrees/<name> change/<name>`
+3. Work in the worktree, commit, push, create PR against `develop`
+4. After merge, clean up: `git worktree remove ../SmallAIOS-Design-worktrees/<name> --force && git branch -D change/<name>`
 
 ## OpenSpec Changes
 
-Active specs in `openspec/changes/`, completed specs in `openspec/archived/`. Reference specs in `openspec/smallaios-kernel/`.
+Active specs in `openspec/changes/`, archived specs in `openspec/changes/archive/` (with `YYYY-MM-DD-` date prefixes). Reference specs in `openspec/smallaios-kernel/`.
 
 | Change | Status | Tasks | Focus |
 |--------|--------|-------|-------|
-| `smallaios-kernel-v1` | Active | 142/146 | Core kernel, memory, scheduler, crypto, ONNX, networking |
-| `platform-expansion-v2` | Active | 191/205 | RISC-V, CAN/ARINC/MIL-STD buses, K8s, DDS, QUIC |
-| `cybersecurity-compliance-v3` | Complete | 110/110 | NIST SP 800-53, audit, supply chain, incident response |
-| `amd-gpu-support-v4` | Complete | 14/14 | AMD RDNA/CDNA GPU HAL stub |
-| `intel-gpu-support-v5` | Complete | 12/12 | Intel Xe GPU HAL stub |
-| `hardware-peripheral-interfaces-v6` | Complete | 74/74 | I2C, SPI, GPIO, UART, CSI, I2S |
-| `usb-sdr-support-v1` | Active | 109/117 | USB core stack, xHCI, SDR drivers |
-| `formal-type-gate-v1` | Complete | 52/52 | Type-safe security gate with formal verification |
+| `architecture-documentation-v1` | Active | In progress | DSM tooling, architecture docs, archive consolidation |
+| `smallaios-kernel-v1` | Archived | 143/144 | Core kernel — 1 task DEFERRED (sphinx-needs) |
+| `platform-expansion-v2` | Archived | 191/198 | RISC-V, buses — 7 tasks DEFERRED (hardware-dependent) |
+| `codeql-remediation-v1` | Archived | 23/25 | CodeQL fixes — 2 tasks DEFERRED (admin gates) |
 
 Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:verify`, `/opsx:archive`) to manage changes. The workflow is: proposal → design → specs → tasks → implementation → verification → archive.
 
@@ -155,19 +207,53 @@ Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:v
 
 GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` and `develop`, and on PRs targeting either branch.
 
-**Jobs:**
+**Gate Jobs (block PR merge):**
 - **Format Check** — `cargo fmt --check`
 - **Clippy Lint** — all host-testable crates
-- **Unit Tests** — all host-testable crates
-- **Build** — x86-64, AArch64, RISC-V bare-metal kernels
+- **Unit Tests** — all host-testable crates (default, formal-gate, verified-boot)
+- **Build** — x86-64, AArch64, RISC-V, Jetson bare-metal kernels
+- **Docker Build** — container image build
+- **Semver PR Title Check** — validates conventional commit PR titles
+- **API Semver Check** — `cargo-semver-checks` detects accidental API breakage (conditional: passes if PR title has `!`)
+- **Supply Chain Security** — `cargo-deny` license/advisory/ban checks
+- **Dependency Audit** — `cargo-vet` ensures all deps have audit trail (DO-178C traceability)
+- **Cyclic Dependency Check** — no crate-level cycles
+- **Coverage Threshold** — `cargo-llvm-cov --fail-under-lines 80` (ratchets to 93%)
+- **Change Gates** — meta-job that gates PR mergeability on all above
+
+**Advisory Jobs (report only):**
+- **Careful UB Testing** — `cargo-careful` extra undefined behavior checks
+- **Unsafe Usage Report** — `cargo-geiger` counts unsafe blocks
+- **Kani Model Checking** — bounded model checking (scheduled/on-demand)
+- **Miri UB Detection** — memory safety verification (scheduled)
+- **SPIN Model Verification** — Promela protocol models
+- **TLA+ Verification** — TLC on 19 formal models
+- **Fuzz Testing** — `cargo-fuzz` on critical parsers
+- **Mutation Testing** — `cargo-mutants` test quality (on-demand)
+- **Code Coverage** — `cargo-llvm-cov` uploaded to [Codecov](https://codecov.io)
+- **SonarCloud Analysis** — static analysis via [SonarCloud](https://sonarcloud.io)
+- **Dependency Analysis** — crate/module dependency graphs, DSM matrix, DSM metrics
 - **RISC-V QEMU Smoke Test** — boots kernel in QEMU
 - **Image Size Check** — ensures binaries stay under 15 MB
-- **TLA+ Verification** — runs TLC on 19 formal models (5 min timeout per model; timeouts are warnings, not failures)
-- **Code Coverage** — `cargo-llvm-cov` with lcov output, uploaded to [Codecov](https://codecov.io)
-- **SonarCloud Analysis** — static analysis via [SonarCloud](https://sonarcloud.io)
-- **Change Gates** — meta-job that gates PR mergeability
 
 **Required secrets:** `CODECOV_TOKEN`, `SONAR_TOKEN`
+
+## Container Environment Variables
+
+The container binary (`smallaios-container`) reads runtime configuration
+from environment variables:
+
+| Variable | Values | Purpose |
+|----------|--------|---------|
+| `SMALLAIOS_MODEL_DIR` | path | Directory of ONNX models to load at boot |
+| `SMALLAIOS_PORT` | port | HTTP listen port (default `8080`) |
+| `SMALLAIOS_GPU_BACKEND` | `cpu`, `cuda`, ... | Inference backend |
+| `SMALLAIOS_BUS_BACKEND` | `none`, `zenoh`, `dds`, `can` | Optional bus-backed dataflow runner |
+| `SMALLAIOS_CAN_DEVICE` | `loopback`, `mcp2515:<path>`, `axi:<addr>` | CAN controller for `bus_backend=can` |
+| `SMALLAIOS_CAN_ROUTING` | path | TOML routing table for CAN inference |
+
+See `docs/can-inference.md` for the CAN bus inference bridge and
+`examples/can-routes.toml` for a routing table example.
 
 ## Crate Feature Flags
 
@@ -175,7 +261,7 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` an
 - `security`: `pqc-hybrid` (default), `pqc-only`, `classical-only`, `formal-gate`, `verified-boot` (boot signature verification APIs)
 - `onnx-rt`: `cpu` (default), `cuda`, `formal-gate`, `verified-boot` (model signature verification at load time)
 - `net`: `ipv4`, `ipv6` (both default)
-- `container`: `nvidia_gpu`, `formal-gate`
-- `ipc`: `formal-gate`
+- `container`: `nvidia_gpu`, `formal-gate`, `bus-zenoh`, `bus-dds` (pub/sub dataflow runner placeholders — see `docs/inference-bus.md`)
+- `ipc`: `formal-gate`, `onnx` (opt-in ONNX runtime integration for the dataflow runner)
 - `arch/nvidia`: `cc_53` through `cc_100` (CUDA compute capabilities)
 - `peripheral`: `i2c`, `spi`, `gpio`, `uart`, `camera-csi`, `audio-i2s`. Bundles: `sensor-io`, `vision`, `audio`, `full-peripheral`. All default OFF.

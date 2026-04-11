@@ -18,6 +18,8 @@
 extern crate alloc;
 
 pub mod bus_transport;
+#[cfg(feature = "onnx")]
+pub mod dataflow_runner;
 pub mod endpoints;
 #[cfg(feature = "formal-gate")]
 pub mod gate_check;

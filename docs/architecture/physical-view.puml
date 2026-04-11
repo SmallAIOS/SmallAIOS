@@ -1,0 +1,79 @@
+@startuml SmallAIOS Physical View
+!theme plain
+title SmallAIOS Physical View — Deployment Targets
+
+skinparam defaultFontName "Segoe UI"
+skinparam shadowing false
+skinparam node {
+  BackgroundColor #FDEBD0
+  BorderColor #E67E22
+}
+skinparam artifact {
+  BackgroundColor #D5F5E3
+  BorderColor #27AE60
+}
+
+' === Bare Metal / VM Targets ===
+frame "Bare Metal / VM" {
+  node "x86-64 Server\n(QEMU / VMware)" as x86 {
+    artifact "smallaios-x86_64" as kx86
+    note bottom: GDT, IDT, APIC\nPCI, VirtIO-net
+  }
+
+  node "AArch64 Board\n(RPi4 / Generic)" as arm {
+    artifact "smallaios-aarch64" as karm
+    note bottom: GICv3, PSCI\nDeviceTree
+  }
+
+  node "Jetson Nano\n(Tegra X1)" as jetson {
+    artifact "smallaios-aarch64\n(tegra-x1)" as kjetson
+    note bottom: Tegra PCIe, GPU\nDisplay, HDMI
+  }
+
+  node "RISC-V Board\n(QEMU virt)" as riscv {
+    artifact "smallaios-riscv64" as krv
+    note bottom: SBI, PLIC, CLINT\nVirtIO
+  }
+}
+
+' === Container Targets ===
+frame "Container" {
+  node "Docker / K8s\nx86-64 Host" as dx86 {
+    artifact "smallaios-container\n(musl)" as cx86
+    note bottom: 594 KB image\nfrom scratch
+  }
+
+  node "Docker / K8s\nARM64 Host" as darm {
+    artifact "smallaios-container\n(musl)" as carm
+  }
+}
+
+' === Network ===
+cloud "Network" as net {
+  [QUIC/H3 + TLS 1.3]
+  [TCP/UDP]
+  [DHCP / Static IP]
+}
+
+x86 -- net
+arm -- net
+jetson -- net
+riscv -- net
+dx86 -- net
+darm -- net
+
+' === Peripherals ===
+frame "Peripheral I/O" as periph {
+  [I2C / SPI / GPIO]
+  [UART Serial]
+  [USB (xHCI)]
+  [CAN / ARINC 429]
+  [CSI Camera]
+  [SDR (HackRF)]
+}
+
+arm -- periph
+jetson -- periph
+riscv -- periph
+
+@enduml

@@ -1,0 +1,344 @@
+// Copyright 2026 SmallAIOS Contributors
+// SPDX-License-Identifier: Apache-2.0
+
+//! Per-operator profiling, timing, and WCET budget enforcement.
+//!
+//! This module mirrors the kernel-side OperatorBudget/BudgetResult types
+//! so onnx-rt stays at Layer 1 (can't depend on kernel at Layer 0).
+//! A future refactor may share these via a new sched-types crate.
+
+extern crate alloc;
+#[cfg(feature = "std")]
+extern crate std;
+
+use alloc::string::String;
+use alloc::vec::Vec;
+
+/// Time source for operator timing measurement.
+///
+/// `no_std`-compatible trait — different implementations for kernel mode
+/// (architecture timer) and container mode (std::time::Instant).
+pub trait TimeSource: Send + Sync {
+    /// Current time in microseconds since some fixed epoch.
+    /// Epoch is arbitrary — only differences matter.
+    fn now_us(&self) -> u64;
+}
+
+/// Zero-cost TimeSource that always returns 0. Used when profiling is disabled.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NullTimeSource;
+
+impl TimeSource for NullTimeSource {
+    fn now_us(&self) -> u64 {
+        0
+    }
+}
+
+/// std::time::Instant-based TimeSource for container mode.
+#[cfg(feature = "std")]
+pub struct StdTimeSource {
+    epoch: std::time::Instant,
+}
+
+#[cfg(feature = "std")]
+impl StdTimeSource {
+    pub fn new() -> Self {
+        Self {
+            epoch: std::time::Instant::now(),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Default for StdTimeSource {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "std")]
+impl TimeSource for StdTimeSource {
+    fn now_us(&self) -> u64 {
+        self.epoch.elapsed().as_micros() as u64
+    }
+}
+
+/// Operator category for budget lookup. Mirrors kernel OperatorClass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperatorClass {
+    Elementwise,
+    Reduction,
+    Gemm,
+    Attention,
+    GpuKernel,
+}
+
+/// Result of checking an operator's execution time against its budget.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetResult {
+    Ok,
+    Warning,
+    SoftLimit,
+    HardLimit,
+}
+
+/// Per-operator execution time budgets in microseconds.
+#[derive(Debug, Clone, Copy)]
+pub struct OperatorBudget {
+    pub elementwise_us: u64,
+    pub reduction_us: u64,
+    pub gemm_us: u64,
+    pub attention_us: u64,
+    pub gpu_kernel_us: u64,
+    pub soft_multiplier: u64,
+    pub hard_multiplier: u64,
+}
+
+impl OperatorBudget {
+    pub const DEFAULT: Self = Self {
+        elementwise_us: 1_000,
+        reduction_us: 10_000,
+        gemm_us: 100_000,
+        attention_us: 500_000,
+        gpu_kernel_us: 1_000_000,
+        soft_multiplier: 2,
+        hard_multiplier: 10,
+    };
+
+    pub fn check(&self, class: OperatorClass, actual_us: u64) -> BudgetResult {
+        let budget = match class {
+            OperatorClass::Elementwise => self.elementwise_us,
+            OperatorClass::Reduction => self.reduction_us,
+            OperatorClass::Gemm => self.gemm_us,
+            OperatorClass::Attention => self.attention_us,
+            OperatorClass::GpuKernel => self.gpu_kernel_us,
+        };
+        if actual_us > budget.saturating_mul(self.hard_multiplier) {
+            BudgetResult::HardLimit
+        } else if actual_us > budget.saturating_mul(self.soft_multiplier) {
+            BudgetResult::SoftLimit
+        } else if actual_us > budget {
+            BudgetResult::Warning
+        } else {
+            BudgetResult::Ok
+        }
+    }
+}
+
+impl Default for OperatorBudget {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
+/// Classify an ONNX operator name into its budget category.
+pub fn classify_op(op_type: &str) -> OperatorClass {
+    match op_type {
+        "Add" | "Sub" | "Mul" | "Div" | "Relu" | "Sigmoid" | "Tanh" | "Clip" | "Cast"
+        | "Reshape" | "Flatten" | "Squeeze" | "Unsqueeze" | "Transpose" | "Concat" | "Slice"
+        | "Pad" | "Gather" => OperatorClass::Elementwise,
+        "Softmax" | "LayerNormalization" | "BatchNormalization" | "MaxPool" | "AveragePool"
+        | "GlobalAveragePool" | "ReduceMean" | "ReduceSum" => OperatorClass::Reduction,
+        "MatMul" | "Gemm" | "Conv" => OperatorClass::Gemm,
+        _ => OperatorClass::Elementwise,
+    }
+}
+
+/// Per-operator timing measurement.
+#[derive(Debug, Clone)]
+pub struct OperatorMeasurement {
+    pub op_type: String,
+    pub class: OperatorClass,
+    pub actual_us: u64,
+    pub budget_result: BudgetResult,
+}
+
+/// Full inference profile.
+#[derive(Debug, Clone, Default)]
+pub struct InferenceProfile {
+    pub total_us: u64,
+    pub operators: Vec<OperatorMeasurement>,
+    pub warnings_count: u32,
+    pub soft_limit_count: u32,
+    pub hard_limit_aborted: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_classify_elementwise() {
+        assert_eq!(classify_op("Add"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Sub"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Mul"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Div"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Relu"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Sigmoid"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Tanh"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Clip"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Cast"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Reshape"), OperatorClass::Elementwise);
+        assert_eq!(classify_op("Transpose"), OperatorClass::Elementwise);
+    }
+
+    #[test]
+    fn test_classify_reduction() {
+        assert_eq!(classify_op("Softmax"), OperatorClass::Reduction);
+        assert_eq!(classify_op("LayerNormalization"), OperatorClass::Reduction);
+        assert_eq!(classify_op("BatchNormalization"), OperatorClass::Reduction);
+        assert_eq!(classify_op("MaxPool"), OperatorClass::Reduction);
+        assert_eq!(classify_op("AveragePool"), OperatorClass::Reduction);
+        assert_eq!(classify_op("GlobalAveragePool"), OperatorClass::Reduction);
+        assert_eq!(classify_op("ReduceMean"), OperatorClass::Reduction);
+        assert_eq!(classify_op("ReduceSum"), OperatorClass::Reduction);
+    }
+
+    #[test]
+    fn test_classify_gemm() {
+        assert_eq!(classify_op("MatMul"), OperatorClass::Gemm);
+        assert_eq!(classify_op("Gemm"), OperatorClass::Gemm);
+        assert_eq!(classify_op("Conv"), OperatorClass::Gemm);
+    }
+
+    #[test]
+    fn test_classify_unknown_defaults_to_elementwise() {
+        assert_eq!(classify_op("MysteryOp"), OperatorClass::Elementwise);
+        assert_eq!(classify_op(""), OperatorClass::Elementwise);
+    }
+
+    #[test]
+    fn test_null_time_source_returns_zero() {
+        let ts = NullTimeSource;
+        assert_eq!(ts.now_us(), 0);
+        assert_eq!(ts.now_us(), 0);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_std_time_source_monotonic() {
+        let ts = StdTimeSource::new();
+        let a = ts.now_us();
+        // Busy-wait a tiny bit to guarantee a tick.
+        for _ in 0..1000 {
+            core::hint::spin_loop();
+        }
+        let b = ts.now_us();
+        assert!(b >= a, "StdTimeSource not monotonic: {} -> {}", a, b);
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn test_std_time_source_default() {
+        let _ts = StdTimeSource::default();
+    }
+
+    #[test]
+    fn test_budget_ok() {
+        let budget = OperatorBudget::DEFAULT;
+        // 500us is well under the 1000us elementwise budget.
+        assert_eq!(
+            budget.check(OperatorClass::Elementwise, 500),
+            BudgetResult::Ok
+        );
+        assert_eq!(
+            budget.check(OperatorClass::Elementwise, 1000),
+            BudgetResult::Ok
+        );
+    }
+
+    #[test]
+    fn test_budget_warning() {
+        let budget = OperatorBudget::DEFAULT;
+        // 1500us > 1000 (budget), <= 2000 (soft). Warning.
+        assert_eq!(
+            budget.check(OperatorClass::Elementwise, 1500),
+            BudgetResult::Warning
+        );
+    }
+
+    #[test]
+    fn test_budget_soft_limit() {
+        let budget = OperatorBudget::DEFAULT;
+        // 5000us > 2000 (soft), <= 10000 (hard). SoftLimit.
+        assert_eq!(
+            budget.check(OperatorClass::Elementwise, 5000),
+            BudgetResult::SoftLimit
+        );
+    }
+
+    #[test]
+    fn test_budget_hard_limit() {
+        let budget = OperatorBudget::DEFAULT;
+        // 20000us > 10000 (hard). HardLimit.
+        assert_eq!(
+            budget.check(OperatorClass::Elementwise, 20_000),
+            BudgetResult::HardLimit
+        );
+    }
+
+    #[test]
+    fn test_budget_all_classes() {
+        let budget = OperatorBudget::DEFAULT;
+        assert_eq!(
+            budget.check(OperatorClass::Reduction, 5_000),
+            BudgetResult::Ok
+        );
+        assert_eq!(budget.check(OperatorClass::Gemm, 50_000), BudgetResult::Ok);
+        assert_eq!(
+            budget.check(OperatorClass::Attention, 100_000),
+            BudgetResult::Ok
+        );
+        assert_eq!(
+            budget.check(OperatorClass::GpuKernel, 500_000),
+            BudgetResult::Ok
+        );
+    }
+
+    #[test]
+    fn test_budget_default_values() {
+        let budget = OperatorBudget::DEFAULT;
+        assert_eq!(budget.elementwise_us, 1_000);
+        assert_eq!(budget.reduction_us, 10_000);
+        assert_eq!(budget.gemm_us, 100_000);
+        assert_eq!(budget.attention_us, 500_000);
+        assert_eq!(budget.gpu_kernel_us, 1_000_000);
+        assert_eq!(budget.soft_multiplier, 2);
+        assert_eq!(budget.hard_multiplier, 10);
+    }
+
+    #[test]
+    fn test_budget_default_trait() {
+        let a = OperatorBudget::default();
+        let b = OperatorBudget::DEFAULT;
+        assert_eq!(a.elementwise_us, b.elementwise_us);
+        assert_eq!(a.hard_multiplier, b.hard_multiplier);
+    }
+
+    #[test]
+    fn test_inference_profile_default() {
+        let p = InferenceProfile::default();
+        assert_eq!(p.total_us, 0);
+        assert!(p.operators.is_empty());
+        assert_eq!(p.warnings_count, 0);
+        assert_eq!(p.soft_limit_count, 0);
+        assert!(!p.hard_limit_aborted);
+    }
+
+    #[test]
+    fn test_operator_measurement_clone() {
+        let m = OperatorMeasurement {
+            op_type: String::from("Relu"),
+            class: OperatorClass::Elementwise,
+            actual_us: 42,
+            budget_result: BudgetResult::Ok,
+        };
+        let m2 = m.clone();
+        assert_eq!(m2.op_type, "Relu");
+        assert_eq!(m2.actual_us, 42);
+    }
+}

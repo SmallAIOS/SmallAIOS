@@ -158,8 +158,8 @@ mod tests {
         let src_mac = MacAddress::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x01);
         let dst_mac = MacAddress::new(0x02, 0x00, 0x00, 0x00, 0x00, 0x02);
         let frame = EthernetFrame {
-            dst_mac: dst_mac.clone(),
-            src_mac: src_mac.clone(),
+            dst_mac,
+            src_mac,
             ether_type: ETHERTYPE_IPV4,
             payload: Vec::from(&ip_bytes[..]),
         };
@@ -190,7 +190,7 @@ mod tests {
         let target_ip: [u8; 4] = [10, 0, 0, 2];
 
         // Create an ARP request.
-        let request = create_request(sender_mac.clone(), sender_ip, target_ip);
+        let request = create_request(sender_mac, sender_ip, target_ip);
         assert_eq!(request.operation, ArpOperation::Request);
         assert_eq!(request.sender_ip, sender_ip);
         assert_eq!(request.target_ip, target_ip);
@@ -202,12 +202,12 @@ mod tests {
 
         // Simulate a reply.
         let target_mac = MacAddress::new(0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x02);
-        let reply = create_reply(target_mac.clone(), target_ip, sender_mac.clone(), sender_ip);
+        let reply = create_reply(target_mac, target_ip, sender_mac, sender_ip);
         assert_eq!(reply.operation, ArpOperation::Reply);
 
         // Insert into ARP table.
         let mut arp_table = ArpTable::new();
-        let _ = arp_table.insert(target_ip, target_mac.clone(), 1000);
+        let _ = arp_table.insert(target_ip, target_mac, 1000);
         assert_eq!(arp_table.len(), 1);
         let resolved = arp_table.lookup(&target_ip);
         assert!(resolved.is_some());
@@ -271,7 +271,7 @@ mod tests {
         // Construct a tensor with the decoded type.
         let shape = TensorShape::new(vec![1, 3, 224, 224]);
         assert_eq!(shape.ndim(), 4);
-        assert_eq!(shape.total_elements(), 1 * 3 * 224 * 224);
+        assert_eq!(shape.total_elements(), 3 * 224 * 224);
         assert!(shape.is_valid());
 
         let tensor = Tensor::new(dtype, shape, String::from("input"));
@@ -287,8 +287,10 @@ mod tests {
         use smallaios_onnx_rt::optimizer::{optimize, OptimizationLevel, OptimizerConfig};
 
         // Build a simple graph: input -> Relu -> output.
-        let mut graph_proto = GraphProto::default();
-        graph_proto.name = String::from("test_graph");
+        let mut graph_proto = GraphProto {
+            name: String::from("test_graph"),
+            ..GraphProto::default()
+        };
         graph_proto.input.push(ValueInfoProto {
             name: String::from("X"),
             elem_type: 1, // Float
