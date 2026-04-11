@@ -42,7 +42,7 @@ jobs:
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.binary }}
           path: target/${{ matrix.target }}/release/${{ matrix.binary }}
@@ -133,7 +133,7 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Login to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}

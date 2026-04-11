@@ -1,0 +1,21 @@
+[package]
+name = "smallaios-coverage-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "ONNX model operator coverage probe against the SmallAIOS roadmap"
+publish = false
+
+[dependencies]
+smallaios-onnx-rt = { path = "../../onnx-rt" }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+
+[features]
+default = ["json"]
+json = ["dep:serde", "dep:serde_json"]
+
+[[bin]]
+name = "smallaios-coverage-probe"
+path = "src/main.rs"
