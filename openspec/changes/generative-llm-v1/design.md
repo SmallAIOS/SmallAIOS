@@ -49,7 +49,7 @@ Any two-of-three delivery produces a non-functional state where a user can techn
 
 The sub-executor recursively calls `execute_graph` on the compiled inner graph with a *fresh* `value_map` that is seeded with carried values and allowed to read outer initializers by name.
 
-```
+```text
 Session::run()
   └── execute_graph(outer_graph)
         ├── node[0]  Add       (dispatch_node → op_add)
@@ -80,7 +80,7 @@ Compilation also lets the optimizer (once it grows cross-body awareness in Phase
 - **Loop-carried values** (the `v_initial` slots and the `v_final` outputs of ONNX Loop) are threaded iteration-to-iteration: iteration N's `v_final` becomes iteration N+1's `v_initial`. The sub-executor owns this rotation; the inner graph executor does not see it.
 - **Outer-graph values are read-only inside the body.** If the body writes a tensor that shadows an outer name, the write lives only in the inner value map; the outer map is untouched. On sub-graph exit, the inner map is dropped.
 
-```
+```text
 Outer value_map:           Inner value_map (Loop iter 3):
   "input"   → T0             "input"        → T0       (copied outer ref)
   "weights" → W              "iter_num"     → I3       (loop var)
@@ -107,7 +107,7 @@ Combination semantics: the loop continues if and only if *all* of: (`M` is absen
 
 Pseudocode:
 
-```
+```text
 op_loop(M, cond_initial, v_initial..., inner_graph):
     if M is Some(0): return v_initial
     if cond_initial is Some(false): return v_initial
@@ -134,15 +134,22 @@ op_loop(M, cond_initial, v_initial..., inner_graph):
 
 ### D5: WCET budget integration for sub-graphs
 
-**Decision.** The `Loop` operator is a single accounting unit in the `OperatorBudget` table, not one unit per iteration. The full time spent inside the loop (summed across all iterations, including sub-dispatch overhead) is the "actual" time compared against the `Loop` budget.
+**Background.** The current `OperatorClass` enum in `sched-types/src/lib.rs` has five variants — `Elementwise`, `Reduction`, `Gemm`, `Attention`, `GpuKernel` — none of which name control flow. Phase 2 must decide how `Loop` / `If` / `Scan` map onto this enum.
 
-Inner-body operators *also* check their own budgets during execution. If an inner operator exceeds its own hard limit, the sub-executor returns `Err(HardLimit)`, which bubbles up to the parent `Loop` and immediately terminates the loop with `SessionError::ExecutionFailed`.
+**Decision.** Phase 2 adds two changes to the budget machinery:
 
-The inner operators' measurements land in the same `InferenceProfile.operators` vector as outer ones, annotated with a parent path (e.g. `"Loop[0] > MatMul[3]"`) for post-hoc analysis.
+1. **New `OperatorClass::ControlFlow` variant** in `sched-types/src/lib.rs`, with corresponding `control_flow_us`, derived budget fields in `OperatorBudget`. The default `control_flow_us` is the largest class budget — it must accommodate a full LLM generation, not a single step. Tentative default: `2_000_000` µs (2 s) soft, matched 10× hard. Phase 2 will tune via measurements before merge.
+2. **`classify_op` extension** in `onnx-rt/src/profile.rs` adding `"If" | "Loop" | "Scan" => OperatorClass::ControlFlow`.
 
-**Rationale.** Per-iteration accounting would blow up the profile table for a 512-token generation. Whole-loop accounting matches the way an end user reasons about latency: "this whole generation took 2.3s, budget was 3s, OK".
+The `Loop` operator is then a **single accounting unit** in the `OperatorBudget` table — one row per `Loop` invocation in `InferenceProfile.operators`, not one row per iteration. The "actual" time is the wall-clock duration of the entire `Loop` call, including all sub-dispatch overhead and all inner operators.
 
-Parent-path annotation preserves the inner detail without exploding the table size (the profile records one row per *operator instance*, not per *iteration*).
+**Inner-operator accounting.** Inner-body operators check their own budgets independently. If an inner op exceeds *its* hard limit, the sub-executor returns `Err(HardLimit)`, which bubbles up to the parent `Loop` dispatcher and terminates with `SessionError::ExecutionFailed`. Inner measurements land in the same `InferenceProfile.operators` vector as outer ones, annotated with a parent path (e.g. `"Loop[0] > MatMul[3]"`) for post-hoc analysis.
+
+**Rationale.** Per-iteration accounting would blow up the profile table for a 512-token generation (one row per operator per iteration → 100k+ rows). Whole-loop accounting matches the way an end user reasons about latency: "this whole generation took 2.3 s, budget was 3 s, OK".
+
+Adding a dedicated `ControlFlow` class — rather than reusing `Attention` or `GpuKernel` — keeps the budget table semantically clean and lets the WCET tuning vary independently for control-flow vs. attention vs. compute kernels.
+
+**Alternative considered.** Reuse `OperatorClass::Attention` for control-flow (since transformer Loops dominate Attention budgets). Rejected: a Loop wrapping a CNN has nothing to do with attention, and conflating the two prevents per-class tuning.
 
 ### D6: Real int8 GEMM kernel
 
