@@ -21,6 +21,7 @@ members = [
     "usb",
     "sdr",
     "bench",
+    "sched-types",
 ]
 
 [workspace.package]

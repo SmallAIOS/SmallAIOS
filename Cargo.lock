@@ -785,6 +785,7 @@ dependencies = [
 name = "smallaios-kernel"
 version = "0.2.0"
 dependencies = [
+ "smallaios-sched-types",
  "smallaios-security",
 ]
 
@@ -802,6 +803,7 @@ dependencies = [
  "smallaios-arch-nvidia",
  "smallaios-compute",
  "smallaios-kernel",
+ "smallaios-sched-types",
  "smallaios-security",
 ]
 
@@ -820,6 +822,10 @@ dependencies = [
  "smallaios-kernel",
  "smallaios-net",
 ]
+
+[[package]]
+name = "smallaios-sched-types"
+version = "0.2.0"
 
 [[package]]
 name = "smallaios-sdr"
