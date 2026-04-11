@@ -680,7 +680,7 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
 name = "smallaios-arch-aarch64"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-arch-nvidia",
  "smallaios-kernel",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "smallaios-arch-amd"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-compute",
  "smallaios-kernel",
@@ -697,7 +697,7 @@ dependencies = [
 
 [[package]]
 name = "smallaios-arch-apple"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "metal",
  "smallaios-compute",
@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "smallaios-arch-intel-gpu"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-compute",
  "smallaios-kernel",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "smallaios-arch-nvidia"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-compute",
  "smallaios-kernel",
@@ -721,21 +721,21 @@ dependencies = [
 
 [[package]]
 name = "smallaios-arch-riscv64"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
 ]
 
 [[package]]
 name = "smallaios-arch-x86_64"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
 ]
 
 [[package]]
 name = "smallaios-bench"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "criterion",
  "smallaios-ipc",
@@ -747,18 +747,18 @@ dependencies = [
 
 [[package]]
 name = "smallaios-bus"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
 ]
 
 [[package]]
 name = "smallaios-compute"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "smallaios-container"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "smallaios-arch-nvidia",
@@ -774,7 +774,7 @@ dependencies = [
 
 [[package]]
 name = "smallaios-ipc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
  "smallaios-onnx-rt",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "smallaios-kernel"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-sched-types",
  "smallaios-security",
@@ -791,14 +791,14 @@ dependencies = [
 
 [[package]]
 name = "smallaios-net"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
 ]
 
 [[package]]
 name = "smallaios-onnx-rt"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-arch-nvidia",
  "smallaios-compute",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "smallaios-peripheral"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
  "smallaios-security",
@@ -817,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "smallaios-posix"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
  "smallaios-net",
@@ -825,11 +825,11 @@ dependencies = [
 
 [[package]]
 name = "smallaios-sched-types"
-version = "0.2.0"
+version = "0.2.1"
 
 [[package]]
 name = "smallaios-sdr"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
  "smallaios-usb",
@@ -837,14 +837,14 @@ dependencies = [
 
 [[package]]
 name = "smallaios-security"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-net",
 ]
 
 [[package]]
 name = "smallaios-usb"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "smallaios-kernel",
 ]
