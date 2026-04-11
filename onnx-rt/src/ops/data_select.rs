@@ -292,6 +292,16 @@ pub fn op_unique(input: &Tensor, axis: Option<i64>, sorted: bool) -> Result<Tens
             "Unique: axis-specific mode not supported (flattened only)",
         )));
     }
+    if input.shape.dims.is_empty() {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Unique requires rank >= 1",
+        )));
+    }
+    if input.shape.dims.iter().any(|&d| d < 0) {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Unique: negative dimensions are invalid",
+        )));
+    }
     let total = input.shape.total_elements();
     let mut vals: Vec<f32> = Vec::new();
     for i in 0..total {
@@ -408,6 +418,29 @@ pub fn op_scatter_elements(
     }
     let ax = normalize_axis(axis, rank)?;
     let axis_dim = input.shape.dims[ax] as usize;
+    // Non-axis dims of indices/updates must not exceed the corresponding
+    // dims of `input`, otherwise the scatter would write past the output
+    // buffer. ONNX additionally allows indices[ax] <= input[ax].
+    for d in 0..rank {
+        let in_d = input.shape.dims[d];
+        let idx_d = indices.shape.dims[d];
+        if idx_d < 0 || in_d < 0 {
+            return Err(OpError::ShapeMismatch(String::from(
+                "ScatterElements: negative dimensions are invalid",
+            )));
+        }
+        if d == ax {
+            if idx_d > in_d {
+                return Err(OpError::ShapeMismatch(String::from(
+                    "ScatterElements: indices axis dim must be <= input axis dim",
+                )));
+            }
+        } else if idx_d != in_d {
+            return Err(OpError::ShapeMismatch(String::from(
+                "ScatterElements: indices non-axis dims must match input",
+            )));
+        }
+    }
     let idx = read_i64_vec(indices);
     let u_total = updates.shape.total_elements();
     if idx.len() != u_total {
@@ -640,6 +673,33 @@ mod tests {
         assert!(v
             .iter()
             .any(|&x| (x - 1.1).abs() < 1e-5 || (x - 2.1).abs() < 1e-5));
+    }
+
+    #[test]
+    fn test_scatter_elements_rejects_nonaxis_shape_mismatch() {
+        // input is [3, 3] but indices non-axis dim is 5 (wider than input).
+        let t = make_f32(&[3, 3], &alloc::vec![0.0; 9]);
+        let idx = make_i64(&[2, 5], &alloc::vec![0i64; 10]);
+        let upd = make_f32(&[2, 5], &alloc::vec![1.0; 10]);
+        assert!(matches!(
+            op_scatter_elements(&t, &idx, &upd, 0, "none"),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_unique_rejects_rank_zero() {
+        // Rank-0 scalar tensor should be rejected.
+        let t = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(alloc::vec![]),
+            name: String::new(),
+            raw_data: alloc::vec![0u8; 4],
+        };
+        assert!(matches!(
+            op_unique(&t, None, false),
+            Err(OpError::ShapeMismatch(_))
+        ));
     }
 
     #[test]

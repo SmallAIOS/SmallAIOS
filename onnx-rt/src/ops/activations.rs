@@ -59,23 +59,55 @@ pub fn op_prelu(input: &Tensor, slope: &Tensor) -> Result<Tensor, OpError> {
     let total = input.shape.total_elements();
     let mut data = allocate_tensor_data(total, DataType::Float);
     let slope_total = slope.shape.total_elements();
-    let scalar_slope = slope_total <= 1;
-    let channel_slope =
-        !scalar_slope && input.shape.dims.len() >= 2 && slope_total == input.shape.dims[1] as usize;
-    let inner_per_c: usize = if input.shape.dims.len() >= 2 {
-        input.shape.dims[2..]
-            .iter()
-            .map(|&d| d as usize)
-            .product::<usize>()
-            .max(1)
+
+    // ONNX PRelu allows uni-directional broadcasting of `slope` over
+    // `input`. We accept the two shapes real exporters use and reject
+    // anything else with ShapeMismatch (no silent clamping).
+    //
+    //   1. Scalar slope: shape `[]` or `[1]` (or all-ones) -> applied
+    //      uniformly.
+    //   2. Per-channel: rank >= 2, channel axis == 1, and slope is
+    //      either length `C` as a 1D tensor or a rank-matching tensor
+    //      with all non-channel dims equal to 1.
+    #[derive(Clone, Copy)]
+    enum Mode {
+        Scalar,
+        PerChannel(usize),
+    }
+    let slope_is_scalar = slope_total == 1
+        && (slope.shape.dims.is_empty() || slope.shape.dims.iter().all(|&d| d == 1));
+    let mode = if slope_is_scalar {
+        Mode::Scalar
+    } else if input.shape.dims.len() >= 2 {
+        let c = input.shape.dims[1] as usize;
+        let per_channel_1d = slope.shape.dims.as_slice() == [c as i64];
+        let per_channel_broadcast = slope.shape.dims.len() == input.shape.dims.len()
+            && slope.shape.dims[1] as usize == c
+            && slope.shape.dims.iter().enumerate().all(|(i, &d)| {
+                if i == 1 {
+                    d as usize == c
+                } else {
+                    d == 1
+                }
+            });
+        if per_channel_1d || per_channel_broadcast {
+            let inner: usize = input.shape.dims[2..]
+                .iter()
+                .map(|&d| d as usize)
+                .product::<usize>()
+                .max(1);
+            Mode::PerChannel(inner)
+        } else {
+            return Err(OpError::ShapeMismatch(alloc::string::String::from(
+                "PRelu: slope must be scalar or per-channel (shape [C] or broadcastable to channel axis)",
+            )));
+        }
     } else {
-        1
+        return Err(OpError::ShapeMismatch(alloc::string::String::from(
+            "PRelu: slope must be scalar for rank<2 input",
+        )));
     };
-    let outer: usize = if input.shape.dims.is_empty() {
-        1
-    } else {
-        input.shape.dims[0] as usize
-    };
+
     let c: usize = if input.shape.dims.len() >= 2 {
         input.shape.dims[1] as usize
     } else {
@@ -83,15 +115,13 @@ pub fn op_prelu(input: &Tensor, slope: &Tensor) -> Result<Tensor, OpError> {
     };
     for flat in 0..total {
         let x = read_f32(&input.raw_data, flat);
-        let s = if scalar_slope {
-            read_f32(&slope.raw_data, 0)
-        } else if channel_slope {
-            let ch = (flat / inner_per_c) % c;
-            read_f32(&slope.raw_data, ch)
-        } else {
-            read_f32(&slope.raw_data, flat.min(slope_total - 1))
+        let s = match mode {
+            Mode::Scalar => read_f32(&slope.raw_data, 0),
+            Mode::PerChannel(inner) => {
+                let ch = (flat / inner) % c;
+                read_f32(&slope.raw_data, ch)
+            }
         };
-        let _ = outer;
         let y = if x >= 0.0 { x } else { s * x };
         write_f32(&mut data, flat, y);
     }
@@ -301,6 +331,46 @@ mod tests {
         assert!((v[1] + 0.2).abs() < 1e-5);
         assert!((v[2] + 0.5).abs() < 1e-5);
         assert!((v[3] + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_prelu_scalar_rank0_slope() {
+        // Rank-0 scalar slope tensor must also be accepted.
+        let t = make_f32(&[3], &[1.0, -1.0, -2.0]);
+        let slope = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(alloc::vec![]),
+            name: String::new(),
+            raw_data: {
+                let mut d = allocate_tensor_data(1, DataType::Float);
+                write_f32(&mut d, 0, 0.5);
+                d
+            },
+        };
+        let v = read_all(&op_prelu(&t, &slope).unwrap());
+        assert_eq!(v, alloc::vec![1.0, -0.5, -1.0]);
+    }
+
+    #[test]
+    fn test_prelu_rejects_invalid_broadcast() {
+        // Input [1,2,1,2] (C=2) with slope length 3 is not broadcastable.
+        let t = make_f32(&[1, 2, 1, 2], &[-1.0, -2.0, -1.0, -2.0]);
+        let slope = make_f32(&[3], &[0.1, 0.2, 0.3]);
+        assert!(matches!(
+            op_prelu(&t, &slope),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_prelu_rejects_mismatched_rank_broadcast() {
+        // Slope shape [1, 2, 2, 1] has non-1 non-channel dim — reject.
+        let t = make_f32(&[1, 2, 1, 2], &[-1.0, -2.0, -1.0, -2.0]);
+        let slope = make_f32(&[1, 2, 2, 1], &[0.1, 0.1, 0.2, 0.2]);
+        assert!(matches!(
+            op_prelu(&t, &slope),
+            Err(OpError::ShapeMismatch(_))
+        ));
     }
 
     #[test]

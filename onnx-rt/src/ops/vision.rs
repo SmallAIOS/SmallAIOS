@@ -91,17 +91,45 @@ pub fn op_resize(
                 "Resize sizes must have rank 4",
             )));
         }
-        (s[2] as usize, s[3] as usize)
+        if s.iter().any(|&d| d < 0) {
+            return Err(OpError::InvalidAttribute(String::from(
+                "Resize sizes must be non-negative",
+            )));
+        }
+        // Bound the spatial dims so the later `n*c*oh*ow` allocation
+        // cannot overflow usize.
+        let oh_i = s[2];
+        let ow_i = s[3];
+        if oh_i > (i32::MAX as i64) || ow_i > (i32::MAX as i64) {
+            return Err(OpError::InvalidAttribute(String::from(
+                "Resize output dims exceed addressable range",
+            )));
+        }
+        (oh_i as usize, ow_i as usize)
     } else if let Some(s) = scales {
         if s.len() != 4 {
             return Err(OpError::InvalidAttribute(String::from(
                 "Resize scales must have rank 4",
             )));
         }
-        (
-            round_f32((h as f32) * s[2]) as usize,
-            round_f32((w as f32) * s[3]) as usize,
-        )
+        if !s.iter().all(|v| v.is_finite() && *v > 0.0) {
+            return Err(OpError::InvalidAttribute(String::from(
+                "Resize scales must be finite and > 0",
+            )));
+        }
+        let oh_f = round_f32((h as f32) * s[2]);
+        let ow_f = round_f32((w as f32) * s[3]);
+        if !oh_f.is_finite() || !ow_f.is_finite() || oh_f < 0.0 || ow_f < 0.0 {
+            return Err(OpError::InvalidAttribute(String::from(
+                "Resize computed output dims are invalid",
+            )));
+        }
+        if oh_f > (i32::MAX as f32) || ow_f > (i32::MAX as f32) {
+            return Err(OpError::InvalidAttribute(String::from(
+                "Resize output dims exceed addressable range",
+            )));
+        }
+        (oh_f as usize, ow_f as usize)
     } else {
         return Err(OpError::InvalidAttribute(String::from(
             "Resize requires scales or sizes",
@@ -112,8 +140,16 @@ pub fn op_resize(
             "Resize output dims must be > 0",
         )));
     }
+    // Checked total-elements to guarantee no overflow before allocation.
+    let total_out = n
+        .checked_mul(c)
+        .and_then(|v| v.checked_mul(oh))
+        .and_then(|v| v.checked_mul(ow))
+        .ok_or_else(|| {
+            OpError::InvalidAttribute(String::from("Resize output tensor size overflows usize"))
+        })?;
     let out_shape = TensorShape::new(alloc::vec![n as i64, c as i64, oh as i64, ow as i64]);
-    let mut data = allocate_tensor_data(n * c * oh * ow, DataType::Float);
+    let mut data = allocate_tensor_data(total_out, DataType::Float);
     let h_scale = h as f32 / oh as f32;
     let w_scale = w as f32 / ow as f32;
     for bn in 0..n {
@@ -329,7 +365,7 @@ pub fn op_roi_align(
             mode
         )));
     }
-    let (_n, c, h, w) = require_4d(x, "RoiAlign")?;
+    let (n_batch, c, h, w) = require_4d(x, "RoiAlign")?;
     require_float(rois, "RoiAlign")?;
     if rois.shape.dims.len() != 2 || rois.shape.dims[1] != 4 {
         return Err(OpError::ShapeMismatch(String::from(
@@ -339,6 +375,13 @@ pub fn op_roi_align(
     let num_rois = rois.shape.dims[0] as usize;
     let pooled_h = output_height.max(1) as usize;
     let pooled_w = output_width.max(1) as usize;
+
+    // batch_indices must be a 1D tensor of length num_rois.
+    if batch_indices.shape.total_elements() != num_rois {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RoiAlign batch_indices length must equal num_rois",
+        )));
+    }
 
     // Decode batch indices (Int64 or Int32).
     let bi: Vec<i64> = match batch_indices.data_type {
@@ -354,6 +397,13 @@ pub fn op_roi_align(
             )));
         }
     };
+    for &b in &bi {
+        if b < 0 || (b as usize) >= n_batch {
+            return Err(OpError::ShapeMismatch(String::from(
+                "RoiAlign batch_indices value out of range [0, N)",
+            )));
+        }
+    }
 
     let out_shape = TensorShape::new(alloc::vec![
         num_rois as i64,
@@ -383,7 +433,8 @@ pub fn op_roi_align(
         } else {
             ceil_f32(roi_w / pooled_w as f32).max(1.0) as usize
         };
-        let bn = batch_id.max(0) as usize;
+        // Bounds already validated above.
+        let bn = batch_id as usize;
         for ch in 0..c {
             let plane = bn * c * h * w + ch * h * w;
             for py in 0..pooled_h {
@@ -449,6 +500,11 @@ pub fn op_grid_sample(
     if grid.shape.dims.len() != 4 || grid.shape.dims[3] != 2 {
         return Err(OpError::ShapeMismatch(String::from(
             "GridSample grid must be [N, H_out, W_out, 2]",
+        )));
+    }
+    if grid.shape.dims[0] as usize != n {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GridSample grid batch must match input batch",
         )));
     }
     let oh = grid.shape.dims[1] as usize;
@@ -584,6 +640,11 @@ pub fn op_center_crop_pad(
         if ax >= in_rank {
             return Err(OpError::InvalidAttribute(String::from(
                 "CenterCropPad: axis out of range",
+            )));
+        }
+        if shape[i] < 0 {
+            return Err(OpError::InvalidAttribute(String::from(
+                "CenterCropPad: target shape dims must be non-negative",
             )));
         }
         out_dims[ax] = shape[i];
@@ -849,6 +910,93 @@ mod tests {
         for x in v {
             assert!(x > 0.0 && x < 16.0);
         }
+    }
+
+    #[test]
+    fn test_resize_rejects_negative_sizes() {
+        let t = make_f32(&[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let err = op_resize(&t, None, Some(&[1, 1, -4, 4]), "nearest");
+        assert!(matches!(err, Err(OpError::InvalidAttribute(_))));
+    }
+
+    #[test]
+    fn test_resize_rejects_nonpositive_scales() {
+        let t = make_f32(&[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(matches!(
+            op_resize(&t, Some(&[1.0, 1.0, 0.0, 2.0]), None, "nearest"),
+            Err(OpError::InvalidAttribute(_))
+        ));
+        assert!(matches!(
+            op_resize(&t, Some(&[1.0, 1.0, -1.0, 2.0]), None, "nearest"),
+            Err(OpError::InvalidAttribute(_))
+        ));
+        assert!(matches!(
+            op_resize(&t, Some(&[1.0, 1.0, f32::NAN, 2.0]), None, "nearest"),
+            Err(OpError::InvalidAttribute(_))
+        ));
+    }
+
+    #[test]
+    fn test_resize_rejects_huge_output_dims() {
+        let t = make_f32(&[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let big = i32::MAX as i64 + 1;
+        assert!(matches!(
+            op_resize(&t, None, Some(&[1, 1, big, 2]), "nearest"),
+            Err(OpError::InvalidAttribute(_))
+        ));
+    }
+
+    #[test]
+    fn test_roi_align_rejects_short_batch_indices() {
+        let x = make_f32(&[2, 1, 2, 2], &alloc::vec![0.0; 8]);
+        let rois = make_f32(&[2, 4], &[0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0]);
+        let bi = make_i64(&[1], &[0]);
+        assert!(matches!(
+            op_roi_align(&x, &rois, &bi, 2, 2, 1, 1.0, "avg"),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_roi_align_rejects_out_of_range_batch_id() {
+        let x = make_f32(&[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let rois = make_f32(&[1, 4], &[0.0, 0.0, 1.0, 1.0]);
+        let bi = make_i64(&[1], &[5]);
+        assert!(matches!(
+            op_roi_align(&x, &rois, &bi, 2, 2, 1, 1.0, "avg"),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_roi_align_rejects_negative_batch_id() {
+        let x = make_f32(&[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let rois = make_f32(&[1, 4], &[0.0, 0.0, 1.0, 1.0]);
+        let bi = make_i64(&[1], &[-1]);
+        assert!(matches!(
+            op_roi_align(&x, &rois, &bi, 2, 2, 1, 1.0, "avg"),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_grid_sample_rejects_batch_mismatch() {
+        let t = make_f32(&[2, 1, 2, 2], &alloc::vec![0.0; 8]);
+        // grid batch is 1 but input batch is 2.
+        let grid = make_f32(&[1, 1, 1, 2], &[0.0, 0.0]);
+        assert!(matches!(
+            op_grid_sample(&t, &grid, "bilinear", "zeros", true),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_center_crop_pad_rejects_negative_shape() {
+        let t = make_f32(&[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        assert!(matches!(
+            op_center_crop_pad(&t, &[1, 1, -2, 2], None),
+            Err(OpError::InvalidAttribute(_))
+        ));
     }
 
     #[test]

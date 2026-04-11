@@ -197,6 +197,49 @@ mod tests {
     }
 
     #[test]
+    fn test_group_norm_rejects_bad_scale_shape() {
+        let x = make_f32(&[1, 4, 1, 1], &[1.0, 2.0, 3.0, 4.0]);
+        let scale = make_f32(&[2], &[1.0, 1.0]); // should be length 4
+        assert!(matches!(
+            op_group_normalization(&x, &scale, None, 2, 1e-5),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_group_norm_rejects_bad_bias_shape() {
+        let x = make_f32(&[1, 4, 1, 1], &[1.0, 2.0, 3.0, 4.0]);
+        let scale = make_f32(&[4], &[1.0, 1.0, 1.0, 1.0]);
+        let bias = make_f32(&[3], &[0.0, 0.0, 0.0]); // should be length 4
+        assert!(matches!(
+            op_group_normalization(&x, &scale, Some(&bias), 2, 1e-5),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_instance_norm_rejects_bad_scale() {
+        let x = make_f32(&[1, 2, 1, 2], &[1.0, 3.0, 10.0, 20.0]);
+        let scale = make_f32(&[3], &[1.0, 1.0, 1.0]); // should be C=2
+        let bias = make_f32(&[2], &[0.0, 0.0]);
+        assert!(matches!(
+            op_instance_normalization(&x, &scale, &bias, 1e-5),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_instance_norm_rejects_bad_bias() {
+        let x = make_f32(&[1, 2, 1, 2], &[1.0, 3.0, 10.0, 20.0]);
+        let scale = make_f32(&[2], &[1.0, 1.0]);
+        let bias = make_f32(&[3], &[0.0, 0.0, 0.0]); // should be C=2
+        assert!(matches!(
+            op_instance_normalization(&x, &scale, &bias, 1e-5),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
     fn test_instance_norm_rejects_bad_rank() {
         let x = make_f32(&[4], &[1.0, 2.0, 3.0, 4.0]);
         let scale = make_f32(&[1], &[1.0]);
