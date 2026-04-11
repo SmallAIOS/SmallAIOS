@@ -58,13 +58,15 @@ fn broadcast_index(coord: &[usize], shape: &[i64]) -> usize {
 
 /// Splits a float tensor along the given axis.
 ///
-/// If `split_sizes` is `None`, the input is split into equal parts based on
-/// the axis dimension. The number of outputs is determined by the length of
-/// `split_sizes` (or by axis dim when None and dim is divisible).
+/// If `split_sizes` is `Some`, the input is split according to those sizes.
+/// If `split_sizes` is `None`, `num_outputs` (derived from the node's output
+/// arity by the dispatcher) is required and the axis dim must be evenly
+/// divisible by it. This matches ONNX Split-13/Split-18 semantics.
 pub fn op_split(
     input: &Tensor,
     axis: i64,
     split_sizes: Option<&[i64]>,
+    num_outputs: Option<usize>,
 ) -> Result<Vec<Tensor>, OpError> {
     require_float(input, "Split")?;
     let ndim = input.shape.dims.len() as i64;
@@ -80,15 +82,25 @@ pub fn op_split(
     let sizes: Vec<i64> = match split_sizes {
         Some(s) => s.to_vec(),
         None => {
-            // Equal split into 2 by default if no info — this matches a common
-            // case where the model has num_outputs implicit.
-            if axis_dim % 2 == 0 {
-                alloc::vec![axis_dim / 2, axis_dim / 2]
-            } else {
+            // Equal-split path: we need to know how many outputs the node
+            // declares. ONNX derives this from the node's output arity.
+            let n = num_outputs.ok_or_else(|| {
+                OpError::InvalidAttribute(String::from(
+                    "Split: equal-split path requires explicit num_outputs",
+                ))
+            })?;
+            if n == 0 {
                 return Err(OpError::InvalidAttribute(String::from(
-                    "Split requires explicit sizes for non-even dim",
+                    "Split: num_outputs must be > 0",
                 )));
             }
+            if axis_dim < 0 || !(axis_dim as usize).is_multiple_of(n) {
+                return Err(OpError::InvalidAttribute(String::from(
+                    "Split: axis dim not divisible by num_outputs",
+                )));
+            }
+            let each = axis_dim / (n as i64);
+            alloc::vec![each; n]
         }
     };
     let sum: i64 = sizes.iter().sum();
@@ -145,7 +157,11 @@ pub fn op_split(
 // Expand
 // ---------------------------------------------------------------------------
 
-/// Broadcasts the input to the target shape using NumPy semantics.
+/// Broadcasts the input to the target shape using ONNX Expand semantics.
+///
+/// ONNX Expand requires that the output shape exactly matches the (rank-
+/// aligned) target shape. For each aligned dim, the input dim must equal
+/// the target dim or be 1 (broadcast); any other mismatch is rejected.
 pub fn op_expand(input: &Tensor, target: &[i64]) -> Result<Tensor, OpError> {
     require_float(input, "Expand")?;
     // Validate input shape can broadcast to target.
@@ -163,16 +179,19 @@ pub fn op_expand(input: &Tensor, target: &[i64]) -> Result<Tensor, OpError> {
         } else {
             1
         };
-        let d = if id == td || id == 1 {
-            td
-        } else if td == 1 {
-            id
-        } else {
-            return Err(OpError::ShapeMismatch(String::from(
-                "Expand: shapes incompatible",
+        if td < 0 {
+            return Err(OpError::InvalidAttribute(String::from(
+                "Expand: target shape must be non-negative",
             )));
-        };
-        out_dims[max - 1 - i] = d;
+        }
+        // ONNX Expand: output is exactly the (rank-aligned) target shape;
+        // the input dim must be either equal to it or 1.
+        if !(id == td || id == 1) {
+            return Err(OpError::ShapeMismatch(String::from(
+                "Expand: input dim must equal target or be 1",
+            )));
+        }
+        out_dims[max - 1 - i] = td;
     }
     let total = product(&out_dims);
     let mut data = allocate_tensor_data(total, DataType::Float);
@@ -202,6 +221,11 @@ pub fn op_tile(input: &Tensor, repeats: &[i64]) -> Result<Tensor, OpError> {
     if repeats.len() != input.shape.dims.len() {
         return Err(OpError::ShapeMismatch(String::from(
             "Tile: repeats length must match input rank",
+        )));
+    }
+    if repeats.iter().any(|&r| r < 0) {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Tile: repeats must be non-negative",
         )));
     }
     let in_dims = &input.shape.dims;
@@ -252,7 +276,7 @@ pub fn op_one_hot(
     values: &Tensor,
     axis: i64,
 ) -> Result<Tensor, OpError> {
-    if values.data_type != DataType::Float || values.shape.total_elements() < 2 {
+    if values.data_type != DataType::Float || values.shape.total_elements() != 2 {
         return Err(OpError::ShapeMismatch(String::from(
             "OneHot values must be Float tensor of length 2",
         )));
@@ -525,7 +549,7 @@ mod tests {
                 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
             ],
         );
-        let outs = op_split(&t, 1, Some(&[2, 2, 2])).unwrap();
+        let outs = op_split(&t, 1, Some(&[2, 2, 2]), None).unwrap();
         assert_eq!(outs.len(), 3);
         assert_eq!(outs[0].shape.dims, alloc::vec![2, 2]);
         assert_eq!(read_all(&outs[0]), alloc::vec![1.0, 2.0, 7.0, 8.0]);
@@ -536,7 +560,7 @@ mod tests {
     #[test]
     fn test_split_custom_sizes() {
         let t = make_f32(&[6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
-        let outs = op_split(&t, 0, Some(&[2, 3, 1])).unwrap();
+        let outs = op_split(&t, 0, Some(&[2, 3, 1]), None).unwrap();
         assert_eq!(outs.len(), 3);
         assert_eq!(outs[0].shape.dims, alloc::vec![2]);
         assert_eq!(outs[1].shape.dims, alloc::vec![3]);
@@ -547,8 +571,8 @@ mod tests {
     #[test]
     fn test_split_axis_validation() {
         let t = make_f32(&[3], &[1.0, 2.0, 3.0]);
-        assert!(op_split(&t, 5, None).is_err());
-        let bad = op_split(&t, 0, Some(&[1, 1])).unwrap_err();
+        assert!(op_split(&t, 5, None, Some(2)).is_err());
+        let bad = op_split(&t, 0, Some(&[1, 1]), None).unwrap_err();
         assert!(matches!(bad, OpError::ShapeMismatch(_)));
     }
 
@@ -653,6 +677,86 @@ mod tests {
         assert_eq!(out.shape.dims, alloc::vec![1, 1, 2, 2]);
         // Identity-like dot products: [[1,0],[0,1]]
         assert_eq!(read_all(&out), alloc::vec![1.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn test_split_equal_2way() {
+        // [6] split into 2 equal parts
+        let t = make_f32(&[6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let outs = op_split(&t, 0, None, Some(2)).unwrap();
+        assert_eq!(outs.len(), 2);
+        assert_eq!(outs[0].shape.dims, alloc::vec![3]);
+        assert_eq!(read_all(&outs[0]), alloc::vec![1.0, 2.0, 3.0]);
+        assert_eq!(read_all(&outs[1]), alloc::vec![4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_split_equal_3way_qkv() {
+        // QKV pattern: [2,6] split axis=1 into 3 equal [2,2]
+        let t = make_f32(
+            &[2, 6],
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+            ],
+        );
+        let outs = op_split(&t, 1, None, Some(3)).unwrap();
+        assert_eq!(outs.len(), 3);
+        assert_eq!(outs[0].shape.dims, alloc::vec![2, 2]);
+    }
+
+    #[test]
+    fn test_split_equal_4way() {
+        let t = make_f32(&[8], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let outs = op_split(&t, 0, None, Some(4)).unwrap();
+        assert_eq!(outs.len(), 4);
+        for out in &outs {
+            assert_eq!(out.shape.dims, alloc::vec![2]);
+        }
+    }
+
+    #[test]
+    fn test_split_equal_requires_num_outputs() {
+        // Without num_outputs and without sizes, must error.
+        let t = make_f32(&[6], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let err = op_split(&t, 0, None, None).unwrap_err();
+        assert!(matches!(err, OpError::InvalidAttribute(_)));
+    }
+
+    #[test]
+    fn test_split_equal_not_divisible() {
+        let t = make_f32(&[7], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+        assert!(op_split(&t, 0, None, Some(3)).is_err());
+    }
+
+    #[test]
+    fn test_expand_valid_broadcast() {
+        // [1,3] -> [2,3] exactly, no "reverse-broadcast" allowed
+        let t = make_f32(&[1, 3], &[1.0, 2.0, 3.0]);
+        let out = op_expand(&t, &[2, 3]).unwrap();
+        assert_eq!(out.shape.dims, alloc::vec![2, 3]);
+    }
+
+    #[test]
+    fn test_expand_rejects_incompatible_target() {
+        // [4,3] cannot expand to [1,3] — that would shrink the output.
+        let t = make_f32(&[4, 3], &alloc::vec![0.0f32; 12]);
+        let err = op_expand(&t, &[1, 3]).unwrap_err();
+        assert!(matches!(err, OpError::ShapeMismatch(_)));
+    }
+
+    #[test]
+    fn test_tile_rejects_negative_repeats() {
+        let t = make_f32(&[2], &[1.0, 2.0]);
+        let err = op_tile(&t, &[-1]).unwrap_err();
+        assert!(matches!(err, OpError::InvalidAttribute(_)));
+    }
+
+    #[test]
+    fn test_one_hot_rejects_wrong_values_length() {
+        let indices = make_i64(&[2], &[0, 1]);
+        let three_values = make_f32(&[3], &[0.0, 1.0, 2.0]);
+        let err = op_one_hot(&indices, 3, &three_values, -1).unwrap_err();
+        assert!(matches!(err, OpError::ShapeMismatch(_)));
     }
 
     #[test]

@@ -168,6 +168,8 @@ pub fn op_pow(base: &Tensor, exponent: &Tensor) -> Result<Tensor, OpError> {
         let v = if b == 0.0 {
             if e == 0.0 {
                 1.0
+            } else if e < 0.0 {
+                f32::INFINITY
             } else {
                 0.0
             }
@@ -205,8 +207,18 @@ pub fn op_pow(base: &Tensor, exponent: &Tensor) -> Result<Tensor, OpError> {
 }
 
 /// Element-wise square root.
+///
+/// Returns `NaN` for negative inputs (matching IEEE semantics). The
+/// internal `sqrt_approx` clamps negatives to 0 for other callers, so
+/// we handle the negative case here before delegating.
 pub fn op_sqrt(input: &Tensor) -> Result<Tensor, OpError> {
-    unary(input, "Sqrt", sqrt_approx)
+    unary(input, "Sqrt", |x| {
+        if x < 0.0 {
+            f32::NAN
+        } else {
+            sqrt_approx(x)
+        }
+    })
 }
 
 /// Element-wise natural exponential.
@@ -964,6 +976,41 @@ mod tests {
     fn test_log_softmax_invalid_axis() {
         let t = make_f32(&[2], &[1.0, 2.0]);
         assert!(op_log_softmax(&t, 5).is_err());
+    }
+
+    #[test]
+    fn test_pow_zero_negative_exponent_is_infinity() {
+        // pow(0, -1) must be +inf, not 0.
+        let base = make_f32(&[1], &[0.0]);
+        let exp = make_f32(&[1], &[-1.0]);
+        let out = op_pow(&base, &exp).unwrap();
+        let v = read_f32(&out.raw_data, 0);
+        assert!(v.is_infinite() && v > 0.0);
+    }
+
+    #[test]
+    fn test_pow_zero_positive_exponent_is_zero() {
+        let base = make_f32(&[1], &[0.0]);
+        let exp = make_f32(&[1], &[2.0]);
+        let out = op_pow(&base, &exp).unwrap();
+        assert_eq!(read_f32(&out.raw_data, 0), 0.0);
+    }
+
+    #[test]
+    fn test_pow_zero_zero_still_one_after_fix() {
+        // Regression guard: ensure the fix didn't regress the 0^0 case.
+        let base = make_f32(&[1], &[0.0]);
+        let exp = make_f32(&[1], &[0.0]);
+        let out = op_pow(&base, &exp).unwrap();
+        assert_eq!(read_f32(&out.raw_data, 0), 1.0);
+    }
+
+    #[test]
+    fn test_sqrt_negative_is_nan() {
+        let t = make_f32(&[2], &[-1.0, -4.0]);
+        let out = op_sqrt(&t).unwrap();
+        assert!(read_f32(&out.raw_data, 0).is_nan());
+        assert!(read_f32(&out.raw_data, 1).is_nan());
     }
 
     #[test]

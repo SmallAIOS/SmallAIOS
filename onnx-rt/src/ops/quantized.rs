@@ -36,33 +36,60 @@ fn round_half_even(x: f32) -> f32 {
 }
 
 /// Returns the per-tensor scale (first element of the scale tensor).
+///
+/// Per-axis quantization is not yet implemented; any scale tensor with
+/// more than one element is rejected explicitly rather than silently
+/// collapsing to the first element. Non-positive scales are also
+/// rejected.
 fn read_scale(scale: &Tensor) -> Result<f32, OpError> {
     if scale.data_type != DataType::Float || scale.raw_data.len() < 4 {
         return Err(OpError::ShapeMismatch(String::from(
             "quantized: scale must be Float",
         )));
     }
-    Ok(read_f32(&scale.raw_data, 0))
+    if scale.shape.total_elements() > 1 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "quantized: per-axis scale not yet implemented",
+        )));
+    }
+    let s = read_f32(&scale.raw_data, 0);
+    if s.is_nan() || s <= 0.0 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "quantized: scale must be positive and finite",
+        )));
+    }
+    Ok(s)
 }
 
 /// Returns the zero-point as an i32 (read from int8 / uint8 / int32).
+///
+/// Per-axis zero points are rejected with the same error as per-axis
+/// scales, since a correct per-axis implementation would require
+/// coordinated changes to the matmul/conv kernels.
 fn read_zero_point(zp: Option<&Tensor>) -> Result<i32, OpError> {
     match zp {
         None => Ok(0),
-        Some(t) => match t.data_type {
-            DataType::Int8 => Ok(t.raw_data.first().map(|&b| b as i8 as i32).unwrap_or(0)),
-            DataType::Uint8 => Ok(t.raw_data.first().map(|&b| b as i32).unwrap_or(0)),
-            DataType::Int32 => {
-                if t.raw_data.len() < 4 {
-                    Ok(0)
-                } else {
-                    Ok(crate::byte_io::read_i32(&t.raw_data, 0))
-                }
+        Some(t) => {
+            if t.shape.total_elements() > 1 {
+                return Err(OpError::InvalidAttribute(String::from(
+                    "quantized: per-axis zero_point not yet implemented",
+                )));
             }
-            _ => Err(OpError::ShapeMismatch(String::from(
-                "quantized: zero_point must be Int8/Uint8/Int32",
-            ))),
-        },
+            match t.data_type {
+                DataType::Int8 => Ok(t.raw_data.first().map(|&b| b as i8 as i32).unwrap_or(0)),
+                DataType::Uint8 => Ok(t.raw_data.first().map(|&b| b as i32).unwrap_or(0)),
+                DataType::Int32 => {
+                    if t.raw_data.len() < 4 {
+                        Ok(0)
+                    } else {
+                        Ok(crate::byte_io::read_i32(&t.raw_data, 0))
+                    }
+                }
+                _ => Err(OpError::ShapeMismatch(String::from(
+                    "quantized: zero_point must be Int8/Uint8/Int32",
+                ))),
+            }
+        }
     }
 }
 
@@ -190,7 +217,41 @@ pub fn op_qlinear_conv(
     y_scale: &Tensor,
     y_zp: &Tensor,
     bias: Option<&Tensor>,
+    pads: Option<&[i64]>,
+    strides: Option<&[i64]>,
+    dilations: Option<&[i64]>,
+    group: i64,
 ) -> Result<Tensor, OpError> {
+    // op_conv currently only supports unpadded, unit-stride, unit-dilation,
+    // group=1 convolutions. Rather than silently dropping these attributes
+    // (the previous behavior), reject non-default values up-front so
+    // callers know the result would be wrong. Phase 4 will widen op_conv.
+    if let Some(p) = pads {
+        if p.iter().any(|&v| v != 0) {
+            return Err(OpError::InvalidAttribute(String::from(
+                "QLinearConv: non-zero pads not yet supported",
+            )));
+        }
+    }
+    if let Some(s) = strides {
+        if s.iter().any(|&v| v != 1) {
+            return Err(OpError::InvalidAttribute(String::from(
+                "QLinearConv: non-unit strides not yet supported",
+            )));
+        }
+    }
+    if let Some(d) = dilations {
+        if d.iter().any(|&v| v != 1) {
+            return Err(OpError::InvalidAttribute(String::from(
+                "QLinearConv: non-unit dilations not yet supported",
+            )));
+        }
+    }
+    if group != 1 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "QLinearConv: group != 1 not yet supported",
+        )));
+    }
     let x_f32 = op_dequantize_linear(x, x_scale, Some(x_zp))?;
     let w_f32 = op_dequantize_linear(w, w_scale, Some(w_zp))?;
     // Bias for QLinearConv is typically Int32 (pre-scaled by x_scale*w_scale).
@@ -371,6 +432,81 @@ mod tests {
         let s = scalar_f32(0.0);
         let zp = scalar_i8(0);
         assert!(op_quantize_linear(&x, &s, Some(&zp)).is_err());
+    }
+
+    #[test]
+    fn test_quantize_per_axis_scale_rejected() {
+        // Multi-element scale must be rejected, not silently truncated.
+        let x = make_f32(&[4], &[0.0, 0.1, 0.2, 0.3]);
+        let mut raw = alloc::vec![0u8; 8];
+        write_f32(&mut raw, 0, 0.1);
+        write_f32(&mut raw, 1, 0.2);
+        let s = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(alloc::vec![2]),
+            name: String::new(),
+            raw_data: raw,
+        };
+        let zp = scalar_i8(0);
+        assert!(matches!(
+            op_quantize_linear(&x, &s, Some(&zp)),
+            Err(OpError::InvalidAttribute(_))
+        ));
+    }
+
+    #[test]
+    fn test_quantize_negative_scale_rejected() {
+        let x = make_f32(&[1], &[1.0]);
+        let s = scalar_f32(-0.1);
+        let zp = scalar_i8(0);
+        assert!(matches!(
+            op_quantize_linear(&x, &s, Some(&zp)),
+            Err(OpError::InvalidAttribute(_))
+        ));
+    }
+
+    #[test]
+    fn test_qlinear_conv_rejects_non_default_attrs() {
+        let x = make_f32(&[1, 1, 3, 3], &alloc::vec![0.0f32; 9]);
+        let w = make_f32(&[1, 1, 2, 2], &alloc::vec![0.0f32; 4]);
+        let s = scalar_f32(0.1);
+        let zp = scalar_i8(0);
+        let xq = op_quantize_linear(&x, &s, Some(&zp)).unwrap();
+        let wq = op_quantize_linear(&w, &s, Some(&zp)).unwrap();
+        // Non-unit strides must be rejected (not silently dropped).
+        assert!(op_qlinear_conv(
+            &xq,
+            &s,
+            &zp,
+            &wq,
+            &s,
+            &zp,
+            &s,
+            &zp,
+            None,
+            None,
+            Some(&[2, 2]),
+            None,
+            1
+        )
+        .is_err());
+        // Non-zero pads must be rejected.
+        assert!(op_qlinear_conv(
+            &xq,
+            &s,
+            &zp,
+            &wq,
+            &s,
+            &zp,
+            &s,
+            &zp,
+            None,
+            Some(&[1, 1, 1, 1]),
+            None,
+            None,
+            1
+        )
+        .is_err());
     }
 
     #[test]

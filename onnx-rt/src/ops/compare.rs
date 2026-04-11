@@ -80,11 +80,17 @@ fn compare<F: Fn(f32, f32) -> bool>(
     require_float(a, op)?;
     require_float(b, op)?;
     let out_dims = broadcast_shape(&a.shape.dims, &b.shape.dims)?;
-    let total: usize = out_dims
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    let total: usize = out_dims.iter().map(|&d| d as usize).product::<usize>();
+    // Honor zero-element tensors: allocate empty buffer and return early
+    // (reading at coord 0 on a 0-total tensor would be undefined).
+    if total == 0 {
+        return Ok(Tensor {
+            data_type: DataType::Bool,
+            shape: TensorShape::new(out_dims),
+            name: String::new(),
+            raw_data: Vec::new(),
+        });
+    }
     let mut data = alloc::vec![0u8; total];
     let ndim = out_dims.len();
     let mut coord = alloc::vec![0usize; ndim];
@@ -115,11 +121,15 @@ fn elementwise_min_max<F: Fn(f32, f32) -> f32>(
     require_float(a, op)?;
     require_float(b, op)?;
     let out_dims = broadcast_shape(&a.shape.dims, &b.shape.dims)?;
-    let total: usize = out_dims
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    let total: usize = out_dims.iter().map(|&d| d as usize).product::<usize>();
+    if total == 0 {
+        return Ok(Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(out_dims),
+            name: String::new(),
+            raw_data: Vec::new(),
+        });
+    }
     let mut data = allocate_tensor_data(total, DataType::Float);
     let ndim = out_dims.len();
     let mut coord = alloc::vec![0usize; ndim];
@@ -190,11 +200,15 @@ pub fn op_where(cond: &Tensor, x: &Tensor, y: &Tensor) -> Result<Tensor, OpError
 
     let xy = broadcast_shape(&x.shape.dims, &y.shape.dims)?;
     let out_dims = broadcast_shape(&xy, &cond.shape.dims)?;
-    let total: usize = out_dims
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    let total: usize = out_dims.iter().map(|&d| d as usize).product::<usize>();
+    if total == 0 {
+        return Ok(Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(out_dims),
+            name: String::new(),
+            raw_data: Vec::new(),
+        });
+    }
     let mut data = allocate_tensor_data(total, DataType::Float);
     let ndim = out_dims.len();
     let mut coord = alloc::vec![0usize; ndim];
@@ -373,6 +387,25 @@ mod tests {
         let b = make_f32(&[1], &[2.0]);
         let v = read_bool_all(&op_less(&a, &b).unwrap());
         assert_eq!(v, alloc::vec![true, false, false, false]);
+    }
+
+    #[test]
+    fn test_compare_zero_element_tensor() {
+        // Shape [0] → output should be 0 elements, NOT 1.
+        let a = make_f32(&[0], &[]);
+        let b = make_f32(&[0], &[]);
+        let out = op_equal(&a, &b).unwrap();
+        assert_eq!(out.shape.dims, alloc::vec![0]);
+        assert!(out.raw_data.is_empty());
+    }
+
+    #[test]
+    fn test_min_max_zero_element_tensor() {
+        let a = make_f32(&[0, 3], &[]);
+        let b = make_f32(&[0, 3], &[]);
+        let out = op_min(&a, &b).unwrap();
+        assert_eq!(out.shape.dims, alloc::vec![0, 3]);
+        assert!(out.raw_data.is_empty());
     }
 
     #[test]

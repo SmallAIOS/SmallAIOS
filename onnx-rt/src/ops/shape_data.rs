@@ -112,11 +112,14 @@ pub fn op_constant(value: &Tensor) -> Result<Tensor, OpError> {
 /// fill-value tensor is Int64 we emit a Float32 with the integer
 /// converted to float (good enough for BERT-style integer masks).
 pub fn op_constant_of_shape(shape: &[i64], value: f32) -> Result<Tensor, OpError> {
-    let total: usize = shape
-        .iter()
-        .map(|&d| d.max(0) as usize)
-        .product::<usize>()
-        .max(1);
+    // Reject negative dims rather than silently absorbing them.
+    if shape.iter().any(|&d| d < 0) {
+        return Err(OpError::InvalidAttribute(String::from(
+            "ConstantOfShape: shape must be non-negative",
+        )));
+    }
+    // Honor zero-element shapes (e.g. [0, 3]) — do NOT collapse to 1.
+    let total: usize = shape.iter().map(|&d| d as usize).product::<usize>();
     let mut data = allocate_tensor_data(total, DataType::Float);
     for i in 0..total {
         write_f32(&mut data, i, value);
@@ -141,13 +144,23 @@ pub fn op_range(start: f32, limit: f32, delta: f32) -> Result<Tensor, OpError> {
         let mut v = start;
         while v < limit {
             values.push(v);
-            v += delta;
+            let next = v + delta;
+            // f32 rounding: when `v` is large and `delta` is small,
+            // `v + delta == v`; break rather than spin forever.
+            if next == v {
+                break;
+            }
+            v = next;
         }
     } else {
         let mut v = start;
         while v > limit {
             values.push(v);
-            v += delta;
+            let next = v + delta;
+            if next == v {
+                break;
+            }
+            v = next;
         }
     }
     let n = values.len();
@@ -297,13 +310,22 @@ pub fn op_cumsum(
 pub fn op_gather_nd(input: &Tensor, indices: &Tensor, batch_dims: i64) -> Result<Tensor, OpError> {
     require_float(input, "GatherND")?;
     require_int64(indices, "GatherND")?;
-    let batch_dims = batch_dims as usize;
     let idx_ndim = indices.shape.ndim();
     if idx_ndim == 0 {
         return Err(OpError::ShapeMismatch(String::from(
             "GatherND indices must have at least 1 dimension",
         )));
     }
+    // ONNX GatherND-13: batch_dims must satisfy
+    // 0 <= batch_dims <= rank(indices) - 1 (the last dim of indices is `k`).
+    if batch_dims < 0 || (batch_dims as usize) >= idx_ndim {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "GatherND batch_dims {} out of range [0, {})",
+            batch_dims,
+            idx_ndim
+        )));
+    }
+    let batch_dims = batch_dims as usize;
     let k = indices.shape.dims[idx_ndim - 1] as usize;
     let in_ndim = input.shape.ndim();
     if batch_dims + k > in_ndim {
@@ -418,6 +440,30 @@ pub fn op_scatter_nd(
         return Err(OpError::ShapeMismatch(String::from(
             "ScatterND index depth exceeds input rank",
         )));
+    }
+    // ONNX ScatterND-16 requires
+    //   updates.shape == indices.shape[:-1] + input.shape[k:]
+    let expected_updates_rank = (idx_ndim - 1) + (in_ndim - k);
+    if updates.shape.ndim() != expected_updates_rank {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "ScatterND: updates rank {} != expected {}",
+            updates.shape.ndim(),
+            expected_updates_rank
+        )));
+    }
+    for (i, &d) in indices.shape.dims[..idx_ndim - 1].iter().enumerate() {
+        if updates.shape.dims[i] != d {
+            return Err(OpError::ShapeMismatch(String::from(
+                "ScatterND: updates leading dims must match indices.shape[:-1]",
+            )));
+        }
+    }
+    for (i, &d) in input.shape.dims[k..].iter().enumerate() {
+        if updates.shape.dims[(idx_ndim - 1) + i] != d {
+            return Err(OpError::ShapeMismatch(String::from(
+                "ScatterND: updates trailing dims must match input.shape[k:]",
+            )));
+        }
     }
     let slice_dims = &input.shape.dims[k..];
     let slice_size: usize = slice_dims
@@ -704,6 +750,55 @@ mod tests {
         let upd = make_f32(&[1, 3], &[10.0, 20.0, 30.0]);
         let out = op_scatter_nd(&t, &idx, &upd).unwrap();
         assert_eq!(read_all_f32(&out), vec![10.0, 20.0, 30.0, 4.0, 5.0, 6.0]);
+    }
+
+    #[test]
+    fn test_constant_of_shape_rejects_negative_dim() {
+        assert!(op_constant_of_shape(&[-1, 3], 0.0).is_err());
+    }
+
+    #[test]
+    fn test_constant_of_shape_zero_element_shape() {
+        // Shape [0, 3] must produce a zero-element tensor, NOT a 1-element one.
+        let out = op_constant_of_shape(&[0, 3], 7.0).unwrap();
+        assert_eq!(out.shape.dims, vec![0, 3]);
+        assert_eq!(out.shape.total_elements(), 0);
+        assert!(out.raw_data.is_empty());
+    }
+
+    #[test]
+    fn test_range_non_advancing_breaks() {
+        // start=1e20, delta=1.0 in f32 → 1e20 + 1.0 rounds back to 1e20.
+        // Must terminate without spinning, not return an error for this case.
+        let out = op_range(1.0e20, 1.0e21, 1.0).unwrap();
+        // We just require it terminates and produces a small finite output
+        // (exactly one element, start, before we bail out).
+        assert_eq!(read_all_f32(&out), vec![1.0e20]);
+    }
+
+    #[test]
+    fn test_range_zero_delta_still_errors() {
+        assert!(op_range(0.0, 1.0, 0.0).is_err());
+    }
+
+    #[test]
+    fn test_gather_nd_rejects_oob_batch_dims() {
+        let t = make_f32(&[2, 2], &[1.0, 2.0, 3.0, 4.0]);
+        let idx = make_i64(&[2, 2], &[0, 0, 1, 1]);
+        // idx_ndim == 2, so batch_dims must be in [0, 2). 2 is out of range.
+        assert!(op_gather_nd(&t, &idx, 2).is_err());
+        // Negative batch_dims also rejected.
+        assert!(op_gather_nd(&t, &idx, -1).is_err());
+    }
+
+    #[test]
+    fn test_scatter_nd_rejects_mismatched_updates_shape() {
+        // input [2,3], idx shape [1,1] (k=1), expected updates shape [1,3]
+        let t = make_f32(&[2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let idx = make_i64(&[1, 1], &[0]);
+        // Wrong updates shape: [1, 2] instead of [1, 3]
+        let upd = make_f32(&[1, 2], &[10.0, 20.0]);
+        assert!(op_scatter_nd(&t, &idx, &upd).is_err());
     }
 
     #[test]

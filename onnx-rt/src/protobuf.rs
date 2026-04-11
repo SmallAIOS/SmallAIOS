@@ -425,8 +425,13 @@ pub fn decode_attribute(data: &[u8]) -> Result<AttributeProto, ProtoError> {
                 attr.s = bytes.to_vec();
             }
             5 => {
-                // t (TensorProto) — skip for now
+                // t (TensorProto) — content not yet stored, but flip
+                // `attr_type` to Tensor so downstream consumers don't
+                // see an Undefined attribute when field 20 is absent.
                 decoder.skip_field(header.wire_type)?;
+                if attr.attr_type == AttributeType::Undefined {
+                    attr.attr_type = AttributeType::Tensor;
+                }
             }
             6 => {
                 // g (GraphProto) — skip for now
@@ -1407,6 +1412,20 @@ mod tests {
         assert_eq!(attr.name, "mode");
         assert_eq!(attr.s, b"linear");
         assert_eq!(attr.attr_type, AttributeType::String);
+    }
+
+    #[test]
+    fn decode_attribute_tensor_field_without_type() {
+        // Field 5 (t) present but field 20 (type) absent. The decoder
+        // should still set attr_type = Tensor so downstream code can
+        // recognize the attribute category.
+        let mut data = Vec::new();
+        data.extend(encode_length_delimited(1, b"value"));
+        // Empty length-delimited TensorProto bytes for field 5.
+        data.extend(encode_length_delimited(5, &[]));
+        let attr = decode_attribute(&data).unwrap();
+        assert_eq!(attr.name, "value");
+        assert_eq!(attr.attr_type, AttributeType::Tensor);
     }
 
     #[test]

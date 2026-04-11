@@ -24,17 +24,23 @@ fn require_float(t: &Tensor, op: &str) -> Result<(), OpError> {
     Ok(())
 }
 
-fn resolved_axes(ndim: usize, axes: &[i64]) -> Vec<usize> {
+fn resolved_axes(ndim: usize, axes: &[i64]) -> Result<Vec<usize>, OpError> {
     if axes.is_empty() {
-        (0..ndim).collect()
+        Ok((0..ndim).collect())
     } else {
+        let nd = ndim as i64;
         axes.iter()
             .map(|&a| {
-                if a < 0 {
-                    (ndim as i64 + a) as usize
-                } else {
-                    a as usize
+                let normalized = if a < 0 { nd + a } else { a };
+                if normalized < 0 || normalized >= nd {
+                    return Err(OpError::InvalidAttribute(alloc::format!(
+                        "reduction axis {} out of range [-{}, {})",
+                        a,
+                        ndim,
+                        ndim
+                    )));
                 }
+                Ok(normalized as usize)
             })
             .collect()
     }
@@ -100,7 +106,7 @@ fn reduce_float<F: Fn(f32, f32) -> f32>(
 ) -> Result<Tensor, OpError> {
     require_float(input, op)?;
     let ndim = input.shape.ndim();
-    let resolved = resolved_axes(ndim, axes);
+    let resolved = resolved_axes(ndim, axes)?;
     let out_dims = compute_out_dims(&input.shape.dims, &resolved, keepdims);
     let out_shape = TensorShape::new(out_dims);
     let total_out = out_shape.total_elements();
@@ -193,12 +199,18 @@ fn argreduce<F: Fn(f32, f32) -> bool>(
     }
     let axis = axis as usize;
     let dims = &input.shape.dims;
+    let axis_size = dims[axis] as usize;
+    if axis_size == 0 {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "{}: cannot reduce over empty axis",
+            op
+        )));
+    }
     let outer: usize = dims[..axis]
         .iter()
         .map(|&d| d as usize)
         .product::<usize>()
         .max(1);
-    let axis_size = dims[axis] as usize;
     let inner: usize = dims[axis + 1..]
         .iter()
         .map(|&d| d as usize)
@@ -393,6 +405,32 @@ mod tests {
     fn test_arg_min_invalid_axis() {
         let t = make_f32(&[3], &[1.0, 2.0, 3.0]);
         assert!(op_arg_min(&t, 5, false, false).is_err());
+    }
+
+    #[test]
+    fn test_reduce_rejects_out_of_range_axis() {
+        let t = make_f32(&[3], &[1.0, 2.0, 3.0]);
+        assert!(op_reduce_max(&t, &[5], false).is_err());
+        assert!(op_reduce_min(&t, &[-5], false).is_err());
+    }
+
+    #[test]
+    fn test_arg_max_rejects_empty_axis() {
+        // Shape [0, 3] → reducing over axis 0 has no elements.
+        let t = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(alloc::vec![0, 3]),
+            name: String::new(),
+            raw_data: Vec::new(),
+        };
+        assert!(matches!(
+            op_arg_max(&t, 0, false, false),
+            Err(OpError::ShapeMismatch(_))
+        ));
+        assert!(matches!(
+            op_arg_min(&t, 0, false, false),
+            Err(OpError::ShapeMismatch(_))
+        ));
     }
 
     #[test]

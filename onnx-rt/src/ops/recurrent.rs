@@ -111,6 +111,28 @@ pub fn op_rnn(
             "RNN: R shape must be [num_dir, hidden, hidden]",
         )));
     }
+    // Validate optional B, h0 shapes up-front before we slice raw data.
+    if let Some(bt) = b {
+        if bt.shape.dims.len() != 2
+            || bt.shape.dims[0] as usize != num_dir
+            || bt.shape.dims[1] as usize != 2 * hidden
+        {
+            return Err(OpError::ShapeMismatch(String::from(
+                "RNN: B shape must be [num_dir, 2*hidden]",
+            )));
+        }
+    }
+    if let Some(h0t) = h0 {
+        if h0t.shape.dims.len() != 3
+            || h0t.shape.dims[0] as usize != num_dir
+            || h0t.shape.dims[1] as usize != batch
+            || h0t.shape.dims[2] as usize != hidden
+        {
+            return Err(OpError::ShapeMismatch(String::from(
+                "RNN: h0 shape must be [num_dir, batch, hidden]",
+            )));
+        }
+    }
 
     // Output buffers.
     let y_total = seq * num_dir * batch * hidden;
@@ -235,6 +257,11 @@ pub fn op_lstm(
             "LSTM: W shape must be [num_dir, 4*hidden, input]",
         )));
     }
+    if w.shape.dims[2] as usize != input_size {
+        return Err(OpError::ShapeMismatch(String::from(
+            "LSTM: W input dim mismatch",
+        )));
+    }
     let four_h = w.shape.dims[1] as usize;
     if !four_h.is_multiple_of(4) {
         return Err(OpError::ShapeMismatch(String::from(
@@ -242,6 +269,47 @@ pub fn op_lstm(
         )));
     }
     let hidden = four_h / 4;
+    if r.shape.dims.len() != 3
+        || r.shape.dims[0] as usize != num_dir
+        || r.shape.dims[1] as usize != 4 * hidden
+        || r.shape.dims[2] as usize != hidden
+    {
+        return Err(OpError::ShapeMismatch(String::from(
+            "LSTM: R shape must be [num_dir, 4*hidden, hidden]",
+        )));
+    }
+    if let Some(bt) = b {
+        if bt.shape.dims.len() != 2
+            || bt.shape.dims[0] as usize != num_dir
+            || bt.shape.dims[1] as usize != 8 * hidden
+        {
+            return Err(OpError::ShapeMismatch(String::from(
+                "LSTM: B shape must be [num_dir, 8*hidden]",
+            )));
+        }
+    }
+    if let Some(h0t) = h0 {
+        if h0t.shape.dims.len() != 3
+            || h0t.shape.dims[0] as usize != num_dir
+            || h0t.shape.dims[1] as usize != batch
+            || h0t.shape.dims[2] as usize != hidden
+        {
+            return Err(OpError::ShapeMismatch(String::from(
+                "LSTM: h0 shape must be [num_dir, batch, hidden]",
+            )));
+        }
+    }
+    if let Some(c0t) = c0 {
+        if c0t.shape.dims.len() != 3
+            || c0t.shape.dims[0] as usize != num_dir
+            || c0t.shape.dims[1] as usize != batch
+            || c0t.shape.dims[2] as usize != hidden
+        {
+            return Err(OpError::ShapeMismatch(String::from(
+                "LSTM: c0 shape must be [num_dir, batch, hidden]",
+            )));
+        }
+    }
 
     let y_total = seq * num_dir * batch * hidden;
     let mut y_data = allocate_tensor_data(y_total, DataType::Float);
@@ -391,6 +459,11 @@ pub fn op_gru(
             "GRU: W shape must be [num_dir, 3*hidden, input]",
         )));
     }
+    if w.shape.dims[2] as usize != input_size {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GRU: W input dim mismatch",
+        )));
+    }
     let three_h = w.shape.dims[1] as usize;
     if !three_h.is_multiple_of(3) {
         return Err(OpError::ShapeMismatch(String::from(
@@ -398,6 +471,36 @@ pub fn op_gru(
         )));
     }
     let hidden = three_h / 3;
+    if r.shape.dims.len() != 3
+        || r.shape.dims[0] as usize != num_dir
+        || r.shape.dims[1] as usize != 3 * hidden
+        || r.shape.dims[2] as usize != hidden
+    {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GRU: R shape must be [num_dir, 3*hidden, hidden]",
+        )));
+    }
+    if let Some(bt) = b {
+        if bt.shape.dims.len() != 2
+            || bt.shape.dims[0] as usize != num_dir
+            || bt.shape.dims[1] as usize != 6 * hidden
+        {
+            return Err(OpError::ShapeMismatch(String::from(
+                "GRU: B shape must be [num_dir, 6*hidden]",
+            )));
+        }
+    }
+    if let Some(h0t) = h0 {
+        if h0t.shape.dims.len() != 3
+            || h0t.shape.dims[0] as usize != num_dir
+            || h0t.shape.dims[1] as usize != batch
+            || h0t.shape.dims[2] as usize != hidden
+        {
+            return Err(OpError::ShapeMismatch(String::from(
+                "GRU: h0 shape must be [num_dir, batch, hidden]",
+            )));
+        }
+    }
 
     let y_total = seq * num_dir * batch * hidden;
     let mut y_data = allocate_tensor_data(y_total, DataType::Float);
@@ -652,6 +755,56 @@ mod tests {
         let h1_out = read_f32(&yh.raw_data, 1);
         assert!((h0_out - 0.7616).abs() < 1e-3);
         assert!(h1_out.abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_rnn_rejects_mismatched_w_input_dim() {
+        // X has input_size=3 but W claims input_size=2 → must error, not panic.
+        let x = make_f32(&[1, 1, 3], &[0.0; 3]);
+        let w = make_f32(&[1, 2, 2], &alloc::vec![0.0f32; 4]);
+        let r = make_f32(&[1, 2, 2], &alloc::vec![0.0f32; 4]);
+        assert!(matches!(
+            op_rnn(&x, &w, &r, None, None, "forward"),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_lstm_rejects_mismatched_r_hidden_dim() {
+        let x = make_f32(&[1, 1, 2], &[0.0; 2]);
+        let w = make_f32(&[1, 8, 2], &alloc::vec![0.0f32; 16]);
+        // R claims hidden=5 but W implies hidden=2 → must error.
+        let r = make_f32(&[1, 8, 5], &alloc::vec![0.0f32; 40]);
+        assert!(matches!(
+            op_lstm(&x, &w, &r, None, None, None, "forward"),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_lstm_rejects_mismatched_bias_shape() {
+        let x = make_f32(&[1, 1, 2], &[0.0; 2]);
+        let w = make_f32(&[1, 8, 2], &alloc::vec![0.0f32; 16]);
+        let r = make_f32(&[1, 8, 2], &alloc::vec![0.0f32; 16]);
+        // B should be [1, 16] but we give [1, 4] — must error, not panic slicing.
+        let b = make_f32(&[1, 4], &alloc::vec![0.0f32; 4]);
+        assert!(matches!(
+            op_lstm(&x, &w, &r, Some(&b), None, None, "forward"),
+            Err(OpError::ShapeMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn test_gru_rejects_mismatched_initial_state() {
+        let x = make_f32(&[1, 1, 2], &[0.0; 2]);
+        let w = make_f32(&[1, 6, 2], &alloc::vec![0.0f32; 12]);
+        let r = make_f32(&[1, 6, 2], &alloc::vec![0.0f32; 12]);
+        // h0 should be [1,1,2] but we give [1,1,5] — must error.
+        let h0 = make_f32(&[1, 1, 5], &alloc::vec![0.0f32; 5]);
+        assert!(matches!(
+            op_gru(&x, &w, &r, None, Some(&h0), "forward"),
+            Err(OpError::ShapeMismatch(_))
+        ));
     }
 
     #[test]

@@ -993,6 +993,13 @@ pub(crate) fn expf_approx(x: f32) -> f32 {
     } else {
         (t - 0.5) as i32
     };
+    // Guard against IEEE-754 exponent underflow: if `k + bias` would go
+    // negative, the bitmask `((k+bias) as u32) << 23` reinterprets as a
+    // huge exponent and yields -inf instead of a tiny positive number.
+    // Treat that as genuine underflow → 0.
+    if k + F32_EXPONENT_BIAS < 0 {
+        return 0.0;
+    }
     let f = x - (k as f32) * core::f32::consts::LN_2;
 
     // Polynomial approximation of e^f for f in [-0.5*ln2, 0.5*ln2]
@@ -5044,5 +5051,14 @@ mod tests {
                 vp
             );
         }
+    }
+
+    #[test]
+    fn test_expf_approx_very_negative_is_finite_zero() {
+        // Very negative inputs must not produce -inf due to exponent
+        // underflow reinterpretation; they should clamp to 0.
+        let v = expf_approx(-1000.0);
+        assert!(v.is_finite(), "expf_approx(-1000) = {} must be finite", v);
+        assert_eq!(v, 0.0);
     }
 }

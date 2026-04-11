@@ -80,6 +80,7 @@ pub fn execute_graph(
                 &node.op_type,
                 &input_tensors,
                 &node.attributes,
+                node.outputs.len(),
                 #[cfg(feature = "gpu")]
                 gpu_backend,
             )
@@ -118,6 +119,7 @@ pub fn execute_graph(
                 &node.op_type,
                 &input_tensors,
                 &node.attributes,
+                node.outputs.len(),
                 #[cfg(feature = "gpu")]
                 gpu_backend,
             )
@@ -258,6 +260,7 @@ fn dispatch_node(
     op_type: &str,
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
+    output_count: usize,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
 ) -> Result<Vec<Tensor>, OpError> {
     // Check if GPU backend can handle this operator. If so, a real
@@ -273,7 +276,7 @@ fn dispatch_node(
 
     // Multi-output ops bypass the single-tensor wrapper.
     match kind {
-        OpKind::Split => return dispatch_split(inputs, attrs),
+        OpKind::Split => return dispatch_split(inputs, attrs, output_count),
         OpKind::LSTM => return dispatch_lstm(inputs, attrs),
         OpKind::GRU => return dispatch_gru(inputs, attrs),
         OpKind::RNN => return dispatch_rnn(inputs, attrs),
@@ -522,20 +525,20 @@ fn dispatch_transformer(
         OpKind::Expand => {
             let x = require_input(inputs, 0, "Expand")?;
             let shape_tensor = require_input(inputs, 1, "Expand")?;
-            let shape = read_i64_tensor(shape_tensor);
+            let shape = read_i64_tensor(shape_tensor)?;
             ops::transformer::op_expand(x, &shape)
         }
         OpKind::Tile => {
             let x = require_input(inputs, 0, "Tile")?;
             let repeats_tensor = require_input(inputs, 1, "Tile")?;
-            let repeats = read_i64_tensor(repeats_tensor);
+            let repeats = read_i64_tensor(repeats_tensor)?;
             ops::transformer::op_tile(x, &repeats)
         }
         OpKind::OneHot => {
             let indices = require_input(inputs, 0, "OneHot")?;
             let depth_tensor = require_input(inputs, 1, "OneHot")?;
             let values = require_input(inputs, 2, "OneHot")?;
-            let depth = read_i64_tensor(depth_tensor)
+            let depth = read_i64_tensor(depth_tensor)?
                 .first()
                 .copied()
                 .ok_or_else(|| OpError::InvalidAttribute(String::from("OneHot depth missing")))?;
@@ -563,7 +566,7 @@ fn dispatch_transformer(
 fn dispatch_quantized(
     kind: OpKind,
     inputs: &[Option<&Tensor>],
-    _attrs: &[AttributeProto],
+    attrs: &[AttributeProto],
 ) -> Result<Tensor, OpError> {
     match kind {
         OpKind::QuantizeLinear => {
@@ -599,7 +602,14 @@ fn dispatch_quantized(
             let y_scale = require_input(inputs, 6, "QLinearConv")?;
             let y_zp = require_input(inputs, 7, "QLinearConv")?;
             let bias = optional_input(inputs, 8);
-            ops::quantized::op_qlinear_conv(x, x_scale, x_zp, w, w_scale, w_zp, y_scale, y_zp, bias)
+            let pads = get_attr_ints(attrs, "pads");
+            let strides = get_attr_ints(attrs, "strides");
+            let dilations = get_attr_ints(attrs, "dilations");
+            let group = get_attr_int(attrs, "group", 1);
+            ops::quantized::op_qlinear_conv(
+                x, x_scale, x_zp, w, w_scale, w_zp, y_scale, y_zp, bias, pads, strides, dilations,
+                group,
+            )
         }
         _ => Err(OpError::UnsupportedOp(String::from("quantized"))),
     }
@@ -609,18 +619,33 @@ fn dispatch_quantized(
 fn dispatch_split(
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
+    output_count: usize,
 ) -> Result<Vec<Tensor>, OpError> {
     let x = require_input(inputs, 0, "Split")?;
     let axis = get_attr_int(attrs, "axis", 0);
     // Opset 13+: 'split' is an input tensor (i64).
     // Older: 'split' is an int list attribute.
-    let split_input = optional_input(inputs, 1).map(read_i64_tensor);
+    let split_input = match optional_input(inputs, 1) {
+        Some(t) => Some(read_i64_tensor(t)?),
+        None => None,
+    };
     let split_attr = get_attr_ints(attrs, "split").map(|s| s.to_vec());
     let split_sizes = split_input.or(split_attr);
-    ops::transformer::op_split(x, axis, split_sizes.as_deref())
+    // ONNX Split with no explicit sizes derives num_outputs from the
+    // node's output arity.
+    let num_outputs = if split_sizes.is_some() {
+        None
+    } else {
+        Some(output_count)
+    };
+    ops::transformer::op_split(x, axis, split_sizes.as_deref(), num_outputs)
 }
 
 /// Dispatches LSTM (multi-output).
+///
+/// Phase 1 limitations: `sequence_lens` (input 4) and `P` peephole
+/// weights (input 7) are not yet implemented and are rejected rather
+/// than silently ignored. Phase 4 will plumb them through.
 fn dispatch_lstm(
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
@@ -629,8 +654,18 @@ fn dispatch_lstm(
     let w = require_input(inputs, 1, "LSTM")?;
     let r = require_input(inputs, 2, "LSTM")?;
     let b = optional_input(inputs, 3);
+    if optional_input(inputs, 4).is_some() {
+        return Err(OpError::InvalidAttribute(String::from(
+            "LSTM: variable sequence_lens not yet supported",
+        )));
+    }
     let h0 = optional_input(inputs, 5);
     let c0 = optional_input(inputs, 6);
+    if optional_input(inputs, 7).is_some() {
+        return Err(OpError::InvalidAttribute(String::from(
+            "LSTM: peephole weights (P) not yet supported",
+        )));
+    }
     let direction_bytes = attrs
         .iter()
         .find(|a| a.name == "direction")
@@ -641,6 +676,10 @@ fn dispatch_lstm(
 }
 
 /// Dispatches GRU (multi-output).
+///
+/// Phase 1 limitations: `sequence_lens` (input 4) and the
+/// `linear_before_reset` attribute are rejected rather than silently
+/// ignored. Phase 4 will implement both.
 fn dispatch_gru(
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
@@ -649,7 +688,17 @@ fn dispatch_gru(
     let w = require_input(inputs, 1, "GRU")?;
     let r = require_input(inputs, 2, "GRU")?;
     let b = optional_input(inputs, 3);
+    if optional_input(inputs, 4).is_some() {
+        return Err(OpError::InvalidAttribute(String::from(
+            "GRU: variable sequence_lens not yet supported",
+        )));
+    }
     let h0 = optional_input(inputs, 5);
+    if get_attr_int(attrs, "linear_before_reset", 0) != 0 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "GRU: linear_before_reset=1 not yet supported",
+        )));
+    }
     let direction_bytes = attrs
         .iter()
         .find(|a| a.name == "direction")
@@ -660,6 +709,9 @@ fn dispatch_gru(
 }
 
 /// Dispatches RNN (multi-output).
+///
+/// Phase 1 limitation: `sequence_lens` (input 4) is rejected rather
+/// than silently ignored. Phase 4 will implement it.
 fn dispatch_rnn(
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
@@ -668,6 +720,11 @@ fn dispatch_rnn(
     let w = require_input(inputs, 1, "RNN")?;
     let r = require_input(inputs, 2, "RNN")?;
     let b = optional_input(inputs, 3);
+    if optional_input(inputs, 4).is_some() {
+        return Err(OpError::InvalidAttribute(String::from(
+            "RNN: variable sequence_lens not yet supported",
+        )));
+    }
     let h0 = optional_input(inputs, 5);
     let direction_bytes = attrs
         .iter()
@@ -841,7 +898,10 @@ fn dispatch_reduction(
         OpKind::ReduceSum => {
             let x = require_input(inputs, 0, "ReduceSum")?;
             // Opset 13+: axes from second input; older: from attribute
-            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_from_input = match optional_input(inputs, 1) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
             let axes_attr = get_attr_ints(attrs, "axes");
             let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
             let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
@@ -849,7 +909,10 @@ fn dispatch_reduction(
         }
         OpKind::ReduceMax => {
             let x = require_input(inputs, 0, "ReduceMax")?;
-            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_from_input = match optional_input(inputs, 1) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
             let axes_attr = get_attr_ints(attrs, "axes");
             let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
             let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
@@ -857,7 +920,10 @@ fn dispatch_reduction(
         }
         OpKind::ReduceMin => {
             let x = require_input(inputs, 0, "ReduceMin")?;
-            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_from_input = match optional_input(inputs, 1) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
             let axes_attr = get_attr_ints(attrs, "axes");
             let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
             let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
@@ -865,7 +931,10 @@ fn dispatch_reduction(
         }
         OpKind::ReduceProd => {
             let x = require_input(inputs, 0, "ReduceProd")?;
-            let axes_from_input = optional_input(inputs, 1).map(read_i64_tensor);
+            let axes_from_input = match optional_input(inputs, 1) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
             let axes_attr = get_attr_ints(attrs, "axes");
             let axes = axes_from_input.as_deref().or(axes_attr).unwrap_or(&[]);
             let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
@@ -906,7 +975,7 @@ fn dispatch_shape_data(
             // either an explicit input tensor (treating Constant as an
             // Identity pass-through of a graph initializer) or a single
             // float / int scalar decoded from the float / int attribute
-            // fields.
+            // fields. Scalar attributes produce a true 0-D tensor.
             if let Some(t) = optional_input(inputs, 0) {
                 return ops::shape_data::op_identity(t);
             }
@@ -914,21 +983,22 @@ fn dispatch_shape_data(
                 .iter()
                 .find(|a| a.name == "value_float" && a.attr_type == AttributeType::Float)
             {
-                return ops::shape_data::op_constant_of_shape(&[1], a.f);
+                return ops::shape_data::op_constant_of_shape(&[], a.f);
             }
             if let Some(a) = attrs
                 .iter()
                 .find(|a| a.name == "value_int" && a.attr_type == AttributeType::Int)
             {
-                return ops::shape_data::op_constant_of_shape(&[1], a.i as f32);
+                return ops::shape_data::op_constant_of_shape(&[], a.i as f32);
             }
             Err(OpError::InvalidAttribute(String::from(
-                "Constant requires a 'value' attribute",
+                "Constant requires one of: 'value' (TensorProto), \
+                 'value_float', 'value_int', or an input initializer",
             )))
         }
         OpKind::ConstantOfShape => {
             let shape_tensor = require_input(inputs, 0, "ConstantOfShape")?;
-            let shape = read_i64_tensor(shape_tensor);
+            let shape = read_i64_tensor(shape_tensor)?;
             // SmallAIOS can't yet decode tensor-typed attributes, so we
             // accept a scalar fill via 'value_float' / 'value_int' or
             // default to 0.0.
@@ -1021,7 +1091,7 @@ fn dispatch_shape(
         OpKind::Reshape => {
             let t = require_input(inputs, 0, "Reshape")?;
             let shape_tensor = require_input(inputs, 1, "Reshape")?;
-            let shape = read_i64_tensor(shape_tensor);
+            let shape = read_i64_tensor(shape_tensor)?;
             operators::op_reshape(t, &shape)
         }
         OpKind::Transpose => {
@@ -1036,14 +1106,16 @@ fn dispatch_shape(
         }
         OpKind::Squeeze => {
             let t = require_input(inputs, 0, "Squeeze")?;
-            let axes_tensor = optional_input(inputs, 1);
-            let axes = axes_tensor.map(read_i64_tensor);
+            let axes = match optional_input(inputs, 1) {
+                Some(at) => Some(read_i64_tensor(at)?),
+                None => None,
+            };
             operators::op_squeeze(t, axes.as_deref())
         }
         OpKind::Unsqueeze => {
             let t = require_input(inputs, 0, "Unsqueeze")?;
             let axes_tensor = require_input(inputs, 1, "Unsqueeze")?;
-            let axes = read_i64_tensor(axes_tensor);
+            let axes = read_i64_tensor(axes_tensor)?;
             operators::op_unsqueeze(t, &axes)
         }
         OpKind::Concat => {
@@ -1066,19 +1138,23 @@ fn dispatch_shape(
             let t = require_input(inputs, 0, "Slice")?;
             let starts_tensor = require_input(inputs, 1, "Slice")?;
             let ends_tensor = require_input(inputs, 2, "Slice")?;
-            let axes_tensor = optional_input(inputs, 3);
-            let steps_tensor = optional_input(inputs, 4);
-            let starts = read_i64_tensor(starts_tensor);
-            let ends = read_i64_tensor(ends_tensor);
-            let axes = axes_tensor.map(read_i64_tensor);
-            let steps = steps_tensor.map(read_i64_tensor);
+            let starts = read_i64_tensor(starts_tensor)?;
+            let ends = read_i64_tensor(ends_tensor)?;
+            let axes = match optional_input(inputs, 3) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
+            let steps = match optional_input(inputs, 4) {
+                Some(t) => Some(read_i64_tensor(t)?),
+                None => None,
+            };
             operators::op_slice(t, &starts, &ends, axes.as_deref(), steps.as_deref())
         }
         OpKind::Pad => {
             let t = require_input(inputs, 0, "Pad")?;
             let pads_tensor = require_input(inputs, 1, "Pad")?;
             let constant_tensor = optional_input(inputs, 2);
-            let pads = read_i64_tensor(pads_tensor);
+            let pads = read_i64_tensor(pads_tensor)?;
             let mode_bytes = attrs
                 .iter()
                 .find(|a| a.name == "mode")
@@ -1148,15 +1224,28 @@ fn require_inputs<'a>(
     Ok(refs)
 }
 
-/// Reads an i64 tensor's raw_data as a Vec<i64>.
-fn read_i64_tensor(tensor: &Tensor) -> Vec<i64> {
-    if tensor.data_type == DataType::Int64 && tensor.raw_data.len() >= I64_SIZE {
-        let count = tensor.raw_data.len() / I64_SIZE;
-        (0..count)
-            .map(|i| byte_io::read_i64(&tensor.raw_data, i))
-            .collect()
-    } else {
-        Vec::new()
+/// Reads an integer tensor's raw_data as a `Vec<i64>`.
+///
+/// Accepts Int64 (native) and Int32 (converted). Returns an error for
+/// other dtypes so callers such as Expand/Tile/Reshape fail fast rather
+/// than silently no-op'ing on an unexpected dtype.
+fn read_i64_tensor(tensor: &Tensor) -> Result<Vec<i64>, OpError> {
+    match tensor.data_type {
+        DataType::Int64 => {
+            let count = tensor.raw_data.len() / I64_SIZE;
+            Ok((0..count)
+                .map(|i| byte_io::read_i64(&tensor.raw_data, i))
+                .collect())
+        }
+        DataType::Int32 => {
+            let count = tensor.raw_data.len() / 4;
+            Ok((0..count)
+                .map(|i| byte_io::read_i32(&tensor.raw_data, i) as i64)
+                .collect())
+        }
+        _ => Err(OpError::ShapeMismatch(String::from(
+            "expected Int32 or Int64 tensor",
+        ))),
     }
 }
 
@@ -1724,7 +1813,7 @@ mod tests {
         assert_eq!(tensor.raw_data.len(), 24); // 3 × 8 bytes
 
         // Verify round-trip: read back the i64 values
-        let vals = read_i64_tensor(&tensor);
+        let vals = read_i64_tensor(&tensor).unwrap();
         assert_eq!(vals, vec![10, 20, 30]);
     }
 
