@@ -13,6 +13,11 @@ use crate::byte_io::{self, allocate_tensor_data, I64_SIZE};
 use crate::graph::ExecutionGraph;
 use crate::onnx_types::{AttributeProto, AttributeType, TensorProto};
 use crate::operators::{self, OpError, OpKind};
+#[cfg(test)]
+use crate::profile::NullTimeSource;
+use crate::profile::{
+    classify_op, BudgetResult, InferenceProfile, OperatorBudget, OperatorMeasurement, TimeSource,
+};
 use crate::session::{InferenceOutput, SessionError};
 use crate::tensor::{DataType, Tensor, TensorShape};
 
@@ -31,6 +36,9 @@ pub fn execute_graph(
     inputs: &[(String, Tensor)],
     initializers: &[TensorProto],
     yield_fn: Option<fn()>,
+    mut profile: Option<&mut InferenceProfile>,
+    budget: &OperatorBudget,
+    time_source: &dyn TimeSource,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
 ) -> Result<Vec<InferenceOutput>, SessionError> {
     let mut value_map: BTreeMap<String, Tensor> = BTreeMap::new();
@@ -64,15 +72,56 @@ pub fn execute_graph(
             })
             .collect();
 
-        // Dispatch operator
-        let outputs = dispatch_node(
-            &node.op_type,
-            &input_tensors,
-            &node.attributes,
-            #[cfg(feature = "gpu")]
-            gpu_backend,
-        )
-        .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
+        // Dispatch operator (optionally wrapped in timing measurement).
+        let outputs = if let Some(prof) = profile.as_mut() {
+            let start = time_source.now_us();
+            let outputs = dispatch_node(
+                &node.op_type,
+                &input_tensors,
+                &node.attributes,
+                #[cfg(feature = "gpu")]
+                gpu_backend,
+            )
+            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
+            let elapsed = time_source.now_us().saturating_sub(start);
+
+            let class = classify_op(&node.op_type);
+            let budget_result = budget.check(class, elapsed);
+
+            prof.operators.push(OperatorMeasurement {
+                op_type: node.op_type.clone(),
+                class,
+                actual_us: elapsed,
+                budget_result,
+            });
+            prof.total_us = prof.total_us.saturating_add(elapsed);
+
+            match budget_result {
+                BudgetResult::Ok => {}
+                BudgetResult::Warning => prof.warnings_count += 1,
+                BudgetResult::SoftLimit => prof.soft_limit_count += 1,
+                BudgetResult::HardLimit => {
+                    prof.hard_limit_aborted = true;
+                    return Err(SessionError::ExecutionFailed(alloc::format!(
+                        "operator '{}' exceeded hard time limit: {} us",
+                        node.op_type,
+                        elapsed
+                    )));
+                }
+            }
+
+            outputs
+        } else {
+            // Zero-overhead path: no profiling.
+            dispatch_node(
+                &node.op_type,
+                &input_tensors,
+                &node.attributes,
+                #[cfg(feature = "gpu")]
+                gpu_backend,
+            )
+            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?
+        };
 
         // Store outputs in value map
         for (i, output_name) in node.outputs.iter().enumerate() {
@@ -647,7 +696,16 @@ mod tests {
         let input = make_f32_tensor("x", &[1, 4], &[-1.0, 0.0, 1.0, 2.0]);
         let inputs = vec![("x".to_string(), input)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "y");
 
@@ -677,7 +735,16 @@ mod tests {
         let input = make_f32_tensor("x", &[1, 3], &[1.0, 2.0, 3.0]);
         let inputs = vec![("x".to_string(), input)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         let out_data: Vec<f32> = (0..3)
             .map(|i| {
                 f32::from_le_bytes([
@@ -716,7 +783,16 @@ mod tests {
             ("b".to_string(), b),
         ];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         // MatMul: [1,2] @ [2,2] = [1,2] → [1.0, 2.0]
         // Add: [1.0, 2.0] + [-0.5, -3.0] = [0.5, -1.0]
         // Relu: [0.5, 0.0]
@@ -785,7 +861,16 @@ mod tests {
             ..TensorProto::default()
         };
 
-        let results = execute_graph(&exec_graph, &inputs, &[w_init], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[w_init],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         let out_data: Vec<f32> = (0..2)
             .map(|i| {
                 f32::from_le_bytes([
@@ -825,7 +910,16 @@ mod tests {
         let input = make_f32_tensor("x", &[1, 4], &[1.0, 2.0, 3.0, 4.0]);
         let inputs = vec![("x".to_string(), input)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "y");
 
@@ -853,7 +947,16 @@ mod tests {
         let input = make_f32_tensor("x", &[1, 3], &[-10.0, 0.0, 10.0]);
         let inputs = vec![("x".to_string(), input)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         let out_data = read_f32_output(&results[0].tensor, 3);
         // sigmoid(0) ≈ 0.5
         assert!(
@@ -879,7 +982,16 @@ mod tests {
         let input = make_f32_tensor("x", &[1, 3], &[5.0, 10.0, 15.0]);
         let inputs = vec![("x".to_string(), input)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         let out_data = read_f32_output(&results[0].tensor, 3);
         assert_eq!(out_data, vec![0.0, 0.0, 0.0]);
     }
@@ -898,7 +1010,16 @@ mod tests {
         let two = make_f32_tensor("two", &[1, 3], &[2.0, 2.0, 2.0]);
         let inputs = vec![("x".to_string(), x), ("two".to_string(), two)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         let out_data = read_f32_output(&results[0].tensor, 3);
         assert_eq!(out_data, vec![2.0, 4.0, 6.0]);
     }
@@ -920,7 +1041,16 @@ mod tests {
         let one = make_f32_tensor("one", &[1, 3], &[1.0, 1.0, 1.0]);
         let inputs = vec![("x".to_string(), x), ("one".to_string(), one)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         assert_eq!(results.len(), 2);
 
         // Find outputs by name (order may vary)
@@ -944,7 +1074,15 @@ mod tests {
         );
         let exec_graph = build_execution_graph(&graph_proto).unwrap();
 
-        let result = execute_graph(&exec_graph, &[], &[], None);
+        let result = execute_graph(
+            &exec_graph,
+            &[],
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
@@ -970,7 +1108,15 @@ mod tests {
         let input = make_f32_tensor("x", &[1, 2], &[1.0, 2.0]);
         let inputs = vec![("x".to_string(), input)];
 
-        let result = execute_graph(&exec_graph, &inputs, &[], None);
+        let result = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        );
         assert!(result.is_err());
         let err = result.unwrap_err();
         match err {
@@ -1010,7 +1156,16 @@ mod tests {
         let input = make_f32_tensor("x", &[1, 2], &[1.0, 2.0]);
         let inputs = vec![("x".to_string(), input)];
 
-        let _results = execute_graph(&exec_graph, &inputs, &[], Some(test_yield)).unwrap();
+        let _results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            Some(test_yield),
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         assert_eq!(
             YIELD_COUNT.load(Ordering::Relaxed),
             3,
@@ -1080,7 +1235,16 @@ mod tests {
         let w = make_f32_tensor("w", &[1, 1, 1, 1], &[1.0]); // 1×1 kernel, weight=1
         let inputs = vec![("x".to_string(), x), ("w".to_string(), w)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         let out_data = read_f32_output(&results[0].tensor, 4);
         // 1×1 conv with weight=1.0 is identity
@@ -1114,7 +1278,16 @@ mod tests {
 
         let inputs = vec![("x".to_string(), x), ("shape".to_string(), shape_tensor)];
 
-        let results = execute_graph(&exec_graph, &inputs, &[], None).unwrap();
+        let results = execute_graph(
+            &exec_graph,
+            &inputs,
+            &[],
+            None,
+            None,
+            &OperatorBudget::DEFAULT,
+            &NullTimeSource,
+        )
+        .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].tensor.shape.dims, vec![3, 2]);
 

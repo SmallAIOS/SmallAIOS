@@ -26,10 +26,17 @@ The key property: preemption points are known at compile time. There is no non-d
 
 ### 2. Per-Operator Time Budgets
 
-`OperatorBudget` enforces time bounds on individual operators:
+`OperatorBudget` enforces time bounds on individual operators. **Enforcement
+is now live** as of `timer-hal-wcet-v1`: the ONNX executor measures each
+operator via a `TimeSource` trait (`StdTimeSource` in container mode,
+architecture-timer-backed in kernel mode), classifies it via `classify_op()`,
+and checks the elapsed time against `OperatorBudget`. Use
+`Session::run_with_profile()` to opt into measurement and receive an
+`InferenceProfile` with per-operator timings; `Session::run()` still takes the
+zero-overhead path via `NullTimeSource`.
 
 - **Soft budget** (`budget_ns`): log a warning if exceeded. Default: 100 ms.
-- **Hard limit** (`hard_limit_multiplier`): abort the operator if elapsed time exceeds `budget_ns * multiplier`. Default: 10x (1 second).
+- **Hard limit** (`hard_limit_multiplier`): abort the operator if elapsed time exceeds `budget_ns * multiplier`. Default: 10x (1 second). Hard-limit violations fail the inference with `SessionError::ExecutionFailed`.
 
 This maps to:
 - **ARINC 653 time partitioning** -- each operator gets a bounded time window.

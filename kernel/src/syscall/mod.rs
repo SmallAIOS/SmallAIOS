@@ -678,11 +678,13 @@ mod tests {
             let args = SyscallArgs::new(nr, max_args);
             let result = dispatch(&args);
             // Must return a valid error code, not panic.
-            // SYS_WATCHDOG_REMAINING and TASK_CURRENT legitimately return positive values.
+            // SYS_WATCHDOG_REMAINING, TASK_CURRENT and SYS_TIME legitimately
+            // return positive values.
             assert!(
                 result <= 0
                     || nr == super::nr::SYS_WATCHDOG_REMAINING
-                    || nr == super::nr::TASK_CURRENT,
+                    || nr == super::nr::TASK_CURRENT
+                    || nr == super::nr::SYS_TIME,
             );
         }
     }
@@ -957,10 +959,9 @@ mod tests {
 
         // sys_info with null buf_ptr returns the required buffer size (positive)
         assert!(dispatch(&SyscallArgs::zero(nr::SYS_INFO)) > 0);
-        assert_eq!(
-            dispatch(&SyscallArgs::zero(nr::SYS_TIME)),
-            SyscallError::Success.as_i64()
-        );
+        // sys_time returns a non-negative monotonic timestamp — exact value
+        // depends on the architecture timer state so we only check sign.
+        assert!(dispatch(&SyscallArgs::zero(nr::SYS_TIME)) >= 0);
         assert_eq!(
             dispatch(&SyscallArgs::zero(nr::SYS_SHUTDOWN)),
             SyscallError::PermissionDenied.as_i64()
