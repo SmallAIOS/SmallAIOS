@@ -61,6 +61,12 @@ fn main() {
     // Wrap manager in Arc for sharing with route closures.
     let manager = Arc::new(manager);
 
+    // Build the inference session map for the HTTP handler. This
+    // parses each .onnx file once at startup so request handling is
+    // pure dispatch. Failures are logged by `load_sessions` itself.
+    let http_sessions: Arc<BTreeMap<String, Session>> = Arc::new(load_sessions(&manager));
+    println!("HTTP inference sessions ready: {}", http_sessions.len());
+
     // Bus/dataflow runner startup (zenoh/dds/can/none).
     let runner_handles =
         enable_dataflow_runner(&bus_backend, Arc::clone(&manager), Arc::clone(&shutdown));
@@ -75,11 +81,20 @@ fn main() {
         }
     };
 
-    // Inference
-    let mgr = Arc::clone(&manager);
-    http.route_fn("POST", "/v1/inference", move |req| {
-        handlers::handle_inference(req, &mgr)
-    });
+    // Inference — use the real executor-backed handler if any session
+    // loaded, otherwise fall back to the metadata-only handler that
+    // still reports 404 / 400 for missing or malformed requests.
+    if !http_sessions.is_empty() {
+        let sessions = Arc::clone(&http_sessions);
+        http.route_fn("POST", "/v1/inference", move |req| {
+            handlers::handle_inference_exec(req, &sessions)
+        });
+    } else {
+        let mgr = Arc::clone(&manager);
+        http.route_fn("POST", "/v1/inference", move |req| {
+            handlers::handle_inference(req, &mgr)
+        });
+    }
 
     // Model registry — specific model must be registered before the list
     // route so the longer prefix matches first.
