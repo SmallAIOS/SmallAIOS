@@ -128,6 +128,90 @@ pub enum OpKind {
     ReduceMean,
     /// Reduce tensor by computing the sum.
     ReduceSum,
+
+    // ---- Tier 2: math primitives ----
+    /// Element-wise power.
+    Pow,
+    /// Element-wise square root.
+    Sqrt,
+    /// Element-wise natural exponential.
+    Exp,
+    /// Element-wise natural logarithm.
+    Log,
+    /// Element-wise error function.
+    Erf,
+    /// Element-wise negation.
+    Neg,
+    /// Element-wise absolute value.
+    Abs,
+    /// Element-wise floor.
+    Floor,
+    /// Element-wise ceiling.
+    Ceil,
+    /// Element-wise rounding.
+    Round,
+
+    // ---- Tier 2: comparison and selection ----
+    /// Element-wise equality.
+    Equal,
+    /// Element-wise inequality.
+    NotEqual,
+    /// Element-wise less-than.
+    Less,
+    /// Element-wise less-than-or-equal.
+    LessOrEqual,
+    /// Element-wise greater-than.
+    Greater,
+    /// Element-wise greater-than-or-equal.
+    GreaterOrEqual,
+    /// Element-wise ternary select.
+    Where,
+    /// Element-wise minimum.
+    Min,
+    /// Element-wise maximum.
+    Max,
+    /// Element-wise boolean negation.
+    Not,
+
+    // ---- Tier 2: composite activations ----
+    /// Gaussian Error Linear Unit.
+    Gelu,
+    /// Leaky ReLU.
+    LeakyRelu,
+    /// Exponential Linear Unit.
+    Elu,
+    /// Sigmoid Linear Unit (Swish/SiLU).
+    Swish,
+
+    // ---- Tier 2: recurrent ----
+    /// Basic RNN.
+    RNN,
+    /// Long Short-Term Memory.
+    LSTM,
+    /// Gated Recurrent Unit.
+    GRU,
+
+    // ---- Tier 2: transformer building blocks ----
+    /// Split tensor along an axis.
+    Split,
+    /// Expand (broadcast) to a target shape.
+    Expand,
+    /// Repeat tensor along axes.
+    Tile,
+    /// One-hot encoding.
+    OneHot,
+    /// Einstein summation.
+    Einsum,
+
+    // ---- Tier 2: quantized ----
+    /// Float -> int8/uint8 quantization.
+    QuantizeLinear,
+    /// int8/uint8 -> float dequantization.
+    DequantizeLinear,
+    /// Quantized matrix multiply.
+    QLinearMatMul,
+    /// Quantized convolution.
+    QLinearConv,
 }
 
 impl OpKind {
@@ -165,6 +249,48 @@ impl OpKind {
             "Clip" => Some(OpKind::Clip),
             "ReduceMean" => Some(OpKind::ReduceMean),
             "ReduceSum" => Some(OpKind::ReduceSum),
+            // Tier 2: math
+            "Pow" => Some(OpKind::Pow),
+            "Sqrt" => Some(OpKind::Sqrt),
+            "Exp" => Some(OpKind::Exp),
+            "Log" => Some(OpKind::Log),
+            "Erf" => Some(OpKind::Erf),
+            "Neg" => Some(OpKind::Neg),
+            "Abs" => Some(OpKind::Abs),
+            "Floor" => Some(OpKind::Floor),
+            "Ceil" => Some(OpKind::Ceil),
+            "Round" => Some(OpKind::Round),
+            // Tier 2: comparison
+            "Equal" => Some(OpKind::Equal),
+            "NotEqual" => Some(OpKind::NotEqual),
+            "Less" => Some(OpKind::Less),
+            "LessOrEqual" => Some(OpKind::LessOrEqual),
+            "Greater" => Some(OpKind::Greater),
+            "GreaterOrEqual" => Some(OpKind::GreaterOrEqual),
+            "Where" => Some(OpKind::Where),
+            "Min" => Some(OpKind::Min),
+            "Max" => Some(OpKind::Max),
+            "Not" => Some(OpKind::Not),
+            // Tier 2: activations
+            "Gelu" => Some(OpKind::Gelu),
+            "LeakyRelu" => Some(OpKind::LeakyRelu),
+            "Elu" => Some(OpKind::Elu),
+            "Swish" => Some(OpKind::Swish),
+            // Tier 2: recurrent
+            "RNN" => Some(OpKind::RNN),
+            "LSTM" => Some(OpKind::LSTM),
+            "GRU" => Some(OpKind::GRU),
+            // Tier 2: transformer
+            "Split" => Some(OpKind::Split),
+            "Expand" => Some(OpKind::Expand),
+            "Tile" => Some(OpKind::Tile),
+            "OneHot" => Some(OpKind::OneHot),
+            "Einsum" => Some(OpKind::Einsum),
+            // Tier 2: quantized
+            "QuantizeLinear" => Some(OpKind::QuantizeLinear),
+            "DequantizeLinear" => Some(OpKind::DequantizeLinear),
+            "QLinearMatMul" => Some(OpKind::QLinearMatMul),
+            "QLinearConv" => Some(OpKind::QLinearConv),
             _ => None,
         }
     }
@@ -201,6 +327,42 @@ impl OpKind {
             OpKind::Clip => "Clip",
             OpKind::ReduceMean => "ReduceMean",
             OpKind::ReduceSum => "ReduceSum",
+            OpKind::Pow => "Pow",
+            OpKind::Sqrt => "Sqrt",
+            OpKind::Exp => "Exp",
+            OpKind::Log => "Log",
+            OpKind::Erf => "Erf",
+            OpKind::Neg => "Neg",
+            OpKind::Abs => "Abs",
+            OpKind::Floor => "Floor",
+            OpKind::Ceil => "Ceil",
+            OpKind::Round => "Round",
+            OpKind::Equal => "Equal",
+            OpKind::NotEqual => "NotEqual",
+            OpKind::Less => "Less",
+            OpKind::LessOrEqual => "LessOrEqual",
+            OpKind::Greater => "Greater",
+            OpKind::GreaterOrEqual => "GreaterOrEqual",
+            OpKind::Where => "Where",
+            OpKind::Min => "Min",
+            OpKind::Max => "Max",
+            OpKind::Not => "Not",
+            OpKind::Gelu => "Gelu",
+            OpKind::LeakyRelu => "LeakyRelu",
+            OpKind::Elu => "Elu",
+            OpKind::Swish => "Swish",
+            OpKind::RNN => "RNN",
+            OpKind::LSTM => "LSTM",
+            OpKind::GRU => "GRU",
+            OpKind::Split => "Split",
+            OpKind::Expand => "Expand",
+            OpKind::Tile => "Tile",
+            OpKind::OneHot => "OneHot",
+            OpKind::Einsum => "Einsum",
+            OpKind::QuantizeLinear => "QuantizeLinear",
+            OpKind::DequantizeLinear => "DequantizeLinear",
+            OpKind::QLinearMatMul => "QLinearMatMul",
+            OpKind::QLinearConv => "QLinearConv",
         }
     }
 }
@@ -240,6 +402,43 @@ const ALL_OPS: &[OpKind] = &[
     OpKind::Clip,
     OpKind::ReduceMean,
     OpKind::ReduceSum,
+    // Tier 2
+    OpKind::Pow,
+    OpKind::Sqrt,
+    OpKind::Exp,
+    OpKind::Log,
+    OpKind::Erf,
+    OpKind::Neg,
+    OpKind::Abs,
+    OpKind::Floor,
+    OpKind::Ceil,
+    OpKind::Round,
+    OpKind::Equal,
+    OpKind::NotEqual,
+    OpKind::Less,
+    OpKind::LessOrEqual,
+    OpKind::Greater,
+    OpKind::GreaterOrEqual,
+    OpKind::Where,
+    OpKind::Min,
+    OpKind::Max,
+    OpKind::Not,
+    OpKind::Gelu,
+    OpKind::LeakyRelu,
+    OpKind::Elu,
+    OpKind::Swish,
+    OpKind::RNN,
+    OpKind::LSTM,
+    OpKind::GRU,
+    OpKind::Split,
+    OpKind::Expand,
+    OpKind::Tile,
+    OpKind::OneHot,
+    OpKind::Einsum,
+    OpKind::QuantizeLinear,
+    OpKind::DequantizeLinear,
+    OpKind::QLinearMatMul,
+    OpKind::QLinearConv,
 ];
 
 /// Registry of supported ONNX operators.
@@ -312,7 +511,7 @@ const F32_MANTISSA_BITS: u32 = 23;
 /// Computes e^x for f32 using range reduction and polynomial approximation.
 ///
 /// Accurate to ~1 ULP for typical inference ranges.
-fn expf_approx(x: f32) -> f32 {
+pub(crate) fn expf_approx(x: f32) -> f32 {
     // Clamp to avoid overflow/underflow
     let x = x.clamp(EXP_CLAMP_MIN, EXP_CLAMP_MAX);
 
@@ -1681,7 +1880,7 @@ pub fn op_clip(
 // ---------------------------------------------------------------------------
 
 /// Approximate square root using Newton's method (no_std).
-fn sqrt_approx(x: f32) -> f32 {
+pub(crate) fn sqrt_approx(x: f32) -> f32 {
     if x <= 0.0 {
         return 0.0;
     }
@@ -2656,7 +2855,7 @@ mod tests {
     #[test]
     fn test_registry_supported_count() {
         let registry = OperatorRegistry::new();
-        assert_eq!(registry.supported_count(), 29);
+        assert_eq!(registry.supported_count(), 65);
     }
 
     #[test]

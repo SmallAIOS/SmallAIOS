@@ -13,6 +13,7 @@ use crate::byte_io::{self, allocate_tensor_data, I64_SIZE};
 use crate::graph::ExecutionGraph;
 use crate::onnx_types::{AttributeProto, AttributeType, TensorProto};
 use crate::operators::{self, OpError, OpKind};
+use crate::ops;
 #[cfg(test)]
 use crate::profile::NullTimeSource;
 use crate::profile::{
@@ -270,6 +271,15 @@ fn dispatch_node(
     let kind =
         OpKind::parse_str(op_type).ok_or_else(|| OpError::UnsupportedOp(String::from(op_type)))?;
 
+    // Multi-output ops bypass the single-tensor wrapper.
+    match kind {
+        OpKind::Split => return dispatch_split(inputs, attrs),
+        OpKind::LSTM => return dispatch_lstm(inputs, attrs),
+        OpKind::GRU => return dispatch_gru(inputs, attrs),
+        OpKind::RNN => return dispatch_rnn(inputs, attrs),
+        _ => {}
+    }
+
     let result = match kind {
         OpKind::Add | OpKind::Sub | OpKind::Mul | OpKind::Div | OpKind::MatMul | OpKind::Gemm => {
             dispatch_arithmetic(kind, inputs, attrs)
@@ -296,9 +306,317 @@ fn dispatch_node(
         | OpKind::Pad
         | OpKind::Cast
         | OpKind::Clip => dispatch_shape(kind, inputs, attrs),
+        OpKind::Pow
+        | OpKind::Sqrt
+        | OpKind::Exp
+        | OpKind::Log
+        | OpKind::Erf
+        | OpKind::Neg
+        | OpKind::Abs
+        | OpKind::Floor
+        | OpKind::Ceil
+        | OpKind::Round => dispatch_math(kind, inputs, attrs),
+        OpKind::Equal
+        | OpKind::NotEqual
+        | OpKind::Less
+        | OpKind::LessOrEqual
+        | OpKind::Greater
+        | OpKind::GreaterOrEqual
+        | OpKind::Where
+        | OpKind::Min
+        | OpKind::Max
+        | OpKind::Not => dispatch_compare(kind, inputs, attrs),
+        OpKind::Gelu | OpKind::LeakyRelu | OpKind::Elu | OpKind::Swish => {
+            dispatch_composite_activation(kind, inputs, attrs)
+        }
+        OpKind::Expand | OpKind::Tile | OpKind::OneHot | OpKind::Einsum => {
+            dispatch_transformer(kind, inputs, attrs)
+        }
+        OpKind::QuantizeLinear
+        | OpKind::DequantizeLinear
+        | OpKind::QLinearMatMul
+        | OpKind::QLinearConv => dispatch_quantized(kind, inputs, attrs),
+        // Multi-output kinds handled above and returned early.
+        OpKind::Split | OpKind::LSTM | OpKind::GRU | OpKind::RNN => unreachable!(),
     };
 
     result.map(|t| alloc::vec![t])
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2 dispatch helpers
+// ---------------------------------------------------------------------------
+
+/// Dispatches Tier 2 element-wise math primitives.
+fn dispatch_math(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    _attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Pow => {
+            let base = require_input(inputs, 0, "Pow")?;
+            let exp = require_input(inputs, 1, "Pow")?;
+            ops::math::op_pow(base, exp)
+        }
+        OpKind::Sqrt => ops::math::op_sqrt(require_input(inputs, 0, "Sqrt")?),
+        OpKind::Exp => ops::math::op_exp(require_input(inputs, 0, "Exp")?),
+        OpKind::Log => ops::math::op_log(require_input(inputs, 0, "Log")?),
+        OpKind::Erf => ops::math::op_erf(require_input(inputs, 0, "Erf")?),
+        OpKind::Neg => ops::math::op_neg(require_input(inputs, 0, "Neg")?),
+        OpKind::Abs => ops::math::op_abs(require_input(inputs, 0, "Abs")?),
+        OpKind::Floor => ops::math::op_floor(require_input(inputs, 0, "Floor")?),
+        OpKind::Ceil => ops::math::op_ceil(require_input(inputs, 0, "Ceil")?),
+        OpKind::Round => ops::math::op_round(require_input(inputs, 0, "Round")?),
+        _ => Err(OpError::UnsupportedOp(String::from("math"))),
+    }
+}
+
+/// Dispatches Tier 2 comparison/selection operators.
+fn dispatch_compare(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    _attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Equal => {
+            let a = require_input(inputs, 0, "Equal")?;
+            let b = require_input(inputs, 1, "Equal")?;
+            ops::compare::op_equal(a, b)
+        }
+        OpKind::NotEqual => {
+            let a = require_input(inputs, 0, "NotEqual")?;
+            let b = require_input(inputs, 1, "NotEqual")?;
+            ops::compare::op_not_equal(a, b)
+        }
+        OpKind::Less => {
+            let a = require_input(inputs, 0, "Less")?;
+            let b = require_input(inputs, 1, "Less")?;
+            ops::compare::op_less(a, b)
+        }
+        OpKind::LessOrEqual => {
+            let a = require_input(inputs, 0, "LessOrEqual")?;
+            let b = require_input(inputs, 1, "LessOrEqual")?;
+            ops::compare::op_less_or_equal(a, b)
+        }
+        OpKind::Greater => {
+            let a = require_input(inputs, 0, "Greater")?;
+            let b = require_input(inputs, 1, "Greater")?;
+            ops::compare::op_greater(a, b)
+        }
+        OpKind::GreaterOrEqual => {
+            let a = require_input(inputs, 0, "GreaterOrEqual")?;
+            let b = require_input(inputs, 1, "GreaterOrEqual")?;
+            ops::compare::op_greater_or_equal(a, b)
+        }
+        OpKind::Where => {
+            let cond = require_input(inputs, 0, "Where")?;
+            let x = require_input(inputs, 1, "Where")?;
+            let y = require_input(inputs, 2, "Where")?;
+            ops::compare::op_where(cond, x, y)
+        }
+        OpKind::Min => {
+            let a = require_input(inputs, 0, "Min")?;
+            let b = require_input(inputs, 1, "Min")?;
+            ops::compare::op_min(a, b)
+        }
+        OpKind::Max => {
+            let a = require_input(inputs, 0, "Max")?;
+            let b = require_input(inputs, 1, "Max")?;
+            ops::compare::op_max(a, b)
+        }
+        OpKind::Not => ops::compare::op_not(require_input(inputs, 0, "Not")?),
+        _ => Err(OpError::UnsupportedOp(String::from("compare"))),
+    }
+}
+
+/// Dispatches Tier 2 composite activations.
+fn dispatch_composite_activation(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Gelu => ops::activations::op_gelu(require_input(inputs, 0, "Gelu")?),
+        OpKind::LeakyRelu => {
+            let x = require_input(inputs, 0, "LeakyRelu")?;
+            let alpha = get_attr_float(attrs, "alpha", 0.01);
+            ops::activations::op_leaky_relu(x, alpha)
+        }
+        OpKind::Elu => {
+            let x = require_input(inputs, 0, "Elu")?;
+            let alpha = get_attr_float(attrs, "alpha", 1.0);
+            ops::activations::op_elu(x, alpha)
+        }
+        OpKind::Swish => ops::activations::op_swish(require_input(inputs, 0, "Swish")?),
+        _ => Err(OpError::UnsupportedOp(String::from("composite-activation"))),
+    }
+}
+
+/// Dispatches transformer building-block ops (Expand/Tile/OneHot/Einsum).
+fn dispatch_transformer(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Expand => {
+            let x = require_input(inputs, 0, "Expand")?;
+            let shape_tensor = require_input(inputs, 1, "Expand")?;
+            let shape = read_i64_tensor(shape_tensor);
+            ops::transformer::op_expand(x, &shape)
+        }
+        OpKind::Tile => {
+            let x = require_input(inputs, 0, "Tile")?;
+            let repeats_tensor = require_input(inputs, 1, "Tile")?;
+            let repeats = read_i64_tensor(repeats_tensor);
+            ops::transformer::op_tile(x, &repeats)
+        }
+        OpKind::OneHot => {
+            let indices = require_input(inputs, 0, "OneHot")?;
+            let depth_tensor = require_input(inputs, 1, "OneHot")?;
+            let values = require_input(inputs, 2, "OneHot")?;
+            let depth = read_i64_tensor(depth_tensor)
+                .first()
+                .copied()
+                .ok_or_else(|| OpError::InvalidAttribute(String::from("OneHot depth missing")))?;
+            let axis = get_attr_int(attrs, "axis", -1);
+            ops::transformer::op_one_hot(indices, depth, values, axis)
+        }
+        OpKind::Einsum => {
+            let equation_bytes = attrs
+                .iter()
+                .find(|a| a.name == "equation")
+                .map(|a| a.s.as_slice())
+                .ok_or_else(|| {
+                    OpError::InvalidAttribute(String::from("Einsum requires 'equation'"))
+                })?;
+            let equation = core::str::from_utf8(equation_bytes)
+                .map_err(|_| OpError::InvalidAttribute(String::from("Einsum equation utf-8")))?;
+            let refs: Vec<&Tensor> = inputs.iter().filter_map(|i| *i).collect();
+            ops::transformer::op_einsum(equation, &refs)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("transformer"))),
+    }
+}
+
+/// Dispatches quantized operators.
+fn dispatch_quantized(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    _attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::QuantizeLinear => {
+            let x = require_input(inputs, 0, "QuantizeLinear")?;
+            let scale = require_input(inputs, 1, "QuantizeLinear")?;
+            let zero_point = optional_input(inputs, 2);
+            ops::quantized::op_quantize_linear(x, scale, zero_point)
+        }
+        OpKind::DequantizeLinear => {
+            let x = require_input(inputs, 0, "DequantizeLinear")?;
+            let scale = require_input(inputs, 1, "DequantizeLinear")?;
+            let zero_point = optional_input(inputs, 2);
+            ops::quantized::op_dequantize_linear(x, scale, zero_point)
+        }
+        OpKind::QLinearMatMul => {
+            let a = require_input(inputs, 0, "QLinearMatMul")?;
+            let a_scale = require_input(inputs, 1, "QLinearMatMul")?;
+            let a_zp = require_input(inputs, 2, "QLinearMatMul")?;
+            let b = require_input(inputs, 3, "QLinearMatMul")?;
+            let b_scale = require_input(inputs, 4, "QLinearMatMul")?;
+            let b_zp = require_input(inputs, 5, "QLinearMatMul")?;
+            let y_scale = require_input(inputs, 6, "QLinearMatMul")?;
+            let y_zp = require_input(inputs, 7, "QLinearMatMul")?;
+            ops::quantized::op_qlinear_matmul(a, a_scale, a_zp, b, b_scale, b_zp, y_scale, y_zp)
+        }
+        OpKind::QLinearConv => {
+            let x = require_input(inputs, 0, "QLinearConv")?;
+            let x_scale = require_input(inputs, 1, "QLinearConv")?;
+            let x_zp = require_input(inputs, 2, "QLinearConv")?;
+            let w = require_input(inputs, 3, "QLinearConv")?;
+            let w_scale = require_input(inputs, 4, "QLinearConv")?;
+            let w_zp = require_input(inputs, 5, "QLinearConv")?;
+            let y_scale = require_input(inputs, 6, "QLinearConv")?;
+            let y_zp = require_input(inputs, 7, "QLinearConv")?;
+            let bias = optional_input(inputs, 8);
+            ops::quantized::op_qlinear_conv(x, x_scale, x_zp, w, w_scale, w_zp, y_scale, y_zp, bias)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("quantized"))),
+    }
+}
+
+/// Dispatches Split (multi-output).
+fn dispatch_split(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "Split")?;
+    let axis = get_attr_int(attrs, "axis", 0);
+    // Opset 13+: 'split' is an input tensor (i64).
+    // Older: 'split' is an int list attribute.
+    let split_input = optional_input(inputs, 1).map(read_i64_tensor);
+    let split_attr = get_attr_ints(attrs, "split").map(|s| s.to_vec());
+    let split_sizes = split_input.or(split_attr);
+    ops::transformer::op_split(x, axis, split_sizes.as_deref())
+}
+
+/// Dispatches LSTM (multi-output).
+fn dispatch_lstm(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "LSTM")?;
+    let w = require_input(inputs, 1, "LSTM")?;
+    let r = require_input(inputs, 2, "LSTM")?;
+    let b = optional_input(inputs, 3);
+    let h0 = optional_input(inputs, 5);
+    let c0 = optional_input(inputs, 6);
+    let direction_bytes = attrs
+        .iter()
+        .find(|a| a.name == "direction")
+        .map(|a| a.s.as_slice())
+        .unwrap_or(b"forward");
+    let direction = core::str::from_utf8(direction_bytes).unwrap_or("forward");
+    ops::recurrent::op_lstm(x, w, r, b, h0, c0, direction)
+}
+
+/// Dispatches GRU (multi-output).
+fn dispatch_gru(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "GRU")?;
+    let w = require_input(inputs, 1, "GRU")?;
+    let r = require_input(inputs, 2, "GRU")?;
+    let b = optional_input(inputs, 3);
+    let h0 = optional_input(inputs, 5);
+    let direction_bytes = attrs
+        .iter()
+        .find(|a| a.name == "direction")
+        .map(|a| a.s.as_slice())
+        .unwrap_or(b"forward");
+    let direction = core::str::from_utf8(direction_bytes).unwrap_or("forward");
+    ops::recurrent::op_gru(x, w, r, b, h0, direction)
+}
+
+/// Dispatches RNN (multi-output).
+fn dispatch_rnn(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "RNN")?;
+    let w = require_input(inputs, 1, "RNN")?;
+    let r = require_input(inputs, 2, "RNN")?;
+    let b = optional_input(inputs, 3);
+    let h0 = optional_input(inputs, 5);
+    let direction_bytes = attrs
+        .iter()
+        .find(|a| a.name == "direction")
+        .map(|a| a.s.as_slice())
+        .unwrap_or(b"forward");
+    let direction = core::str::from_utf8(direction_bytes).unwrap_or("forward");
+    ops::recurrent::op_rnn(x, w, r, b, h0, direction)
 }
 
 /// Dispatches arithmetic operators: Add, Sub, Mul, Div, MatMul, Gemm.
