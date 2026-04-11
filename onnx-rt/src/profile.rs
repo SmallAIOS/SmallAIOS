@@ -3,9 +3,9 @@
 
 //! Per-operator profiling, timing, and WCET budget enforcement.
 //!
-//! This module mirrors the kernel-side OperatorBudget/BudgetResult types
-//! so onnx-rt stays at Layer 1 (can't depend on kernel at Layer 0).
-//! A future refactor may share these via a new sched-types crate.
+//! Shared primitive types (`OperatorClass`, `OperatorBudget`, `BudgetResult`)
+//! live in the Layer 0 `smallaios-sched-types` crate and are re-exported here
+//! so existing call sites keep working.
 
 extern crate alloc;
 #[cfg(feature = "std")]
@@ -63,73 +63,7 @@ impl TimeSource for StdTimeSource {
     }
 }
 
-/// Operator category for budget lookup. Mirrors kernel OperatorClass.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OperatorClass {
-    Elementwise,
-    Reduction,
-    Gemm,
-    Attention,
-    GpuKernel,
-}
-
-/// Result of checking an operator's execution time against its budget.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BudgetResult {
-    Ok,
-    Warning,
-    SoftLimit,
-    HardLimit,
-}
-
-/// Per-operator execution time budgets in microseconds.
-#[derive(Debug, Clone, Copy)]
-pub struct OperatorBudget {
-    pub elementwise_us: u64,
-    pub reduction_us: u64,
-    pub gemm_us: u64,
-    pub attention_us: u64,
-    pub gpu_kernel_us: u64,
-    pub soft_multiplier: u64,
-    pub hard_multiplier: u64,
-}
-
-impl OperatorBudget {
-    pub const DEFAULT: Self = Self {
-        elementwise_us: 1_000,
-        reduction_us: 10_000,
-        gemm_us: 100_000,
-        attention_us: 500_000,
-        gpu_kernel_us: 1_000_000,
-        soft_multiplier: 2,
-        hard_multiplier: 10,
-    };
-
-    pub fn check(&self, class: OperatorClass, actual_us: u64) -> BudgetResult {
-        let budget = match class {
-            OperatorClass::Elementwise => self.elementwise_us,
-            OperatorClass::Reduction => self.reduction_us,
-            OperatorClass::Gemm => self.gemm_us,
-            OperatorClass::Attention => self.attention_us,
-            OperatorClass::GpuKernel => self.gpu_kernel_us,
-        };
-        if actual_us > budget.saturating_mul(self.hard_multiplier) {
-            BudgetResult::HardLimit
-        } else if actual_us > budget.saturating_mul(self.soft_multiplier) {
-            BudgetResult::SoftLimit
-        } else if actual_us > budget {
-            BudgetResult::Warning
-        } else {
-            BudgetResult::Ok
-        }
-    }
-}
-
-impl Default for OperatorBudget {
-    fn default() -> Self {
-        Self::DEFAULT
-    }
-}
+pub use smallaios_sched_types::{BudgetResult, OperatorBudget, OperatorClass};
 
 /// Classify an ONNX operator name into its budget category.
 pub fn classify_op(op_type: &str) -> OperatorClass {

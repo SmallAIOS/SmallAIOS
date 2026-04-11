@@ -41,12 +41,13 @@ SmallAIOS is a 20-crate `#![no_std]` Rust workspace organized into a strict 4-la
 │  │  scheduler, ~46 syscalls  │  │  ML-KEM, ML-DSA, Ed25519,     │   │
 │  │                           │  │  X25519), formal gate          │   │
 │  └───────────────────────────┘  └───────────────────────────────┘   │
-│  ┌───────────────────────────┐                                      │
-│  │  compute                  │  Unified compute abstraction:        │
-│  │  CPU/GPU/NPU backends,    │  device registry, kernel dispatch,   │
-│  │  tensor buffer management │  backend trait hierarchy             │
-│  └───────────────────────────┘                                      │
+│  ┌───────────────────────────┐  ┌───────────────────────────────┐   │
+│  │  compute                  │  │  sched-types                  │   │
+│  │  CPU/GPU/NPU backends,    │  │  Shared scheduler primitives  │   │
+│  │  tensor buffer management │  │  (OperatorClass, Budget)      │   │
+│  └───────────────────────────┘  └───────────────────────────────┘   │
 │           kernel ──depends-on──▶ security                           │
+│           kernel ──depends-on──▶ sched-types                        │
 └─────────────────────────────────────────────────────────────────────┘
 
   Dependency direction: Layer 3 → Layer 2 → Layer 1 → Layer 0
@@ -60,6 +61,7 @@ SmallAIOS is a 20-crate `#![no_std]` Rust workspace organized into a strict 4-la
 | 0 | `smallaios-kernel` | Memory management, cooperative scheduler, syscall interface |
 | 0 | `smallaios-security` | Capability system, PQC crypto stack, formal verification gate |
 | 0 | `smallaios-compute` | Unified compute abstraction: device registry, kernel dispatch, tensor buffers |
+| 0 | `smallaios-sched-types` | Shared scheduler primitive types (`OperatorClass`, `OperatorBudget`, `BudgetResult`) |
 | 1 | `smallaios-net` | IPv4/IPv6, TCP/UDP, ARP/NDP, QUIC/HTTP3, TLS 1.3 |
 | 1 | `smallaios-ipc` | Zenoh-inspired pub/sub messaging |
 | 1 | `smallaios-posix` | Minimal POSIX compatibility layer |
@@ -89,7 +91,7 @@ Propagation cost measures the percentage of crates affected when a crate changes
 | Crate | Propagation Cost | Notes |
 |-------|-----------------|-------|
 | `security` | 100% | Foundation — all crates transitively affected |
-| `kernel` | 94% | 18 of 20 crates depend on it directly |
+| `kernel` | 94% | 18 of 21 crates depend on it directly |
 | `arch/nvidia` | 22% | Used by onnx-rt and aarch64 |
 | `net` | 17% | Used by container and posix |
 | `onnx-rt` | 17% | Used by container and aarch64 |
@@ -144,7 +146,7 @@ The scheduler is cooperative, not preemptive. Tasks yield at ONNX operator bound
 
 ### `#![no_std]` Throughout
 
-All 20 crates are `#![no_std]`. This enables bare-metal deployment on x86-64, ARM64, and RISC-V without a host OS. The same crates also compile for musl targets for container deployment, giving a single codebase for both deployment modes.
+All 21 crates are `#![no_std]`. This enables bare-metal deployment on x86-64, ARM64, and RISC-V without a host OS. The same crates also compile for musl targets for container deployment, giving a single codebase for both deployment modes.
 
 ### Size Goals
 

@@ -19,3 +19,4 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
 
 [dependencies]
 smallaios-security = { path = "../security" }
+smallaios-sched-types = { path = "../sched-types" }
