@@ -16,8 +16,16 @@ mod model_manager;
 #[allow(dead_code)]
 mod server;
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use smallaios_bus::can::controller::{CanController, CanMode, MockCanController};
+use smallaios_bus::can::inference_adapter::{AdapterConfig, CanInferenceAdapter};
+use smallaios_ipc::dataflow_runner::{DataflowRunner, DataflowRunnerConfig};
+use smallaios_onnx_rt::session::{self, Session, SessionConfig};
 
 fn main() {
     // Health check mode: quick probe for liveness, then exit.
@@ -54,7 +62,8 @@ fn main() {
     let manager = Arc::new(manager);
 
     // Bus/dataflow runner startup (zenoh/dds/can/none).
-    enable_dataflow_runner(&bus_backend, Arc::clone(&manager));
+    let runner_handles =
+        enable_dataflow_runner(&bus_backend, Arc::clone(&manager), Arc::clone(&shutdown));
 
     // Build HTTP server and register routes.
     let addr = format!("0.0.0.0:{}", port);
@@ -92,48 +101,250 @@ fn main() {
     println!("Ready. Listening on {}", addr);
     http.run();
     println!("Shutting down...");
+
+    // Ensure the shutdown flag is set so runner threads can observe it
+    // (the HTTP server loop already sets it on SIGTERM, but be defensive
+    // in case we fall out of `run()` via some other code path).
+    shutdown.store(true, Ordering::Relaxed);
+    for handle in runner_handles {
+        let _ = handle.join();
+    }
 }
 
-/// Start the pub/sub dataflow runner for the configured bus backend.
+/// Load every `ModelInfo` tracked by the manager into an initialised
+/// ONNX `Session`, keyed by model name.
 ///
-/// Recognized values for `SMALLAIOS_BUS_BACKEND`:
+/// Models that fail to read, parse, or initialise are logged and
+/// skipped; the runner can still start with the remaining sessions.
+fn load_sessions(manager: &model_manager::ModelManager) -> BTreeMap<String, Session> {
+    let mut sessions = BTreeMap::new();
+    for info in manager.list_models() {
+        if !info.loaded {
+            continue;
+        }
+        let bytes = match std::fs::read(&info.file_path) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("  load_sessions: failed to read {}: {}", info.file_path, e);
+                continue;
+            }
+        };
+        let model = match session::load_model(&bytes) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("  load_sessions: failed to parse {}: {}", info.name, e);
+                continue;
+            }
+        };
+        let mut s = Session::new(SessionConfig::default());
+        match s.initialize(&model) {
+            Ok(()) => {
+                sessions.insert(info.name.clone(), s);
+                println!("  Session ready: {}", info.name);
+            }
+            Err(e) => eprintln!("  load_sessions: failed to initialize {}: {}", info.name, e),
+        }
+    }
+    sessions
+}
+
+/// Build a [`DataflowRunner`] populated with sessions from the manager.
+///
+/// Returns `None` if no sessions could be loaded — callers use this as
+/// a signal to skip spawning the runner thread entirely.
+fn build_runner(manager: &model_manager::ModelManager) -> Option<DataflowRunner> {
+    let sessions = load_sessions(manager);
+    if sessions.is_empty() {
+        eprintln!("  no models loaded — runner will not start");
+        return None;
+    }
+    let mut runner = DataflowRunner::new(DataflowRunnerConfig::default());
+    for (name, sess) in sessions {
+        runner.register_session(name, sess);
+    }
+    Some(runner)
+}
+
+/// Spawn a background thread that owns a Zenoh-backed
+/// [`DataflowRunner`]. The runner currently runs in-process only: the
+/// external Zenoh wire protocol wire-up is deferred to a follow-up
+/// change. Until then the thread simply holds onto the runner and
+/// polls the shutdown flag, proving that the container can bring the
+/// runner up alongside the HTTP server without crashing.
+fn start_zenoh_dataflow_runner(
+    manager: Arc<model_manager::ModelManager>,
+    shutdown: Arc<AtomicBool>,
+) -> Option<JoinHandle<()>> {
+    let runner = build_runner(&manager)?;
+    let models = runner.model_names();
+    println!(
+        "  Zenoh runner ready: {} model(s) registered: {:?}",
+        models.len(),
+        models
+    );
+    Some(std::thread::spawn(move || {
+        // The runner is held by this thread for its lifetime. External
+        // pub/sub wiring (Zenoh TCP transport) is a follow-up change;
+        // here we just keep the sessions resident until shutdown fires.
+        let _runner = runner;
+        while !shutdown.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        println!("  Zenoh runner thread exiting");
+    }))
+}
+
+/// Spawn a background thread for the DDS backend. For the initial
+/// wire-up the DDS path mirrors the Zenoh path — both sit on the same
+/// in-process runner. The real DDS RTPS wire protocol is a follow-up
+/// change and, once it lands, this function will bridge it via
+/// `bus::dds::DdsZenohAdapter`.
+fn start_dds_dataflow_runner(
+    manager: Arc<model_manager::ModelManager>,
+    shutdown: Arc<AtomicBool>,
+) -> Option<JoinHandle<()>> {
+    let runner = build_runner(&manager)?;
+    let models = runner.model_names();
+    println!(
+        "  DDS runner ready: {} model(s) registered: {:?}",
+        models.len(),
+        models
+    );
+    println!("  NOTE: DDS RTPS wire protocol is not active; runs in-process");
+    Some(std::thread::spawn(move || {
+        let _runner = runner;
+        while !shutdown.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        println!("  DDS runner thread exiting");
+    }))
+}
+
+/// Spawn a background thread for the CAN backend. Uses a
+/// [`MockCanController`] for loopback; for MCP2515 and AXI specs we
+/// also fall back to the mock for now, logging a clear warning. Real
+/// hardware bring-up is a separate change (see
+/// `can-inference-bridge-v1` deferred tasks).
+fn start_can_dataflow_runner(
+    manager: Arc<model_manager::ModelManager>,
+    shutdown: Arc<AtomicBool>,
+    device: CanDeviceSpec,
+) -> Option<JoinHandle<()>> {
+    let runner = build_runner(&manager)?;
+    let models = runner.model_names();
+    println!(
+        "  CAN runner ready: {} model(s) registered: {:?}",
+        models.len(),
+        models
+    );
+
+    // Always use MockCanController until real drivers are wired in.
+    match device {
+        CanDeviceSpec::Loopback => {}
+        CanDeviceSpec::Mcp2515(ref path) => {
+            eprintln!(
+                "  WARNING: MCP2515 driver ({}) not wired; using in-process mock",
+                path
+            );
+        }
+        CanDeviceSpec::AxiCan(addr) => {
+            eprintln!(
+                "  WARNING: AXI CAN driver (0x{:x}) not wired; using in-process mock",
+                addr
+            );
+        }
+    }
+
+    let mut controller = MockCanController::new();
+    if let Err(e) = controller.init() {
+        eprintln!("  CAN controller init failed: {:?}", e);
+        return None;
+    }
+    if let Err(e) = controller.set_mode(CanMode::Loopback) {
+        eprintln!("  CAN controller set_mode failed: {:?}", e);
+        return None;
+    }
+
+    // Hard-coded empty routing table — real routing-file loading is a
+    // follow-up (see task group 4.2 notes). With no routes, incoming
+    // frames are counted under `unrouted_frames_total` and no batches
+    // are ever flushed, which is fine for the initial wire-up: the
+    // goal is to prove the thread starts cleanly and observes shutdown.
+    let mut adapter = CanInferenceAdapter::new(AdapterConfig::default());
+
+    Some(std::thread::spawn(move || {
+        let mut timestamp_us: u64 = 0;
+        while !shutdown.load(Ordering::Relaxed) {
+            // Drain anything the controller has for us.
+            loop {
+                match controller.receive() {
+                    Ok(Some(frame)) => {
+                        if let Some((topic, payload)) = adapter.process_frame(&frame, timestamp_us)
+                        {
+                            // Try to run inference for the topic's model.
+                            if let Ok(output_bytes) = runner.process_message(&topic, &payload) {
+                                let output_topic = runner.output_topic(&topic);
+                                let frames =
+                                    adapter.on_inference_output(&output_topic, &output_bytes);
+                                for frame in frames {
+                                    let _ = controller.transmit(&frame);
+                                }
+                            }
+                        }
+                        timestamp_us = timestamp_us.wrapping_add(100);
+                    }
+                    Ok(None) => break,
+                    Err(e) => {
+                        eprintln!("  CAN receive error: {:?}", e);
+                        break;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        println!("  CAN runner thread exiting");
+    }))
+}
+
+/// Start the pub/sub dataflow runner(s) for the configured bus
+/// backend. Returns the set of thread handles the caller must join
+/// before exiting.
+///
+/// Recognised values for `SMALLAIOS_BUS_BACKEND`:
 /// - `none`  — HTTP only (default)
-/// - `zenoh` — start a Zenoh-style pub/sub runner (topic
-///   `smallaios/inference/<model>/{input,output,error}`)
-/// - `dds`   — start a DDS runner via the bus::dds Zenoh adapter
-///
-/// This is currently a placeholder: the real runner lives behind the
-/// `onnx` feature in the `ipc` crate (`dataflow_runner` module), which
-/// is still being wired in a parallel change. Once that lands this
-/// function will start the runner in a background thread sharing the
-/// `ModelManager` Arc and hook its shutdown into the signal handler.
-fn enable_dataflow_runner(bus_backend: &str, _manager: Arc<model_manager::ModelManager>) {
+/// - `zenoh` — Zenoh-style pub/sub runner
+/// - `dds`   — DDS runner (mirrors zenoh in-process for now)
+/// - `can`   — CAN dataflow bridge on top of a [`MockCanController`]
+fn enable_dataflow_runner(
+    bus_backend: &str,
+    manager: Arc<model_manager::ModelManager>,
+    shutdown: Arc<AtomicBool>,
+) -> Vec<JoinHandle<()>> {
+    let mut handles = Vec::new();
     match bus_backend {
         "none" => {}
         "zenoh" => {
-            println!(
-                "Bus: Zenoh dataflow runner requested \
-                 (placeholder — enable once `smallaios-ipc` ships the `onnx` feature)"
-            );
+            println!("Bus: starting Zenoh dataflow runner");
             println!("  Topics: smallaios/inference/<model>/{{input,output,error}}");
-            // TODO(dataflow-inference-v1 §5.2): start_zenoh_dataflow_runner(_manager);
+            if let Some(h) = start_zenoh_dataflow_runner(manager, shutdown) {
+                handles.push(h);
+            }
         }
         "dds" => {
-            println!(
-                "Bus: DDS dataflow runner requested \
-                 (placeholder — enable once `smallaios-ipc` ships the `onnx` feature)"
-            );
+            println!("Bus: starting DDS dataflow runner");
             println!(
                 "  Topics: bridged via bus::dds::DdsZenohAdapter → smallaios/inference/<model>/..."
             );
-            // TODO(dataflow-inference-v1 §5.2): start_dds_dataflow_runner(_manager);
+            if let Some(h) = start_dds_dataflow_runner(manager, shutdown) {
+                handles.push(h);
+            }
         }
         "can" => {
             let device =
                 std::env::var("SMALLAIOS_CAN_DEVICE").unwrap_or_else(|_| String::from("loopback"));
             let routing = std::env::var("SMALLAIOS_CAN_ROUTING").unwrap_or_default();
             println!(
-                "Bus: CAN dataflow runner requested: device={}, routing={}",
+                "Bus: starting CAN dataflow runner: device={}, routing={}",
                 device,
                 if routing.is_empty() {
                     "<none>"
@@ -144,7 +355,9 @@ fn enable_dataflow_runner(bus_backend: &str, _manager: Arc<model_manager::ModelM
             match parse_can_device(&device) {
                 Ok(spec) => {
                     println!("  CAN device parsed: {:?}", spec);
-                    // TODO(can-inference-bridge-v1 §5.3): instantiate controller, attach adapter
+                    if let Some(h) = start_can_dataflow_runner(manager, shutdown, spec) {
+                        handles.push(h);
+                    }
                 }
                 Err(e) => {
                     eprintln!("ERROR: invalid SMALLAIOS_CAN_DEVICE: {}", e);
@@ -158,6 +371,7 @@ fn enable_dataflow_runner(bus_backend: &str, _manager: Arc<model_manager::ModelM
             );
         }
     }
+    handles
 }
 
 /// Register a signal handler that sets the shutdown flag on SIGTERM / SIGINT.

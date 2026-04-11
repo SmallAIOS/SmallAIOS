@@ -301,7 +301,6 @@ pub fn serve_dataflow_runner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::ToString;
     use alloc::vec;
 
     use smallaios_onnx_rt::onnx_types::{

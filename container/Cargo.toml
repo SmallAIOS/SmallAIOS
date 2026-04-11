@@ -20,7 +20,8 @@ bus-dds = []
 [dependencies]
 smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
 smallaios-onnx-rt = { path = "../onnx-rt", features = ["std"] }
-smallaios-ipc = { path = "../ipc" }
+smallaios-ipc = { path = "../ipc", features = ["onnx"] }
+smallaios-bus = { path = "../bus", default-features = false, features = ["can"] }
 smallaios-posix = { path = "../posix" }
 smallaios-security = { path = "../security" }
 smallaios-net = { path = "../net" }

@@ -5,20 +5,13 @@
 //! pub/sub dataflow mode.
 //!
 //! These tests start the container binary as a subprocess with various
-//! `SMALLAIOS_BUS_BACKEND` values and verify that the runner placeholder
-//! plumbing does not crash the process and that the HTTP server still
-//! binds alongside the bus runner.
-//!
-//! All tests in this file are marked `#[ignore]` because the real
-//! dataflow runner lives behind an `onnx` feature in the `smallaios-ipc`
-//! crate, which is being wired in a parallel change (see
-//! openspec/changes/dataflow-inference-v1 task groups 1-4). Once that
-//! lands these tests become live regression coverage for the
-//! container-level integration in task group 5.
+//! `SMALLAIOS_BUS_BACKEND` values and verify that the real
+//! `DataflowRunner` spawns cleanly and the HTTP server remains
+//! responsive alongside the bus runner.
 //!
 //! Run with:
 //!   cargo build -p smallaios-container
-//!   cargo test -p smallaios-container --test e2e_bus -- --ignored
+//!   cargo test -p smallaios-container --test e2e_bus
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -106,7 +99,6 @@ fn temp_model_dir(name: &str) -> std::path::PathBuf {
 // ---------------------------------------------------------------------------
 
 #[test]
-#[ignore]
 fn test_bus_mode_zenoh() {
     let port = 18090;
     let model_dir = temp_model_dir("zenoh");
@@ -130,7 +122,6 @@ fn test_bus_mode_zenoh() {
 }
 
 #[test]
-#[ignore]
 fn test_bus_mode_dds() {
     let port = 18091;
     let model_dir = temp_model_dir("dds");
@@ -153,7 +144,6 @@ fn test_bus_mode_dds() {
 }
 
 #[test]
-#[ignore]
 fn test_bus_mode_unknown_falls_back() {
     let port = 18092;
     let model_dir = temp_model_dir("unknown");
@@ -181,7 +171,6 @@ fn test_bus_mode_unknown_falls_back() {
 }
 
 #[test]
-#[ignore]
 fn test_http_and_bus_concurrent() {
     let port = 18093;
     let model_dir = temp_model_dir("concurrent");
