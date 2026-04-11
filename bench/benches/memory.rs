@@ -14,11 +14,10 @@ fn heap_pool() -> Box<TensorPool> {
     let layout = std::alloc::Layout::new::<TensorPool>();
     // Safety: TensorPool is valid when zero-initialized (all entries inactive),
     // and we immediately call init() to set it up properly.
-    let ptr = unsafe {
+    unsafe {
         let p = std::alloc::alloc_zeroed(layout) as *mut TensorPool;
         Box::from_raw(p)
-    };
-    ptr
+    }
 }
 
 fn bench_tensor_alloc_free(c: &mut Criterion) {

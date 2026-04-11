@@ -136,10 +136,10 @@ mod tests {
     #[test]
     fn test_f64_round_trip() {
         let mut buf = vec![0u8; 16];
-        write_f64(&mut buf, 0, 3.14159);
-        write_f64(&mut buf, 1, -2.71828);
-        assert_eq!(read_f64(&buf, 0), 3.14159);
-        assert_eq!(read_f64(&buf, 1), -2.71828);
+        write_f64(&mut buf, 0, 1.23456);
+        write_f64(&mut buf, 1, -9.87654);
+        assert_eq!(read_f64(&buf, 0), 1.23456);
+        assert_eq!(read_f64(&buf, 1), -9.87654);
     }
 
     #[test]

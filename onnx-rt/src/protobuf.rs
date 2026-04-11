@@ -1332,11 +1332,11 @@ mod tests {
 
     #[test]
     fn packed_f64_single() {
-        let data = 2.718f64.to_le_bytes();
+        let data = 1.25f64.to_le_bytes();
         let mut dec = ProtoDecoder::new(&data);
         let result = dec.read_packed_f64(8).unwrap();
         assert_eq!(result.len(), 1);
-        assert!((result[0] - 2.718).abs() < 1e-10);
+        assert!((result[0] - 1.25).abs() < 1e-10);
     }
 
     #[test]
@@ -1697,12 +1697,12 @@ mod tests {
         let mut data = Vec::new();
         data.extend(encode_varint_field(2, 11)); // DOUBLE
         let mut double_bytes = Vec::new();
-        double_bytes.extend(3.14f64.to_le_bytes());
+        double_bytes.extend(2.5f64.to_le_bytes());
         data.extend(encode_length_delimited(10, &double_bytes));
         let tensor = decode_tensor(&data).unwrap();
         assert_eq!(tensor.data_type, 11);
         assert_eq!(tensor.double_data.len(), 1);
-        assert!((tensor.double_data[0] - 3.14).abs() < 1e-10);
+        assert!((tensor.double_data[0] - 2.5).abs() < 1e-10);
     }
 
     #[test]

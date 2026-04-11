@@ -2338,7 +2338,7 @@ mod tests {
     #[test]
     fn test_mcdc_syscall_error_from_i64_boundaries() {
         // All defined values
-        for val in 0..=-16i64 {
+        for val in (-16i64..=0).rev() {
             let result = SyscallError::from_i64(val);
             assert!(result.is_some(), "value {} should be a valid error", val);
         }

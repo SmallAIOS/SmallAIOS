@@ -78,14 +78,14 @@ fn session_no_optimization_config() {
 fn tensor_with_float32_shape() {
     let shape = TensorShape::new(vec![1, 3, 224, 224]);
     assert_eq!(shape.ndim(), 4);
-    assert_eq!(shape.total_elements(), 1 * 3 * 224 * 224);
+    assert_eq!(shape.total_elements(), 3 * 224 * 224);
     assert!(shape.is_valid());
 
     let tensor = Tensor::new(DataType::Float, shape, String::from("images"));
     assert_eq!(tensor.data_type, DataType::Float);
     assert_eq!(tensor.name, "images");
     assert!(tensor.is_empty());
-    assert_eq!(tensor.byte_size(), 1 * 3 * 224 * 224 * 4);
+    assert_eq!(tensor.byte_size(), 3 * 224 * 224 * 4);
 }
 
 #[test]

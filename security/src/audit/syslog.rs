@@ -353,7 +353,12 @@ mod tests {
             };
             let severity = entry_severity(&entry);
             let p = pri(severity);
-            assert!(p >= 160 && p <= 167, "PRI {} out of range for {:?}", p, et);
+            assert!(
+                (160..=167).contains(&p),
+                "PRI {} out of range for {:?}",
+                p,
+                et
+            );
         }
     }
 }

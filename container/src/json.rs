@@ -398,7 +398,7 @@ mod tests {
 
     #[test]
     fn parse_negative_number() {
-        assert_eq!(JsonValue::parse("-3.14").unwrap(), JsonValue::Number(-3.14));
+        assert_eq!(JsonValue::parse("-2.5").unwrap(), JsonValue::Number(-2.5));
     }
 
     #[test]
@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn roundtrip_number() {
         assert_eq!(JsonValue::Number(42.0).serialize(), "42");
-        assert_eq!(JsonValue::Number(3.14).serialize(), "3.14");
+        assert_eq!(JsonValue::Number(2.5).serialize(), "2.5");
     }
 
     #[test]

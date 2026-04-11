@@ -390,11 +390,11 @@ mod tests {
             let mut a = vec![0.0f32; m * k];
             let mut b = vec![0.0f32; k * n];
             // Fill with deterministic values
-            for i in 0..a.len() {
-                a[i] = ((i % 7) as f32 - 3.0) * 0.1;
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = ((i % 7) as f32 - 3.0) * 0.1;
             }
-            for i in 0..b.len() {
-                b[i] = ((i % 11) as f32 - 5.0) * 0.1;
+            for (i, v) in b.iter_mut().enumerate() {
+                *v = ((i % 11) as f32 - 5.0) * 0.1;
             }
 
             let mut c_opt = vec![0.0f32; m * n];
@@ -428,11 +428,11 @@ mod tests {
             let k = size;
             let mut a = vec![1.0f32; m * k];
             let mut b = vec![1.0f32; k * n];
-            for i in 0..a.len() {
-                a[i] = (i % 100) as f32 * 0.01;
+            for (i, v) in a.iter_mut().enumerate() {
+                *v = (i % 100) as f32 * 0.01;
             }
-            for i in 0..b.len() {
-                b[i] = (i % 100) as f32 * 0.01;
+            for (i, v) in b.iter_mut().enumerate() {
+                *v = (i % 100) as f32 * 0.01;
             }
             let mut c = vec![0.0f32; m * n];
 
@@ -522,11 +522,11 @@ mod tests {
         let pool = CorePool::new(4);
         let mut a = vec![0.0f32; n * n];
         let mut b = vec![0.0f32; n * n];
-        for i in 0..a.len() {
-            a[i] = ((i % 7) as f32 - 3.0) * 0.1;
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = ((i % 7) as f32 - 3.0) * 0.1;
         }
-        for i in 0..b.len() {
-            b[i] = ((i % 11) as f32 - 5.0) * 0.1;
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = ((i % 11) as f32 - 5.0) * 0.1;
         }
         let mut c_seq = vec![0.0f32; n * n];
         let mut c_par = vec![0.0f32; n * n];
@@ -551,11 +551,11 @@ mod tests {
         let pool = CorePool::new(4);
         let mut a = vec![0.0f32; n * n];
         let mut b = vec![0.0f32; n * n];
-        for i in 0..a.len() {
-            a[i] = ((i % 13) as f32 - 6.0) * 0.05;
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = ((i % 13) as f32 - 6.0) * 0.05;
         }
-        for i in 0..b.len() {
-            b[i] = ((i % 17) as f32 - 8.0) * 0.05;
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = ((i % 17) as f32 - 8.0) * 0.05;
         }
         let mut c_seq = vec![0.0f32; n * n];
         let mut c_par = vec![0.0f32; n * n];
@@ -580,11 +580,11 @@ mod tests {
         let pool = CorePool::new(4);
         let mut a = vec![0.0f32; n * n];
         let mut b = vec![0.0f32; n * n];
-        for i in 0..a.len() {
-            a[i] = ((i % 19) as f32 - 9.0) * 0.02;
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = ((i % 19) as f32 - 9.0) * 0.02;
         }
-        for i in 0..b.len() {
-            b[i] = ((i % 23) as f32 - 11.0) * 0.02;
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = ((i % 23) as f32 - 11.0) * 0.02;
         }
         let mut c_seq = vec![0.0f32; n * n];
         let mut c_par = vec![0.0f32; n * n];
@@ -620,11 +620,11 @@ mod tests {
         let pool = CorePool::new(2);
         let mut a = vec![0.0f32; n * n];
         let mut b = vec![0.0f32; n * n];
-        for i in 0..a.len() {
-            a[i] = ((i % 7) as f32 - 3.0) * 0.1;
+        for (i, v) in a.iter_mut().enumerate() {
+            *v = ((i % 7) as f32 - 3.0) * 0.1;
         }
-        for i in 0..b.len() {
-            b[i] = ((i % 11) as f32 - 5.0) * 0.1;
+        for (i, v) in b.iter_mut().enumerate() {
+            *v = ((i % 11) as f32 - 5.0) * 0.1;
         }
         let mut c_seq = vec![0.0f32; n * n];
         let mut c_par = vec![0.0f32; n * n];

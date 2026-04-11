@@ -838,7 +838,7 @@ mod tests {
         let mut msg = alloc::string::String::new();
         for i in 0..24 {
             if a[i] != py_limbs[i] {
-                write!(&mut msg, "a[{}]: rust={} py={}\n", i, a[i], py_limbs[i]).unwrap();
+                writeln!(&mut msg, "a[{}]: rust={} py={}", i, a[i], py_limbs[i]).unwrap();
                 bad = true;
             }
         }

@@ -179,6 +179,7 @@ test:
 # Run clippy lints
 clippy:
     {{cargo}} clippy \
+        --all-targets \
         -p smallaios-kernel \
         -p smallaios-security \
         -p smallaios-compute \

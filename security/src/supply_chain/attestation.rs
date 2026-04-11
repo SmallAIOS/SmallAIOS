@@ -258,7 +258,6 @@ mod tests {
         );
         let payload = att.signing_payload();
         assert!(!payload.is_empty());
-        assert!(payload.len() > 0);
     }
 
     #[test]

@@ -718,8 +718,8 @@ mod tests {
     #[test]
     fn hybrid_kem_keygen_encaps_decaps_roundtrip() {
         let mut seed = [0u8; 96];
-        for i in 0..96 {
-            seed[i] = i as u8;
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b = i as u8;
         }
         let kp = hybrid_kem_keygen(&seed).expect("keygen should succeed");
         assert_eq!(kp.public_key.len(), HYBRID_KEM_PK_LEN);

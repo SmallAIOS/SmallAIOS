@@ -626,7 +626,7 @@ mod tests {
 
     /// Pad buffer to 4-byte alignment.
     fn pad4(buf: &mut Vec<u8>) {
-        while buf.len() % 4 != 0 {
+        while !buf.len().is_multiple_of(4) {
             buf.push(0);
         }
     }
@@ -858,7 +858,7 @@ mod tests {
         buf[tag_size_offset..tag_size_offset + 4].copy_from_slice(&tag_size.to_le_bytes());
 
         // Pad to 8-byte alignment before end tag
-        while buf.len() % 8 != 0 {
+        while !buf.len().is_multiple_of(8) {
             buf.push(0);
         }
 
@@ -924,6 +924,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::manual_c_str_literals)]
     fn test_cstr_helpers() {
         // cstr_len: simple string
         let s = b"hello\0";
@@ -954,6 +955,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::manual_c_str_literals)]
     fn test_is_memory_node() {
         // Exact "memory" (length 6)
         assert!(unsafe { is_memory_node(b"memory\0".as_ptr(), 6) });
@@ -1045,7 +1047,7 @@ mod tests {
         buf[tag_size_offset..tag_size_offset + 4].copy_from_slice(&tag_size.to_le_bytes());
 
         // Pad to 8-byte alignment
-        while buf.len() % 8 != 0 {
+        while !buf.len().is_multiple_of(8) {
             buf.push(0);
         }
 
@@ -1091,7 +1093,7 @@ mod tests {
         let tag_size = (buf.len() - tag_start) as u32;
         buf[tag_size_offset..tag_size_offset + 4].copy_from_slice(&tag_size.to_le_bytes());
 
-        while buf.len() % 8 != 0 {
+        while !buf.len().is_multiple_of(8) {
             buf.push(0);
         }
 
