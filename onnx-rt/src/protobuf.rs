@@ -425,10 +425,13 @@ pub fn decode_attribute(data: &[u8]) -> Result<AttributeProto, ProtoError> {
                 attr.s = bytes.to_vec();
             }
             5 => {
-                // t (TensorProto) — content not yet stored, but flip
-                // `attr_type` to Tensor so downstream consumers don't
-                // see an Undefined attribute when field 20 is absent.
-                decoder.skip_field(header.wire_type)?;
+                // t (TensorProto) — length-delimited nested message.
+                // Decode and store the tensor; also flip `attr_type` to
+                // Tensor so downstream consumers don't see an Undefined
+                // attribute when field 20 is absent.
+                let tensor_data = decoder.read_length_delimited()?;
+                let tensor = decode_tensor(tensor_data)?;
+                attr.t = Some(alloc::boxed::Box::new(tensor));
                 if attr.attr_type == AttributeType::Undefined {
                     attr.attr_type = AttributeType::Tensor;
                 }
@@ -1457,6 +1460,72 @@ mod tests {
         let attr = decode_attribute(&data).unwrap();
         assert_eq!(attr.ints, alloc::vec![3i64, 3]);
         assert_eq!(attr.attr_type, AttributeType::Ints);
+    }
+
+    #[test]
+    fn decode_attribute_tensor_value() {
+        // Build an inner TensorProto: dims=[3], data_type=FLOAT,
+        // float_data=[1.0, 2.0, 3.0].
+        let mut tensor_bytes = Vec::new();
+        let mut dims_bytes = Vec::new();
+        dims_bytes.extend(encode_varint(3));
+        tensor_bytes.extend(encode_length_delimited(1, &dims_bytes));
+        tensor_bytes.extend(encode_varint_field(2, 1));
+        let mut float_bytes = Vec::new();
+        for v in [1.0f32, 2.0, 3.0] {
+            float_bytes.extend(v.to_le_bytes());
+        }
+        tensor_bytes.extend(encode_length_delimited(4, &float_bytes));
+
+        // Wrap in an AttributeProto: name="value", t=<tensor>, type=Tensor(4).
+        let mut data = Vec::new();
+        data.extend(encode_length_delimited(1, b"value"));
+        data.extend(encode_length_delimited(5, &tensor_bytes));
+        data.extend(encode_varint_field(20, 4));
+
+        let attr = decode_attribute(&data).unwrap();
+        assert_eq!(attr.name, "value");
+        assert_eq!(attr.attr_type, AttributeType::Tensor);
+        let t = attr.t.as_ref().expect("tensor should be populated");
+        assert_eq!(t.dims, alloc::vec![3i64]);
+        assert_eq!(t.data_type, 1);
+        assert_eq!(t.float_data.len(), 3);
+        assert!((t.float_data[2] - 3.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn decode_attribute_tensor_with_mixed_fields() {
+        // An AttributeProto that sets t, f, and i simultaneously, but
+        // declares attr_type = Tensor. The parser should populate every
+        // raw field it decoded, but downstream lookups via
+        // `get_attr_tensor` should only match the declared type.
+        let mut tensor_bytes = Vec::new();
+        let mut dims_bytes = Vec::new();
+        dims_bytes.extend(encode_varint(1));
+        tensor_bytes.extend(encode_length_delimited(1, &dims_bytes));
+        tensor_bytes.extend(encode_varint_field(2, 1));
+        let mut float_bytes = Vec::new();
+        float_bytes.extend(7.5f32.to_le_bytes());
+        tensor_bytes.extend(encode_length_delimited(4, &float_bytes));
+
+        let mut data = Vec::new();
+        data.extend(encode_length_delimited(1, b"value"));
+        // f = 0.5 (irrelevant — attr_type is Tensor)
+        data.extend(encode_fixed32_field(2, 0.5f32.to_bits()));
+        // i = 42 (irrelevant — attr_type is Tensor)
+        data.extend(encode_varint_field(3, 42));
+        // t = <tensor>
+        data.extend(encode_length_delimited(5, &tensor_bytes));
+        data.extend(encode_varint_field(20, 4));
+
+        let attr = decode_attribute(&data).unwrap();
+        assert_eq!(attr.attr_type, AttributeType::Tensor);
+        assert!((attr.f - 0.5).abs() < f32::EPSILON);
+        assert_eq!(attr.i, 42);
+        let t = attr.t.as_ref().expect("tensor should be populated");
+        assert_eq!(t.dims, alloc::vec![1i64]);
+        assert_eq!(t.float_data.len(), 1);
+        assert!((t.float_data[0] - 7.5).abs() < f32::EPSILON);
     }
 
     #[test]

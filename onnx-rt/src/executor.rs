@@ -226,6 +226,15 @@ fn get_attr_ints<'a>(attrs: &'a [AttributeProto], name: &str) -> Option<&'a [i64
         .map(|a| a.ints.as_slice())
 }
 
+/// Extracts a tensor attribute by name. Returns `None` if absent or if the
+/// attribute's declared type is not `Tensor`.
+fn get_attr_tensor<'a>(attrs: &'a [AttributeProto], name: &str) -> Option<&'a TensorProto> {
+    attrs
+        .iter()
+        .find(|a| a.name == name && a.attr_type == AttributeType::Tensor)
+        .and_then(|a| a.t.as_deref())
+}
+
 // ---------------------------------------------------------------------------
 // Operator dispatch
 // ---------------------------------------------------------------------------
@@ -1210,15 +1219,21 @@ fn dispatch_shape_data(
         OpKind::Size => ops::shape_data::op_size(require_input(inputs, 0, "Size")?),
         OpKind::Identity => ops::shape_data::op_identity(require_input(inputs, 0, "Identity")?),
         OpKind::Constant => {
-            // ONNX Constant carries its payload in a 'value' attribute
-            // (TensorProto). SmallAIOS's AttributeProto does not model
-            // tensor attributes yet, so at runtime we fall back to
-            // either an explicit input tensor (treating Constant as an
-            // Identity pass-through of a graph initializer) or a single
-            // float / int scalar decoded from the float / int attribute
-            // fields. Scalar attributes produce a true 0-D tensor.
+            // ONNX Constant most commonly carries its payload in a
+            // 'value' attribute of type TensorProto. We also accept an
+            // explicit input tensor (initializer pass-through) or the
+            // scalar 'value_float' / 'value_int' variants emitted by
+            // some exporters. Scalar attributes produce a true 0-D
+            // tensor.
             if let Some(t) = optional_input(inputs, 0) {
                 return ops::shape_data::op_identity(t);
+            }
+            if let Some(proto) = get_attr_tensor(attrs, "value") {
+                return tensor_from_proto(proto).ok_or_else(|| {
+                    OpError::InvalidAttribute(String::from(
+                        "Constant 'value' tensor has unsupported data_type",
+                    ))
+                });
             }
             if let Some(a) = attrs
                 .iter()
@@ -1240,17 +1255,25 @@ fn dispatch_shape_data(
         OpKind::ConstantOfShape => {
             let shape_tensor = require_input(inputs, 0, "ConstantOfShape")?;
             let shape = read_i64_tensor(shape_tensor)?;
-            // SmallAIOS can't yet decode tensor-typed attributes, so we
-            // accept a scalar fill via 'value_float' / 'value_int' or
-            // default to 0.0.
-            let value = attrs
-                .iter()
-                .find_map(|a| match (a.name.as_str(), a.attr_type) {
-                    ("value_float", AttributeType::Float) => Some(a.f),
-                    ("value_int", AttributeType::Int) => Some(a.i as f32),
-                    _ => None,
-                })
-                .unwrap_or(0.0);
+            // Prefer the tensor-typed 'value' attribute (standard ONNX
+            // export). Fall back to 'value_float' / 'value_int' or 0.0.
+            let value = if let Some(proto) = get_attr_tensor(attrs, "value") {
+                let fill_tensor = tensor_from_proto(proto).ok_or_else(|| {
+                    OpError::InvalidAttribute(String::from(
+                        "ConstantOfShape 'value' tensor has unsupported data_type",
+                    ))
+                })?;
+                read_scalar_f32(&fill_tensor)?
+            } else {
+                attrs
+                    .iter()
+                    .find_map(|a| match (a.name.as_str(), a.attr_type) {
+                        ("value_float", AttributeType::Float) => Some(a.f),
+                        ("value_int", AttributeType::Int) => Some(a.i as f32),
+                        _ => None,
+                    })
+                    .unwrap_or(0.0)
+            };
             ops::shape_data::op_constant_of_shape(&shape, value)
         }
         OpKind::Range => {
@@ -2423,5 +2446,103 @@ mod tests {
         let inputs: [Option<&Tensor>; 0] = [];
         let r = dispatch_shape(OpKind::Concat, &inputs, &[]);
         assert!(r.is_err());
+    }
+
+    // ---- Tensor-valued 'value' attribute for Constant / ConstantOfShape ----
+
+    fn make_value_tensor_attr(proto: TensorProto) -> AttributeProto {
+        AttributeProto {
+            name: String::from("value"),
+            attr_type: AttributeType::Tensor,
+            t: Some(alloc::boxed::Box::new(proto)),
+            ..AttributeProto::default()
+        }
+    }
+
+    #[test]
+    fn test_get_attr_tensor_finds_tensor() {
+        let proto = TensorProto {
+            dims: vec![2],
+            data_type: 1,
+            float_data: vec![1.0, 2.0],
+            ..TensorProto::default()
+        };
+        let attrs = vec![make_value_tensor_attr(proto)];
+        let t = get_attr_tensor(&attrs, "value").expect("tensor attr present");
+        assert_eq!(t.dims, vec![2i64]);
+        assert!(get_attr_tensor(&attrs, "missing").is_none());
+    }
+
+    #[test]
+    fn test_dispatch_constant_with_tensor_value_attr() {
+        let proto = TensorProto {
+            dims: vec![3],
+            data_type: 1, // FLOAT
+            float_data: vec![10.0, 20.0, 30.0],
+            ..TensorProto::default()
+        };
+        let attrs = vec![make_value_tensor_attr(proto)];
+        let inputs: [Option<&Tensor>; 0] = [];
+        let out = dispatch_shape_data(OpKind::Constant, &inputs, &attrs).unwrap();
+        assert_eq!(out.data_type, DataType::Float);
+        assert_eq!(out.shape.dims, vec![3i64]);
+        assert_eq!(out.raw_data.len(), 12);
+        assert!((byte_io::read_f32(&out.raw_data, 0) - 10.0).abs() < f32::EPSILON);
+        assert!((byte_io::read_f32(&out.raw_data, 1) - 20.0).abs() < f32::EPSILON);
+        assert!((byte_io::read_f32(&out.raw_data, 2) - 30.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_dispatch_constant_prefers_tensor_over_value_float() {
+        // Both 'value' (tensor) and 'value_float' are provided; the
+        // tensor attribute should win.
+        let proto = TensorProto {
+            dims: vec![1],
+            data_type: 1,
+            float_data: vec![99.0],
+            ..TensorProto::default()
+        };
+        let attrs = vec![
+            make_value_tensor_attr(proto),
+            AttributeProto {
+                name: String::from("value_float"),
+                attr_type: AttributeType::Float,
+                f: 0.5,
+                ..AttributeProto::default()
+            },
+        ];
+        let inputs: [Option<&Tensor>; 0] = [];
+        let out = dispatch_shape_data(OpKind::Constant, &inputs, &attrs).unwrap();
+        assert!((byte_io::read_f32(&out.raw_data, 0) - 99.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn test_dispatch_constant_of_shape_with_tensor_value_attr() {
+        // Fill value tensor: scalar float 7.0.
+        let fill_proto = TensorProto {
+            dims: vec![1],
+            data_type: 1,
+            float_data: vec![7.0],
+            ..TensorProto::default()
+        };
+        let attrs = vec![make_value_tensor_attr(fill_proto)];
+
+        // Input shape tensor: Int64 [2, 3].
+        let mut shape_raw = alloc::vec![0u8; 2 * I64_SIZE];
+        byte_io::write_i64(&mut shape_raw, 0, 2);
+        byte_io::write_i64(&mut shape_raw, 1, 3);
+        let shape_tensor = Tensor {
+            data_type: DataType::Int64,
+            shape: TensorShape::new(vec![2]),
+            name: String::from("shape"),
+            raw_data: shape_raw,
+        };
+        let inputs = [Some(&shape_tensor)];
+        let out = dispatch_shape_data(OpKind::ConstantOfShape, &inputs, &attrs).unwrap();
+        assert_eq!(out.shape.dims, vec![2i64, 3]);
+        assert_eq!(out.data_type, DataType::Float);
+        for i in 0..6 {
+            assert!((byte_io::read_f32(&out.raw_data, i) - 7.0).abs() < f32::EPSILON);
+        }
     }
 }
