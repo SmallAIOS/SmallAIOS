@@ -10,7 +10,7 @@
 - [ ] 1.5 Add Tier 3 (`transformer-models-v1`) op catalog from D4
 - [ ] 1.6 Add Tier 4-7 sketches from D5 (these are not binding but reserve
   the slot names)
-- [ ] 1.7 Cross-reference: link from `README.md` "Status" section to the
+- [ ] 1.7 Cross-reference: link from `README.md` "Features" section to the
   roadmap
 
 ## 2. Tier Slot Reservation

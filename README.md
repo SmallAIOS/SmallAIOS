@@ -16,7 +16,7 @@ on x86-64, ARM64, and RISC-V platforms.
 - **6 architectures** — x86-64, AArch64, RISC-V 64, NVIDIA GPU, AMD GPU, Intel GPU
 - **Post-quantum crypto** — ML-KEM-768 + ML-DSA-65 hybrid mode by default
 - **Full network stack** — IPv4/IPv6, TCP/UDP, QUIC/HTTP3, TLS 1.3
-- **65 ONNX operators** — see the [coverage roadmap](docs/onnx-coverage-roadmap.md) for the path to full standard-spec coverage
+- **ONNX operators** — 29 in `develop`, 109 after Phase 1 PRs land; see the [coverage roadmap](docs/onnx-coverage-roadmap.md) for the full plan
 - **Formally verified** — 19 TLA+ models, SPIN protocols, Lean 4 proofs
 - **4,143 tests** — Zero clippy warnings, MC/DC coverage on safety-critical paths
 - **< 15 MB** — Release binary per architecture
@@ -42,7 +42,7 @@ See [`docs/architecture.puml`](docs/architecture.puml)
 | `smallaios-arch-nvidia` | NVIDIA GPU HAL: PCIe, compute, PTX |
 | `smallaios-arch-amd` | AMD GPU HAL: RDNA/CDNA, wavefront, HIP |
 | `smallaios-arch-intel-gpu` | Intel GPU HAL: Xe, EU compute, SPIR-V |
-| `smallaios-onnx-rt` | ONNX runtime: protobuf parser, 7 operators |
+| `smallaios-onnx-rt` | ONNX runtime: protobuf parser, 29 operators in `develop` (109 after Phase 1) — see [coverage roadmap](docs/onnx-coverage-roadmap.md) |
 | `smallaios-security` | Capabilities, PQC crypto, audit, compliance |
 | `smallaios-net` | IPv4/IPv6, TCP/UDP, QUIC/HTTP3, TLS 1.3 |
 | `smallaios-ipc` | Zenoh-inspired pub/sub with security gate |

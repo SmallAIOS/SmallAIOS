@@ -2,8 +2,10 @@
 
 ## Why
 
-SmallAIOS currently implements 65 of the ~190 operators in the standard
-ONNX specification (~34% coverage). This is enough for classic CNN
+SmallAIOS currently implements 29 of the ~190 operators in the standard
+ONNX specification (~15% coverage), with 80 more in flight on Phase 1
+PRs (#74 Tier 2, #76 vision, #77 transformer) bringing the total to
+109 (~57%). This is enough for classic CNN
 inference (Tier 1) plus the building blocks for transformers, recurrent
 models, and quantized inference (Tier 2). It is **not** enough to load
 arbitrary real-world models off the shelf — every additional model

@@ -3,8 +3,10 @@
 ## Context
 
 The ONNX standard operator set as of opset 21 contains roughly 190
-operators. SmallAIOS currently implements 65 (Tier 1 = 29 classic CNN
-ops, Tier 2 = 36 transformer/recurrent/quantized building blocks).
+operators. SmallAIOS implements 29 in `develop` today. Once the
+Phase 1 PRs (#74 Tier 2 = 36 ops, #76 vision = 19 ops, #77 transformer
+= 25 ops) merge, the registry will be at 109 ops (Tier 1 + Tier 2 +
+Phase 1A + Phase 1B).
 Naïvely targeting "all 190" is the wrong frame because:
 
 - ~25 ops are **training-only** (Adam, Momentum, Gradient, GraphCall,
@@ -28,11 +30,12 @@ worktrees:
 
 | Phase | Changes (parallel within phase) | Target models | Op delta | Cumulative | % of ONNX |
 |---|---|---|---|---|---|
-| Done ✅ | `onnx-cpu-runtime-v1`, `additional-operators-v1` | CNNs + transformer/recurrent/quant building blocks | 65 | 65 | 34% |
-| **P1** | `transformer-models-v1` ‖ `vision-transformers-v1` | BERT, DistilBERT, ViT, Swin, DeiT | +39 | 104 | 55% |
-| **P2** | `generative-llm-v1` (combined: control-flow + generative ops + i8 kernels) | GPT-2, T5, single-pass autoregressive generation, real i8 LLM inference | +21 + sub-graph executor | 125 | 66% |
-| **P3** | `audio-models-v1` ‖ `detection-models-v1` | Whisper-tiny, Wav2Vec2, DETR, RetinaNet | +21 | 146 | 77% |
-| **P4** | `long-tail-v1` (reactive) | User-driven additions when models fail to load | +~30 | ~176 | ~93% |
+| Merged | `onnx-cpu-runtime-v1` (Tier 1) | CNNs (ResNet, MobileNet, YOLO) | 29 | 29 | 15% |
+| In flight | `additional-operators-v1` (PR #74) | Tier 2 building blocks | +36 | 65 | 34% |
+| **P1** | `transformer-models-v1` ‖ `vision-transformers-v1` | BERT, DistilBERT, ViT, Swin, DeiT | +44 | 109 | 57% |
+| **P2** | `generative-llm-v1` (combined: control-flow + generative ops + i8 kernels) | GPT-2, T5, single-pass autoregressive generation, real i8 LLM inference | +22 + sub-graph executor | 131 | 69% |
+| **P3** | `audio-models-v1` ‖ `detection-models-v1` | Whisper-tiny, Wav2Vec2, DETR, RetinaNet | +21 | 152 | 80% |
+| **P4** | `long-tail-v1` (reactive) | User-driven additions when models fail to load | +~30 | ~182 | ~96% |
 
 The remaining ~14 ops are deliberately not on the path: training-only,
 deprecated, vendor-specific, or requiring subsystems (sequence types,

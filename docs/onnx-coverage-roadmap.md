@@ -5,8 +5,15 @@ future operator-coverage OpenSpec change must slot into a tier defined
 here. Cite this document from each tier proposal.
 
 **Last reviewed:** 2026-04-11
-**Current coverage:** 65 / ~190 standard ops (~34%)
+**Current coverage in `develop`:** 29 / ~190 standard ops (~15%)
+**Coverage after Phase 1 PRs (#74, #76, #77) merge:** 109 / ~190 (~57%)
 **Owning OpenSpec change:** `onnx-full-coverage-roadmap-v1`
+
+> The "Implemented" section below lists ops that are *either* in
+> `develop` today *or* in flight on the Phase 1 PRs (#74 Tier 2,
+> #76 vision, #77 transformer). The roadmap forward-looks so it can
+> serve as the merge target spec; numbers will become true as the
+> PRs land.
 
 ## Goals
 
@@ -43,10 +50,10 @@ sequentially; tiers within a phase run in parallel.
 |---|---|---|---|---|---|
 | 1 ✅ | `onnx-cpu-runtime-v1` (archived) | ResNet, MobileNet, YOLO | 29 | 29 | 15% |
 | 2 ✅ | `additional-operators-v1` | Building blocks | +36 | 65 | 34% |
-| **P1** | `transformer-models-v1` ‖ `vision-transformers-v1` | BERT, DistilBERT, ViT, Swin, DeiT, ConvNeXt | +39 | 104 | 55% |
-| **P2** | `generative-llm-v1` (combined: control-flow + generative ops + i8 kernels) | GPT-2, T5, single-pass autoregressive generation, real i8 LLM inference | +21 + sub-graph executor | 125 | 66% |
-| **P3** | `audio-models-v1` ‖ `detection-models-v1` | Whisper-tiny, Wav2Vec2, DETR, RetinaNet | +21 | 146 | 77% |
-| **P4** | `long-tail-v1` (reactive) | User-driven additions | +~30 | ~176 | ~93% |
+| **P1** | `transformer-models-v1` ‖ `vision-transformers-v1` | BERT, DistilBERT, ViT, Swin, DeiT, ConvNeXt | +44 | 109 | 57% |
+| **P2** | `generative-llm-v1` (combined: control-flow + generative ops + i8 kernels) | GPT-2, T5, single-pass autoregressive generation, real i8 LLM inference | +22 + sub-graph executor | 131 | 69% |
+| **P3** | `audio-models-v1` ‖ `detection-models-v1` | Whisper-tiny, Wav2Vec2, DETR, RetinaNet | +21 | 152 | 80% |
+| **P4** | `long-tail-v1` (reactive) | User-driven additions | +~30 | ~182 | ~96% |
 
 The remaining ~14 ops are explicitly **Deferred-subsystem** (sequence
 types, optional types, string tensors, ONNX-ML classical ML) or
@@ -93,7 +100,7 @@ materially limit any neural model class we care about.
 The inventory tracks every standard operator with one of:
 
 - **Implemented** — works today.
-- **Planned-T<n>** — will land in tier `n`.
+- **Planned-P<n>** — will land in phase `n` (P1-P4).
 - **Deferred-subsystem** — needs a non-trivial subsystem we haven't
   built yet (sequence types, optional types, control-flow executor,
   string tensors).
@@ -102,11 +109,11 @@ The inventory tracks every standard operator with one of:
   rewrite at export time.
 - **Skipped-vendor** — non-standard op (e.g., `com.microsoft` domain).
 
-The Tier 3 change (`transformer-models-v1`) will encode this inventory
+The Phase 1 change (`transformer-models-v1`) encodes this inventory
 as a Rust constant `SUPPORTED_OPS_INVENTORY` with a CI test that fails
 if the implemented set drifts from the inventory.
 
-### Implemented (65)
+### Implemented (29 in develop today; 65 after #74; 109 after Phase 1)
 
 **Tier 1 (29):** Add, Sub, Mul, Div, MatMul, Relu, Sigmoid, Tanh,
 Softmax, Conv, MaxPool, AveragePool, BatchNormalization, Reshape,
@@ -124,45 +131,45 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| Mod | Planned-T3 | Integer/float modulo; positional encoding |
-| Sin | Planned-T3 | Sinusoidal positional embeddings |
-| Cos | Planned-T3 | Sinusoidal positional embeddings |
-| Reciprocal | Planned-T3 | 1/x; LayerNorm and attention scaling |
-| Sign | Planned-T3 | Sign extraction; quant + transformers |
-| Sum | Planned-T3 | Variadic elementwise sum |
-| Mean | Planned-T3 | Variadic elementwise mean |
-| And | Planned-T3 | Boolean mask composition |
-| Or | Planned-T3 | Boolean mask composition |
-| LogSoftmax | Planned-T3 | Common classifier head |
-| PRelu | Planned-T4 | Parametric ReLU; older vision nets |
-| HardSigmoid | Planned-T4 | MobileNet/EfficientNet activation |
-| HardSwish | Planned-T4 | MobileNetV3 activation |
-| Softplus | Planned-T5 | Smooth ReLU; generative models |
-| Sinh | Planned-T6 | Hyperbolic trig; audio models |
-| Cosh | Planned-T6 | Hyperbolic trig; audio models |
-| Tan | Planned-T10 | Rare in inference |
-| Asin | Planned-T10 | Rare inverse trig |
-| Acos | Planned-T10 | Rare inverse trig |
-| Atan | Planned-T10 | Rare inverse trig |
-| Asinh | Planned-T10 | Long tail |
-| Acosh | Planned-T10 | Long tail |
-| Atanh | Planned-T10 | Long tail |
-| Xor | Planned-T10 | Rare boolean op |
-| BitwiseAnd | Planned-T10 | Integer bitwise (opset 18+) |
-| BitwiseOr | Planned-T10 | Integer bitwise (opset 18+) |
-| BitwiseXor | Planned-T10 | Integer bitwise (opset 18+) |
-| BitwiseNot | Planned-T10 | Integer bitwise (opset 18+) |
-| BitShift | Planned-T10 | Integer bit shift |
-| ThresholdedRelu | Planned-T10 | Rare activation |
-| Selu | Planned-T10 | Rare self-normalizing activation |
-| Celu | Planned-T10 | Rare continuous ELU |
-| Softsign | Planned-T10 | Rare activation |
-| Shrink | Planned-T10 | Soft thresholding; rare |
-| Hardmax | Planned-T10 | One-hot argmax variant |
-| IsNaN | Planned-T10 | Debug/validation op |
-| IsInf | Planned-T10 | Debug/validation op |
-| MeanVarianceNormalization | Planned-T5 | MVN normalization |
-| LpNormalization | Planned-T5 | L1/L2 normalization layer |
+| Mod | Planned-P1 | Integer/float modulo; positional encoding |
+| Sin | Planned-P1 | Sinusoidal positional embeddings |
+| Cos | Planned-P1 | Sinusoidal positional embeddings |
+| Reciprocal | Planned-P1 | 1/x; LayerNorm and attention scaling |
+| Sign | Planned-P1 | Sign extraction; quant + transformers |
+| Sum | Planned-P1 | Variadic elementwise sum |
+| Mean | Planned-P1 | Variadic elementwise mean |
+| And | Planned-P1 | Boolean mask composition |
+| Or | Planned-P1 | Boolean mask composition |
+| LogSoftmax | Planned-P1 | Common classifier head |
+| PRelu | Planned-P1 | Parametric ReLU; older vision nets |
+| HardSigmoid | Planned-P1 | MobileNet/EfficientNet activation |
+| HardSwish | Planned-P1 | MobileNetV3 activation |
+| Softplus | Planned-P2 | Smooth ReLU; generative models |
+| Sinh | Planned-P3 | Hyperbolic trig; audio models |
+| Cosh | Planned-P3 | Hyperbolic trig; audio models |
+| Tan | Planned-P4 | Rare in inference |
+| Asin | Planned-P4 | Rare inverse trig |
+| Acos | Planned-P4 | Rare inverse trig |
+| Atan | Planned-P4 | Rare inverse trig |
+| Asinh | Planned-P4 | Long tail |
+| Acosh | Planned-P4 | Long tail |
+| Atanh | Planned-P4 | Long tail |
+| Xor | Planned-P4 | Rare boolean op |
+| BitwiseAnd | Planned-P4 | Integer bitwise (opset 18+) |
+| BitwiseOr | Planned-P4 | Integer bitwise (opset 18+) |
+| BitwiseXor | Planned-P4 | Integer bitwise (opset 18+) |
+| BitwiseNot | Planned-P4 | Integer bitwise (opset 18+) |
+| BitShift | Planned-P4 | Integer bit shift |
+| ThresholdedRelu | Planned-P4 | Rare activation |
+| Selu | Planned-P4 | Rare self-normalizing activation |
+| Celu | Planned-P4 | Rare continuous ELU |
+| Softsign | Planned-P4 | Rare activation |
+| Shrink | Planned-P4 | Soft thresholding; rare |
+| Hardmax | Planned-P4 | One-hot argmax variant |
+| IsNaN | Planned-P4 | Debug/validation op |
+| IsInf | Planned-P4 | Debug/validation op |
+| MeanVarianceNormalization | Planned-P2 | MVN normalization |
+| LpNormalization | Planned-P2 | L1/L2 normalization layer |
 | Affine | Skipped-deprecated | Replaced by Mul+Add |
 | ImageScaler | Skipped-deprecated | Replaced by Mul+Add |
 | Scale | Skipped-deprecated | Replaced by Mul |
@@ -173,68 +180,68 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| ReduceMax | Planned-T3 | Attention / classifier max pooling |
-| ReduceMin | Planned-T3 | Counterpart to ReduceMax |
-| ReduceProd | Planned-T3 | Shape/volume computations |
-| ArgMax | Planned-T3 | Classifier decode |
-| ArgMin | Planned-T3 | Counterpart to ArgMax |
-| ReduceL1 | Planned-T5 | L1 norm reductions |
-| ReduceL2 | Planned-T5 | L2 norm reductions |
-| ReduceLogSum | Planned-T5 | Log-domain reductions |
-| ReduceLogSumExp | Planned-T5 | Stable softmax building block |
-| ReduceSumSquare | Planned-T5 | Variance / norm computation |
+| ReduceMax | Planned-P1 | Attention / classifier max pooling |
+| ReduceMin | Planned-P1 | Counterpart to ReduceMax |
+| ReduceProd | Planned-P1 | Shape/volume computations |
+| ArgMax | Planned-P1 | Classifier decode |
+| ArgMin | Planned-P1 | Counterpart to ArgMax |
+| ReduceL1 | Planned-P2 | L1 norm reductions |
+| ReduceL2 | Planned-P2 | L2 norm reductions |
+| ReduceLogSum | Planned-P2 | Log-domain reductions |
+| ReduceLogSumExp | Planned-P2 | Stable softmax building block |
+| ReduceSumSquare | Planned-P2 | Variance / norm computation |
 
 ### Pooling
 
 | Op | Status | Rationale |
 |---|---|---|
-| GlobalMaxPool | Planned-T4 | Common classifier head |
-| RoiAlign | Planned-T4 | ViT detection / Mask R-CNN |
-| MaxRoiPool | Planned-T7 | Object detection ROI pooling |
-| GlobalLpPool | Planned-T10 | Rare Lp pooling |
-| LpPool | Planned-T10 | Rare Lp pooling |
-| MaxUnpool | Planned-T10 | Segmentation decoder; rare |
+| GlobalMaxPool | Planned-P1 | Common classifier head |
+| RoiAlign | Planned-P1 | ViT detection / Mask R-CNN |
+| MaxRoiPool | Planned-P3 | Object detection ROI pooling |
+| GlobalLpPool | Planned-P4 | Rare Lp pooling |
+| LpPool | Planned-P4 | Rare Lp pooling |
+| MaxUnpool | Planned-P4 | Segmentation decoder; rare |
 
 ### Normalization
 
 | Op | Status | Rationale |
 |---|---|---|
-| InstanceNormalization | Planned-T4 | Style transfer / vision transformers |
-| GroupNormalization | Planned-T4 | ConvNeXt / Swin / diffusion |
-| RMSNormalization | Planned-T5 | LLaMA / T5 normalization |
-| LRN | Planned-T6 | Legacy AlexNet; whisper preprocess |
+| InstanceNormalization | Planned-P1 | Style transfer / vision transformers |
+| GroupNormalization | Planned-P1 | ConvNeXt / Swin / diffusion |
+| RMSNormalization | Planned-P2 | LLaMA / T5 normalization |
+| LRN | Planned-P3 | Legacy AlexNet; whisper preprocess |
 
 ### Shape / Data Movement
 
 | Op | Status | Rationale |
 |---|---|---|
-| Shape | Planned-T3 | Dynamic shape queries; BERT |
-| Size | Planned-T3 | Element count queries |
-| Identity | Planned-T3 | Pass-through; constant folding |
-| ConstantOfShape | Planned-T3 | Masking / attention patterns |
-| Constant | Planned-T3 | Inline constant tensors |
-| Range | Planned-T3 | Positional indices |
-| Trilu | Planned-T3 | Causal mask for attention |
-| CumSum | Planned-T3 | Positional offsets; attention |
-| GatherND | Planned-T3 | N-dim gather; transformers |
-| ScatterND | Planned-T3 | N-dim scatter; transformers |
-| GatherElements | Planned-T4 | Element-wise gather |
-| ScatterElements | Planned-T4 | Element-wise scatter |
-| TopK | Planned-T4 | Beam search; classifier top-k |
-| NonZero | Planned-T4 | Mask indexing |
-| Compress | Planned-T4 | Boolean mask selection |
-| Unique | Planned-T4 | Deduplication |
-| DepthToSpace | Planned-T4 | Super-resolution; pixel shuffle |
-| SpaceToDepth | Planned-T4 | YOLO / ViT patchify |
-| Resize | Planned-T4 | Image scaling; ViT/U-Net |
-| GridSample | Planned-T4 | Spatial transformers / STN |
-| CenterCropPad | Planned-T4 | Vision preprocessing (opset 18+) |
-| EyeLike | Planned-T5 | Identity matrix generation |
-| Reverse | Planned-T10 | Rare axis reversal |
-| ReverseSequence | Planned-T10 | Bi-directional RNN support |
-| ImageDecoder | Planned-T10 | Raw image decode (opset 20+) |
-| AffineGrid | Planned-T10 | Spatial transformer grid (opset 20+) |
-| Col2Im | Planned-T10 | Inverse im2col (opset 18+) |
+| Shape | Planned-P1 | Dynamic shape queries; BERT |
+| Size | Planned-P1 | Element count queries |
+| Identity | Planned-P1 | Pass-through; constant folding |
+| ConstantOfShape | Planned-P1 | Masking / attention patterns |
+| Constant | Planned-P1 | Inline constant tensors |
+| Range | Planned-P1 | Positional indices |
+| Trilu | Planned-P1 | Causal mask for attention |
+| CumSum | Planned-P1 | Positional offsets; attention |
+| GatherND | Planned-P1 | N-dim gather; transformers |
+| ScatterND | Planned-P1 | N-dim scatter; transformers |
+| GatherElements | Planned-P1 | Element-wise gather |
+| ScatterElements | Planned-P1 | Element-wise scatter |
+| TopK | Planned-P1 | Beam search; classifier top-k |
+| NonZero | Planned-P1 | Mask indexing |
+| Compress | Planned-P1 | Boolean mask selection |
+| Unique | Planned-P1 | Deduplication |
+| DepthToSpace | Planned-P1 | Super-resolution; pixel shuffle |
+| SpaceToDepth | Planned-P1 | YOLO / ViT patchify |
+| Resize | Planned-P1 | Image scaling; ViT/U-Net |
+| GridSample | Planned-P1 | Spatial transformers / STN |
+| CenterCropPad | Planned-P1 | Vision preprocessing (opset 18+) |
+| EyeLike | Planned-P2 | Identity matrix generation |
+| Reverse | Planned-P4 | Rare axis reversal |
+| ReverseSequence | Planned-P4 | Bi-directional RNN support |
+| ImageDecoder | Planned-P4 | Raw image decode (opset 20+) |
+| AffineGrid | Planned-P4 | Spatial transformer grid (opset 20+) |
+| Col2Im | Planned-P4 | Inverse im2col (opset 18+) |
 | Scatter | Skipped-deprecated | Replaced by ScatterElements |
 | Upsample | Skipped-deprecated | Replaced by Resize |
 | SplitToSequence | Deferred-subsystem | Sequence type required |
@@ -244,16 +251,16 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| ConvTranspose | Planned-T6 | Upsampling decoder; audio |
-| ConvInteger | Planned-T10 | Integer convolution; rare quant path |
-| DeformConv | Planned-T10 | Deformable convolution (opset 19+) |
+| ConvTranspose | Planned-P3 | Upsampling decoder; audio |
+| ConvInteger | Planned-P4 | Integer convolution; rare quant path |
+| DeformConv | Planned-P4 | Deformable convolution (opset 19+) |
 
 ### Quantized
 
 | Op | Status | Rationale |
 |---|---|---|
-| MatMulInteger | Planned-T5 | Int8 LLM inference |
-| DynamicQuantizeLinear | Planned-T5 | Runtime quantization for LLMs |
+| MatMulInteger | Planned-P2 | Int8 LLM inference |
+| DynamicQuantizeLinear | Planned-P2 | Runtime quantization for LLMs |
 | QLinearAdd | Skipped-vendor | `com.microsoft` contrib op |
 | QLinearMul | Skipped-vendor | `com.microsoft` contrib op |
 | QLinearConcat | Skipped-vendor | `com.microsoft` contrib op |
@@ -267,30 +274,30 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| RandomNormal | Planned-T5 | Generative sampling |
-| RandomNormalLike | Planned-T5 | Generative sampling |
-| RandomUniform | Planned-T5 | Generative sampling / dropout |
-| RandomUniformLike | Planned-T5 | Generative sampling / dropout |
-| Multinomial | Planned-T5 | Token sampling for LLMs |
-| Bernoulli | Planned-T5 | Stochastic masking |
-| Dropout | Planned-T5 | No-op at inference; must parse |
+| RandomNormal | Planned-P2 | Generative sampling |
+| RandomNormalLike | Planned-P2 | Generative sampling |
+| RandomUniform | Planned-P2 | Generative sampling / dropout |
+| RandomUniformLike | Planned-P2 | Generative sampling / dropout |
+| Multinomial | Planned-P2 | Token sampling for LLMs |
+| Bernoulli | Planned-P2 | Stochastic masking |
+| Dropout | Planned-P2 | No-op at inference; must parse |
 
 ### Audio / Signal
 
 | Op | Status | Rationale |
 |---|---|---|
-| STFT | Planned-T6 | Whisper spectrogram frontend |
-| DFT | Planned-T6 | Spectral transforms |
-| MelWeightMatrix | Planned-T6 | Mel filterbank for Whisper |
-| HannWindow | Planned-T6 | Audio windowing |
-| HammingWindow | Planned-T6 | Audio windowing |
-| BlackmanWindow | Planned-T6 | Audio windowing |
+| STFT | Planned-P3 | Whisper spectrogram frontend |
+| DFT | Planned-P3 | Spectral transforms |
+| MelWeightMatrix | Planned-P3 | Mel filterbank for Whisper |
+| HannWindow | Planned-P3 | Audio windowing |
+| HammingWindow | Planned-P3 | Audio windowing |
+| BlackmanWindow | Planned-P3 | Audio windowing |
 
 ### Object Detection
 
 | Op | Status | Rationale |
 |---|---|---|
-| NonMaxSuppression | Planned-T7 | All detection models need this |
+| NonMaxSuppression | Planned-P3 | All detection models need this |
 
 ### Sequence (Deferred)
 
@@ -305,20 +312,21 @@ for any current target model.
 `Optional`, `OptionalHasElement`, `OptionalGetElement` —
 **Deferred-subsystem**. Requires a sum-type wrapper around tensors.
 Used by some control-flow models; will be addressed alongside
-`If`/`Loop` in Tier 9 if at all.
+`If`/`Loop` in P2 alongside the sub-graph executor.
 
-### Control Flow (Deferred / Tier 9)
+### Control Flow (Phase 2)
 
 | Op | Status | Rationale |
 |---|---|---|
-| If | Tier 9 (subsystem) | Conditional subgraph execution |
-| Loop | Tier 9 (subsystem) | Iterative subgraph execution |
-| Scan | Tier 9 (subsystem) | Recurrent subgraph execution |
+| If | Planned-P2 | Conditional subgraph execution; needs sub-graph executor |
+| Loop | Planned-P2 | Iterative subgraph execution; needs sub-graph executor |
+| Scan | Planned-P2 | Recurrent subgraph execution; needs sub-graph executor |
 
-Tier 9 is the only tier whose design budget will be larger than its
+Phase 2 is the only phase whose design budget will be larger than its
 implementation budget. The ops themselves are simple; the runtime
 machinery (sub-executor, scope management, carried dependencies) is
-substantial.
+substantial. See `openspec/changes/generative-llm-v1/` and
+`docs/sub-graph-executor-design.md` for the architecture.
 
 ### String / Tokenizer (Deferred)
 
@@ -357,7 +365,7 @@ These two changes run in parallel agent worktrees as soon as
 **Target models:** BERT-base (`bert-base-uncased`), DistilBERT
 (`distilbert-base-uncased`), TinyBERT.
 
-**New operators (~25):**
+**New operators (25):**
 - **Math (10):** Mod, Sin, Cos, Reciprocal, Sign, Sum, Mean, And, Or,
   LogSoftmax
 - **Reduction (5):** ReduceMax, ReduceMin, ReduceProd, ArgMax, ArgMin
@@ -390,10 +398,10 @@ variant and vice versa, preventing the inventory from drifting.
 
 **Target models:** ViT, Swin, DeiT, ConvNeXt, MobileViT.
 
-**New operators (~14):** Resize, DepthToSpace, SpaceToDepth, RoiAlign,
+**New operators (19):** Resize, DepthToSpace, SpaceToDepth, RoiAlign,
 GridSample, GroupNormalization, InstanceNormalization, TopK, Compress,
 NonZero, Unique, GatherElements, ScatterElements, GlobalMaxPool,
-HardSigmoid, HardSwish, PRelu, CenterCropPad.
+HardSigmoid, HardSwish, PRelu, Mish, CenterCropPad.
 
 **Validation:** loads ViT-base end-to-end via the integration harness.
 
@@ -484,14 +492,14 @@ already in P1.
 
 ## Phase 4 — `long-tail-v1` (reactive)
 
-No fixed scope. Operators tagged `Planned-T10` in the inventory are
+No fixed scope. Operators tagged `Planned-P4` in the inventory are
 pulled into small, focused PRs only when a real user model fails to
 load because of them. Phase 4 is **reactive maintenance**, not a
 scheduled change.
 
 When a Phase 4 PR lands:
 1. Add the missing op to its appropriate `ops/` submodule
-2. Update the inventory entry from `Planned-T10` to `Implemented`
+2. Update the inventory entry from `Planned-P4` to `Implemented`
 3. Add the user's model to the integration test suite if practical
 
 ## Agent-Team Execution Playbook
@@ -514,7 +522,7 @@ established pattern:
 | `onnx-rt/src/operators.rs` (`OpKind`, `parse_str`, `name`, `ALL_OPS`) | **Append-only.** Merges sequenced. Later tiers rebase. |
 | `onnx-rt/src/executor.rs` (dispatch helpers) | **Append-only.** Each tier adds new dispatch helpers; existing ones are not edited. |
 | `onnx-rt/src/profile.rs` (`classify_op`) | **Append-only.** Add to the existing match arm with new op names. |
-| `docs/onnx-coverage-roadmap.md` | Updated by every tier — change status from `Planned-Tn` to `Implemented`. |
+| `docs/onnx-coverage-roadmap.md` | Updated by every change — flip status from `Planned-Pn` to `Implemented`. |
 | `SUPPORTED_OPS_INVENTORY` (T3+) | Append/update inline. CI test enforces consistency. |
 
 ### Per-tier validation gates
@@ -544,7 +552,7 @@ When starting an agent on a tier:
 5. Implement each op in its own commit if practical, or one commit
    per category if the ops are tiny
 6. Run the validation gates above before opening the PR
-7. Update this roadmap in the same PR — flip Planned-Tn → Implemented
+7. Update this roadmap in the same PR — flip Planned-Pn → Implemented
    for every shipped op
 
 ### Coordination
@@ -564,10 +572,10 @@ This document must be reviewed:
 
 - **Before each release** — flip statuses, sanity-check counts.
 - **After each ONNX opset bump** — add any new ops to the inventory
-  with a default status of `Planned-T10`.
+  with a default status of `Planned-P4`.
 - **After each tier merges** — verify the cumulative count and
   percentage in the tier table match reality.
 
-A future Tier 3 task will add a `just check-roadmap` recipe that
+A future Phase 1 follow-up will add a `just check-roadmap` recipe that
 diffs the roadmap inventory against `OperatorRegistry` and fails CI
 on drift.
