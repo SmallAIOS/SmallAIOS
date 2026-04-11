@@ -19,25 +19,74 @@ here. Cite this document from each tier proposal.
 - Be honest about what we will **not** implement (training ops,
   ecosystem ops, sequence/optional/control-flow subsystems).
 
-## Tier Sequence
+## Plan Shape: Phases, Not a Long Queue
 
-| Tier | OpenSpec change | Target models | Op delta | Cumulative | % of ONNX |
+Earlier drafts of this roadmap listed 10 sequential tiers. After
+analyzing the actual gap each tier closes, that ordering is wrong:
+
+- The only **material** missing capability in standard ONNX is
+  `Loop` / `If` / `Scan`. Without `Loop`, autoregressive generation
+  (GPT/LLaMA-class models) cannot run as a single graph call. Every
+  other "deferred" item is either dead code, vendor-specific, or a
+  separate workload (classical ML).
+- `int8-kernels` is **performance for LLMs**, not a coverage gap.
+  It only matters once we have LLMs running, so it belongs *with* the
+  generative tier, not as a separate later tier.
+- `transformer-models` (BERT) and `vision-transformers` (ViT) are
+  **independent** — different `ops/` submodules, different validation
+  models — so they can run in **true parallel** worktrees.
+
+The revised plan is **4 phases** instead of 10 tiers. Phases run
+sequentially; tiers within a phase run in parallel.
+
+| Phase | OpenSpec changes (parallel within phase) | Target models | Op delta | Cumulative | % of ONNX |
 |---|---|---|---|---|---|
 | 1 ✅ | `onnx-cpu-runtime-v1` (archived) | ResNet, MobileNet, YOLO | 29 | 29 | 15% |
-| 2 ✅ | `additional-operators-v1` | Transformer/recurrent/quant building blocks | +36 | 65 | 34% |
-| 3 | `transformer-models-v1` | BERT-base, DistilBERT, TinyBERT | +18 | 83 | 44% |
-| 4 | `vision-transformers-v1` | ViT, Swin, DeiT, ConvNeXt | +14 | 97 | 51% |
-| 5 | `generative-models-v1` | GPT-2-small, T5-small, LLaMA-style | +18 | 115 | 60% |
-| 6 | `audio-models-v1` | Whisper-tiny, Wav2Vec2 | +13 | 128 | 67% |
-| 7 | `detection-models-v1` | DETR, RetinaNet, Mask R-CNN | +8 | 136 | 72% |
-| 8 | `int8-kernels-v1` | (real i8 GEMM/Conv perf, no new ops) | 0 | 136 | 72% |
-| 9 | `control-flow-v1` | Models w/ If/Loop/Scan + sequence types | +3 + subsystems | 139 | 73% |
-| 10 | `long-tail-completion-v1` | Reactive, user-driven | +~25 | ~164 | ~86% |
+| 2 ✅ | `additional-operators-v1` | Building blocks | +36 | 65 | 34% |
+| **P1** | `transformer-models-v1` ‖ `vision-transformers-v1` | BERT, DistilBERT, ViT, Swin, DeiT, ConvNeXt | +39 | 104 | 55% |
+| **P2** | `generative-llm-v1` (combined: control-flow + generative ops + i8 kernels) | GPT-2, T5, single-pass autoregressive generation, real i8 LLM inference | +21 + sub-graph executor | 125 | 66% |
+| **P3** | `audio-models-v1` ‖ `detection-models-v1` | Whisper-tiny, Wav2Vec2, DETR, RetinaNet | +21 | 146 | 77% |
+| **P4** | `long-tail-v1` (reactive) | User-driven additions | +~30 | ~176 | ~93% |
 
-The remaining ~26 ops are explicitly **Deferred-subsystem** (sequence,
-optional, string, tokenizer, ONNX-ML classical ML) or **Skipped**
-(training, deprecated, vendor). They are not in the path to 100%
-unless a real user model demands one of them.
+The remaining ~14 ops are explicitly **Deferred-subsystem** (sequence
+types, optional types, string tensors, ONNX-ML classical ML) or
+**Skipped** (training, deprecated, vendor). They are not on the path
+unless a real user model demands one of them. See "What we're
+explicitly not doing" below.
+
+### Why this ordering
+
+- **Phase 1 first** because BERT and ViT are the highest-leverage
+  encoder workloads and the two changes can be implemented in
+  parallel agent worktrees. Phase 1 also adds the
+  `OperatorStatus` / `SUPPORTED_OPS_INVENTORY` machinery that every
+  later phase depends on.
+- **Phase 2 is the breakthrough phase** — GPT-2-class LLMs cannot
+  run without `Loop`, and `int8-kernels` is only valuable once an
+  LLM is running. Bundling control-flow + generative ops + i8
+  kernels into one tier prevents the half-finished state where we
+  have generative ops but still need an external Python loop. This
+  is the most ambitious phase and runs sequentially after P1.
+- **Phase 3 covers specialty model classes** (audio, detection)
+  that are narrower in scope and runnable in parallel after the
+  Phase 2 dispatcher work has stabilized.
+- **Phase 4 is reactive maintenance**, not a scheduled change.
+  Long-tail ops are pulled when a real user model fails to load.
+
+### What we're explicitly not doing (and why)
+
+| Bucket | Op count | Why we're not doing it |
+|---|---|---|
+| Training-only ops (Adam, Gradient, …) | ~10 | SmallAIOS is inference-only by charter. These ops appear only in training checkpoints, not inference models. |
+| Deprecated ops (Affine, Upsample, Scatter, …) | ~7 | Converters rewrite them at export time. Implementing them would be implementing dead code. |
+| Vendor (`com.microsoft`) QLinear* ops | ~8 | Microsoft-specific quantization format. Standard QDQ format works on every runtime and uses ops we already implement. |
+| Sequence types (`SequenceConstruct`, …) | 9 | Requires a `Tensor`-of-`Tensor` value type. Niche; no current target model needs them. |
+| Optional types (`Optional`, …) | 3 | Coupled with control-flow; would land in Phase 2 only if a target model demands it. |
+| String / tokenizer ops | 5 | Requires a string tensor type. Most NLP pipelines tokenize before hitting the ONNX graph. |
+| ONNX-ML classical ML (`TreeEnsembleClassifier`, `LinearRegressor`, …) | ~18 | Different ML domain entirely (trees, SVMs, feature pipelines). Out of scope for a neural inference runtime; would warrant its own decision rather than being lumped in. |
+
+Total deliberately not on the path: **~60 ops**, none of which
+materially limit any neural model class we care about.
 
 ## Operator Inventory
 
@@ -298,32 +347,28 @@ on neural workloads, but cataloged for completeness.
 `BatchNormalization` and `Dropout` have inference-mode paths
 implemented; their training-mode behaviors are skipped.
 
-## Tier 3 Detailed Plan — `transformer-models-v1`
+## Phase 1 Detail — `transformer-models-v1` ‖ `vision-transformers-v1`
 
-This is the next tier and is fully scoped here so an agent team can
-start immediately after this roadmap merges.
+These two changes run in parallel agent worktrees as soon as
+`additional-operators-v1` merges.
 
-### Target models
-- BERT-base (`bert-base-uncased`)
-- DistilBERT (`distilbert-base-uncased`)
-- TinyBERT (`huawei-noah/TinyBERT_General_4L_312D`)
+### `transformer-models-v1`
 
-### New operators (18)
+**Target models:** BERT-base (`bert-base-uncased`), DistilBERT
+(`distilbert-base-uncased`), TinyBERT.
+
+**New operators (~25):**
 - **Math (10):** Mod, Sin, Cos, Reciprocal, Sign, Sum, Mean, And, Or,
   LogSoftmax
 - **Reduction (5):** ReduceMax, ReduceMin, ReduceProd, ArgMax, ArgMin
 - **Shape/Data (10):** Shape, Size, Identity, Constant,
   ConstantOfShape, Range, Trilu, CumSum, GatherND, ScatterND
 
-(Note: Tier 3 actually adds 25 ops; the cumulative table above used a
-conservative 18 to leave headroom. Refine when the change opens.)
-
-### Inventory machinery
-Tier 3 adds:
+**Inventory machinery (also added in this change):**
 ```rust
 pub enum OperatorStatus {
     Implemented,
-    Planned(Tier),
+    Planned(Phase),
     DeferredSubsystem(&'static str),
     SkippedTraining,
     SkippedDeprecated,
@@ -332,83 +377,133 @@ pub enum OperatorStatus {
 
 pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("Add", OperatorStatus::Implemented),
-    ("Sin", OperatorStatus::Planned(Tier::T3)),
+    ("Sin", OperatorStatus::Planned(Phase::P1)),
     // … one entry per standard ONNX op
 ];
 ```
 A unit test asserts every `Implemented` entry has a matching `OpKind`
-variant and vice versa.
+variant and vice versa, preventing the inventory from drifting.
 
-## Tier 4 Sketch — `vision-transformers-v1`
+**Validation:** loads BERT-base end-to-end via the integration harness.
 
-**Target models:** ViT, Swin, DeiT, ConvNeXt, MobileViT
+### `vision-transformers-v1`
 
-**New ops (~14):** Resize, DepthToSpace, SpaceToDepth, RoiAlign,
+**Target models:** ViT, Swin, DeiT, ConvNeXt, MobileViT.
+
+**New operators (~14):** Resize, DepthToSpace, SpaceToDepth, RoiAlign,
 GridSample, GroupNormalization, InstanceNormalization, TopK, Compress,
 NonZero, Unique, GatherElements, ScatterElements, GlobalMaxPool,
-HardSigmoid, HardSwish, PRelu, CenterCropPad
+HardSigmoid, HardSwish, PRelu, CenterCropPad.
 
-## Tier 5 Sketch — `generative-models-v1`
+**Validation:** loads ViT-base end-to-end via the integration harness.
 
-**Target models:** GPT-2-small, T5-small, LLaMA-style int8 (with Tier 8)
+### Phase 1 coordination
 
-**New ops (~18):** RMSNormalization, MatMulInteger, DynamicQuantizeLinear,
-RandomNormal/NormalLike/Uniform/UniformLike, Multinomial, Bernoulli,
-Dropout, EyeLike, ReduceL1/L2/LogSum/LogSumExp/SumSquare,
-LpNormalization, MeanVarianceNormalization, Softplus
+The two changes touch separate `ops/` submodules and only collide on
+`OpKind` / `parse_str` / `dispatch_node`. The append-only file rules
+in the "Agent-Team Execution Playbook" section below prevent merge
+conflicts; whichever PR lands first, the other rebases.
 
-## Tier 6 Sketch — `audio-models-v1`
+## Phase 2 Detail — `generative-llm-v1`
 
-**Target models:** Whisper-tiny, Wav2Vec2-base
+This is a single combined tier covering control-flow ops, generative
+ops, and the real i8 GEMM kernel. It is the **breakthrough phase**:
+shipping it makes SmallAIOS usable for autoregressive LLM inference.
 
-**New ops (~13):** STFT, DFT, MelWeightMatrix, Hann/Hamming/Blackman
-windows, ConvTranspose, Sinh, Cosh, LRN, plus opset-14 BatchNorm
-adjustments for audio preprocessing
+It runs sequentially after Phase 1 because it touches the dispatcher
+extensively and adds new runtime machinery (sub-graph executor) that
+later phases will build on.
 
-## Tier 7 Sketch — `detection-models-v1`
+### Target models
+- GPT-2-small (`gpt2`)
+- T5-small (`t5-small`)
+- LLaMA-style int8 (a small open-weight LLM in int8 quantization)
 
-**Target models:** DETR, RetinaNet, Mask R-CNN
+### Sub-graph executor (the design-heavy part)
 
-**New ops (~8):** NonMaxSuppression, MaxRoiPool, MaxUnpool,
-ReverseSequence, Det, EyeLike (if not in T5), MeanVarianceNormalization
-(if not in T5), and any detection-specific shape ops
+**~1500 lines of new runtime work** before any op implementation:
 
-## Tier 8 — `int8-kernels-v1`
+- Sub-graph compilation and caching — each `If` branch and `Loop`
+  body is its own sub-graph that needs the full topological sort,
+  memory planning, and dispatcher applied to it
+- Scope management — outer-graph values referenced from inside a
+  loop body must be visible without copying
+- Carried-state semantics for `Loop` — loop-carried dependencies and
+  scan outputs follow specific iteration rules
+- Iteration limits + WCET integration — `Loop` must respect the
+  per-operator hard time budget across all iterations, not per
+  iteration
+- Termination condition evaluation per iteration
 
-**No new ops.** This tier replaces the dequantize→f32→requantize
-shim in `op_qlinear_matmul` and `op_qlinear_conv` with a real i8 GEMM
-kernel using saturating arithmetic and proper output scale handling.
-Adds `MatMulInteger`/`DynamicQuantizeLinear` perf paths if those landed
-in Tier 5.
+This needs its own design document inside the OpenSpec change.
 
-## Tier 9 — `control-flow-v1`
+### Control-flow operators (3)
+`If`, `Loop`, `Scan`.
 
-**New ops (3):** If, Loop, Scan
-**New subsystems:** sub-graph executor, scope/carried-state management,
-optional/sequence type wrappers if needed
+### Generative operators (~17)
+RMSNormalization, MatMulInteger, DynamicQuantizeLinear, RandomNormal,
+RandomNormalLike, RandomUniform, RandomUniformLike, Multinomial,
+Bernoulli, Dropout, EyeLike, ReduceL1, ReduceL2, ReduceLogSum,
+ReduceLogSumExp, ReduceSumSquare, LpNormalization,
+MeanVarianceNormalization, Softplus.
 
-This is the only tier with significant runtime-architecture work.
-The proposal will need its own design document covering:
-- How sub-graphs are compiled and cached
-- Scope rules for outer-graph values referenced inside loop bodies
-- Iteration carry semantics for Loop and Scan
-- Termination conditions and bound limits (WCET budget interaction)
+### Real int8 kernels (no new ops)
+Replaces the dequantize → f32 → requantize shim in
+`op_qlinear_matmul` and `op_qlinear_conv` with a real i8 GEMM kernel
+using saturating accumulation, proper output scale handling, and
+zero-point folding. `MatMulInteger` gets the same kernel.
 
-## Tier 10 — `long-tail-completion-v1`
+### Validation
+- GPT-2-small generates a 64-token completion in a **single** ONNX
+  graph call (no external Python loop)
+- T5-small encoder + decoder runs end-to-end
+- An int8-quantized LLM produces output within 1% relative error of
+  its f32 baseline
 
-Reactive tier. Operators are pulled from the "Planned-T10" inventory
-on demand when a real user model fails to load. No fixed scope; merge
-when no user-facing op gaps remain in the active model targets.
+## Phase 3 Detail — `audio-models-v1` ‖ `detection-models-v1`
+
+Two parallel changes covering specialty model classes. Lower priority
+than Phases 1-2 because the workloads are narrower than generic
+NLP/vision.
+
+### `audio-models-v1`
+
+**Target models:** Whisper-tiny, Wav2Vec2-base.
+
+**New operators (~13):** STFT, DFT, MelWeightMatrix, HannWindow,
+HammingWindow, BlackmanWindow, ConvTranspose, Sinh, Cosh, LRN, plus
+opset-14 audio-related shape adjustments.
+
+### `detection-models-v1`
+
+**Target models:** DETR, RetinaNet, Mask R-CNN.
+
+**New operators (~8):** NonMaxSuppression, MaxRoiPool, MaxUnpool,
+ReverseSequence, Det, plus any detection-specific shape ops not
+already in P1.
+
+## Phase 4 — `long-tail-v1` (reactive)
+
+No fixed scope. Operators tagged `Planned-T10` in the inventory are
+pulled into small, focused PRs only when a real user model fails to
+load because of them. Phase 4 is **reactive maintenance**, not a
+scheduled change.
+
+When a Phase 4 PR lands:
+1. Add the missing op to its appropriate `ops/` submodule
+2. Update the inventory entry from `Planned-T10` to `Implemented`
+3. Add the user's model to the integration test suite if practical
 
 ## Agent-Team Execution Playbook
 
-Tiers run in **parallel worktrees** following the established pattern:
+Within a phase, changes run in **parallel worktrees** following the
+established pattern:
 
 ```
 ../SmallAIOS-Design-worktrees/
-├── transformer-models-v1/    (Tier 3 — agent A)
-├── vision-transformers-v1/   (Tier 4 — agent B)
-└── audio-models-v1/          (Tier 6 — agent C)
+├── transformer-models-v1/    (Phase 1 — agent A)
+├── vision-transformers-v1/   (Phase 1 — agent B)
+└── audio-models-v1/          (Phase 3 — agent C)
 ```
 
 ### File-ownership rules
