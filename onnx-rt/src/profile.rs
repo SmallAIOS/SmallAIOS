@@ -87,14 +87,24 @@ pub fn classify_op(op_type: &str) -> OperatorClass {
         | "And" | "Or"
         // Tier 3 Phase 1 shape / data-movement
         | "Shape" | "Size" | "Identity" | "Constant" | "ConstantOfShape"
-        | "Range" | "Trilu" | "CumSum" | "GatherND" | "ScatterND" => {
+        | "Range" | "Trilu" | "CumSum" | "GatherND" | "ScatterND"
+        // Phase 1 vision: shape/data-movement-style ops
+        | "DepthToSpace" | "SpaceToDepth" | "CenterCropPad"
+        // Phase 1 vision: data selection
+        | "TopK" | "Compress" | "NonZero" | "Unique"
+        | "GatherElements" | "ScatterElements"
+        // Phase 1 vision: composite activations
+        | "HardSigmoid" | "HardSwish" | "PRelu" | "Mish" => {
             OperatorClass::Elementwise
         }
         "Softmax" | "LayerNormalization" | "BatchNormalization" | "MaxPool" | "AveragePool"
         | "GlobalAveragePool" | "ReduceMean" | "ReduceSum"
         // Tier 3 Phase 1 reductions
         | "ReduceMax" | "ReduceMin" | "ReduceProd" | "ArgMax" | "ArgMin"
-        | "LogSoftmax" => OperatorClass::Reduction,
+        | "LogSoftmax"
+        // Phase 1 vision: pooling/resize/align — reduction-class budget.
+        | "GlobalMaxPool" | "Resize" | "RoiAlign" | "GridSample"
+        | "GroupNormalization" | "InstanceNormalization" => OperatorClass::Reduction,
         "MatMul" | "Gemm" | "Conv"
         // Tier 2: Einsum is matmul-like; quantized GEMM/Conv same.
         | "Einsum" | "QLinearMatMul" | "QLinearConv" => OperatorClass::Gemm,

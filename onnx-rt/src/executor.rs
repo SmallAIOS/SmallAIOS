@@ -280,6 +280,7 @@ fn dispatch_node(
         OpKind::LSTM => return dispatch_lstm(inputs, attrs),
         OpKind::GRU => return dispatch_gru(inputs, attrs),
         OpKind::RNN => return dispatch_rnn(inputs, attrs),
+        OpKind::TopK => return dispatch_top_k(inputs, attrs),
         _ => {}
     }
 
@@ -355,9 +356,14 @@ fn dispatch_node(
         | OpKind::CumSum
         | OpKind::GatherND
         | OpKind::ScatterND => dispatch_shape_data(kind, inputs, attrs),
-        OpKind::Gelu | OpKind::LeakyRelu | OpKind::Elu | OpKind::Swish => {
-            dispatch_composite_activation(kind, inputs, attrs)
-        }
+        OpKind::Gelu
+        | OpKind::LeakyRelu
+        | OpKind::Elu
+        | OpKind::Swish
+        | OpKind::HardSigmoid
+        | OpKind::HardSwish
+        | OpKind::PRelu
+        | OpKind::Mish => dispatch_composite_activation(kind, inputs, attrs),
         OpKind::Expand | OpKind::Tile | OpKind::OneHot | OpKind::Einsum => {
             dispatch_transformer(kind, inputs, attrs)
         }
@@ -365,8 +371,23 @@ fn dispatch_node(
         | OpKind::DequantizeLinear
         | OpKind::QLinearMatMul
         | OpKind::QLinearConv => dispatch_quantized(kind, inputs, attrs),
+        OpKind::Resize
+        | OpKind::DepthToSpace
+        | OpKind::SpaceToDepth
+        | OpKind::RoiAlign
+        | OpKind::GridSample
+        | OpKind::GlobalMaxPool
+        | OpKind::CenterCropPad => dispatch_vision(kind, inputs, attrs),
+        OpKind::Compress
+        | OpKind::NonZero
+        | OpKind::Unique
+        | OpKind::GatherElements
+        | OpKind::ScatterElements => dispatch_data_select(kind, inputs, attrs),
+        OpKind::GroupNormalization | OpKind::InstanceNormalization => {
+            dispatch_normalization_v2(kind, inputs, attrs)
+        }
         // Multi-output kinds handled above and returned early.
-        OpKind::Split | OpKind::LSTM | OpKind::GRU | OpKind::RNN => unreachable!(),
+        OpKind::Split | OpKind::LSTM | OpKind::GRU | OpKind::RNN | OpKind::TopK => unreachable!(),
     };
 
     result.map(|t| alloc::vec![t])
@@ -511,8 +532,228 @@ fn dispatch_composite_activation(
             ops::activations::op_elu(x, alpha)
         }
         OpKind::Swish => ops::activations::op_swish(require_input(inputs, 0, "Swish")?),
+        OpKind::HardSigmoid => {
+            let x = require_input(inputs, 0, "HardSigmoid")?;
+            let alpha = get_attr_float(attrs, "alpha", 0.2);
+            let beta = get_attr_float(attrs, "beta", 0.5);
+            ops::activations::op_hard_sigmoid(x, alpha, beta)
+        }
+        OpKind::HardSwish => {
+            ops::activations::op_hard_swish(require_input(inputs, 0, "HardSwish")?)
+        }
+        OpKind::PRelu => {
+            let x = require_input(inputs, 0, "PRelu")?;
+            let slope = require_input(inputs, 1, "PRelu")?;
+            ops::activations::op_prelu(x, slope)
+        }
+        OpKind::Mish => ops::activations::op_mish(require_input(inputs, 0, "Mish")?),
         _ => Err(OpError::UnsupportedOp(String::from("composite-activation"))),
     }
+}
+
+/// Reads an f32 tensor's raw_data as a Vec<f32>.
+fn read_f32_tensor(tensor: &Tensor) -> Vec<f32> {
+    if tensor.data_type == DataType::Float {
+        let count = tensor.raw_data.len() / 4;
+        (0..count)
+            .map(|i| byte_io::read_f32(&tensor.raw_data, i))
+            .collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Dispatches Phase 1 vision operators.
+fn dispatch_vision(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Resize => {
+            let x = require_input(inputs, 0, "Resize")?;
+            // Inputs: X, roi, scales, sizes. roi is ignored (not implemented).
+            let scales_tensor = optional_input(inputs, 2);
+            let sizes_tensor = optional_input(inputs, 3);
+            let scales_vec = scales_tensor.map(read_f32_tensor);
+            let sizes_vec = sizes_tensor.map(read_i64_tensor).transpose()?;
+            let mode_bytes = attrs
+                .iter()
+                .find(|a| a.name == "mode")
+                .map(|a| a.s.as_slice())
+                .unwrap_or(b"nearest");
+            let mode = core::str::from_utf8(mode_bytes).unwrap_or("nearest");
+            ops::vision::op_resize(
+                x,
+                scales_vec.as_deref().filter(|v| !v.is_empty()),
+                sizes_vec.as_deref().filter(|v| !v.is_empty()),
+                mode,
+            )
+        }
+        OpKind::DepthToSpace => {
+            let x = require_input(inputs, 0, "DepthToSpace")?;
+            let blocksize = get_attr_int(attrs, "blocksize", 0);
+            let mode_bytes = attrs
+                .iter()
+                .find(|a| a.name == "mode")
+                .map(|a| a.s.as_slice())
+                .unwrap_or(b"DCR");
+            let mode = core::str::from_utf8(mode_bytes).unwrap_or("DCR");
+            ops::vision::op_depth_to_space(x, blocksize, mode)
+        }
+        OpKind::SpaceToDepth => {
+            let x = require_input(inputs, 0, "SpaceToDepth")?;
+            let blocksize = get_attr_int(attrs, "blocksize", 0);
+            ops::vision::op_space_to_depth(x, blocksize)
+        }
+        OpKind::RoiAlign => {
+            let x = require_input(inputs, 0, "RoiAlign")?;
+            let rois = require_input(inputs, 1, "RoiAlign")?;
+            let batch_indices = require_input(inputs, 2, "RoiAlign")?;
+            let oh = get_attr_int(attrs, "output_height", 1);
+            let ow = get_attr_int(attrs, "output_width", 1);
+            let sampling_ratio = get_attr_int(attrs, "sampling_ratio", 0);
+            let spatial_scale = get_attr_float(attrs, "spatial_scale", 1.0);
+            let mode_bytes = attrs
+                .iter()
+                .find(|a| a.name == "mode")
+                .map(|a| a.s.as_slice())
+                .unwrap_or(b"avg");
+            let mode = core::str::from_utf8(mode_bytes).unwrap_or("avg");
+            ops::vision::op_roi_align(
+                x,
+                rois,
+                batch_indices,
+                oh,
+                ow,
+                sampling_ratio,
+                spatial_scale,
+                mode,
+            )
+        }
+        OpKind::GridSample => {
+            let x = require_input(inputs, 0, "GridSample")?;
+            let grid = require_input(inputs, 1, "GridSample")?;
+            let mode_bytes = attrs
+                .iter()
+                .find(|a| a.name == "mode")
+                .map(|a| a.s.as_slice())
+                .unwrap_or(b"bilinear");
+            let mode = core::str::from_utf8(mode_bytes).unwrap_or("bilinear");
+            let pad_bytes = attrs
+                .iter()
+                .find(|a| a.name == "padding_mode")
+                .map(|a| a.s.as_slice())
+                .unwrap_or(b"zeros");
+            let padding_mode = core::str::from_utf8(pad_bytes).unwrap_or("zeros");
+            let align_corners = get_attr_int(attrs, "align_corners", 0) != 0;
+            ops::vision::op_grid_sample(x, grid, mode, padding_mode, align_corners)
+        }
+        OpKind::GlobalMaxPool => {
+            ops::vision::op_global_max_pool(require_input(inputs, 0, "GlobalMaxPool")?)
+        }
+        OpKind::CenterCropPad => {
+            let x = require_input(inputs, 0, "CenterCropPad")?;
+            let shape_tensor = require_input(inputs, 1, "CenterCropPad")?;
+            let shape = read_i64_tensor(shape_tensor)?;
+            let axes_attr = get_attr_ints(attrs, "axes").map(|s| s.to_vec());
+            ops::vision::op_center_crop_pad(x, &shape, axes_attr.as_deref())
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("vision"))),
+    }
+}
+
+/// Dispatches Phase 1 data-selection operators.
+fn dispatch_data_select(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Compress => {
+            let x = require_input(inputs, 0, "Compress")?;
+            let cond = require_input(inputs, 1, "Compress")?;
+            let axis = attrs
+                .iter()
+                .find(|a| a.name == "axis" && a.attr_type == AttributeType::Int)
+                .map(|a| a.i);
+            ops::data_select::op_compress(x, cond, axis)
+        }
+        OpKind::NonZero => ops::data_select::op_non_zero(require_input(inputs, 0, "NonZero")?),
+        OpKind::Unique => {
+            let x = require_input(inputs, 0, "Unique")?;
+            let axis = attrs
+                .iter()
+                .find(|a| a.name == "axis" && a.attr_type == AttributeType::Int)
+                .map(|a| a.i);
+            let sorted = get_attr_int(attrs, "sorted", 1) != 0;
+            ops::data_select::op_unique(x, axis, sorted)
+        }
+        OpKind::GatherElements => {
+            let x = require_input(inputs, 0, "GatherElements")?;
+            let idx = require_input(inputs, 1, "GatherElements")?;
+            let axis = get_attr_int(attrs, "axis", 0);
+            ops::data_select::op_gather_elements(x, idx, axis)
+        }
+        OpKind::ScatterElements => {
+            let x = require_input(inputs, 0, "ScatterElements")?;
+            let idx = require_input(inputs, 1, "ScatterElements")?;
+            let upd = require_input(inputs, 2, "ScatterElements")?;
+            let axis = get_attr_int(attrs, "axis", 0);
+            let red_bytes = attrs
+                .iter()
+                .find(|a| a.name == "reduction")
+                .map(|a| a.s.as_slice())
+                .unwrap_or(b"none");
+            let reduction = core::str::from_utf8(red_bytes).unwrap_or("none");
+            ops::data_select::op_scatter_elements(x, idx, upd, axis, reduction)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("data-select"))),
+    }
+}
+
+/// Dispatches Phase 1 normalization operators (Group/Instance).
+fn dispatch_normalization_v2(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::GroupNormalization => {
+            let x = require_input(inputs, 0, "GroupNormalization")?;
+            let scale = require_input(inputs, 1, "GroupNormalization")?;
+            let bias = optional_input(inputs, 2);
+            let num_groups = get_attr_int(attrs, "num_groups", 1);
+            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
+            ops::normalization::op_group_normalization(x, scale, bias, num_groups, epsilon)
+        }
+        OpKind::InstanceNormalization => {
+            let x = require_input(inputs, 0, "InstanceNormalization")?;
+            let scale = require_input(inputs, 1, "InstanceNormalization")?;
+            let bias = require_input(inputs, 2, "InstanceNormalization")?;
+            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
+            ops::normalization::op_instance_normalization(x, scale, bias, epsilon)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("normalization-v2"))),
+    }
+}
+
+/// Dispatches TopK (multi-output).
+fn dispatch_top_k(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "TopK")?;
+    // Opset 10+: K is an input tensor (Int64).
+    let k = if let Some(k_t) = optional_input(inputs, 1) {
+        read_i64_tensor(k_t)?.first().copied().unwrap_or(0)
+    } else {
+        get_attr_int(attrs, "k", 0)
+    };
+    let axis = get_attr_int(attrs, "axis", -1);
+    let largest = get_attr_int(attrs, "largest", 1) != 0;
+    let sorted = get_attr_int(attrs, "sorted", 1) != 0;
+    ops::data_select::op_top_k(x, k, axis, largest, sorted)
 }
 
 /// Dispatches transformer building-block ops (Expand/Tile/OneHot/Einsum).

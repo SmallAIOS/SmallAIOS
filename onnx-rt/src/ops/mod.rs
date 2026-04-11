@@ -18,9 +18,12 @@
 pub mod activations;
 pub mod common;
 pub mod compare;
+pub mod data_select;
 pub mod math;
+pub mod normalization;
 pub mod quantized;
 pub mod recurrent;
 pub mod reduction;
 pub mod shape_data;
 pub mod transformer;
+pub mod vision;

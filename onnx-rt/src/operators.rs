@@ -268,6 +268,52 @@ pub enum OpKind {
     GatherND,
     /// N-dimensional scatter.
     ScatterND,
+
+    // ---- Phase 1 vision: image ops ----
+    /// 2D image resize (nearest/bilinear).
+    Resize,
+    /// Rearrange depth into spatial blocks.
+    DepthToSpace,
+    /// Rearrange spatial blocks into depth.
+    SpaceToDepth,
+    /// Region-of-interest align (bilinear avg).
+    RoiAlign,
+    /// 2D grid sampling (bilinear/nearest).
+    GridSample,
+    /// Global max pooling.
+    GlobalMaxPool,
+    /// Symmetric crop/pad to target shape.
+    CenterCropPad,
+
+    // ---- Phase 1 vision: data selection ----
+    /// Top-k values and indices along an axis.
+    TopK,
+    /// Select elements where condition is true.
+    Compress,
+    /// Indices of non-zero elements.
+    NonZero,
+    /// Unique values (primary output only).
+    Unique,
+    /// Element-wise gather along an axis.
+    GatherElements,
+    /// Element-wise scatter along an axis.
+    ScatterElements,
+
+    // ---- Phase 1 vision: normalization ----
+    /// Group normalization.
+    GroupNormalization,
+    /// Instance normalization.
+    InstanceNormalization,
+
+    // ---- Phase 1 vision: composite activations ----
+    /// Hard sigmoid (clipped affine).
+    HardSigmoid,
+    /// Hard swish (x * relu6(x+3)/6).
+    HardSwish,
+    /// Parametric ReLU (per-channel negative slope).
+    PRelu,
+    /// Mish activation (x * tanh(softplus(x))).
+    Mish,
 }
 
 impl OpKind {
@@ -375,6 +421,29 @@ impl OpKind {
             "CumSum" => Some(OpKind::CumSum),
             "GatherND" => Some(OpKind::GatherND),
             "ScatterND" => Some(OpKind::ScatterND),
+            // Phase 1 vision: image
+            "Resize" => Some(OpKind::Resize),
+            "DepthToSpace" => Some(OpKind::DepthToSpace),
+            "SpaceToDepth" => Some(OpKind::SpaceToDepth),
+            "RoiAlign" => Some(OpKind::RoiAlign),
+            "GridSample" => Some(OpKind::GridSample),
+            "GlobalMaxPool" => Some(OpKind::GlobalMaxPool),
+            "CenterCropPad" => Some(OpKind::CenterCropPad),
+            // Phase 1 vision: data selection
+            "TopK" => Some(OpKind::TopK),
+            "Compress" => Some(OpKind::Compress),
+            "NonZero" => Some(OpKind::NonZero),
+            "Unique" => Some(OpKind::Unique),
+            "GatherElements" => Some(OpKind::GatherElements),
+            "ScatterElements" => Some(OpKind::ScatterElements),
+            // Phase 1 vision: normalization
+            "GroupNormalization" => Some(OpKind::GroupNormalization),
+            "InstanceNormalization" => Some(OpKind::InstanceNormalization),
+            // Phase 1 vision: activations
+            "HardSigmoid" => Some(OpKind::HardSigmoid),
+            "HardSwish" => Some(OpKind::HardSwish),
+            "PRelu" => Some(OpKind::PRelu),
+            "Mish" => Some(OpKind::Mish),
             _ => None,
         }
     }
@@ -472,6 +541,25 @@ impl OpKind {
             OpKind::CumSum => "CumSum",
             OpKind::GatherND => "GatherND",
             OpKind::ScatterND => "ScatterND",
+            OpKind::Resize => "Resize",
+            OpKind::DepthToSpace => "DepthToSpace",
+            OpKind::SpaceToDepth => "SpaceToDepth",
+            OpKind::RoiAlign => "RoiAlign",
+            OpKind::GridSample => "GridSample",
+            OpKind::GlobalMaxPool => "GlobalMaxPool",
+            OpKind::CenterCropPad => "CenterCropPad",
+            OpKind::TopK => "TopK",
+            OpKind::Compress => "Compress",
+            OpKind::NonZero => "NonZero",
+            OpKind::Unique => "Unique",
+            OpKind::GatherElements => "GatherElements",
+            OpKind::ScatterElements => "ScatterElements",
+            OpKind::GroupNormalization => "GroupNormalization",
+            OpKind::InstanceNormalization => "InstanceNormalization",
+            OpKind::HardSigmoid => "HardSigmoid",
+            OpKind::HardSwish => "HardSwish",
+            OpKind::PRelu => "PRelu",
+            OpKind::Mish => "Mish",
         }
     }
 }
@@ -574,6 +662,26 @@ const ALL_OPS: &[OpKind] = &[
     OpKind::CumSum,
     OpKind::GatherND,
     OpKind::ScatterND,
+    // Phase 1 vision
+    OpKind::Resize,
+    OpKind::DepthToSpace,
+    OpKind::SpaceToDepth,
+    OpKind::RoiAlign,
+    OpKind::GridSample,
+    OpKind::GlobalMaxPool,
+    OpKind::CenterCropPad,
+    OpKind::TopK,
+    OpKind::Compress,
+    OpKind::NonZero,
+    OpKind::Unique,
+    OpKind::GatherElements,
+    OpKind::ScatterElements,
+    OpKind::GroupNormalization,
+    OpKind::InstanceNormalization,
+    OpKind::HardSigmoid,
+    OpKind::HardSwish,
+    OpKind::PRelu,
+    OpKind::Mish,
 ];
 
 /// Registry of supported ONNX operators.
@@ -749,14 +857,30 @@ pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("CumSum", OperatorStatus::Implemented),
     ("GatherND", OperatorStatus::Implemented),
     ("ScatterND", OperatorStatus::Implemented),
+    // ---------------- Phase 1B: vision ----
+    ("Resize", OperatorStatus::Implemented),
+    ("DepthToSpace", OperatorStatus::Implemented),
+    ("SpaceToDepth", OperatorStatus::Implemented),
+    ("RoiAlign", OperatorStatus::Implemented),
+    ("GridSample", OperatorStatus::Implemented),
+    ("GlobalMaxPool", OperatorStatus::Implemented),
+    ("CenterCropPad", OperatorStatus::Implemented),
+    ("TopK", OperatorStatus::Implemented),
+    ("Compress", OperatorStatus::Implemented),
+    ("NonZero", OperatorStatus::Implemented),
+    ("Unique", OperatorStatus::Implemented),
+    ("GatherElements", OperatorStatus::Implemented),
+    ("ScatterElements", OperatorStatus::Implemented),
+    ("GroupNormalization", OperatorStatus::Implemented),
+    ("InstanceNormalization", OperatorStatus::Implemented),
+    ("HardSigmoid", OperatorStatus::Implemented),
+    ("HardSwish", OperatorStatus::Implemented),
+    ("PRelu", OperatorStatus::Implemented),
+    ("Mish", OperatorStatus::Implemented),
     // ---------------- Phase 2: generative / control-flow ----
     ("If", OperatorStatus::Planned(Phase::P2)),
     ("Loop", OperatorStatus::Planned(Phase::P2)),
     ("Scan", OperatorStatus::Planned(Phase::P2)),
-    ("TopK", OperatorStatus::Planned(Phase::P2)),
-    ("NonZero", OperatorStatus::Planned(Phase::P2)),
-    ("Compress", OperatorStatus::Planned(Phase::P2)),
-    ("Unique", OperatorStatus::Planned(Phase::P2)),
     ("DynamicQuantizeLinear", OperatorStatus::Planned(Phase::P2)),
     ("Attention", OperatorStatus::Planned(Phase::P2)),
     ("MatMulInteger", OperatorStatus::Planned(Phase::P2)),
@@ -764,9 +888,6 @@ pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("Multinomial", OperatorStatus::Planned(Phase::P2)),
     // ---------------- Phase 3: audio + detection ----
     ("NonMaxSuppression", OperatorStatus::Planned(Phase::P3)),
-    ("RoiAlign", OperatorStatus::Planned(Phase::P3)),
-    ("Resize", OperatorStatus::Planned(Phase::P3)),
-    ("GridSample", OperatorStatus::Planned(Phase::P3)),
     ("STFT", OperatorStatus::Planned(Phase::P3)),
     ("DFT", OperatorStatus::Planned(Phase::P3)),
     ("MelWeightMatrix", OperatorStatus::Planned(Phase::P3)),
@@ -774,10 +895,6 @@ pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("HannWindow", OperatorStatus::Planned(Phase::P3)),
     ("BlackmanWindow", OperatorStatus::Planned(Phase::P3)),
     ("ConvTranspose", OperatorStatus::Planned(Phase::P3)),
-    ("DepthToSpace", OperatorStatus::Planned(Phase::P3)),
-    ("SpaceToDepth", OperatorStatus::Planned(Phase::P3)),
-    ("GatherElements", OperatorStatus::Planned(Phase::P3)),
-    ("ScatterElements", OperatorStatus::Planned(Phase::P3)),
     // ---------------- Phase 4: long tail ----
     ("BitShift", OperatorStatus::Planned(Phase::P4)),
     ("BitwiseAnd", OperatorStatus::Planned(Phase::P4)),
@@ -801,22 +918,16 @@ pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("ReduceLogSum", OperatorStatus::Planned(Phase::P4)),
     ("ReduceLogSumExp", OperatorStatus::Planned(Phase::P4)),
     ("ReduceSumSquare", OperatorStatus::Planned(Phase::P4)),
-    ("HardSigmoid", OperatorStatus::Planned(Phase::P4)),
-    ("HardSwish", OperatorStatus::Planned(Phase::P4)),
     ("Selu", OperatorStatus::Planned(Phase::P4)),
     ("Softplus", OperatorStatus::Planned(Phase::P4)),
     ("Softsign", OperatorStatus::Planned(Phase::P4)),
     ("ThresholdedRelu", OperatorStatus::Planned(Phase::P4)),
-    ("PRelu", OperatorStatus::Planned(Phase::P4)),
     ("CastLike", OperatorStatus::Planned(Phase::P4)),
     ("EyeLike", OperatorStatus::Planned(Phase::P4)),
     ("Shrink", OperatorStatus::Planned(Phase::P4)),
     ("LpNormalization", OperatorStatus::Planned(Phase::P4)),
     ("LpPool", OperatorStatus::Planned(Phase::P4)),
-    ("GlobalMaxPool", OperatorStatus::Planned(Phase::P4)),
     ("GlobalLpPool", OperatorStatus::Planned(Phase::P4)),
-    ("InstanceNormalization", OperatorStatus::Planned(Phase::P4)),
-    ("GroupNormalization", OperatorStatus::Planned(Phase::P4)),
     (
         "MeanVarianceNormalization",
         OperatorStatus::Planned(Phase::P4),
@@ -3332,7 +3443,7 @@ mod tests {
     #[test]
     fn test_registry_supported_count() {
         let registry = OperatorRegistry::new();
-        assert_eq!(registry.supported_count(), 90);
+        assert_eq!(registry.supported_count(), 109);
     }
 
     #[test]
@@ -3374,8 +3485,8 @@ mod tests {
             );
         }
 
-        // Sanity: must match the advertised 90-op count.
-        assert_eq!(impl_names.len(), 90);
+        // Sanity: must match the advertised 109-op count.
+        assert_eq!(impl_names.len(), 109);
 
         // No duplicate entries in the inventory.
         let mut all_names: alloc::vec::Vec<&str> =
