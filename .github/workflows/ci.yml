@@ -459,7 +459,7 @@ jobs:
       - name: Convert LCOV to SonarCloud generic format
         run: python3 scripts/lcov-to-sonar.py lcov.info > sonar-coverage.xml
       - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-sonar
           path: sonar-coverage.xml
@@ -596,7 +596,7 @@ jobs:
           echo "=== Unsafe Usage Summary ==="
           grep -c "unsafe" geiger-report.txt || echo "0 unsafe usages found"
       - name: Upload geiger report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: geiger-report
           path: geiger-report.txt
@@ -633,7 +633,7 @@ jobs:
       - name: Run Kani proofs (security)
         run: cargo kani -p smallaios-security --tests 2>&1 | tee kani-security.txt || true
       - name: Upload Kani reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: kani-reports
           path: kani-*.txt
@@ -732,7 +732,7 @@ jobs:
         run: |
           cargo mutants -p smallaios-kernel --file kernel/src/mem/buddy.rs --file kernel/src/mem/slab.rs -- --lib 2>&1 | tee mutants-memory.txt || true
       - name: Upload mutation reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: mutation-reports
           path: mutants-*.txt
@@ -817,7 +817,7 @@ jobs:
         run: ./scripts/bench-regression.sh 10
         continue-on-error: true
       - name: Upload benchmark results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: benchmark-results
           path: target/criterion/
@@ -852,7 +852,7 @@ jobs:
         run: just dsm-analyze
         continue-on-error: true
       - name: Upload analysis artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dependency-analysis
           path: build/analysis/
@@ -904,7 +904,7 @@ jobs:
           fi
       - name: Upload semver report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: semver-api-report
           path: semver-report.txt
@@ -955,7 +955,7 @@ jobs:
             2>&1 | tee careful-report.txt
       - name: Upload careful report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: careful-report
           path: careful-report.txt
@@ -995,7 +995,7 @@ jobs:
             2>&1 | tee coverage-threshold.txt
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-threshold-report
           path: coverage-threshold.txt
