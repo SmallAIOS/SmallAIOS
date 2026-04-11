@@ -16,6 +16,7 @@
 //! existing call sites.
 
 pub mod activations;
+pub mod common;
 pub mod compare;
 pub mod math;
 pub mod quantized;

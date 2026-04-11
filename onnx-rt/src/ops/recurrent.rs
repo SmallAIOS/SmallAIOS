@@ -15,17 +15,8 @@ use alloc::vec::Vec;
 
 use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
 use crate::operators::{expf_approx, OpError};
+use crate::ops::common::require_float;
 use crate::tensor::{DataType, Tensor, TensorShape};
-
-fn require_float(t: &Tensor, op: &str) -> Result<(), OpError> {
-    if t.data_type != DataType::Float {
-        return Err(OpError::ShapeMismatch(alloc::format!(
-            "{} requires Float input",
-            op
-        )));
-    }
-    Ok(())
-}
 
 fn sigmoid(x: f32) -> f32 {
     1.0 / (1.0 + expf_approx(-x))

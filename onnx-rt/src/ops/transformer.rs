@@ -14,42 +14,11 @@ use alloc::vec::Vec;
 
 use crate::byte_io::{allocate_tensor_data, read_f32, read_i64, write_f32};
 use crate::operators::OpError;
+use crate::ops::common::{broadcast_index, next_coord, require_float};
 use crate::tensor::{DataType, Tensor, TensorShape};
-
-fn require_float(t: &Tensor, op: &str) -> Result<(), OpError> {
-    if t.data_type != DataType::Float {
-        return Err(OpError::ShapeMismatch(alloc::format!(
-            "{} requires Float input",
-            op
-        )));
-    }
-    Ok(())
-}
 
 fn product(dims: &[i64]) -> usize {
     dims.iter().map(|&d| d as usize).product::<usize>().max(1)
-}
-
-fn next_coord(coord: &mut [usize], dims: &[i64]) {
-    for i in (0..coord.len()).rev() {
-        coord[i] += 1;
-        if (coord[i] as i64) < dims[i] {
-            return;
-        }
-        coord[i] = 0;
-    }
-}
-
-fn broadcast_index(coord: &[usize], shape: &[i64]) -> usize {
-    let off = coord.len() - shape.len();
-    let mut idx = 0usize;
-    let mut stride = 1usize;
-    for i in (0..shape.len()).rev() {
-        let c = if shape[i] == 1 { 0 } else { coord[off + i] };
-        idx += c * stride;
-        stride *= shape[i] as usize;
-    }
-    idx
 }
 
 // ---------------------------------------------------------------------------

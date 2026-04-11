@@ -12,17 +12,8 @@ use alloc::vec::Vec;
 
 use crate::byte_io::{allocate_tensor_data, read_f32, write_f32, write_i64, I64_SIZE};
 use crate::operators::OpError;
+use crate::ops::common::{next_coord, require_float_attr as require_float};
 use crate::tensor::{DataType, Tensor, TensorShape};
-
-fn require_float(t: &Tensor, op: &str) -> Result<(), OpError> {
-    if t.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(alloc::format!(
-            "{} only supports float32",
-            op
-        )));
-    }
-    Ok(())
-}
 
 fn resolved_axes(ndim: usize, axes: &[i64]) -> Result<Vec<usize>, OpError> {
     if axes.is_empty() {
@@ -64,16 +55,6 @@ fn compute_out_dims(input_dims: &[i64], resolved: &[usize], keepdims: bool) -> V
         out_dims.push(1);
     }
     out_dims
-}
-
-fn next_coord(coord: &mut [usize], dims: &[i64]) {
-    for i in (0..coord.len()).rev() {
-        coord[i] += 1;
-        if (coord[i] as i64) < dims[i] {
-            return;
-        }
-        coord[i] = 0;
-    }
 }
 
 fn compute_strides(shape: &[i64]) -> Vec<usize> {

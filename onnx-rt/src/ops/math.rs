@@ -14,81 +14,8 @@ use alloc::vec::Vec;
 
 use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
 use crate::operators::{expf_approx, sqrt_approx, OpError};
+use crate::ops::common::{broadcast_index, broadcast_shape, next_coord, require_float, unary};
 use crate::tensor::{DataType, Tensor, TensorShape};
-
-/// Returns the broadcast output shape for two NumPy-style shapes.
-fn broadcast_shape(a: &[i64], b: &[i64]) -> Result<alloc::vec::Vec<i64>, OpError> {
-    let max = a.len().max(b.len());
-    let mut out = alloc::vec![1i64; max];
-    for i in 0..max {
-        let ad = if i < a.len() { a[a.len() - 1 - i] } else { 1 };
-        let bd = if i < b.len() { b[b.len() - 1 - i] } else { 1 };
-        let dim = if ad == bd {
-            ad
-        } else if ad == 1 {
-            bd
-        } else if bd == 1 {
-            ad
-        } else {
-            return Err(OpError::ShapeMismatch(String::from(
-                "incompatible shapes for broadcast",
-            )));
-        };
-        out[max - 1 - i] = dim;
-    }
-    Ok(out)
-}
-
-/// Computes the linear index for a coordinate in a (broadcast) tensor.
-fn broadcast_index(coord: &[usize], shape: &[i64]) -> usize {
-    // Right-aligned. coord is in output space; shape is the input shape.
-    let off = coord.len() - shape.len();
-    let mut idx = 0usize;
-    let mut stride = 1usize;
-    for i in (0..shape.len()).rev() {
-        let c = if shape[i] == 1 { 0 } else { coord[off + i] };
-        idx += c * stride;
-        stride *= shape[i] as usize;
-    }
-    idx
-}
-
-fn next_coord(coord: &mut [usize], dims: &[i64]) {
-    for i in (0..coord.len()).rev() {
-        coord[i] += 1;
-        if (coord[i] as i64) < dims[i] {
-            return;
-        }
-        coord[i] = 0;
-    }
-}
-
-fn require_float(t: &Tensor, op: &str) -> Result<(), OpError> {
-    if t.data_type != DataType::Float {
-        return Err(OpError::ShapeMismatch(alloc::format!(
-            "{} requires Float input",
-            op
-        )));
-    }
-    Ok(())
-}
-
-/// Element-wise unary helper that allocates an output tensor with the same
-/// shape and applies a function to each element.
-fn unary<F: Fn(f32) -> f32>(input: &Tensor, op: &str, f: F) -> Result<Tensor, OpError> {
-    require_float(input, op)?;
-    let n = input.shape.total_elements();
-    let mut out = allocate_tensor_data(n, DataType::Float);
-    for i in 0..n {
-        write_f32(&mut out, i, f(read_f32(&input.raw_data, i)));
-    }
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: input.shape.clone(),
-        name: String::new(),
-        raw_data: out,
-    })
-}
 
 /// Natural log via `ln(x) = log2(x) * ln(2)`. Uses the IEEE-754 exponent
 /// for `log2` and a 5-term polynomial in the mantissa. Accurate to ~2 ULP

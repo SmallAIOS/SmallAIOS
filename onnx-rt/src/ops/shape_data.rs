@@ -15,21 +15,12 @@ use crate::byte_io::{
     allocate_tensor_data, read_f32, read_i64, write_f32, write_i64, F32_SIZE, I64_SIZE,
 };
 use crate::operators::OpError;
+use crate::ops::common::require_float_attr as require_float;
 use crate::tensor::{DataType, Tensor, TensorShape};
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-fn require_float(t: &Tensor, op: &str) -> Result<(), OpError> {
-    if t.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(alloc::format!(
-            "{} only supports float32",
-            op
-        )));
-    }
-    Ok(())
-}
 
 fn require_int64(t: &Tensor, op: &str) -> Result<(), OpError> {
     if t.data_type != DataType::Int64 {

@@ -3,37 +3,10 @@
 
 //! Composite activation functions used by transformer-style models.
 
-use alloc::string::String;
-
-use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
 use crate::operators::{expf_approx, OpError};
+use crate::ops::common::unary;
 use crate::ops::math::erf_approx;
-use crate::tensor::{DataType, Tensor};
-
-fn require_float(t: &Tensor, op: &str) -> Result<(), OpError> {
-    if t.data_type != DataType::Float {
-        return Err(OpError::ShapeMismatch(alloc::format!(
-            "{} requires Float input",
-            op
-        )));
-    }
-    Ok(())
-}
-
-fn unary<F: Fn(f32) -> f32>(input: &Tensor, op: &str, f: F) -> Result<Tensor, OpError> {
-    require_float(input, op)?;
-    let n = input.shape.total_elements();
-    let mut data = allocate_tensor_data(n, DataType::Float);
-    for i in 0..n {
-        write_f32(&mut data, i, f(read_f32(&input.raw_data, i)));
-    }
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: input.shape.clone(),
-        name: String::new(),
-        raw_data: data,
-    })
-}
+use crate::tensor::Tensor;
 
 /// Gaussian Error Linear Unit: `0.5 * x * (1 + erf(x / sqrt(2)))`.
 pub fn op_gelu(input: &Tensor) -> Result<Tensor, OpError> {
@@ -67,7 +40,10 @@ pub fn op_swish(input: &Tensor) -> Result<Tensor, OpError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tensor::TensorShape;
+    use alloc::string::String;
+
+    use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
+    use crate::tensor::{DataType, TensorShape};
 
     fn make_f32(dims: &[i64], vals: &[f32]) -> Tensor {
         let mut data = allocate_tensor_data(vals.len(), DataType::Float);
