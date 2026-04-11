@@ -168,6 +168,62 @@ Both surfaces share the same loaded models, the same request path inside
 the ONNX runtime, and the same Prometheus metric counters — the bus
 simply bypasses JSON parsing and HTTP framing for hot-loop use cases.
 
+## End-to-End Test Pattern
+
+The canonical proof that the HTTP surface is wired end-to-end lives in
+`container/tests/test_full_inference_e2e.rs`. That test:
+
+1. Writes a known-good ONNX Relu model (shape `[3, 4, 5]`, 60 elements)
+   to a temp directory.
+2. Spawns the `smallaios-container` binary as a subprocess pointing at
+   that directory, on an OS-assigned free port, with
+   `SMALLAIOS_BUS_BACKEND=none`.
+3. Polls `/healthz` until it returns 200 OK or a 10-second budget
+   expires.
+4. Asserts `/v1/models` lists the `relu` model.
+5. POSTs a JSON inference request of the form:
+   ```json
+   {
+     "model": "relu",
+     "inputs": {
+       "x": {
+         "shape": [3, 4, 5],
+         "dtype": "float32",
+         "data": [-30.0, -29.0, ..., 29.0]
+       }
+     }
+   }
+   ```
+6. Verifies the response has `200 OK`, extracts the `y` output data
+   from the JSON, and checks that every element equals
+   `max(0, input_element)`.
+
+The response shape is:
+```json
+{
+  "outputs": {
+    "y": {
+      "shape": [3, 4, 5],
+      "dtype": "float32",
+      "data": [0, 0, ..., 29]
+    }
+  },
+  "timing_us": 12
+}
+```
+
+Because this test spans protobuf decode, session initialisation, graph
+executor dispatch, the `Relu` operator, the HTTP server, JSON parse,
+handler dispatch, and JSON serialise, a regression in *any* of those
+layers will surface here first. Run it with:
+
+```
+cargo test -p smallaios-container --test test_full_inference_e2e
+```
+
+The test is not `#[ignore]`d and is executed by default in CI alongside
+every other container integration test.
+
 ## See Also
 
 - `ipc/src/inference_proto.rs` — binary wire format definition

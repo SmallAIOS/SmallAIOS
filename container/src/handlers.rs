@@ -10,6 +10,9 @@
 use crate::json::JsonValue;
 use crate::model_manager::ModelManager;
 use crate::server::{HttpRequest, HttpResponse};
+use smallaios_onnx_rt::session::{InferenceInput, Session};
+use smallaios_onnx_rt::tensor::{DataType, Tensor, TensorShape};
+use std::collections::BTreeMap;
 
 /// POST /v1/inference — run inference on a named model.
 ///
@@ -55,6 +58,215 @@ pub fn handle_inference(req: &HttpRequest, manager: &ModelManager) -> HttpRespon
             &format!(r#"{{"error":"model '{}' not found"}}"#, model_name),
         ),
     }
+}
+
+/// POST /v1/inference — execute inference against a pre-initialised session.
+///
+/// Parses the JSON body into a model name and a set of named input
+/// tensors, looks up the pre-loaded [`Session`] in `sessions`, runs
+/// [`Session::run`], and serialises the resulting output tensors back
+/// into the wire format documented in `docs/inference-bus.md`:
+///
+/// ```json
+/// {"outputs":{"y":{"shape":[3,4,5],"dtype":"float32","data":[...]}},
+///  "timing_us":12}
+/// ```
+///
+/// Returns 400 on bad JSON / shape mismatches, 404 on unknown model,
+/// and 500 on executor failure.
+pub fn handle_inference_exec(
+    req: &HttpRequest,
+    sessions: &BTreeMap<String, Session>,
+) -> HttpResponse {
+    if req.method != "POST" {
+        return HttpResponse::json(405, r#"{"error":"method not allowed, use POST"}"#);
+    }
+
+    let body_str = core::str::from_utf8(&req.body).unwrap_or("");
+    let json = match JsonValue::parse(body_str) {
+        Ok(j) => j,
+        Err(e) => {
+            return HttpResponse::json(400, &format!(r#"{{"error":"invalid JSON: {}"}}"#, e));
+        }
+    };
+
+    let model_name = match json.get("model").and_then(|v| v.as_str()) {
+        Some(n) => n,
+        None => return HttpResponse::json(400, r#"{"error":"missing 'model' field"}"#),
+    };
+
+    let session = match sessions.get(model_name) {
+        Some(s) => s,
+        None => {
+            return HttpResponse::json(
+                404,
+                &format!(r#"{{"error":"model '{}' not found"}}"#, model_name),
+            );
+        }
+    };
+
+    let inputs_json = match json.get("inputs") {
+        Some(v) => v,
+        None => return HttpResponse::json(400, r#"{"error":"missing 'inputs' field"}"#),
+    };
+    let input_entries = match inputs_json.as_object() {
+        Some(o) => o,
+        None => return HttpResponse::json(400, r#"{"error":"'inputs' must be an object"}"#),
+    };
+
+    // Build typed InferenceInput list from the JSON object.
+    let mut inference_inputs: Vec<InferenceInput> = Vec::with_capacity(input_entries.len());
+    for (name, val) in input_entries {
+        let tensor = match json_to_tensor(name, val) {
+            Ok(t) => t,
+            Err(e) => {
+                return HttpResponse::json(
+                    400,
+                    &format!(r#"{{"error":"invalid input '{}': {}"}}"#, name, e),
+                );
+            }
+        };
+        inference_inputs.push(InferenceInput {
+            name: name.clone(),
+            tensor,
+        });
+    }
+
+    let start = std::time::Instant::now();
+    let outputs = match session.run(&inference_inputs) {
+        Ok(o) => o,
+        Err(e) => {
+            // Invalid-input errors from the executor should surface as 400,
+            // everything else as 500.
+            let msg = format!("{}", e);
+            let lower = msg.to_lowercase();
+            let status = if lower.contains("invalid")
+                || lower.contains("shape")
+                || lower.contains("mismatch")
+            {
+                400
+            } else {
+                500
+            };
+            return HttpResponse::json(
+                status,
+                &format!(
+                    r#"{{"error":"inference failed: {}"}}"#,
+                    msg.replace('"', "\\\"")
+                ),
+            );
+        }
+    };
+    let elapsed_us = start.elapsed().as_micros();
+
+    HttpResponse::json(200, &serialize_outputs(&outputs, elapsed_us))
+}
+
+/// Convert a JSON `{"shape":[..],"dtype":"float32","data":[..]}` object
+/// into a typed `Tensor`. Only `float32` is supported for now — add
+/// more dtypes as the runtime grows.
+fn json_to_tensor(name: &str, val: &JsonValue) -> Result<Tensor, String> {
+    let shape_json = val
+        .get("shape")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "missing or non-array 'shape'".to_string())?;
+    let dtype = val
+        .get("dtype")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "missing 'dtype'".to_string())?;
+    let data_json = val
+        .get("data")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "missing or non-array 'data'".to_string())?;
+
+    if dtype != "float32" {
+        return Err(format!(
+            "unsupported dtype '{}': only float32 is wired",
+            dtype
+        ));
+    }
+
+    let dims: Vec<i64> = shape_json
+        .iter()
+        .map(|d| {
+            d.as_f64()
+                .map(|f| f as i64)
+                .ok_or_else(|| "shape entries must be numbers".to_string())
+        })
+        .collect::<Result<_, _>>()?;
+
+    let shape = TensorShape::new(dims);
+    let expected_elems = shape.total_elements();
+    if data_json.len() != expected_elems {
+        return Err(format!(
+            "data length {} does not match shape element count {}",
+            data_json.len(),
+            expected_elems
+        ));
+    }
+
+    let mut raw_data = Vec::with_capacity(expected_elems * 4);
+    for v in data_json {
+        let f = v
+            .as_f64()
+            .ok_or_else(|| "data entries must be numbers".to_string())? as f32;
+        raw_data.extend_from_slice(&f.to_le_bytes());
+    }
+
+    let mut tensor = Tensor::new(DataType::Float, shape, name.to_string());
+    tensor.raw_data = raw_data;
+    Ok(tensor)
+}
+
+/// Serialise a slice of `InferenceOutput` (all assumed float32) into
+/// the JSON wire format.
+fn serialize_outputs(
+    outputs: &[smallaios_onnx_rt::session::InferenceOutput],
+    elapsed_us: u128,
+) -> String {
+    let mut buf = String::from("{\"outputs\":{");
+    for (i, out) in outputs.iter().enumerate() {
+        if i > 0 {
+            buf.push(',');
+        }
+        buf.push('"');
+        buf.push_str(&out.name);
+        buf.push_str("\":{\"shape\":[");
+        for (j, d) in out.tensor.shape.dims.iter().enumerate() {
+            if j > 0 {
+                buf.push(',');
+            }
+            buf.push_str(&d.to_string());
+        }
+        buf.push_str("],\"dtype\":\"");
+        buf.push_str(out.tensor.data_type.name());
+        buf.push_str("\",\"data\":[");
+
+        // Serialise the raw_data as little-endian f32 array. Non-float
+        // tensors fall back to an empty array — callers only wire
+        // float32 for now.
+        if out.tensor.data_type == DataType::Float {
+            let n = out.tensor.raw_data.len() / 4;
+            for k in 0..n {
+                if k > 0 {
+                    buf.push(',');
+                }
+                let bytes = [
+                    out.tensor.raw_data[k * 4],
+                    out.tensor.raw_data[k * 4 + 1],
+                    out.tensor.raw_data[k * 4 + 2],
+                    out.tensor.raw_data[k * 4 + 3],
+                ];
+                let v = f32::from_le_bytes(bytes);
+                buf.push_str(&format!("{}", v));
+            }
+        }
+        buf.push_str("]}");
+    }
+    buf.push_str("},\"timing_us\":");
+    buf.push_str(&elapsed_us.to_string());
+    buf.push('}');
+    buf
 }
 
 /// GET /v1/models — list all loaded models.
