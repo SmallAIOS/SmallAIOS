@@ -2359,6 +2359,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2401,6 +2403,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2453,6 +2457,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2536,6 +2542,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2589,6 +2597,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2630,6 +2640,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2669,6 +2681,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2700,6 +2714,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2735,6 +2751,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2773,6 +2791,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         );
@@ -2810,6 +2830,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2862,6 +2884,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2946,6 +2970,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2992,6 +3018,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,

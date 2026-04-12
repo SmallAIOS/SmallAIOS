@@ -630,8 +630,8 @@ fn test_gpu_conv2d_non4d_falls_back() {
     let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
 
     // 3D input — should return None (not a 4D conv).
-    let x = make_f32_tensor(&[1, 3, 5], &vec![1.0; 15]);
-    let w = make_f32_tensor(&[1, 3, 3], &vec![1.0; 9]);
+    let x = make_f32_tensor(&[1, 3, 5], &[1.0; 15]);
+    let w = make_f32_tensor(&[1, 3, 3], &[1.0; 9]);
 
     let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[1, 1], &[1, 1])
         .expect("should not error");
