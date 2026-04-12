@@ -19,6 +19,8 @@
 extern crate alloc;
 
 pub mod byte_io;
+#[cfg(feature = "cuda")]
+pub mod cuda;
 pub mod executor;
 pub mod gemm;
 pub mod graph;

@@ -482,3 +482,73 @@ fn test_mobilenet_v2_loads() {
         }
     }
 }
+
+#[test]
+#[ignore]
+fn test_resnet50_loads() {
+    let Some(_) = fixture_path("resnet50.onnx") else {
+        eprintln!("SKIP: resnet50 fixture not found");
+        return;
+    };
+    let result = validate_model("resnet50.onnx");
+    // ResNet-50 v2 with weights (~98 MB).
+    match result {
+        ModelResult::Ok {
+            total_nodes,
+            unsupported_ops,
+            ..
+        } => {
+            assert!(
+                total_nodes > 10,
+                "ResNet-50 should have many nodes, got {}",
+                total_nodes
+            );
+            eprintln!(
+                "ResNet-50: {} nodes, {} unsupported ops",
+                total_nodes,
+                unsupported_ops.len()
+            );
+        }
+        ModelResult::ParseFailed(e) => {
+            eprintln!("ResNet-50: decode_model failed: {}", e);
+        }
+        ModelResult::GraphBuildFailed(e) => {
+            panic!("ResNet-50: unexpected graph build failure: {}", e);
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_squeezenet_loads() {
+    let Some(_) = fixture_path("squeezenet.onnx") else {
+        eprintln!("SKIP: squeezenet fixture not found");
+        return;
+    };
+    let result = validate_model("squeezenet.onnx");
+    // SqueezeNet 1.1 with weights (~4.8 MB).
+    match result {
+        ModelResult::Ok {
+            total_nodes,
+            unsupported_ops,
+            ..
+        } => {
+            assert!(
+                total_nodes > 10,
+                "SqueezeNet should have many nodes, got {}",
+                total_nodes
+            );
+            eprintln!(
+                "SqueezeNet: {} nodes, {} unsupported ops",
+                total_nodes,
+                unsupported_ops.len()
+            );
+        }
+        ModelResult::ParseFailed(e) => {
+            eprintln!("SqueezeNet: decode_model failed: {}", e);
+        }
+        ModelResult::GraphBuildFailed(e) => {
+            panic!("SqueezeNet: unexpected graph build failure: {}", e);
+        }
+    }
+}

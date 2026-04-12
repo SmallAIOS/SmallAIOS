@@ -213,6 +213,9 @@ pub struct Session {
     /// dispatcher mutates its internal cache and kernel state.
     #[cfg(all(feature = "metal", target_os = "macos"))]
     pub metal_dispatcher: core::cell::RefCell<Option<crate::metal_dispatch::MetalDispatcher>>,
+    /// Optional CUDA runtime for real GPU dispatch (container mode).
+    #[cfg(feature = "cuda")]
+    pub cuda_runtime: Option<crate::cuda::CudaRuntime>,
 }
 
 /// ONNX model file magic bytes: `\x08` (field 1, varint wire type).
@@ -391,6 +394,8 @@ impl Session {
             gpu_backend: None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             metal_dispatcher: core::cell::RefCell::new(metal_dispatcher),
+            #[cfg(feature = "cuda")]
+            cuda_runtime: None,
         }
     }
 
@@ -500,6 +505,8 @@ impl Session {
             &crate::profile::NullTimeSource,
             #[cfg(feature = "gpu")]
             self.gpu_backend.as_ref(),
+            #[cfg(feature = "cuda")]
+            self.cuda_runtime.as_ref(),
             #[cfg(all(feature = "metal", target_os = "macos"))]
             metal_guard.as_mut(),
         )
@@ -567,6 +574,8 @@ impl Session {
             &time_source,
             #[cfg(feature = "gpu")]
             self.gpu_backend.as_ref(),
+            #[cfg(feature = "cuda")]
+            self.cuda_runtime.as_ref(),
             #[cfg(all(feature = "metal", target_os = "macos"))]
             metal_guard.as_mut(),
         )?;

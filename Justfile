@@ -21,11 +21,11 @@ host_crates := "smallaios-kernel smallaios-security smallaios-compute smallaios-
 
 # Build container image for x86_64
 build-container-x86 gpu="":
-    {{cargo}} build --release --target x86_64-unknown-linux-musl {{ if gpu != "" { "--features nvidia_gpu" } else { "" } }}
+    {{cargo}} build --release --target x86_64-unknown-linux-musl -p smallaios-container {{ if gpu != "" { "--features nvidia_gpu" } else { "" } }}
 
 # Build container image for ARM64
 build-container-arm gpu="":
-    {{cargo}} build --release --target aarch64-unknown-linux-musl {{ if gpu != "" { "--features nvidia_gpu" } else { "" } }}
+    {{cargo}} build --release --target aarch64-unknown-linux-musl -p smallaios-container {{ if gpu != "" { "--features nvidia_gpu" } else { "" } }}
 
 # === Kernel Mode (VM / Bare Metal) ===
 
@@ -113,6 +113,10 @@ vmware-x86: build-kernel-x86
 docker-build:
     {{docker}} buildx build --platform linux/amd64,linux/arm64 \
         -t smallaios/runtime:latest .
+
+# Build GPU-enabled Docker image (NVIDIA CUDA runtime)
+docker-build-gpu:
+    {{docker}} build -f Dockerfile.cuda -t smallaios/runtime:gpu .
 
 # Build and push multi-arch Docker image
 docker-push:

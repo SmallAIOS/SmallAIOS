@@ -82,6 +82,14 @@ download "deepseek-r1-distill-qwen-1.5b.onnx" \
 download "mobilenet_v2.onnx" \
     "https://github.com/onnx/models/raw/main/validated/vision/classification/mobilenet/model/mobilenetv2-12.onnx"
 
+# ResNet-50 (onnx/models GitHub mirror, public)
+download "resnet50.onnx" \
+    "https://github.com/onnx/models/raw/main/validated/vision/classification/resnet/model/resnet50-v2-7.onnx"
+
+# SqueezeNet 1.1 (onnx/models GitHub mirror, public)
+download "squeezenet.onnx" \
+    "https://github.com/onnx/models/raw/main/validated/vision/classification/squeezenet/model/squeezenet1.1-7.onnx"
+
 # ---------------------------------------------------------------------------
 # Gemma 3 (onnx-community public ONNX exports)
 # ---------------------------------------------------------------------------

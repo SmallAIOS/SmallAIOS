@@ -32,9 +32,7 @@ services:
   smallaios-gpu:
     build:
       context: .
-      dockerfile: Dockerfile
-      args:
-        ENABLE_GPU: "1"
+      dockerfile: Dockerfile.cuda
     ports:
       - "8080:8080"
     volumes:
@@ -45,13 +43,12 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - SMALLAIOS_MODEL_DIR=/models
       - SMALLAIOS_PORT=8080
-      - SMALLAIOS_GPU_BACKEND=nvidia
-      # Pub/sub dataflow runner backend; see docs/inference-bus.md.
+      - SMALLAIOS_GPU_BACKEND=cuda
       - SMALLAIOS_BUS_BACKEND=none
     profiles:
       - gpu
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/healthz || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 3
