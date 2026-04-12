@@ -51,7 +51,8 @@ fn main() {
     // Initialize CUDA runtime if requested.
     #[cfg(feature = "cuda")]
     let cuda_runtime = if gpu_backend == "cuda" {
-        let precision_str = std::env::var("SMALLAIOS_GPU_PRECISION").unwrap_or_else(|_| "tf32".to_string());
+        let precision_str =
+            std::env::var("SMALLAIOS_GPU_PRECISION").unwrap_or_else(|_| "tf32".to_string());
         let precision = smallaios_onnx_rt::cuda::GpuPrecision::from_str(&precision_str);
         println!("GPU precision mode: {:?}", precision);
         match smallaios_onnx_rt::cuda::CudaRuntime::init_with_precision(precision) {
@@ -67,7 +68,10 @@ fn main() {
                 Some(std::sync::Arc::new(rt))
             }
             Err(e) => {
-                eprintln!("WARNING: GPU backend=cuda requested but CUDA init failed: {}", e);
+                eprintln!(
+                    "WARNING: GPU backend=cuda requested but CUDA init failed: {}",
+                    e
+                );
                 eprintln!("  Falling back to CPU inference");
                 None
             }
@@ -165,7 +169,9 @@ fn main() {
 /// skipped; the runner can still start with the remaining sessions.
 fn load_sessions(
     manager: &model_manager::ModelManager,
-    #[cfg(feature = "cuda")] cuda_runtime: &Option<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
+    #[cfg(feature = "cuda")] cuda_runtime: &Option<
+        std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>,
+    >,
 ) -> BTreeMap<String, Session> {
     let mut sessions = BTreeMap::new();
     for info in manager.list_models() {

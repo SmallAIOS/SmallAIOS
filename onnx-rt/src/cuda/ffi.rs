@@ -303,15 +303,13 @@ extern "C" {
     pub fn cudnnCreateConvolutionDescriptor(
         desc: *mut cudnnConvolutionDescriptor_t,
     ) -> cudnnStatus_t;
-    pub fn cudnnDestroyConvolutionDescriptor(
-        desc: cudnnConvolutionDescriptor_t,
-    ) -> cudnnStatus_t;
+    pub fn cudnnDestroyConvolutionDescriptor(desc: cudnnConvolutionDescriptor_t) -> cudnnStatus_t;
     pub fn cudnnSetConvolution2dDescriptor(
         desc: cudnnConvolutionDescriptor_t,
         pad_h: i32,
         pad_w: i32,
-        u: i32,     // vertical stride
-        v: i32,     // horizontal stride
+        u: i32, // vertical stride
+        v: i32, // horizontal stride
         dilation_h: i32,
         dilation_w: i32,
         mode: cudnnConvolutionMode_t,

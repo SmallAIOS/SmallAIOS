@@ -10,6 +10,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::byte_io::{self, allocate_tensor_data, I64_SIZE};
+#[cfg(feature = "cuda")]
+use crate::cuda;
 use crate::graph::{ExecutionGraph, ExecutionNode};
 use crate::onnx_types::{AttributeProto, AttributeType, TensorProto};
 use crate::operators::{self, OpError, OpKind};
@@ -22,8 +24,6 @@ use crate::profile::{
 use crate::session::{InferenceOutput, SessionError};
 use crate::sub_executor;
 use crate::tensor::{DataType, Tensor, TensorShape};
-#[cfg(feature = "cuda")]
-use crate::cuda;
 
 /// Executes an ONNX graph end-to-end.
 ///

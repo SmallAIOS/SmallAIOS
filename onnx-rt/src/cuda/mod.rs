@@ -249,6 +249,7 @@ impl CublasHandle {
     ///
     /// Note: cuBLAS uses column-major layout. For row-major data (as used in
     /// ONNX tensors), swap A/B and transpose flags.
+    #[allow(clippy::too_many_arguments)]
     pub fn sgemm(
         &self,
         transa: ffi::cublasOperation_t,
@@ -293,6 +294,7 @@ impl CublasHandle {
     }
 
     /// Perform mixed-precision GEMM via cublasGemmEx (e.g. INT8 with INT32 accumulation).
+    #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
     pub fn gemm_ex(
         &self,
         transa: ffi::cublasOperation_t,
@@ -469,6 +471,7 @@ pub enum GpuPrecision {
 
 impl GpuPrecision {
     /// Parse from environment variable string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s {
             "f32" | "fp32" => Self::F32,

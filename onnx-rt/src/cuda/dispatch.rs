@@ -19,6 +19,7 @@ use crate::tensor::{DataType, Tensor, TensorShape};
 ///
 /// Handles 2D matrix multiply: C[M,N] = alpha * op(A)[M,K] * op(B)[K,N] + beta * C_bias.
 /// For plain MatMul, use alpha=1.0, beta=0.0, c_bias=None.
+#[allow(clippy::too_many_arguments)]
 pub fn gpu_gemm(
     runtime: &CudaRuntime,
     a: &Tensor,
@@ -40,14 +41,26 @@ pub fn gpu_gemm(
     }
 
     let (m, k_a) = if trans_a {
-        (a_dims[a_dims.len() - 1] as usize, a_dims[a_dims.len() - 2] as usize)
+        (
+            a_dims[a_dims.len() - 1] as usize,
+            a_dims[a_dims.len() - 2] as usize,
+        )
     } else {
-        (a_dims[a_dims.len() - 2] as usize, a_dims[a_dims.len() - 1] as usize)
+        (
+            a_dims[a_dims.len() - 2] as usize,
+            a_dims[a_dims.len() - 1] as usize,
+        )
     };
     let (k_b, n) = if trans_b {
-        (b_dims[b_dims.len() - 1] as usize, b_dims[b_dims.len() - 2] as usize)
+        (
+            b_dims[b_dims.len() - 1] as usize,
+            b_dims[b_dims.len() - 2] as usize,
+        )
     } else {
-        (b_dims[b_dims.len() - 2] as usize, b_dims[b_dims.len() - 1] as usize)
+        (
+            b_dims[b_dims.len() - 2] as usize,
+            b_dims[b_dims.len() - 1] as usize,
+        )
     };
 
     if k_a != k_b {
@@ -172,7 +185,7 @@ pub fn gpu_gemm_int8(
     let n = b_dims[b_dims.len() - 1] as usize;
 
     // cuBLAS INT8 GEMM requires 4-aligned dimensions.
-    if m % 4 != 0 || n % 4 != 0 || k % 4 != 0 {
+    if !m.is_multiple_of(4) || !n.is_multiple_of(4) || !k.is_multiple_of(4) {
         return Ok(None); // fall back to CPU
     }
 
@@ -196,22 +209,22 @@ pub fn gpu_gemm_int8(
     let beta: i32 = 0;
 
     runtime.cublas.gemm_ex(
-        ffi::cublasOperation_t::CUBLAS_OP_N,  // B^T already in memory
-        ffi::cublasOperation_t::CUBLAS_OP_N,  // A^T already in memory
-        n as i32,  // rows of op(B^T) = N
-        m as i32,  // cols of op(A^T) = M
+        ffi::cublasOperation_t::CUBLAS_OP_N, // B^T already in memory
+        ffi::cublasOperation_t::CUBLAS_OP_N, // A^T already in memory
+        n as i32,                            // rows of op(B^T) = N
+        m as i32,                            // cols of op(A^T) = M
         k as i32,
         &alpha as *const i32 as *const core::ffi::c_void,
-        &b_buf,                               // "A" in cuBLAS = B_row
+        &b_buf, // "A" in cuBLAS = B_row
         ffi::cudaDataType_t::CUDA_R_8I,
-        n as i32,                             // lda = N
-        &a_buf,                               // "B" in cuBLAS = A_row
+        n as i32, // lda = N
+        &a_buf,   // "B" in cuBLAS = A_row
         ffi::cudaDataType_t::CUDA_R_8I,
-        k as i32,                             // ldb = K
+        k as i32, // ldb = K
         &beta as *const i32 as *const core::ffi::c_void,
         &c_buf,
         ffi::cudaDataType_t::CUDA_R_32I,
-        n as i32,                             // ldc = N
+        n as i32, // ldc = N
         ffi::cublasComputeType_t::CUBLAS_COMPUTE_32I,
     )?;
 
@@ -278,7 +291,10 @@ pub fn gpu_gemm_fp8(
         )
     };
     if err != ffi::CUBLAS_STATUS_SUCCESS {
-        return Err(CudaError::BlasError { op: "LtMatmulDescCreate", code: err });
+        return Err(CudaError::BlasError {
+            op: "LtMatmulDescCreate",
+            code: err,
+        });
     }
 
     let mut b_layout: ffi::cublasLtMatrixLayout_t = core::ptr::null_mut();
@@ -286,24 +302,54 @@ pub fn gpu_gemm_fp8(
     let mut c_layout: ffi::cublasLtMatrixLayout_t = core::ptr::null_mut();
 
     // B^T is [N, K] in column-major (B row-major [K, N] reinterpreted)
-    let err = unsafe { ffi::cublasLtMatrixLayoutCreate(&mut b_layout, fp8_type, n as u64, k as u64, n as i64) };
+    let err = unsafe {
+        ffi::cublasLtMatrixLayoutCreate(&mut b_layout, fp8_type, n as u64, k as u64, n as i64)
+    };
     if err != ffi::CUBLAS_STATUS_SUCCESS {
-        unsafe { ffi::cublasLtMatmulDescDestroy(matmul_desc); }
-        return Err(CudaError::BlasError { op: "LtLayoutCreate B", code: err });
+        unsafe {
+            ffi::cublasLtMatmulDescDestroy(matmul_desc);
+        }
+        return Err(CudaError::BlasError {
+            op: "LtLayoutCreate B",
+            code: err,
+        });
     }
 
     // A^T is [K, M] in column-major (A row-major [M, K] reinterpreted)
-    let err = unsafe { ffi::cublasLtMatrixLayoutCreate(&mut a_layout, fp8_type, k as u64, m as u64, k as i64) };
+    let err = unsafe {
+        ffi::cublasLtMatrixLayoutCreate(&mut a_layout, fp8_type, k as u64, m as u64, k as i64)
+    };
     if err != ffi::CUBLAS_STATUS_SUCCESS {
-        unsafe { ffi::cublasLtMatrixLayoutDestroy(b_layout); ffi::cublasLtMatmulDescDestroy(matmul_desc); }
-        return Err(CudaError::BlasError { op: "LtLayoutCreate A", code: err });
+        unsafe {
+            ffi::cublasLtMatrixLayoutDestroy(b_layout);
+            ffi::cublasLtMatmulDescDestroy(matmul_desc);
+        }
+        return Err(CudaError::BlasError {
+            op: "LtLayoutCreate A",
+            code: err,
+        });
     }
 
     // C^T is [N, M] in column-major → C row-major [M, N]
-    let err = unsafe { ffi::cublasLtMatrixLayoutCreate(&mut c_layout, ffi::cudaDataType_t::CUDA_R_32F, n as u64, m as u64, n as i64) };
+    let err = unsafe {
+        ffi::cublasLtMatrixLayoutCreate(
+            &mut c_layout,
+            ffi::cudaDataType_t::CUDA_R_32F,
+            n as u64,
+            m as u64,
+            n as i64,
+        )
+    };
     if err != ffi::CUBLAS_STATUS_SUCCESS {
-        unsafe { ffi::cublasLtMatrixLayoutDestroy(a_layout); ffi::cublasLtMatrixLayoutDestroy(b_layout); ffi::cublasLtMatmulDescDestroy(matmul_desc); }
-        return Err(CudaError::BlasError { op: "LtLayoutCreate C", code: err });
+        unsafe {
+            ffi::cublasLtMatrixLayoutDestroy(a_layout);
+            ffi::cublasLtMatrixLayoutDestroy(b_layout);
+            ffi::cublasLtMatmulDescDestroy(matmul_desc);
+        }
+        return Err(CudaError::BlasError {
+            op: "LtLayoutCreate C",
+            code: err,
+        });
     }
 
     let alpha: f32 = 1.0;
@@ -339,7 +385,10 @@ pub fn gpu_gemm_fp8(
     }
 
     if err != ffi::CUBLAS_STATUS_SUCCESS {
-        return Err(CudaError::BlasError { op: "cublasLtMatmul FP8", code: err });
+        return Err(CudaError::BlasError {
+            op: "cublasLtMatmul FP8",
+            code: err,
+        });
     }
 
     super::synchronize()?;

@@ -130,6 +130,12 @@ pub struct DeviceWeightStore {
     total_bytes: usize,
 }
 
+impl Default for DeviceWeightStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DeviceWeightStore {
     /// Create an empty weight store.
     pub fn new() -> Self {

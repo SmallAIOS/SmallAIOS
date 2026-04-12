@@ -54,10 +54,12 @@ fn test_device_buffer_alloc_copy_roundtrip() {
     let buf = cuda::DeviceBuffer::alloc(data.len()).expect("alloc failed");
     assert_eq!(buf.size(), 256);
 
-    buf.copy_from_host(&data).expect("host-to-device copy failed");
+    buf.copy_from_host(&data)
+        .expect("host-to-device copy failed");
 
     let mut result = vec![0u8; 256];
-    buf.copy_to_host(&mut result).expect("device-to-host copy failed");
+    buf.copy_to_host(&mut result)
+        .expect("device-to-host copy failed");
 
     assert_eq!(data, result, "roundtrip data mismatch");
     eprintln!("DeviceBuffer roundtrip: 256 bytes OK");
@@ -211,7 +213,9 @@ fn test_gpu_gemm_dispatch_2x3_times_3x2() {
         assert!(
             (got - exp).abs() < 1e-3,
             "gemm result[{}]: expected {}, got {}",
-            i, exp, got
+            i,
+            exp,
+            got
         );
     }
     eprintln!("gpu_gemm dispatch 2x3 * 3x2: OK {:?}", result);
@@ -238,7 +242,9 @@ fn test_gpu_gemm_with_bias() {
         assert!(
             (got - exp).abs() < 1e-3,
             "gemm+bias result[{}]: expected {}, got {}",
-            i, exp, got
+            i,
+            exp,
+            got
         );
     }
     eprintln!("gpu_gemm with bias: OK {:?}", result);
@@ -287,11 +293,7 @@ fn test_gpu_gemm_matches_cpu_large_matrix() {
     );
     // f32 GEMM on GPU uses FMA with different rounding than CPU naive loop.
     // ~0.02 max error on 64x64 with values up to ~40.96 is expected.
-    assert!(
-        max_err < 0.05,
-        "GPU/CPU mismatch too large: {}",
-        max_err
-    );
+    assert!(max_err < 0.05, "GPU/CPU mismatch too large: {}", max_err);
 }
 
 #[test]
@@ -322,7 +324,8 @@ fn test_gpu_gemm_int8() {
     assert_eq!(c.data_type, DataType::Int32);
     assert_eq!(c.shape.dims, vec![4, 4]);
 
-    let c_vals: Vec<i32> = c.raw_data
+    let c_vals: Vec<i32> = c
+        .raw_data
         .chunks_exact(4)
         .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
@@ -365,7 +368,10 @@ fn test_gpu_gemm_int8_unaligned_falls_back() {
     };
 
     let result = cuda::dispatch::gpu_gemm_int8(&rt, &a, &b).expect("should not error");
-    assert!(result.is_none(), "3x3 should fall back to CPU (not 4-aligned)");
+    assert!(
+        result.is_none(),
+        "3x3 should fall back to CPU (not 4-aligned)"
+    );
     eprintln!("gpu_gemm_int8 3x3: correctly falls back to CPU");
 }
 
@@ -394,7 +400,9 @@ fn precision_gemm_max_error(precision: cuda::GpuPrecision, n: usize) -> f32 {
     let mut max_err: f32 = 0.0;
     for i in 0..n * n {
         let err = (gpu_result[i] - cpu_c[i]).abs();
-        if err > max_err { max_err = err; }
+        if err > max_err {
+            max_err = err;
+        }
     }
     max_err
 }
@@ -443,7 +451,10 @@ fn test_gpu_conv2d_1x1() {
     let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
 
     // 1x1 conv: input [1,1,3,3], weight [1,1,1,1] (scale by 2.0)
-    let x = make_f32_tensor(&[1, 1, 3, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    let x = make_f32_tensor(
+        &[1, 1, 3, 3],
+        &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+    );
     let w = make_f32_tensor(&[1, 1, 1, 1], &[2.0]);
 
     let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[1, 1], &[1, 1])
@@ -455,7 +466,13 @@ fn test_gpu_conv2d_1x1() {
     let vals = read_f32(&y);
     let expected = [2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0];
     for (i, (&got, &exp)) in vals.iter().zip(expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-5, "conv 1x1 [{}]: {} vs {}", i, got, exp);
+        assert!(
+            (got - exp).abs() < 1e-5,
+            "conv 1x1 [{}]: {} vs {}",
+            i,
+            got,
+            exp
+        );
     }
     eprintln!("gpu_conv2d 1x1: OK {:?}", vals);
 }
@@ -481,7 +498,11 @@ fn test_gpu_conv2d_3x3_with_padding() {
 
     // Spot check: center element y[0,0,1,1] = sum of 3x3 patch around (1,1)
     // = 1+2+3+5+6+7+9+10+11 = 54
-    assert!((vals[5] - 54.0).abs() < 1e-4, "conv center: {} vs 54", vals[5]);
+    assert!(
+        (vals[5] - 54.0).abs() < 1e-4,
+        "conv center: {} vs 54",
+        vals[5]
+    );
     eprintln!("gpu_conv2d 3x3 pad=1: OK, center={}", vals[5]);
 }
 
@@ -506,7 +527,13 @@ fn test_gpu_conv2d_with_bias() {
     // Chan 1: [-1+20, -2+20, -3+20, -4+20] = [19, 18, 17, 16]
     let expected = [11.0, 12.0, 13.0, 14.0, 19.0, 18.0, 17.0, 16.0];
     for (i, (&got, &exp)) in vals.iter().zip(expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-4, "conv+bias [{}]: {} vs {}", i, got, exp);
+        assert!(
+            (got - exp).abs() < 1e-4,
+            "conv+bias [{}]: {} vs {}",
+            i,
+            got,
+            exp
+        );
     }
     eprintln!("gpu_conv2d with bias: OK {:?}", vals);
 }
@@ -531,7 +558,13 @@ fn test_gpu_conv2d_strided() {
     // Stride=2 picks every other element: [1, 3, 9, 11]
     let expected = [1.0, 3.0, 9.0, 11.0];
     for (i, (&got, &exp)) in vals.iter().zip(expected.iter()).enumerate() {
-        assert!((got - exp).abs() < 1e-5, "strided conv [{}]: {} vs {}", i, got, exp);
+        assert!(
+            (got - exp).abs() < 1e-5,
+            "strided conv [{}]: {} vs {}",
+            i,
+            got,
+            exp
+        );
     }
     eprintln!("gpu_conv2d stride=2: OK {:?}", vals);
 }
@@ -556,7 +589,11 @@ fn test_gpu_conv2d_dilated() {
     let vals = read_f32(&y);
     // Dilated 3x3 with dilation=2 picks positions (0,0),(0,2),(0,4),(2,0),(2,2),(2,4),(4,0),(4,2),(4,4)
     // = 1+3+5+11+13+15+21+23+25 = 117
-    assert!((vals[0] - 117.0).abs() < 1e-4, "dilated conv: {} vs 117", vals[0]);
+    assert!(
+        (vals[0] - 117.0).abs() < 1e-4,
+        "dilated conv: {} vs 117",
+        vals[0]
+    );
     eprintln!("gpu_conv2d dilation=2: OK val={}", vals[0]);
 }
 
@@ -579,7 +616,11 @@ fn test_gpu_conv2d_tf32_precision() {
     let vals = read_f32(&y);
     // TF32 may have slightly different rounding but should be close.
     // Center element should be ~54.
-    assert!((vals[5] - 54.0).abs() < 1.0, "TF32 conv center: {} vs 54", vals[5]);
+    assert!(
+        (vals[5] - 54.0).abs() < 1.0,
+        "TF32 conv center: {} vs 54",
+        vals[5]
+    );
     eprintln!("gpu_conv2d TF32: OK, center={}", vals[5]);
 }
 
@@ -604,7 +645,9 @@ fn test_gpu_conv2d_non4d_falls_back() {
 /// E4M3: sign(1) + exponent(4) + mantissa(3), bias=7, max=448.
 fn f32_to_fp8_e4m3(val: f32) -> u8 {
     // Simplified conversion: only handles positive values 0-448.
-    if val == 0.0 { return 0; }
+    if val == 0.0 {
+        return 0;
+    }
     let sign = if val < 0.0 { 1u8 } else { 0u8 };
     let abs_val = val.abs();
     // FP8 E4M3: exponent bias = 7
@@ -639,10 +682,9 @@ fn test_gpu_gemm_fp8_e4m3() {
         raw_data: b_data,
     };
 
-    let result = cuda::dispatch::gpu_gemm_fp8(
-        &rt, &a, &b,
-        cuda::ffi::cudaDataType_t::CUDA_R_8F_E4M3,
-    ).expect("gpu_gemm_fp8 failed");
+    let result =
+        cuda::dispatch::gpu_gemm_fp8(&rt, &a, &b, cuda::ffi::cudaDataType_t::CUDA_R_8F_E4M3)
+            .expect("gpu_gemm_fp8 failed");
 
     assert!(result.is_some(), "FP8 GEMM should succeed for 16x16");
     let c = result.unwrap();
@@ -666,8 +708,8 @@ fn test_cublas_gemm_ex_int8_raw() {
     cuda::set_device(0).unwrap();
     let cublas = cuda::CublasHandle::new().unwrap();
 
-    let a_data: [i8; 16] = [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16];
-    let b_data: [i8; 16] = [16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1];
+    let a_data: [i8; 16] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+    let b_data: [i8; 16] = [16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1];
 
     let a_bytes = unsafe { core::slice::from_raw_parts(a_data.as_ptr() as *const u8, 16) };
     let b_bytes = unsafe { core::slice::from_raw_parts(b_data.as_ptr() as *const u8, 16) };
@@ -683,29 +725,34 @@ fn test_cublas_gemm_ex_int8_raw() {
     let alpha: i32 = 1;
     let beta: i32 = 0;
 
-    cublas.gemm_ex(
-        cuda::ffi::cublasOperation_t::CUBLAS_OP_N,
-        cuda::ffi::cublasOperation_t::CUBLAS_OP_N,
-        4, 4, 4,
-        &alpha as *const i32 as *const core::ffi::c_void,
-        &b_buf,
-        cuda::ffi::cudaDataType_t::CUDA_R_8I,
-        4,
-        &a_buf,
-        cuda::ffi::cudaDataType_t::CUDA_R_8I,
-        4,
-        &beta as *const i32 as *const core::ffi::c_void,
-        &c_buf,
-        cuda::ffi::cudaDataType_t::CUDA_R_32I,
-        4,
-        cuda::ffi::cublasComputeType_t::CUBLAS_COMPUTE_32I,
-    ).expect("cublasGemmEx INT8 failed");
+    cublas
+        .gemm_ex(
+            cuda::ffi::cublasOperation_t::CUBLAS_OP_N,
+            cuda::ffi::cublasOperation_t::CUBLAS_OP_N,
+            4,
+            4,
+            4,
+            &alpha as *const i32 as *const core::ffi::c_void,
+            &b_buf,
+            cuda::ffi::cudaDataType_t::CUDA_R_8I,
+            4,
+            &a_buf,
+            cuda::ffi::cudaDataType_t::CUDA_R_8I,
+            4,
+            &beta as *const i32 as *const core::ffi::c_void,
+            &c_buf,
+            cuda::ffi::cudaDataType_t::CUDA_R_32I,
+            4,
+            cuda::ffi::cublasComputeType_t::CUBLAS_COMPUTE_32I,
+        )
+        .expect("cublasGemmEx INT8 failed");
 
     cuda::synchronize().unwrap();
 
     let mut result = [0u8; 64];
     c_buf.copy_to_host(&mut result).unwrap();
-    let c_vals: Vec<i32> = result.chunks_exact(4)
+    let c_vals: Vec<i32> = result
+        .chunks_exact(4)
         .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
         .collect();
 

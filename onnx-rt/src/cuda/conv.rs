@@ -25,19 +25,30 @@ impl TensorDesc {
         let mut desc: ffi::cudnnTensorDescriptor_t = core::ptr::null_mut();
         let err = unsafe { ffi::cudnnCreateTensorDescriptor(&mut desc) };
         if err != ffi::CUDNN_STATUS_SUCCESS {
-            return Err(CudaError::DnnError { op: "createTensorDesc", code: err });
+            return Err(CudaError::DnnError {
+                op: "createTensorDesc",
+                code: err,
+            });
         }
         let err = unsafe {
             ffi::cudnnSetTensor4dDescriptor(
                 desc,
                 ffi::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
                 ffi::cudnnDataType_t::CUDNN_DATA_FLOAT,
-                n, c, h, w,
+                n,
+                c,
+                h,
+                w,
             )
         };
         if err != ffi::CUDNN_STATUS_SUCCESS {
-            unsafe { ffi::cudnnDestroyTensorDescriptor(desc); }
-            return Err(CudaError::DnnError { op: "setTensor4dDesc", code: err });
+            unsafe {
+                ffi::cudnnDestroyTensorDescriptor(desc);
+            }
+            return Err(CudaError::DnnError {
+                op: "setTensor4dDesc",
+                code: err,
+            });
         }
         Ok(Self { desc })
     }
@@ -45,7 +56,9 @@ impl TensorDesc {
 
 impl Drop for TensorDesc {
     fn drop(&mut self) {
-        unsafe { ffi::cudnnDestroyTensorDescriptor(self.desc); }
+        unsafe {
+            ffi::cudnnDestroyTensorDescriptor(self.desc);
+        }
     }
 }
 
@@ -59,19 +72,30 @@ impl FilterDesc {
         let mut desc: ffi::cudnnFilterDescriptor_t = core::ptr::null_mut();
         let err = unsafe { ffi::cudnnCreateFilterDescriptor(&mut desc) };
         if err != ffi::CUDNN_STATUS_SUCCESS {
-            return Err(CudaError::DnnError { op: "createFilterDesc", code: err });
+            return Err(CudaError::DnnError {
+                op: "createFilterDesc",
+                code: err,
+            });
         }
         let err = unsafe {
             ffi::cudnnSetFilter4dDescriptor(
                 desc,
                 ffi::cudnnDataType_t::CUDNN_DATA_FLOAT,
                 ffi::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
-                k, c, h, w,
+                k,
+                c,
+                h,
+                w,
             )
         };
         if err != ffi::CUDNN_STATUS_SUCCESS {
-            unsafe { ffi::cudnnDestroyFilterDescriptor(desc); }
-            return Err(CudaError::DnnError { op: "setFilter4dDesc", code: err });
+            unsafe {
+                ffi::cudnnDestroyFilterDescriptor(desc);
+            }
+            return Err(CudaError::DnnError {
+                op: "setFilter4dDesc",
+                code: err,
+            });
         }
         Ok(Self { desc })
     }
@@ -79,7 +103,9 @@ impl FilterDesc {
 
 impl Drop for FilterDesc {
     fn drop(&mut self) {
-        unsafe { ffi::cudnnDestroyFilterDescriptor(self.desc); }
+        unsafe {
+            ffi::cudnnDestroyFilterDescriptor(self.desc);
+        }
     }
 }
 
@@ -90,28 +116,42 @@ struct ConvDesc {
 
 impl ConvDesc {
     fn new_2d(
-        pad_h: i32, pad_w: i32,
-        stride_h: i32, stride_w: i32,
-        dilation_h: i32, dilation_w: i32,
+        pad_h: i32,
+        pad_w: i32,
+        stride_h: i32,
+        stride_w: i32,
+        dilation_h: i32,
+        dilation_w: i32,
     ) -> Result<Self, CudaError> {
         let mut desc: ffi::cudnnConvolutionDescriptor_t = core::ptr::null_mut();
         let err = unsafe { ffi::cudnnCreateConvolutionDescriptor(&mut desc) };
         if err != ffi::CUDNN_STATUS_SUCCESS {
-            return Err(CudaError::DnnError { op: "createConvDesc", code: err });
+            return Err(CudaError::DnnError {
+                op: "createConvDesc",
+                code: err,
+            });
         }
         let err = unsafe {
             ffi::cudnnSetConvolution2dDescriptor(
                 desc,
-                pad_h, pad_w,
-                stride_h, stride_w,
-                dilation_h, dilation_w,
+                pad_h,
+                pad_w,
+                stride_h,
+                stride_w,
+                dilation_h,
+                dilation_w,
                 ffi::cudnnConvolutionMode_t::CUDNN_CROSS_CORRELATION,
                 ffi::cudnnDataType_t::CUDNN_DATA_FLOAT,
             )
         };
         if err != ffi::CUDNN_STATUS_SUCCESS {
-            unsafe { ffi::cudnnDestroyConvolutionDescriptor(desc); }
-            return Err(CudaError::DnnError { op: "setConv2dDesc", code: err });
+            unsafe {
+                ffi::cudnnDestroyConvolutionDescriptor(desc);
+            }
+            return Err(CudaError::DnnError {
+                op: "setConv2dDesc",
+                code: err,
+            });
         }
         Ok(Self { desc })
     }
@@ -119,7 +159,9 @@ impl ConvDesc {
 
 impl Drop for ConvDesc {
     fn drop(&mut self) {
-        unsafe { ffi::cudnnDestroyConvolutionDescriptor(self.desc); }
+        unsafe {
+            ffi::cudnnDestroyConvolutionDescriptor(self.desc);
+        }
     }
 }
 
@@ -131,12 +173,12 @@ impl Drop for ConvDesc {
 /// Returns None if the input shapes don't match a supported 4D conv pattern.
 pub fn gpu_conv2d(
     runtime: &CudaRuntime,
-    input: &Tensor,      // [N, C, H, W]
-    weight: &Tensor,     // [K, C, kH, kW]
+    input: &Tensor,        // [N, C, H, W]
+    weight: &Tensor,       // [K, C, kH, kW]
     bias: Option<&Tensor>, // [K]
-    pads: &[i32],        // [pad_top, pad_left, pad_bottom, pad_right] or [pad_h, pad_w]
-    strides: &[i32],     // [stride_h, stride_w]
-    dilations: &[i32],   // [dilation_h, dilation_w]
+    pads: &[i32],          // [pad_top, pad_left, pad_bottom, pad_right] or [pad_h, pad_w]
+    strides: &[i32],       // [stride_h, stride_w]
+    dilations: &[i32],     // [dilation_h, dilation_w]
 ) -> Result<Option<Tensor>, CudaError> {
     let x_dims = &input.shape.dims;
     let w_dims = &weight.shape.dims;
@@ -150,15 +192,13 @@ pub fn gpu_conv2d(
     let h_in = x_dims[2] as i32;
     let w_in = x_dims[3] as i32;
 
-    let k = w_dims[0] as i32;       // output channels
-    let _c_w = w_dims[1] as i32;    // should equal c_in (or c_in/group)
+    let k = w_dims[0] as i32; // output channels
+    let _c_w = w_dims[1] as i32; // should equal c_in (or c_in/group)
     let kh = w_dims[2] as i32;
     let kw = w_dims[3] as i32;
 
     // Parse padding (support both 2-element and 4-element forms).
-    let (pad_h, pad_w) = if pads.len() >= 4 {
-        (pads[0], pads[1])
-    } else if pads.len() >= 2 {
+    let (pad_h, pad_w) = if pads.len() >= 2 {
         (pads[0], pads[1])
     } else {
         (0, 0)
@@ -218,7 +258,10 @@ pub fn gpu_conv2d(
         )
     };
     if err != ffi::CUDNN_STATUS_SUCCESS {
-        return Err(CudaError::DnnError { op: "cudnnConvolutionForward", code: err });
+        return Err(CudaError::DnnError {
+            op: "cudnnConvolutionForward",
+            code: err,
+        });
     }
 
     super::synchronize()?;
@@ -230,21 +273,25 @@ pub fn gpu_conv2d(
     // Add bias if present.
     if let Some(bias_tensor) = bias {
         if bias_tensor.raw_data.len() == (k as usize) * 4 {
-            let bias_f32: Vec<f32> = bias_tensor.raw_data.chunks_exact(4)
+            let bias_f32: Vec<f32> = bias_tensor
+                .raw_data
+                .chunks_exact(4)
                 .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                 .collect();
             // Add bias per output channel: y[n,c,h,w] += bias[c]
             let spatial = (h_out * w_out) as usize;
             for b_idx in 0..n as usize {
-                for c_idx in 0..k as usize {
+                for (c_idx, &bias_val) in bias_f32.iter().enumerate().take(k as usize) {
                     let base = (b_idx * k as usize + c_idx) * spatial;
                     for s in 0..spatial {
                         let offset = (base + s) * 4;
                         let val = f32::from_le_bytes([
-                            result_bytes[offset], result_bytes[offset + 1],
-                            result_bytes[offset + 2], result_bytes[offset + 3],
+                            result_bytes[offset],
+                            result_bytes[offset + 1],
+                            result_bytes[offset + 2],
+                            result_bytes[offset + 3],
                         ]);
-                        let biased = val + bias_f32[c_idx];
+                        let biased = val + bias_val;
                         result_bytes[offset..offset + 4].copy_from_slice(&biased.to_le_bytes());
                     }
                 }
