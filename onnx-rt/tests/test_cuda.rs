@@ -908,3 +908,170 @@ fn test_gpu_conv2d_bf16_3x3() {
         max_abs
     );
 }
+
+// ── GPU-resident executor tests (Section 5) ─────────────────────────
+
+/// Build a trivial `ExecutionGraph` with two chained MatMul nodes:
+///
+///   tmp = X  @ W1
+///   out = tmp @ W2
+///
+/// Both weights are provided as graph inputs (not initializers) so the
+/// test exercises the input-tensor path through `execute_graph_gpu`.
+fn build_matmul_pipeline_graph() -> smallaios_onnx_rt::graph::ExecutionGraph {
+    use smallaios_onnx_rt::graph::{ExecutionGraph, ExecutionNode, NodeIndex};
+    use std::collections::BTreeMap;
+
+    let n0 = ExecutionNode {
+        node_index: NodeIndex::new(0),
+        op_type: String::from("MatMul"),
+        domain: String::new(),
+        name: String::from("matmul_0"),
+        inputs: vec![String::from("X"), String::from("W1")],
+        outputs: vec![String::from("tmp")],
+        dependencies: Vec::new(),
+        attributes: Vec::new(),
+        inner_graphs: BTreeMap::new(),
+    };
+    let n1 = ExecutionNode {
+        node_index: NodeIndex::new(1),
+        op_type: String::from("MatMul"),
+        domain: String::new(),
+        name: String::from("matmul_1"),
+        inputs: vec![String::from("tmp"), String::from("W2")],
+        outputs: vec![String::from("out")],
+        dependencies: vec![NodeIndex::new(0)],
+        attributes: Vec::new(),
+        inner_graphs: BTreeMap::new(),
+    };
+
+    ExecutionGraph {
+        nodes: vec![n0, n1],
+        topological_order: vec![NodeIndex::new(0), NodeIndex::new(1)],
+        input_names: vec![String::from("X"), String::from("W1"), String::from("W2")],
+        output_names: vec![String::from("out")],
+    }
+}
+
+fn named_f32_tensor(name: &str, rows: usize, cols: usize, data: &[f32]) -> Tensor {
+    let mut t = make_f32_tensor(&[rows as i64, cols as i64], data);
+    t.name = String::from(name);
+    t
+}
+
+fn naive_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
+    let mut out = vec![0f32; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut s = 0f32;
+            for p in 0..k {
+                s += a[i * k + p] * b[p * n + j];
+            }
+            out[i * n + j] = s;
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore]
+fn test_gpu_executor_matmul_pipeline() {
+    use cuda::{execute_graph_gpu, tensor_to_device};
+
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    // Random-ish 4x4 f32 matrices.
+    let x_vals: Vec<f32> = (0..16).map(|i| (i as f32) * 0.1 - 0.3).collect();
+    let w1_vals: Vec<f32> = (0..16).map(|i| 0.05 * ((i as f32) + 1.0).sin()).collect();
+    let w2_vals: Vec<f32> = (0..16).map(|i| 0.07 * ((i as f32) + 2.0).cos()).collect();
+
+    let x = named_f32_tensor("X", 4, 4, &x_vals);
+    let w1 = named_f32_tensor("W1", 4, 4, &w1_vals);
+    let w2 = named_f32_tensor("W2", 4, 4, &w2_vals);
+
+    let x_dev = tensor_to_device(&x, &rt).expect("X -> device");
+    let w1_dev = tensor_to_device(&w1, &rt).expect("W1 -> device");
+    let w2_dev = tensor_to_device(&w2, &rt).expect("W2 -> device");
+
+    let graph = build_matmul_pipeline_graph();
+    let inputs: Vec<(String, cuda::DeviceTensor)> = vec![
+        (String::from("X"), x_dev),
+        (String::from("W1"), w1_dev),
+        (String::from("W2"), w2_dev),
+    ];
+
+    let outputs = execute_graph_gpu(&graph, &inputs, &[], &rt).expect("execute_graph_gpu");
+    assert_eq!(outputs.len(), 1);
+    let host_out = outputs[0].to_host().expect("to_host");
+    assert_eq!(host_out.shape.dims, vec![4, 4]);
+    assert_eq!(host_out.data_type, DataType::Float);
+    let gpu_f32: Vec<f32> = host_out
+        .raw_data
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+
+    // CPU reference: tmp = X @ W1, out = tmp @ W2.
+    let tmp = naive_matmul(&x_vals, &w1_vals, 4, 4, 4);
+    let reference = naive_matmul(&tmp, &w2_vals, 4, 4, 4);
+
+    let mut max_abs = 0f32;
+    for (g, r) in gpu_f32.iter().zip(reference.iter()) {
+        let e = (g - r).abs();
+        if e > max_abs {
+            max_abs = e;
+        }
+    }
+    eprintln!(
+        "test_gpu_executor_matmul_pipeline: max abs err = {:.6e}",
+        max_abs
+    );
+    assert!(max_abs < 1e-3, "max abs err = {}", max_abs);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_executor_unsupported_op() {
+    use cuda::{execute_graph_gpu, tensor_to_device};
+    use smallaios_onnx_rt::graph::{ExecutionGraph, ExecutionNode, NodeIndex};
+    use std::collections::BTreeMap;
+
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    // Build a 1-node graph containing a Relu, which has no GPU dispatch
+    // in the Section 5 executor.
+    let node = ExecutionNode {
+        node_index: NodeIndex::new(0),
+        op_type: String::from("Relu"),
+        domain: String::new(),
+        name: String::from("relu_0"),
+        inputs: vec![String::from("X")],
+        outputs: vec![String::from("Y")],
+        dependencies: Vec::new(),
+        attributes: Vec::new(),
+        inner_graphs: BTreeMap::new(),
+    };
+    let graph = ExecutionGraph {
+        nodes: vec![node],
+        topological_order: vec![NodeIndex::new(0)],
+        input_names: vec![String::from("X")],
+        output_names: vec![String::from("Y")],
+    };
+
+    let x = named_f32_tensor("X", 2, 2, &[-1.0, 0.5, -0.25, 2.0]);
+    let x_dev = tensor_to_device(&x, &rt).expect("X -> device");
+    let inputs = vec![(String::from("X"), x_dev)];
+
+    let err = execute_graph_gpu(&graph, &inputs, &[], &rt)
+        .expect_err("Relu should be rejected by the GPU executor");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("no GPU implementation for Relu"),
+        "unexpected error message: {}",
+        msg
+    );
+    eprintln!(
+        "test_gpu_executor_unsupported_op: got expected error: {}",
+        msg
+    );
+}

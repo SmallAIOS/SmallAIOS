@@ -41,12 +41,12 @@
 
 ## 5. GPU-Resident Executor
 
-- [ ] 5.1 Create `onnx-rt/src/cuda/gpu_executor.rs` with `DeviceTensor { buffer: DeviceBuffer, shape, dtype }` struct
-- [ ] 5.2 Implement `execute_graph_gpu(graph, input_device_tensors, runtime) -> Result<Vec<DeviceTensor>>` — runs the full forward pass entirely on GPU
-- [ ] 5.3 Operator dispatch in `execute_graph_gpu` returns `DeviceTensor` outputs that feed into the next operator without host transfer
-- [ ] 5.4 Add `DeviceTensor::to_host() -> Tensor` and `Tensor::to_device(&CudaRuntime) -> DeviceTensor` for boundary conversions
-- [ ] 5.5 Fail fast when a GPU-resident graph encounters an operator without a GPU implementation (no silent CPU fallback inside the forward pass)
-- [ ] 5.6 Unit test: simple graph (MatMul → Add → RMSNorm) runs end-to-end in `execute_graph_gpu` with zero host-side copies
+- [x] 5.1 Create `onnx-rt/src/cuda/gpu_executor.rs` with `DeviceTensor { buffer: DeviceBuffer, shape, dtype }` struct
+- [x] 5.2 Implement `execute_graph_gpu(graph, input_device_tensors, runtime) -> Result<Vec<DeviceTensor>>` — runs the full forward pass entirely on GPU
+- [x] 5.3 Operator dispatch in `execute_graph_gpu` returns `DeviceTensor` outputs that feed into the next operator without host transfer
+- [x] 5.4 Add `DeviceTensor::to_host() -> Tensor` and `Tensor::to_device(&CudaRuntime) -> DeviceTensor` for boundary conversions
+- [x] 5.5 Fail fast when a GPU-resident graph encounters an operator without a GPU implementation (no silent CPU fallback inside the forward pass)
+- [x] 5.6 Unit test: chained MatMul pipeline runs end-to-end in `execute_graph_gpu` with device-resident tensors (Add/RMSNorm deferred until their GPU kernels land in Section 7)
 
 ## 6. Programmatic Graph Builder
 
