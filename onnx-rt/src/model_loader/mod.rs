@@ -15,9 +15,11 @@
 use alloc::string::String;
 use core::fmt;
 
+pub mod config;
 pub mod safetensors;
 pub mod sharded;
 
+pub use config::{GemmaConfig, ModelArchitecture};
 pub use safetensors::{SafetensorsFile, TensorEntry, TensorView};
 pub use sharded::MultiShardSafetensors;
 
@@ -37,6 +39,9 @@ pub enum LoaderError {
     /// A sharded index referenced a shard file that could not be
     /// resolved at load time.
     MissingShard(String),
+    /// A HuggingFace `config.json` failed to parse or validate
+    /// (missing required field, wrong type, or inconsistent values).
+    InvalidConfig(String),
 }
 
 impl fmt::Display for LoaderError {
@@ -47,6 +52,7 @@ impl fmt::Display for LoaderError {
             LoaderError::UnsupportedDtype(dt) => write!(f, "unsupported safetensors dtype: {dt}"),
             LoaderError::TensorNotFound(name) => write!(f, "tensor not found: {name}"),
             LoaderError::MissingShard(name) => write!(f, "missing safetensors shard: {name}"),
+            LoaderError::InvalidConfig(msg) => write!(f, "invalid config.json: {msg}"),
         }
     }
 }

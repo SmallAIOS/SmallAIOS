@@ -12,12 +12,12 @@
 
 ## 2. HuggingFace Config Parser
 
-- [ ] 2.1 Create `onnx-rt/src/model_loader/config.rs` with `ModelArchitecture` enum (`Gemma3`, `Gemma4`, `Llama`, `Qwen`, `Unknown`)
-- [ ] 2.2 Implement `ModelArchitecture::detect(config_json: &str)` based on the `architectures` array in `config.json`
-- [ ] 2.3 Define `GemmaConfig` struct with: `num_hidden_layers`, `hidden_size`, `intermediate_size`, `num_attention_heads`, `num_key_value_heads`, `head_dim`, `vocab_size`, `max_position_embeddings`, `rope_theta`, `sliding_window`, `sliding_window_pattern`, `rms_norm_eps`, `bos_token_id`, `eos_token_id`
-- [ ] 2.4 Implement `GemmaConfig::from_json(json: &str)` using the existing `json.rs` parser in `container` (or a minimal parser in `onnx-rt`)
-- [ ] 2.5 Config validation: reject on missing required fields, out-of-range values, or inconsistent combinations (e.g., `hidden_size % num_attention_heads != 0`)
-- [ ] 2.6 Unit tests with real Gemma 4 31B-it `config.json` fixture
+- [x] 2.1 Create `onnx-rt/src/model_loader/config.rs` with `ModelArchitecture` enum (`Gemma3`, `Gemma4`, `Llama`, `Qwen`, `Unknown`)
+- [x] 2.2 Implement `ModelArchitecture::detect(config_json: &str)` based on the `architectures` array in `config.json`
+- [x] 2.3 Define `GemmaConfig` struct with: `num_hidden_layers`, `hidden_size`, `intermediate_size`, `num_attention_heads`, `num_key_value_heads`, `head_dim`, `vocab_size`, `max_position_embeddings`, `rope_theta`, `sliding_window`, `sliding_window_pattern`, `rms_norm_eps`, `bos_token_id`, `eos_token_id`
+- [x] 2.4 Implement `GemmaConfig::from_json(json: &str)` using the existing `json.rs` parser in `container` (or a minimal parser in `onnx-rt`)
+- [x] 2.5 Config validation: reject on missing required fields, out-of-range values, or inconsistent combinations (e.g., `hidden_size % num_attention_heads != 0`)
+- [x] 2.6 Unit tests with real Gemma 4 31B-it `config.json` fixture
 
 ## 3. BF16 Tensor Support
 
