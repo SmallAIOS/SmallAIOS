@@ -13,7 +13,7 @@ use alloc::vec::Vec;
 use super::ffi;
 use super::memory::DeviceBuffer;
 use super::{CudaError, CudaRuntime};
-use crate::tensor::{DataType, Tensor, TensorShape};
+use crate::tensor::{f32_to_bf16, DataType, Tensor, TensorShape};
 
 /// RAII wrapper for cuDNN tensor descriptor.
 struct TensorDesc {
@@ -21,7 +21,13 @@ struct TensorDesc {
 }
 
 impl TensorDesc {
-    fn new_4d(n: i32, c: i32, h: i32, w: i32) -> Result<Self, CudaError> {
+    fn new_4d_dtype(
+        n: i32,
+        c: i32,
+        h: i32,
+        w: i32,
+        dtype: ffi::cudnnDataType_t,
+    ) -> Result<Self, CudaError> {
         let mut desc: ffi::cudnnTensorDescriptor_t = core::ptr::null_mut();
         let err = unsafe { ffi::cudnnCreateTensorDescriptor(&mut desc) };
         if err != ffi::CUDNN_STATUS_SUCCESS {
@@ -34,7 +40,7 @@ impl TensorDesc {
             ffi::cudnnSetTensor4dDescriptor(
                 desc,
                 ffi::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
-                ffi::cudnnDataType_t::CUDNN_DATA_FLOAT,
+                dtype,
                 n,
                 c,
                 h,
@@ -68,7 +74,13 @@ struct FilterDesc {
 }
 
 impl FilterDesc {
-    fn new_4d(k: i32, c: i32, h: i32, w: i32) -> Result<Self, CudaError> {
+    fn new_4d_dtype(
+        k: i32,
+        c: i32,
+        h: i32,
+        w: i32,
+        dtype: ffi::cudnnDataType_t,
+    ) -> Result<Self, CudaError> {
         let mut desc: ffi::cudnnFilterDescriptor_t = core::ptr::null_mut();
         let err = unsafe { ffi::cudnnCreateFilterDescriptor(&mut desc) };
         if err != ffi::CUDNN_STATUS_SUCCESS {
@@ -80,7 +92,7 @@ impl FilterDesc {
         let err = unsafe {
             ffi::cudnnSetFilter4dDescriptor(
                 desc,
-                ffi::cudnnDataType_t::CUDNN_DATA_FLOAT,
+                dtype,
                 ffi::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
                 k,
                 c,
@@ -187,6 +199,25 @@ pub fn gpu_conv2d(
         return Ok(None); // Not a 4D conv, fall back to CPU
     }
 
+    // Pick cuDNN I/O dtype. BF16 inputs stay in BF16 end-to-end (f32
+    // accumulation in the convolution descriptor); anything else uses the
+    // f32 path. Mixed input/weight dtypes fall back to CPU.
+    let is_bf16 = input.data_type == DataType::BFloat16 && weight.data_type == DataType::BFloat16;
+    if !is_bf16 && (input.data_type != DataType::Float || weight.data_type != DataType::Float) {
+        return Ok(None);
+    }
+    let dnn_dtype = if is_bf16 {
+        ffi::cudnnDataType_t::CUDNN_DATA_BFLOAT16
+    } else {
+        ffi::cudnnDataType_t::CUDNN_DATA_FLOAT
+    };
+    let elem_size: usize = if is_bf16 { 2 } else { 4 };
+    let out_data_type = if is_bf16 {
+        DataType::BFloat16
+    } else {
+        DataType::Float
+    };
+
     let n = x_dims[0] as i32;
     let c_in = x_dims[1] as i32;
     let h_in = x_dims[2] as i32;
@@ -217,16 +248,18 @@ pub fn gpu_conv2d(
         return Ok(None);
     }
 
-    // Create cuDNN descriptors.
-    let x_desc = TensorDesc::new_4d(n, c_in, h_in, w_in)?;
-    let w_desc = FilterDesc::new_4d(k, c_in, kh, kw)?;
+    // Create cuDNN descriptors. Input/filter/output use dnn_dtype (BF16 or
+    // f32); the convolution descriptor itself uses f32 accumulation regardless
+    // so BF16 inputs get the same accuracy guarantees as BF16 cuBLAS GEMM.
+    let x_desc = TensorDesc::new_4d_dtype(n, c_in, h_in, w_in, dnn_dtype)?;
+    let w_desc = FilterDesc::new_4d_dtype(k, c_in, kh, kw, dnn_dtype)?;
     let conv_desc = ConvDesc::new_2d(pad_h, pad_w, stride_h, stride_w, dil_h, dil_w)?;
-    let y_desc = TensorDesc::new_4d(n, k, h_out, w_out)?;
+    let y_desc = TensorDesc::new_4d_dtype(n, k, h_out, w_out, dnn_dtype)?;
 
     // Allocate device buffers.
     let x_bytes = input.raw_data.len();
     let w_bytes = weight.raw_data.len();
-    let y_bytes = (n * k * h_out * w_out) as usize * 4; // f32
+    let y_bytes = (n * k * h_out * w_out) as usize * elem_size;
 
     let x_buf = DeviceBuffer::alloc(x_bytes)?;
     let w_buf = DeviceBuffer::alloc(w_bytes)?;
@@ -270,29 +303,57 @@ pub fn gpu_conv2d(
     let mut result_bytes = vec![0u8; y_bytes];
     y_buf.copy_to_host(&mut result_bytes)?;
 
-    // Add bias if present.
+    // Add bias if present. Host-side per-channel add: y[n,c,h,w] += bias[c].
+    // For BF16 output we round-trip through f32 for each element — BF16 is
+    // not directly addable, and the intermediate accumulation is done in f32
+    // anyway. For f32 output this matches the original behaviour exactly.
     if let Some(bias_tensor) = bias {
-        if bias_tensor.raw_data.len() == (k as usize) * 4 {
-            let bias_f32: Vec<f32> = bias_tensor
-                .raw_data
-                .chunks_exact(4)
-                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                .collect();
-            // Add bias per output channel: y[n,c,h,w] += bias[c]
-            let spatial = (h_out * w_out) as usize;
-            for b_idx in 0..n as usize {
-                for (c_idx, &bias_val) in bias_f32.iter().enumerate().take(k as usize) {
-                    let base = (b_idx * k as usize + c_idx) * spatial;
-                    for s in 0..spatial {
-                        let offset = (base + s) * 4;
-                        let val = f32::from_le_bytes([
-                            result_bytes[offset],
-                            result_bytes[offset + 1],
-                            result_bytes[offset + 2],
-                            result_bytes[offset + 3],
-                        ]);
-                        let biased = val + bias_val;
-                        result_bytes[offset..offset + 4].copy_from_slice(&biased.to_le_bytes());
+        let bias_elems = bias_tensor.shape.total_elements();
+        if bias_elems == k as usize {
+            // Decode bias to f32 regardless of its native dtype. BF16 bias
+            // is converted once; f32 bias is read directly.
+            let bias_f32: Vec<f32> = match bias_tensor.data_type {
+                DataType::Float if bias_tensor.raw_data.len() == (k as usize) * 4 => bias_tensor
+                    .raw_data
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .collect(),
+                DataType::BFloat16 if bias_tensor.raw_data.len() == (k as usize) * 2 => {
+                    crate::tensor::bf16_to_f32(&bias_tensor.raw_data)
+                }
+                _ => Vec::new(),
+            };
+            if bias_f32.len() == k as usize {
+                let spatial = (h_out * w_out) as usize;
+                for b_idx in 0..n as usize {
+                    for (c_idx, &add) in bias_f32.iter().enumerate().take(k as usize) {
+                        let base = (b_idx * k as usize + c_idx) * spatial;
+                        if is_bf16 {
+                            // Decode one BF16 element, add, re-encode.
+                            for s in 0..spatial {
+                                let offset = (base + s) * 2;
+                                let lo = result_bytes[offset] as u32;
+                                let hi = result_bytes[offset + 1] as u32;
+                                let bits = ((hi << 8) | lo) << 16;
+                                let val = f32::from_bits(bits) + add;
+                                let enc = f32_to_bf16(&[val]);
+                                result_bytes[offset] = enc[0];
+                                result_bytes[offset + 1] = enc[1];
+                            }
+                        } else {
+                            for s in 0..spatial {
+                                let offset = (base + s) * 4;
+                                let val = f32::from_le_bytes([
+                                    result_bytes[offset],
+                                    result_bytes[offset + 1],
+                                    result_bytes[offset + 2],
+                                    result_bytes[offset + 3],
+                                ]);
+                                let biased = val + add;
+                                result_bytes[offset..offset + 4]
+                                    .copy_from_slice(&biased.to_le_bytes());
+                            }
+                        }
                     }
                 }
             }
@@ -300,7 +361,7 @@ pub fn gpu_conv2d(
     }
 
     Ok(Some(Tensor {
-        data_type: DataType::Float,
+        data_type: out_data_type,
         shape: TensorShape::new(vec![n as i64, k as i64, h_out as i64, w_out as i64]),
         name: String::new(),
         raw_data: result_bytes,

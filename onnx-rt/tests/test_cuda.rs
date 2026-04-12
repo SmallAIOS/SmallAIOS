@@ -761,3 +761,150 @@ fn test_cublas_gemm_ex_int8_raw() {
     assert_eq!(c_vals[1], 70);
     eprintln!("Raw cublasGemmEx INT8: OK {:?}", &c_vals[..4]);
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// BF16 GPU dispatch tests (safetensors-model-loader-v1 Section 4)
+// ──────────────────────────────────────────────────────────────────────
+
+/// Build a BF16 tensor from an f32 slice (round-tripped through f32→BF16).
+fn make_bf16_tensor(shape: &[i64], data: &[f32]) -> Tensor {
+    let raw = smallaios_onnx_rt::tensor::f32_to_bf16(data);
+    Tensor {
+        data_type: DataType::BFloat16,
+        shape: TensorShape::new(shape.to_vec()),
+        name: String::new(),
+        raw_data: raw,
+    }
+}
+
+/// Decode a BF16 tensor's raw bytes to f32 for comparison.
+fn read_bf16_as_f32(t: &Tensor) -> Vec<f32> {
+    assert_eq!(t.data_type, DataType::BFloat16);
+    smallaios_onnx_rt::tensor::bf16_to_f32(&t.raw_data)
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gemm_bf16_16x16() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::Bf16).expect("CUDA init");
+
+    // 16x16 * 16x16 = 16x16, BF16 end-to-end.
+    let n = 16usize;
+    // Small deterministic values so BF16 mantissa loss stays small.
+    let a_data: Vec<f32> = (0..n * n).map(|i| ((i % 7) as f32) * 0.25 - 0.5).collect();
+    let b_data: Vec<f32> = (0..n * n)
+        .map(|i| ((i % 5) as f32) * 0.125 + 0.25)
+        .collect();
+
+    let a_bf = make_bf16_tensor(&[n as i64, n as i64], &a_data);
+    let b_bf = make_bf16_tensor(&[n as i64, n as i64], &b_data);
+    assert_eq!(a_bf.raw_data.len(), n * n * 2);
+    assert_eq!(b_bf.raw_data.len(), n * n * 2);
+
+    let c_bf = cuda::dispatch::gpu_gemm(&rt, &a_bf, &b_bf, false, false, 1.0, 0.0, None)
+        .expect("gpu_gemm BF16 failed");
+    assert_eq!(c_bf.data_type, DataType::BFloat16);
+    assert_eq!(c_bf.shape.dims, vec![n as i64, n as i64]);
+    assert_eq!(c_bf.raw_data.len(), n * n * 2);
+
+    let gpu_bf16_result = read_bf16_as_f32(&c_bf);
+
+    // f32 reference on GPU using the *same* BF16-rounded inputs so we
+    // isolate compute-precision drift from input-rounding drift.
+    let a_rounded = smallaios_onnx_rt::tensor::bf16_to_f32(&a_bf.raw_data);
+    let b_rounded = smallaios_onnx_rt::tensor::bf16_to_f32(&b_bf.raw_data);
+    let a_f32 = make_f32_tensor(&[n as i64, n as i64], &a_rounded);
+    let b_f32 = make_f32_tensor(&[n as i64, n as i64], &b_rounded);
+    let rt_f32 =
+        cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init f32");
+    let c_f32 = cuda::dispatch::gpu_gemm(&rt_f32, &a_f32, &b_f32, false, false, 1.0, 0.0, None)
+        .expect("gpu_gemm f32 ref failed");
+    let ref_vals = read_f32(&c_f32);
+
+    let mut max_abs: f32 = 0.0;
+    for i in 0..n * n {
+        let e = (gpu_bf16_result[i] - ref_vals[i]).abs();
+        if e > max_abs {
+            max_abs = e;
+        }
+    }
+    // BF16 has ~8 bits of mantissa; for a 16-element dot product of values
+    // in roughly [-0.5, 1.25], 5e-2 absolute is generous but realistic.
+    assert!(
+        max_abs < 5e-2,
+        "BF16 GEMM deviated from f32 reference by {} (limit 5e-2)",
+        max_abs
+    );
+    eprintln!(
+        "gpu_gemm BF16 16x16: OK, max abs err vs f32 = {:.6}",
+        max_abs
+    );
+}
+
+#[test]
+#[ignore]
+fn test_gpu_conv2d_bf16_3x3() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::Bf16).expect("CUDA init");
+
+    // Input [1,2,4,4], weight [3,2,3,3] → output [1,3,4,4] (pad=1).
+    let x_data: Vec<f32> = (0..(1 * 2 * 4 * 4))
+        .map(|i| ((i % 11) as f32) * 0.125 - 0.5)
+        .collect();
+    let w_data: Vec<f32> = (0..(3 * 2 * 3 * 3))
+        .map(|i| ((i % 5) as f32) * 0.0625 + 0.125)
+        .collect();
+
+    let x_bf = make_bf16_tensor(&[1, 2, 4, 4], &x_data);
+    let w_bf = make_bf16_tensor(&[3, 2, 3, 3], &w_data);
+    assert_eq!(x_bf.raw_data.len(), 1 * 2 * 4 * 4 * 2);
+    assert_eq!(w_bf.raw_data.len(), 3 * 2 * 3 * 3 * 2);
+
+    let result = cuda::conv::gpu_conv2d(&rt, &x_bf, &w_bf, None, &[1, 1, 1, 1], &[1, 1], &[1, 1])
+        .expect("gpu_conv2d BF16 failed");
+    let y_bf = result.expect("BF16 conv returned None");
+    assert_eq!(y_bf.data_type, DataType::BFloat16);
+    assert_eq!(y_bf.shape.dims, vec![1, 3, 4, 4]);
+    assert_eq!(y_bf.raw_data.len(), 1 * 3 * 4 * 4 * 2);
+
+    let gpu_bf16_result = read_bf16_as_f32(&y_bf);
+
+    // f32 reference on same BF16-rounded inputs.
+    let x_rounded = smallaios_onnx_rt::tensor::bf16_to_f32(&x_bf.raw_data);
+    let w_rounded = smallaios_onnx_rt::tensor::bf16_to_f32(&w_bf.raw_data);
+    let x_f32 = make_f32_tensor(&[1, 2, 4, 4], &x_rounded);
+    let w_f32 = make_f32_tensor(&[3, 2, 3, 3], &w_rounded);
+    let rt_f32 =
+        cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init f32");
+    let ref_result = cuda::conv::gpu_conv2d(
+        &rt_f32,
+        &x_f32,
+        &w_f32,
+        None,
+        &[1, 1, 1, 1],
+        &[1, 1],
+        &[1, 1],
+    )
+    .expect("gpu_conv2d f32 ref failed")
+    .expect("f32 conv returned None");
+    let ref_vals = read_f32(&ref_result);
+
+    let mut max_abs: f32 = 0.0;
+    for (i, (&g, &r)) in gpu_bf16_result.iter().zip(ref_vals.iter()).enumerate() {
+        let e = (g - r).abs();
+        if e > max_abs {
+            max_abs = e;
+        }
+        assert!(
+            e < 5e-2,
+            "BF16 conv[{}] diverged: bf16={}, f32={}, err={}",
+            i,
+            g,
+            r,
+            e
+        );
+    }
+    eprintln!(
+        "gpu_conv2d BF16 3x3 pad=1: OK, max abs err vs f32 = {:.6}",
+        max_abs
+    );
+}

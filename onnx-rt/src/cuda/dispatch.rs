@@ -13,7 +13,7 @@ use alloc::vec;
 use super::ffi;
 use super::memory::DeviceBuffer;
 use super::{CudaError, CudaRuntime};
-use crate::tensor::{DataType, Tensor, TensorShape};
+use crate::tensor::{f32_to_bf16, DataType, Tensor, TensorShape};
 
 /// Execute a MatMul/Gemm on GPU via cuBLAS, returning the result tensor.
 ///
@@ -71,9 +71,26 @@ pub fn gpu_gemm(
     }
     let k = k_a;
 
+    // Detect BF16 native path: BF16 in → BF16 out, f32 accumulation via
+    // CUBLAS_COMPUTE_32F_FAST_16BF. Falls back to f32 path for all other
+    // (and mixed) input combinations — the executor routes non-f32/non-BF16
+    // combinations to the CPU before reaching this function.
+    let is_bf16 = a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16;
+    let elem_size = if is_bf16 { 2 } else { 4 };
+    let io_dtype = if is_bf16 {
+        ffi::cudaDataType_t::CUDA_R_16BF
+    } else {
+        ffi::cudaDataType_t::CUDA_R_32F
+    };
+    let out_data_type = if is_bf16 {
+        DataType::BFloat16
+    } else {
+        DataType::Float
+    };
+
     let a_bytes = a.raw_data.len();
     let b_bytes = b.raw_data.len();
-    let c_bytes = m * n * 4; // f32 output
+    let c_bytes = m * n * elem_size;
 
     let a_buf = DeviceBuffer::alloc(a_bytes)?;
     let b_buf = DeviceBuffer::alloc(b_bytes)?;
@@ -82,20 +99,47 @@ pub fn gpu_gemm(
     a_buf.copy_from_host(&a.raw_data)?;
     b_buf.copy_from_host(&b.raw_data)?;
 
-    // Initialize C with bias or zeros.
+    // Initialize C with bias or zeros. For BF16 dispatch the bias must be
+    // materialized in BF16 inside the output buffer before the cuBLAS call
+    // — convert from f32 if necessary so callers can pass either dtype.
     if beta != 0.0 {
         if let Some(bias) = c_bias {
+            // Produce a BF16-or-f32 byte vector matching the output dtype.
+            let bias_bytes_in_out_dtype: alloc::vec::Vec<u8> = if is_bf16 {
+                match bias.data_type {
+                    DataType::BFloat16 => bias.raw_data.clone(),
+                    DataType::Float => {
+                        let f32_vals: alloc::vec::Vec<f32> = bias
+                            .raw_data
+                            .chunks_exact(4)
+                            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                            .collect();
+                        f32_to_bf16(&f32_vals)
+                    }
+                    _ => {
+                        return Err(CudaError::RuntimeError {
+                            op: "gpu_gemm: unsupported bias dtype for BF16 output",
+                            code: -3,
+                        });
+                    }
+                }
+            } else {
+                bias.raw_data.clone()
+            };
+
             let bias_elements = bias.shape.total_elements();
             if bias_elements == n {
                 // Row-broadcast bias vector to full C matrix.
+                let row_bytes = n * elem_size;
                 let mut c_data = vec![0u8; c_bytes];
                 for row in 0..m {
-                    let dst_start = row * n * 4;
-                    c_data[dst_start..dst_start + n * 4].copy_from_slice(&bias.raw_data[..n * 4]);
+                    let dst_start = row * row_bytes;
+                    c_data[dst_start..dst_start + row_bytes]
+                        .copy_from_slice(&bias_bytes_in_out_dtype[..row_bytes]);
                 }
                 c_buf.copy_from_host(&c_data)?;
-            } else if bias.raw_data.len() == c_bytes {
-                c_buf.copy_from_host(&bias.raw_data)?;
+            } else if bias_bytes_in_out_dtype.len() == c_bytes {
+                c_buf.copy_from_host(&bias_bytes_in_out_dtype)?;
             } else {
                 c_buf.copy_from_host(&vec![0u8; c_bytes])?;
             }
@@ -127,7 +171,14 @@ pub fn gpu_gemm(
     let ldc = n as i32;
 
     // Use GemmEx with the runtime's precision mode for tensor core acceleration.
-    let compute_type = runtime.precision.to_cublas_compute_type();
+    // For BF16 inputs we hard-pin the compute type to 32F_FAST_16BF (f32
+    // accumulation, BF16 tensor cores) regardless of runtime.precision, since
+    // BF16 inputs cannot be computed in a non-BF16 tensor-core mode anyway.
+    let compute_type = if is_bf16 {
+        ffi::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_16BF
+    } else {
+        runtime.precision.to_cublas_compute_type()
+    };
     runtime.cublas.gemm_ex(
         transa,
         transb,
@@ -136,14 +187,14 @@ pub fn gpu_gemm(
         k as i32,
         &alpha as *const f32 as *const core::ffi::c_void,
         &b_buf,
-        ffi::cudaDataType_t::CUDA_R_32F,
+        io_dtype,
         lda,
         &a_buf,
-        ffi::cudaDataType_t::CUDA_R_32F,
+        io_dtype,
         ldb,
         &beta as *const f32 as *const core::ffi::c_void,
         &c_buf,
-        ffi::cudaDataType_t::CUDA_R_32F,
+        io_dtype,
         ldc,
         compute_type,
     )?;
@@ -154,7 +205,7 @@ pub fn gpu_gemm(
     c_buf.copy_to_host(&mut result_bytes)?;
 
     Ok(Tensor {
-        data_type: DataType::Float,
+        data_type: out_data_type,
         shape: TensorShape::new(vec![m as i64, n as i64]),
         name: String::new(),
         raw_data: result_bytes,

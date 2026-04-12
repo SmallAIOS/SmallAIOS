@@ -32,12 +32,12 @@
 
 ## 4. BF16 GPU Dispatch
 
-- [ ] 4.1 Update `cuda::dispatch::gpu_gemm()` to detect BF16 input tensors and pass `CUDA_R_16BF` to `cublasGemmEx`
-- [ ] 4.2 Produce BF16 output tensors when inputs are BF16 (not silently promote to f32)
-- [ ] 4.3 Update `gpu_conv2d()` to handle BF16 input (set cuDNN tensor descriptor to `CUDNN_DATA_BFLOAT16`)
-- [ ] 4.4 Update `try_cuda_dispatch` in executor to route BF16 tensors through the GPU path
-- [ ] 4.5 Unit test: BF16 GEMM numerical correctness on GB10 hardware
-- [ ] 4.6 Unit test: BF16 Conv numerical correctness on GB10 hardware
+- [x] 4.1 Update `cuda::dispatch::gpu_gemm()` to detect BF16 input tensors and pass `CUDA_R_16BF` to `cublasGemmEx`
+- [x] 4.2 Produce BF16 output tensors when inputs are BF16 (not silently promote to f32)
+- [x] 4.3 Update `gpu_conv2d()` to handle BF16 input (set cuDNN tensor descriptor to `CUDNN_DATA_BFLOAT16`)
+- [x] 4.4 Update `try_cuda_dispatch` in executor to route BF16 tensors through the GPU path
+- [x] 4.5 Unit test: BF16 GEMM numerical correctness on GB10 hardware
+- [x] 4.6 Unit test: BF16 Conv numerical correctness on GB10 hardware
 
 ## 5. GPU-Resident Executor
 
