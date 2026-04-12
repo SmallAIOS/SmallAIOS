@@ -15,7 +15,7 @@ cuda = ["smallaios-arch-nvidia", "gpu"]
 tegra = ["cuda", "smallaios-arch-nvidia/tegra"]
 rocm = ["gpu"]
 level-zero = ["gpu"]
-metal = ["gpu"]
+metal = ["smallaios-arch-apple", "gpu"]
 gpu = ["dep:smallaios-compute"]
 formal-gate = ["dep:smallaios-security", "smallaios-security/formal-gate"]
 verified-boot = ["dep:smallaios-security", "smallaios-security/verified-boot"]
@@ -25,4 +25,5 @@ smallaios-kernel = { path = "../kernel" }
 smallaios-sched-types = { path = "../sched-types" }
 smallaios-compute = { path = "../compute", optional = true }
 smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }
+smallaios-arch-apple = { path = "../arch/apple", optional = true }
 smallaios-security = { path = "../security", optional = true }
