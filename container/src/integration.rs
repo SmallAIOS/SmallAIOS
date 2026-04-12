@@ -329,13 +329,13 @@ mod tests {
 
     /// Verify the operator registry covers Tier 1 (29) + Tier 2 (36) +
     /// Tier 3 Phase 1 transformer (25) + Phase 1 vision (19) + Phase 2
-    /// generative (22) ops.
+    /// generative (22) + microsoft-fused-ops-v1 (5) ops.
     #[test]
     fn test_operator_registry_covers_tier1() {
         use smallaios_onnx_rt::operators::{OpKind, OperatorRegistry};
 
         let registry = OperatorRegistry::new();
-        assert_eq!(registry.supported_count(), 131);
+        assert_eq!(registry.supported_count(), 136);
 
         // Verify critical operators are present.
         let critical_ops = [

@@ -94,6 +94,9 @@ pub struct ExecutionNode {
     pub node_index: NodeIndex,
     /// The ONNX operator type (e.g., "Conv", "Relu").
     pub op_type: String,
+    /// The operator domain (empty string = default ONNX domain,
+    /// `"com.microsoft"` = Microsoft contrib op set).
+    pub domain: String,
     /// Human-readable node name.
     pub name: String,
     /// Names of input tensors consumed by this node.
@@ -157,6 +160,7 @@ fn create_execution_nodes(graph: &GraphProto) -> Vec<ExecutionNode> {
         .map(|(i, node_proto)| ExecutionNode {
             node_index: NodeIndex::new(i),
             op_type: node_proto.op_type.clone(),
+            domain: node_proto.domain.clone(),
             name: node_proto.name.clone(),
             inputs: node_proto.input.clone(),
             outputs: node_proto.output.clone(),

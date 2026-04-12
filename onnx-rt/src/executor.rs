@@ -76,8 +76,9 @@ pub fn execute_graph(
         // Dispatch operator (optionally wrapped in timing measurement).
         let outputs = if let Some(prof) = profile.as_mut() {
             let start = time_source.now_us();
-            let outputs = dispatch_node(
+            let outputs = dispatch_node_with_domain(
                 &node.op_type,
+                &node.domain,
                 &input_tensors,
                 &node.attributes,
                 node.outputs.len(),
@@ -115,8 +116,9 @@ pub fn execute_graph(
             outputs
         } else {
             // Zero-overhead path: no profiling.
-            dispatch_node(
+            dispatch_node_with_domain(
                 &node.op_type,
+                &node.domain,
                 &input_tensors,
                 &node.attributes,
                 node.outputs.len(),
@@ -272,6 +274,28 @@ pub(crate) fn dispatch_node(
     output_count: usize,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
 ) -> Result<Vec<Tensor>, OpError> {
+    dispatch_node_with_domain(
+        op_type,
+        "",
+        inputs,
+        attrs,
+        output_count,
+        #[cfg(feature = "gpu")]
+        gpu_backend,
+    )
+}
+
+/// Domain-aware variant of [`dispatch_node`]. The `domain` argument is
+/// the ONNX `NodeProto.domain` string — `""` / `"ai.onnx"` for the
+/// standard ONNX op set, `"com.microsoft"` for the contrib op set.
+pub(crate) fn dispatch_node_with_domain(
+    op_type: &str,
+    domain: &str,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+    output_count: usize,
+    #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
+) -> Result<Vec<Tensor>, OpError> {
     // Check if GPU backend can handle this operator. If so, a real
     // implementation would transfer tensors to device, launch the GPU
     // kernel, and transfer results back. For now we note the support
@@ -280,8 +304,14 @@ pub(crate) fn dispatch_node(
     let _gpu_supported = gpu_backend
         .map(|gb| gb.supports_op(op_type))
         .unwrap_or(false);
-    let kind =
-        OpKind::parse_str(op_type).ok_or_else(|| OpError::UnsupportedOp(String::from(op_type)))?;
+    let kind = OpKind::lookup_by_domain_and_name(domain, op_type)
+        .ok_or_else(|| OpError::UnsupportedOp(String::from(op_type)))?;
+
+    // microsoft-fused-ops-v1: com.microsoft-domain fused operators take a
+    // separate dispatch path since several of them return multiple tensors.
+    if kind.domain() == operators::Domain::MicrosoftFused {
+        return dispatch_microsoft_fused(kind, inputs, attrs);
+    }
 
     // Multi-output ops bypass the single-tensor wrapper.
     match kind {
@@ -432,6 +462,13 @@ pub(crate) fn dispatch_node(
         | OpKind::RNN
         | OpKind::TopK
         | OpKind::DynamicQuantizeLinear => unreachable!(),
+        // microsoft-fused-ops-v1: routed via dispatch_microsoft_fused
+        // above and never reach this match.
+        OpKind::SimplifiedLayerNormalization
+        | OpKind::SkipSimplifiedLayerNormalization
+        | OpKind::RotaryEmbedding
+        | OpKind::MultiHeadAttention
+        | OpKind::GroupQueryAttention => unreachable!(),
     };
 
     result.map(|t| alloc::vec![t])
@@ -1521,6 +1558,72 @@ fn require_inputs<'a>(
         )));
     }
     Ok(refs)
+}
+
+/// Dispatches the 5 `com.microsoft`-domain fused operators from the
+/// `microsoft-fused-ops-v1` change. Several of these ops return multiple
+/// tensors (MHA and GQA each produce `(attn, present_k, present_v)`), so
+/// they bypass the single-tensor wrapper used by the standard dispatcher.
+fn dispatch_microsoft_fused(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<Tensor>, OpError> {
+    use crate::ops::microsoft;
+
+    match kind {
+        OpKind::SimplifiedLayerNormalization => {
+            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
+            let axis = get_attr_int(attrs, "axis", -1);
+            microsoft::op_simplified_layer_normalization(inputs, epsilon, axis)
+                .map(|t| alloc::vec![t])
+        }
+        OpKind::SkipSimplifiedLayerNormalization => {
+            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
+            microsoft::op_skip_simplified_layer_normalization(inputs, epsilon)
+                .map(|(y, pre)| alloc::vec![y, pre])
+        }
+        OpKind::RotaryEmbedding => {
+            let interleaved = get_attr_int(attrs, "interleaved", 0) != 0;
+            let rotary_dim = get_attr_int(attrs, "rotary_embedding_dim", 0);
+            let num_heads = get_attr_int(attrs, "num_heads", 0);
+            microsoft::op_rotary_embedding(inputs, interleaved, rotary_dim, num_heads)
+                .map(|t| alloc::vec![t])
+        }
+        OpKind::MultiHeadAttention => {
+            let num_heads = get_attr_int(attrs, "num_heads", 0);
+            let scale = attrs
+                .iter()
+                .find(|a| a.name == "scale" && a.attr_type == AttributeType::Float)
+                .map(|a| a.f);
+            microsoft::op_multi_head_attention(inputs, num_heads, scale)
+                .map(|(a, pk, pv)| alloc::vec![a, pk, pv])
+        }
+        OpKind::GroupQueryAttention => {
+            let num_heads = get_attr_int(attrs, "num_heads", 0);
+            let kv_num_heads = get_attr_int(attrs, "kv_num_heads", 0);
+            let scale = attrs
+                .iter()
+                .find(|a| a.name == "scale" && a.attr_type == AttributeType::Float)
+                .map(|a| a.f);
+            let local_window_size = get_attr_int(attrs, "local_window_size", -1);
+            let do_rotary = get_attr_int(attrs, "do_rotary", 1) != 0;
+            let rotary_interleaved = get_attr_int(attrs, "rotary_interleaved", 0) != 0;
+            microsoft::op_group_query_attention(
+                inputs,
+                num_heads,
+                kv_num_heads,
+                scale,
+                local_window_size,
+                do_rotary,
+                rotary_interleaved,
+            )
+            .map(|(a, pk, pv)| alloc::vec![a, pk, pv])
+        }
+        _ => Err(OpError::UnsupportedOp(String::from(
+            "dispatch_microsoft_fused: not a microsoft-fused op",
+        ))),
+    }
 }
 
 /// Dispatches Phase 2 generative / normalization / random / reduction ops.
