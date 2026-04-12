@@ -22,6 +22,7 @@ pub mod byte_io;
 pub mod executor;
 pub mod gemm;
 pub mod graph;
+pub mod kv_compression;
 pub mod memory_planner;
 #[cfg(feature = "formal-gate")]
 pub mod model_policy;
