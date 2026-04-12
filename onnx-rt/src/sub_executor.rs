@@ -97,8 +97,7 @@ pub fn run_sub_graph(
         // Control-flow ops need the full ExecutionNode + outer value map
         // and bypass the flat dispatch_node path.
         if crate::executor::is_control_flow_op(&node.op_type) {
-            let outputs =
-                crate::executor::dispatch_control_flow(node, &value_map, initializers)?;
+            let outputs = crate::executor::dispatch_control_flow(node, &value_map, initializers)?;
             for (i, output_name) in node.outputs.iter().enumerate() {
                 if !output_name.is_empty() {
                     if let Some(tensor) = outputs.get(i) {

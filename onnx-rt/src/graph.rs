@@ -779,10 +779,7 @@ mod tests {
         assert_eq!(if_exec.inner_graphs.len(), 2);
         assert!(if_exec.inner_graphs.contains_key("then_branch"));
         assert!(if_exec.inner_graphs.contains_key("else_branch"));
-        assert_eq!(
-            if_exec.inner_graphs["then_branch"].nodes[0].op_type,
-            "Relu"
-        );
+        assert_eq!(if_exec.inner_graphs["then_branch"].nodes[0].op_type, "Relu");
         assert_eq!(if_exec.inner_graphs["else_branch"].nodes[0].op_type, "Neg");
     }
 

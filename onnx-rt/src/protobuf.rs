@@ -668,7 +668,8 @@ fn decode_node_with_depth(data: &[u8], depth: usize) -> Result<NodeProto, ProtoE
             4 => node.op_type = String::from(decoder.read_string()?),
             5 => {
                 let sub_data = decoder.read_length_delimited()?;
-                node.attribute.push(decode_attribute_with_depth(sub_data, depth)?);
+                node.attribute
+                    .push(decode_attribute_with_depth(sub_data, depth)?);
             }
             6 => {
                 // doc_string — skip

@@ -14,13 +14,13 @@ use crate::graph::{ExecutionGraph, ExecutionNode};
 use crate::onnx_types::{AttributeProto, AttributeType, TensorProto};
 use crate::operators::{self, OpError, OpKind};
 use crate::ops;
-use crate::sub_executor;
 #[cfg(test)]
 use crate::profile::NullTimeSource;
 use crate::profile::{
     classify_op, BudgetResult, InferenceProfile, OperatorBudget, OperatorMeasurement, TimeSource,
 };
 use crate::session::{InferenceOutput, SessionError};
+use crate::sub_executor;
 use crate::tensor::{DataType, Tensor, TensorShape};
 
 /// Executes an ONNX graph end-to-end.
@@ -536,10 +536,7 @@ fn dispatch_if(
     let mut out = Vec::with_capacity(node.outputs.len());
     for (i, _out_name) in node.outputs.iter().enumerate() {
         let branch_out_name = branch.output_names.get(i).ok_or_else(|| {
-            SessionError::ExecutionFailed(alloc::format!(
-                "If: branch output {} not declared",
-                i
-            ))
+            SessionError::ExecutionFailed(alloc::format!("If: branch output {} not declared", i))
         })?;
         let tensor = result.get(branch_out_name).ok_or_else(|| {
             SessionError::ExecutionFailed(alloc::format!(
@@ -650,10 +647,7 @@ fn dispatch_loop(
         let mut next_v = Vec::with_capacity(carried_output_names.len());
         for name in &carried_output_names {
             let t = result.get(name).ok_or_else(|| {
-                SessionError::ExecutionFailed(alloc::format!(
-                    "Loop body missing output '{}'",
-                    name
-                ))
+                SessionError::ExecutionFailed(alloc::format!("Loop body missing output '{}'", name))
             })?;
             next_v.push(t.clone());
         }
