@@ -265,7 +265,7 @@ fn read_first_f32(tensor: Option<&Tensor>) -> Option<f32> {
 /// category-specific dispatcher (`dispatch_arithmetic`,
 /// `dispatch_activation`, etc.) to reduce cognitive complexity. Returns
 /// a vector of output tensors (most operators produce exactly one).
-fn dispatch_node(
+pub(crate) fn dispatch_node(
     op_type: &str,
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
