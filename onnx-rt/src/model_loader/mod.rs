@@ -16,10 +16,12 @@ use alloc::string::String;
 use core::fmt;
 
 pub mod config;
+pub mod graph_builder;
 pub mod safetensors;
 pub mod sharded;
 
 pub use config::{GemmaConfig, ModelArchitecture};
+pub use graph_builder::{BuiltGraph, GraphBuilder};
 pub use safetensors::{SafetensorsFile, TensorEntry, TensorView};
 pub use sharded::MultiShardSafetensors;
 

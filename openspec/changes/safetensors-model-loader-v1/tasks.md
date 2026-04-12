@@ -50,13 +50,13 @@
 
 ## 6. Programmatic Graph Builder
 
-- [ ] 6.1 Create `onnx-rt/src/model_loader/graph_builder.rs` with `GraphBuilder` struct wrapping an `ExecutionGraph` under construction
-- [ ] 6.2 Implement automatic tensor name allocation (`tensor_0`, `tensor_1`, ...)
-- [ ] 6.3 Implement `GraphBuilder::add_initializer(name, tensor)` for binding weight tensors
-- [ ] 6.4 Implement operator helpers: `matmul`, `add`, `mul`, `rms_norm`, `rotary_embedding`, `attention`, `swiglu`, `embedding_lookup`
-- [ ] 6.5 Implement `GraphBuilder::build() -> Result<ExecutionGraph>` with DAG validation and missing-weight detection
-- [ ] 6.6 Add a GPU-resident variant: `GraphBuilder::load_weights_to_gpu(runtime, safetensors)` that transfers each initializer directly into `DeviceBuffer`s via `cudaMemcpy` from the mmap region
-- [ ] 6.7 Unit test: build a 2-layer synthetic graph, verify node order and initializer bindings
+- [x] 6.1 Create `onnx-rt/src/model_loader/graph_builder.rs` with `GraphBuilder` struct wrapping an `ExecutionGraph` under construction
+- [x] 6.2 Implement automatic tensor name allocation (`tensor_0`, `tensor_1`, ...)
+- [x] 6.3 Implement `GraphBuilder::add_initializer(name, tensor)` for binding weight tensors
+- [x] 6.4 Implement operator helpers: `matmul`, `add`, `mul`, `rms_norm`, `rotary_embedding`, `attention`, `swiglu`, `embedding_lookup`
+- [x] 6.5 Implement `GraphBuilder::build() -> Result<ExecutionGraph>` with DAG validation and missing-weight detection
+- [x] 6.6 Add a GPU-resident variant: `GraphBuilder::load_weights_to_gpu(runtime, safetensors)` that transfers each initializer directly into `DeviceBuffer`s via `cudaMemcpy` from the mmap region
+- [x] 6.7 Unit test: build a 2-layer synthetic graph, verify node order and initializer bindings
 
 ## 7. Gemma Architecture Template
 
