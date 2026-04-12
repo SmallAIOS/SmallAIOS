@@ -16,14 +16,40 @@ use alloc::string::String;
 use core::fmt;
 
 pub mod config;
+pub mod gemma;
 pub mod graph_builder;
 pub mod safetensors;
 pub mod sharded;
 
 pub use config::{GemmaConfig, ModelArchitecture};
+pub use gemma::build_gemma_graph;
 pub use graph_builder::{BuiltGraph, GraphBuilder};
 pub use safetensors::{SafetensorsFile, TensorEntry, TensorView};
 pub use sharded::MultiShardSafetensors;
+
+/// Abstraction over single-file and sharded safetensors containers so
+/// that the Gemma graph builder (Section 7) can consume either without
+/// duplicating its body. Both [`SafetensorsFile`] and
+/// [`MultiShardSafetensors`] already expose a `tensor_view(name)` method
+/// — this trait just lifts that into a trait object so
+/// `build_gemma_graph` can take `&dyn WeightSource`.
+pub trait WeightSource {
+    /// Return a zero-copy view of the named tensor, or `None` if the
+    /// tensor is not present in the source.
+    fn tensor_view<'a>(&'a self, name: &str) -> Option<TensorView<'a>>;
+}
+
+impl WeightSource for SafetensorsFile {
+    fn tensor_view<'a>(&'a self, name: &str) -> Option<TensorView<'a>> {
+        SafetensorsFile::tensor_view(self, name)
+    }
+}
+
+impl WeightSource for MultiShardSafetensors {
+    fn tensor_view<'a>(&'a self, name: &str) -> Option<TensorView<'a>> {
+        MultiShardSafetensors::tensor_view(self, name)
+    }
+}
 
 /// Errors returned by the safetensors model loader.
 #[derive(Debug, Clone, PartialEq, Eq)]

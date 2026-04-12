@@ -60,17 +60,17 @@
 
 ## 7. Gemma Architecture Template
 
-- [ ] 7.1 Create `onnx-rt/src/model_loader/gemma.rs` with `build_gemma_graph(config, safetensors) -> ExecutionGraph`
-- [ ] 7.2 Implement `embedding_lookup` for `model.embed_tokens.weight`
-- [ ] 7.3 Implement single-layer function: RMSNorm → Q/K/V projections → RoPE → attention → output projection → residual → post-attn RMSNorm → SwiGLU MLP → residual
-- [ ] 7.4 Handle sliding-window vs global attention pattern (interleave based on `sliding_window_pattern`, final layer always global)
-- [ ] 7.5 Handle GQA via `num_key_value_heads < num_attention_heads` — size K/V projections correctly
-- [ ] 7.6 Apply p-RoPE attribute to RotaryEmbedding nodes (`p_rope: true` for Gemma 4)
-- [ ] 7.7 Apply Gemma RMSNorm convention (`1 + weight`) — either via operator attribute or by pre-adding 1 at load time
-- [ ] 7.8 Build final layer: RMSNorm → lm_head MatMul → vocab logits
-- [ ] 7.9 Loop over `num_hidden_layers` to build the full model graph
-- [ ] 7.10 Unit test: build Gemma 4 270M graph from fixture config (smaller sanity check before 31B)
-- [ ] 7.11 Integration test: build Gemma 4 31B-it graph from real downloaded weights, verify node count matches expected architecture
+- [x] 7.1 Create `onnx-rt/src/model_loader/gemma.rs` with `build_gemma_graph(config, safetensors) -> ExecutionGraph`
+- [x] 7.2 Implement `embedding_lookup` for `model.embed_tokens.weight`
+- [x] 7.3 Implement single-layer function: RMSNorm → Q/K/V projections → RoPE → attention → output projection → residual → post-attn RMSNorm → SwiGLU MLP → residual
+- [x] 7.4 Handle sliding-window vs global attention pattern (interleave based on `sliding_window_pattern`, final layer always global)
+- [x] 7.5 Handle GQA via `num_key_value_heads < num_attention_heads` — size K/V projections correctly
+- [x] 7.6 Apply p-RoPE attribute to RotaryEmbedding nodes (`p_rope: true` for Gemma 4)
+- [x] 7.7 Apply Gemma RMSNorm convention (`1 + weight`) — either via operator attribute or by pre-adding 1 at load time
+- [x] 7.8 Build final layer: RMSNorm → lm_head MatMul → vocab logits
+- [x] 7.9 Loop over `num_hidden_layers` to build the full model graph
+- [x] 7.10 Unit test: build Gemma 4 270M graph from fixture config (smaller sanity check before 31B)
+- [x] 7.11 Integration test: build Gemma 4 31B-it graph from real downloaded weights, verify node count matches expected architecture
 
 ## 8. KV Cache Management
 
