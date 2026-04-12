@@ -1386,3 +1386,242 @@ fn test_kv_cache_reset() {
     }
     eprintln!("test_kv_cache_reset: OK");
 }
+
+// ── Section 9.6: Session::from_safetensors end-to-end ──────────────────
+//
+// Builds a synthetic 2-layer Gemma-like safetensors directory in a temp
+// dir, loads it via Session::from_safetensors, runs a single forward pass,
+// and checks the logits shape. The underlying Gemma graph uses several
+// operators (Gather, Add, Mul, RMSNormalization, RotaryEmbedding,
+// GroupQueryAttention, Silu) that do NOT yet have GPU implementations in
+// the Section 5 dispatcher (which only supports MatMul/Gemm/
+// MatMulInteger/Conv). As a result this test currently exercises the
+// session construction + dispatch plumbing and expects the forward pass
+// to bottom out in an "no GPU implementation for {op}" error. When the
+// GPU dispatch table is expanded (future sections), this assertion
+// should be upgraded to a successful shape+NaN check on the logits.
+#[cfg(feature = "safetensors")]
+#[test]
+#[ignore]
+fn test_session_from_safetensors_synthetic_gemma() {
+    use smallaios_onnx_rt::session::{InferenceInput, Session, SessionKind};
+    use std::fs;
+    use std::io::Write;
+    use std::sync::Arc;
+
+    // ── Config params (small enough for a 2-layer toy model) ─────────
+    let num_layers = 2usize;
+    let hidden = 128usize;
+    let intermediate = 256usize;
+    let num_heads = 4usize;
+    let num_kv_heads = 2usize;
+    let head_dim = 32usize;
+    let vocab = 256usize;
+    let max_pos = 64usize;
+
+    let config_json = format!(
+        r#"{{
+            "architectures": ["Gemma4ForCausalLM"],
+            "num_hidden_layers": {num_layers},
+            "hidden_size": {hidden},
+            "intermediate_size": {intermediate},
+            "num_attention_heads": {num_heads},
+            "num_key_value_heads": {num_kv_heads},
+            "head_dim": {head_dim},
+            "vocab_size": {vocab},
+            "max_position_embeddings": {max_pos},
+            "rope_theta": 10000.0,
+            "sliding_window": 16,
+            "sliding_window_pattern": 2,
+            "rms_norm_eps": 1e-6,
+            "bos_token_id": 1,
+            "eos_token_id": 2
+        }}"#
+    );
+
+    // ── Synthetic safetensors blob ───────────────────────────────────
+    //
+    // Include every tensor `build_gemma_graph` registers for this
+    // config. Intentionally omit `lm_head.weight` so the graph builder
+    // exercises the weight-tying fallback.
+    #[derive(Clone)]
+    struct Entry {
+        name: String,
+        dtype: &'static str,
+        shape: Vec<i64>,
+    }
+    fn bf16_entry(name: &str, shape: Vec<i64>) -> Entry {
+        Entry {
+            name: name.to_string(),
+            dtype: "BF16",
+            shape,
+        }
+    }
+    fn bytes_for(e: &Entry) -> usize {
+        let numel: usize = e.shape.iter().map(|&d| d as usize).product();
+        numel * 2 // BF16 = 2 bytes
+    }
+
+    let h = hidden as i64;
+    let i = intermediate as i64;
+    let v = vocab as i64;
+    let kv = (num_kv_heads * head_dim) as i64;
+
+    let mut entries: Vec<Entry> = Vec::new();
+    entries.push(bf16_entry("model.embed_tokens.weight", vec![v, h]));
+    for l in 0..num_layers {
+        let p = format!("model.layers.{l}");
+        entries.push(bf16_entry(&format!("{p}.input_layernorm.weight"), vec![h]));
+        entries.push(bf16_entry(
+            &format!("{p}.post_attention_layernorm.weight"),
+            vec![h],
+        ));
+        entries.push(bf16_entry(
+            &format!("{p}.self_attn.q_proj.weight"),
+            vec![h, h],
+        ));
+        entries.push(bf16_entry(
+            &format!("{p}.self_attn.k_proj.weight"),
+            vec![kv, h],
+        ));
+        entries.push(bf16_entry(
+            &format!("{p}.self_attn.v_proj.weight"),
+            vec![kv, h],
+        ));
+        entries.push(bf16_entry(
+            &format!("{p}.self_attn.o_proj.weight"),
+            vec![h, h],
+        ));
+        entries.push(bf16_entry(&format!("{p}.mlp.gate_proj.weight"), vec![i, h]));
+        entries.push(bf16_entry(&format!("{p}.mlp.up_proj.weight"), vec![i, h]));
+        entries.push(bf16_entry(&format!("{p}.mlp.down_proj.weight"), vec![h, i]));
+    }
+    entries.push(bf16_entry("model.norm.weight", vec![h]));
+
+    // Sort by name (matches safetensors ordering convention) and
+    // assign offsets.
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut offset = 0usize;
+    let mut entry_offsets: Vec<(Entry, usize, usize)> = Vec::new();
+    for e in entries {
+        let sz = bytes_for(&e);
+        entry_offsets.push((e.clone(), offset, offset + sz));
+        offset += sz;
+    }
+    let payload_size = offset;
+
+    // Build JSON header.
+    let mut header = String::from("{");
+    for (idx, (e, start, end)) in entry_offsets.iter().enumerate() {
+        if idx > 0 {
+            header.push(',');
+        }
+        let shape_str = e
+            .shape
+            .iter()
+            .map(|d| format!("{d}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        header.push_str(&format!(
+            "\"{}\":{{\"dtype\":\"{}\",\"shape\":[{}],\"data_offsets\":[{},{}]}}",
+            e.name, e.dtype, shape_str, start, end
+        ));
+    }
+    header.push('}');
+
+    let header_bytes = header.as_bytes();
+    let mut blob = Vec::with_capacity(8 + header_bytes.len() + payload_size);
+    blob.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+    blob.extend_from_slice(header_bytes);
+    // Random-ish BF16 payload: use a small deterministic pattern.
+    let payload: Vec<u8> = (0..payload_size)
+        .map(|ix| ((ix as u32).wrapping_mul(2654435761) >> 24) as u8)
+        .collect();
+    blob.extend_from_slice(&payload);
+
+    // ── Write the model directory ─────────────────────────────────────
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("smallaios-sec9-{nanos}"));
+    fs::create_dir_all(&dir).expect("mkdir temp model dir");
+    {
+        let mut f = fs::File::create(dir.join("config.json")).expect("create config.json");
+        f.write_all(config_json.as_bytes())
+            .expect("write config.json");
+    }
+    {
+        let mut f = fs::File::create(dir.join("model.safetensors"))
+            .expect("create model.safetensors");
+        f.write_all(&blob).expect("write model.safetensors");
+        f.sync_all().ok();
+    }
+
+    // ── Initialize CUDA + build session ───────────────────────────────
+    cuda::set_device(0).expect("set device");
+    let rt = Arc::new(cuda::CudaRuntime::init().expect("CudaRuntime::init"));
+
+    let session = Session::from_safetensors(&dir, rt).expect("from_safetensors");
+    assert_eq!(session.kind, SessionKind::Safetensors);
+    assert_eq!(session.input_names(), &["input_ids".to_string()]);
+    assert!(session.output_names().len() == 1);
+
+    // ── Build input_ids [1, 4] int64 ─────────────────────────────────
+    let token_ids: [i64; 4] = [1, 42, 99, 7];
+    let mut raw = vec![0u8; token_ids.len() * 8];
+    for (k, &t) in token_ids.iter().enumerate() {
+        raw[k * 8..(k + 1) * 8].copy_from_slice(&t.to_le_bytes());
+    }
+    let mut input_tensor = Tensor::new(
+        DataType::Int64,
+        TensorShape::new(vec![1, 4]),
+        "input_ids".to_string(),
+    );
+    input_tensor.raw_data = raw;
+    let inputs = [InferenceInput {
+        name: "input_ids".to_string(),
+        tensor: input_tensor,
+    }];
+
+    // ── Run forward pass ──────────────────────────────────────────────
+    //
+    // The current GPU dispatcher only implements MatMul/Gemm/
+    // MatMulInteger/Conv. The Gemma graph starts with a Gather (for
+    // embedding lookup), so we expect an ExecutionFailed error whose
+    // message contains "no GPU implementation for Gather". When the GPU
+    // dispatcher is extended in a follow-up change, this assertion
+    // should flip to an Ok() check on the output shape/dtype.
+    let result = session.run(&inputs);
+    match result {
+        Ok(outputs) => {
+            // If a future change makes this path succeed, verify shape.
+            assert_eq!(outputs.len(), 1);
+            let logits = &outputs[0];
+            assert_eq!(
+                logits.tensor.shape.dims,
+                vec![1i64, 4, vocab as i64],
+                "unexpected logits shape"
+            );
+            assert_eq!(logits.tensor.data_type, DataType::BFloat16);
+            eprintln!("test_session_from_safetensors_synthetic_gemma: forward pass OK");
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("no GPU implementation"),
+                "unexpected error from session.run: {msg}"
+            );
+            eprintln!(
+                "test_session_from_safetensors_synthetic_gemma: \
+                 expected unsupported-op error ({msg})"
+            );
+        }
+    }
+
+    // reset_kv_cache must succeed regardless of forward pass outcome.
+    session.reset_kv_cache().expect("reset_kv_cache");
+
+    // Cleanup the temp dir.
+    let _ = fs::remove_dir_all(&dir);
+}

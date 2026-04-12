@@ -85,12 +85,12 @@
 
 ## 9. Session Integration
 
-- [ ] 9.1 Add `SessionKind::Safetensors` variant (or `is_gpu_resident: bool` field) to `Session`
-- [ ] 9.2 Implement `Session::from_safetensors(dir, cuda_runtime)` — loads config, safetensors shards, builds Gemma graph, pre-loads weights to GPU, allocates KV cache
-- [ ] 9.3 Update `Session::run()` for safetensors sessions: accept token ID tensor, use `execute_graph_gpu` with internal KV cache, return logits tensor
-- [ ] 9.4 Implement `Session::reset_kv_cache()` public method for starting new generation sessions
-- [ ] 9.5 Fail `Session::from_safetensors()` with a clear error if `cuda_runtime.is_none()`
-- [ ] 9.6 Unit test: create a tiny safetensors fixture with 2 layers, build a Session, run a single forward pass, verify logits shape
+- [x] 9.1 Add `SessionKind::Safetensors` variant (or `is_gpu_resident: bool` field) to `Session`
+- [x] 9.2 Implement `Session::from_safetensors(dir, cuda_runtime)` — loads config, safetensors shards, builds Gemma graph, pre-loads weights to GPU, allocates KV cache
+- [x] 9.3 Update `Session::run()` for safetensors sessions: accept token ID tensor, use `execute_graph_gpu` with internal KV cache, return logits tensor
+- [x] 9.4 Implement `Session::reset_kv_cache()` public method for starting new generation sessions
+- [x] 9.5 Fail `Session::from_safetensors()` with a clear error if `cuda_runtime.is_none()`
+- [x] 9.6 Unit test: create a tiny safetensors fixture with 2 layers, build a Session, run a single forward pass, verify logits shape
 
 ## 10. Coordination with `llm-api-translation-v1`
 

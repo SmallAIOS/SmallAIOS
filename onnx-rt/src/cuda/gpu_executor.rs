@@ -189,6 +189,31 @@ fn tensor_from_proto(proto: &TensorProto) -> Option<Tensor> {
     })
 }
 
+// ── initializers_to_gpu ─────────────────────────────────────────────
+
+/// Materialize a slice of host `TensorProto` initializers as
+/// [`DeviceTensor`]s in one pass.
+///
+/// Used by [`crate::session::Session::from_safetensors`] (Section 9) to
+/// preload a Gemma graph's weights onto the GPU once at session
+/// construction time, rather than re-uploading them on every
+/// [`execute_graph_gpu`] call.
+pub fn initializers_to_gpu(
+    initializers: &[TensorProto],
+    _runtime: &CudaRuntime,
+) -> Result<BTreeMap<String, DeviceTensor>, CudaError> {
+    let mut out: BTreeMap<String, DeviceTensor> = BTreeMap::new();
+    for init in initializers {
+        let host_t = match tensor_from_proto(init) {
+            Some(t) => t,
+            None => continue,
+        };
+        let dev_t = DeviceTensor::from_host(&host_t)?;
+        out.insert(init.name.clone(), dev_t);
+    }
+    Ok(out)
+}
+
 // ── execute_graph_gpu ───────────────────────────────────────────────
 
 /// Run an [`ExecutionGraph`] end-to-end on the GPU.
@@ -210,6 +235,22 @@ pub fn execute_graph_gpu(
     initializers: &[TensorProto],
     runtime: &CudaRuntime,
 ) -> Result<Vec<DeviceTensor>, SessionError> {
+    execute_graph_gpu_with_weights(graph, input_device_tensors, initializers, None, runtime)
+}
+
+/// Extended entry point accepting an optional pre-loaded GPU weight map.
+///
+/// When `pre_loaded_weights` is `Some`, any tensor whose name matches a
+/// key in the map is resolved from that map (via a D2D clone) instead of
+/// being uploaded from the host `TensorProto`. This is the path used by
+/// safetensors-backed [`crate::session::Session`]s.
+pub fn execute_graph_gpu_with_weights(
+    graph: &ExecutionGraph,
+    input_device_tensors: &[(String, DeviceTensor)],
+    initializers: &[TensorProto],
+    pre_loaded_weights: Option<&BTreeMap<String, DeviceTensor>>,
+    runtime: &CudaRuntime,
+) -> Result<Vec<DeviceTensor>, SessionError> {
     let mut value_map: BTreeMap<String, DeviceTensor> = BTreeMap::new();
 
     // Move user inputs into the value map. We take ownership of the input
@@ -224,10 +265,22 @@ pub fn execute_graph_gpu(
         value_map.insert(name.clone(), cloned);
     }
 
-    // Materialize graph initializers host -> device. This is the bridge
-    // path; Section 6 will replace it with a direct safetensors-mmap
-    // loader that allocs DeviceTensors from the weight store.
+    // Materialize graph initializers. Prefer the pre-loaded GPU map (from
+    // Session::from_safetensors) when available; otherwise bridge each
+    // proto host -> device as the legacy path does.
     for init in initializers {
+        if let Some(map) = pre_loaded_weights {
+            if let Some(dev_src) = map.get(&init.name) {
+                let cloned = clone_device_tensor(dev_src).map_err(|e| {
+                    SessionError::ExecutionFailed(format!(
+                        "pre-loaded weight '{}': {}",
+                        init.name, e
+                    ))
+                })?;
+                value_map.insert(init.name.clone(), cloned);
+                continue;
+            }
+        }
         if let Some(host_t) = tensor_from_proto(init) {
             let dev_t = DeviceTensor::from_host(&host_t).map_err(|e| {
                 SessionError::ExecutionFailed(format!("initializer '{}': {}", init.name, e))
