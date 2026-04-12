@@ -242,8 +242,7 @@ pub struct Session {
     /// Interior mutability via `Mutex` so `&Session` can update the cache
     /// across successive `Session::run()` calls.
     #[cfg(feature = "cuda")]
-    pub kv_cache:
-        Option<alloc::sync::Arc<std::sync::Mutex<crate::cuda::GpuKvCache>>>,
+    pub kv_cache: Option<alloc::sync::Arc<std::sync::Mutex<crate::cuda::GpuKvCache>>>,
     /// Pre-loaded GPU weight map for safetensors sessions.
     ///
     /// Populated by [`Session::from_safetensors`] via
@@ -407,9 +406,7 @@ pub fn load_model(data: &[u8]) -> Result<ModelProto, SessionError> {
 /// from 1) is a global-attention layer; all others are sliding-window
 /// local attention with the config's `sliding_window` size.
 #[cfg(all(feature = "safetensors", feature = "cuda"))]
-fn layer_kinds_for_gemma(
-    config: &crate::model_loader::GemmaConfig,
-) -> Vec<crate::cuda::LayerKind> {
+fn layer_kinds_for_gemma(config: &crate::model_loader::GemmaConfig) -> Vec<crate::cuda::LayerKind> {
     let n = config.num_hidden_layers;
     let pattern = config.sliding_window_pattern.max(1);
     (0..n)
@@ -626,9 +623,7 @@ impl Session {
         inputs: &[InferenceInput],
     ) -> Result<Vec<InferenceOutput>, SessionError> {
         let runtime = self.cuda_runtime.as_ref().ok_or_else(|| {
-            SessionError::ExecutionFailed(String::from(
-                "safetensors session missing cuda runtime",
-            ))
+            SessionError::ExecutionFailed(String::from("safetensors session missing cuda runtime"))
         })?;
 
         // Convert host inputs -> device tensors.
@@ -798,11 +793,7 @@ impl Session {
         // 1. Read and parse config.json.
         let config_path = dir.join("config.json");
         let config_json = std::fs::read_to_string(&config_path).map_err(|e| {
-            SessionError::InvalidModel(alloc::format!(
-                "read {}: {}",
-                config_path.display(),
-                e
-            ))
+            SessionError::InvalidModel(alloc::format!("read {}: {}", config_path.display(), e))
         })?;
 
         let gemma_config = crate::model_loader::GemmaConfig::from_json(&config_json)
@@ -828,20 +819,13 @@ impl Session {
         let built = if index_path.exists() {
             let sharded =
                 crate::model_loader::MultiShardSafetensors::open_dir(dir).map_err(|e| {
-                    SessionError::InvalidModel(alloc::format!(
-                        "open sharded safetensors: {}",
-                        e
-                    ))
+                    SessionError::InvalidModel(alloc::format!("open sharded safetensors: {}", e))
                 })?;
             crate::model_loader::build_gemma_graph(&gemma_config, &sharded)
                 .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?
         } else {
             let file = crate::model_loader::SafetensorsFile::open(&single_path).map_err(|e| {
-                SessionError::InvalidModel(alloc::format!(
-                    "open {}: {}",
-                    single_path.display(),
-                    e
-                ))
+                SessionError::InvalidModel(alloc::format!("open {}: {}", single_path.display(), e))
             })?;
             crate::model_loader::build_gemma_graph(&gemma_config, &file)
                 .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?
@@ -913,6 +897,30 @@ impl Session {
     pub fn is_initialized(&self) -> bool {
         self.is_initialized
     }
+
+    /// Returns the [`SessionKind`] discriminator identifying how this
+    /// session was constructed and which execution path `run()` uses.
+    ///
+    /// Callers (in particular the `llm-generation` loop from
+    /// `llm-api-translation-v1`) MUST branch on this when deciding
+    /// whether to thread KV cache through input tensors (ONNX) or rely
+    /// on the Session-managed internal KV cache (Safetensors). See
+    /// `docs/safetensors-integration.md` for the full contract.
+    pub fn kind(&self) -> SessionKind {
+        self.kind
+    }
+
+    /// Returns `true` when this Session owns its KV cache internally and
+    /// callers should NOT thread `past_k`/`past_v` through inputs. This
+    /// is the case for safetensors-backed sessions whose forward pass
+    /// runs entirely on the GPU using a persistent `GpuKvCache`.
+    ///
+    /// For ONNX sessions, returns `false`: the caller is expected to
+    /// thread KV state through the model's input/output tensors as with
+    /// any other ONNX LLM export.
+    pub fn manages_kv_cache_internally(&self) -> bool {
+        matches!(self.kind, SessionKind::Safetensors)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -938,6 +946,25 @@ mod tests {
         assert!(session.output_names().is_empty());
         assert!(session.graph.is_none());
         assert!(session.model_name.is_empty());
+    }
+
+    #[test]
+    fn test_session_kind_defaults_to_onnx() {
+        let session = Session::new(SessionConfig::default());
+        assert_eq!(session.kind(), SessionKind::Onnx);
+        assert!(
+            !session.manages_kv_cache_internally(),
+            "a fresh ONNX session must NOT claim internal KV ownership"
+        );
+    }
+
+    #[test]
+    fn test_session_kind_accessor_matches_field() {
+        // Contract: Session::kind() must always return the same value
+        // as the public `kind` field. `llm-api-translation-v1`
+        // branches on this to decide KV cache threading.
+        let session = Session::new(SessionConfig::default());
+        assert_eq!(session.kind(), session.kind);
     }
 
     #[test]

@@ -179,11 +179,7 @@ extern "C" {
         count: usize,
         kind: cudaMemcpyKind,
     ) -> cudaError_t;
-    pub fn cudaMemset(
-        devPtr: *mut core::ffi::c_void,
-        value: i32,
-        count: usize,
-    ) -> cudaError_t;
+    pub fn cudaMemset(devPtr: *mut core::ffi::c_void, value: i32, count: usize) -> cudaError_t;
     pub fn cudaDeviceSynchronize() -> cudaError_t;
     pub fn cudaRuntimeGetVersion(runtimeVersion: *mut i32) -> cudaError_t;
     pub fn cudaGetErrorString(error: cudaError_t) -> *const u8;

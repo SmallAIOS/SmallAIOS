@@ -1271,10 +1271,7 @@ fn test_kv_cache_sliding_window() {
     let head_dim = 8;
     let max_seq_len = 16;
     // Layer 0: global. Layer 1: sliding window of 4.
-    let kinds = vec![
-        cuda::LayerKind::Global,
-        cuda::LayerKind::SlidingWindow(4),
-    ];
+    let kinds = vec![cuda::LayerKind::Global, cuda::LayerKind::SlidingWindow(4)];
 
     let mut cache = cuda::GpuKvCache::allocate(
         &rt,
@@ -1552,8 +1549,8 @@ fn test_session_from_safetensors_synthetic_gemma() {
             .expect("write config.json");
     }
     {
-        let mut f = fs::File::create(dir.join("model.safetensors"))
-            .expect("create model.safetensors");
+        let mut f =
+            fs::File::create(dir.join("model.safetensors")).expect("create model.safetensors");
         f.write_all(&blob).expect("write model.safetensors");
         f.sync_all().ok();
     }
@@ -1623,5 +1620,254 @@ fn test_session_from_safetensors_synthetic_gemma() {
     session.reset_kv_cache().expect("reset_kv_cache");
 
     // Cleanup the temp dir.
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── Section 10.5: Session API contract for `llm-generation` ────────────
+//
+// This test pins the Session API that `llm-api-translation-v1`
+// `llm-generation` will call, against a synthetic 2-layer safetensors
+// model. It verifies the interface points documented in
+// `docs/safetensors-integration.md`:
+//
+//   (a) `Session::from_safetensors` succeeds on a synthetic fixture
+//   (b) `Session::kind()` returns `SessionKind::Safetensors`
+//   (c) `Session::manages_kv_cache_internally()` returns `true`
+//   (d) `Session::run()` accepts a single Int64 `input_ids` tensor
+//       (even if the forward pass errors on a missing GPU op, the
+//       dispatch plumbing must be reachable)
+//   (e) `Session::reset_kv_cache()` succeeds
+//
+// `#[ignore]` because it requires a real CUDA device on GB10 class
+// hardware, matching the existing CUDA tests.
+#[cfg(feature = "safetensors")]
+#[test]
+#[ignore]
+fn test_session_api_contract_for_llm_generation() {
+    use smallaios_onnx_rt::session::{InferenceInput, Session, SessionKind};
+    use std::fs;
+    use std::io::Write;
+    use std::sync::Arc;
+
+    let num_layers = 2usize;
+    let hidden = 64usize;
+    let intermediate = 128usize;
+    let num_heads = 4usize;
+    let num_kv_heads = 2usize;
+    let head_dim = 16usize;
+    let vocab = 128usize;
+    let max_pos = 32usize;
+
+    let config_json = format!(
+        r#"{{
+            "architectures": ["Gemma4ForCausalLM"],
+            "num_hidden_layers": {num_layers},
+            "hidden_size": {hidden},
+            "intermediate_size": {intermediate},
+            "num_attention_heads": {num_heads},
+            "num_key_value_heads": {num_kv_heads},
+            "head_dim": {head_dim},
+            "vocab_size": {vocab},
+            "max_position_embeddings": {max_pos},
+            "rope_theta": 10000.0,
+            "sliding_window": 16,
+            "sliding_window_pattern": 2,
+            "rms_norm_eps": 1e-6,
+            "bos_token_id": 1,
+            "eos_token_id": 2
+        }}"#
+    );
+
+    #[derive(Clone)]
+    struct Entry {
+        name: String,
+        shape: Vec<i64>,
+    }
+    fn bf16_bytes(e: &Entry) -> usize {
+        let numel: usize = e.shape.iter().map(|&d| d as usize).product();
+        numel * 2
+    }
+
+    let h = hidden as i64;
+    let ii = intermediate as i64;
+    let v = vocab as i64;
+    let kv = (num_kv_heads * head_dim) as i64;
+
+    let mut entries: Vec<Entry> = Vec::new();
+    entries.push(Entry {
+        name: "model.embed_tokens.weight".to_string(),
+        shape: vec![v, h],
+    });
+    for l in 0..num_layers {
+        let p = format!("model.layers.{l}");
+        entries.push(Entry {
+            name: format!("{p}.input_layernorm.weight"),
+            shape: vec![h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.post_attention_layernorm.weight"),
+            shape: vec![h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.self_attn.q_proj.weight"),
+            shape: vec![h, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.self_attn.k_proj.weight"),
+            shape: vec![kv, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.self_attn.v_proj.weight"),
+            shape: vec![kv, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.self_attn.o_proj.weight"),
+            shape: vec![h, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.mlp.gate_proj.weight"),
+            shape: vec![ii, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.mlp.up_proj.weight"),
+            shape: vec![ii, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.mlp.down_proj.weight"),
+            shape: vec![h, ii],
+        });
+    }
+    entries.push(Entry {
+        name: "model.norm.weight".to_string(),
+        shape: vec![h],
+    });
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut offset = 0usize;
+    let mut entry_offsets: Vec<(Entry, usize, usize)> = Vec::new();
+    for e in entries {
+        let sz = bf16_bytes(&e);
+        entry_offsets.push((e.clone(), offset, offset + sz));
+        offset += sz;
+    }
+    let payload_size = offset;
+
+    let mut header = String::from("{");
+    for (idx, (e, start, end)) in entry_offsets.iter().enumerate() {
+        if idx > 0 {
+            header.push(',');
+        }
+        let shape_str = e
+            .shape
+            .iter()
+            .map(|d| format!("{d}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        header.push_str(&format!(
+            "\"{}\":{{\"dtype\":\"BF16\",\"shape\":[{}],\"data_offsets\":[{},{}]}}",
+            e.name, shape_str, start, end
+        ));
+    }
+    header.push('}');
+
+    let header_bytes = header.as_bytes();
+    let mut blob = Vec::with_capacity(8 + header_bytes.len() + payload_size);
+    blob.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+    blob.extend_from_slice(header_bytes);
+    let payload: Vec<u8> = (0..payload_size)
+        .map(|ix| ((ix as u32).wrapping_mul(2654435761) >> 24) as u8)
+        .collect();
+    blob.extend_from_slice(&payload);
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("smallaios-sec10-{nanos}"));
+    fs::create_dir_all(&dir).expect("mkdir temp model dir");
+    {
+        let mut f = fs::File::create(dir.join("config.json")).expect("create config.json");
+        f.write_all(config_json.as_bytes())
+            .expect("write config.json");
+    }
+    {
+        let mut f =
+            fs::File::create(dir.join("model.safetensors")).expect("create model.safetensors");
+        f.write_all(&blob).expect("write model.safetensors");
+        f.sync_all().ok();
+    }
+
+    cuda::set_device(0).expect("set device");
+    let rt = Arc::new(cuda::CudaRuntime::init().expect("CudaRuntime::init"));
+
+    // (a) Construction.
+    let session = Session::from_safetensors(&dir, rt).expect("from_safetensors");
+
+    // (b) Kind discriminator.
+    assert_eq!(session.kind(), SessionKind::Safetensors);
+
+    // (c) Internal-KV flag.
+    assert!(
+        session.manages_kv_cache_internally(),
+        "safetensors session must manage KV cache internally"
+    );
+
+    // Input/output signature matches the contract documented in
+    // docs/safetensors-integration.md.
+    assert_eq!(session.input_names(), &["input_ids".to_string()]);
+    assert_eq!(session.output_names().len(), 1);
+
+    // (d) `run()` accepts a token ID tensor. The forward pass will
+    // bottom out in "no GPU implementation for Gather" with the
+    // current dispatcher — that's fine; we only care that the
+    // dispatch path is reachable through the public API.
+    let token_ids: [i64; 3] = [1, 42, 7];
+    let mut raw = vec![0u8; token_ids.len() * 8];
+    for (k, &t) in token_ids.iter().enumerate() {
+        raw[k * 8..(k + 1) * 8].copy_from_slice(&t.to_le_bytes());
+    }
+    let mut input_tensor = Tensor::new(
+        DataType::Int64,
+        TensorShape::new(vec![1, 3]),
+        "input_ids".to_string(),
+    );
+    input_tensor.raw_data = raw;
+    let inputs = [InferenceInput {
+        name: "input_ids".to_string(),
+        tensor: input_tensor,
+    }];
+    match session.run(&inputs) {
+        Ok(_) => eprintln!("llm-generation contract: forward pass OK"),
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("no GPU implementation") || msg.contains("GPU"),
+                "unexpected error from session.run: {msg}"
+            );
+        }
+    }
+
+    // (e) reset_kv_cache — must succeed even if `run()` errored.
+    session.reset_kv_cache().expect("reset_kv_cache");
+
+    // Simulate the recommended calling pattern: reset, then run each
+    // token individually. We don't care whether the forward pass
+    // succeeds — we only care that the API contract holds.
+    session.reset_kv_cache().expect("second reset_kv_cache");
+    for tok in [5i64, 6, 7] {
+        let mut raw = vec![0u8; 8];
+        raw.copy_from_slice(&tok.to_le_bytes());
+        let mut t = Tensor::new(
+            DataType::Int64,
+            TensorShape::new(vec![1, 1]),
+            "input_ids".to_string(),
+        );
+        t.raw_data = raw;
+        let _ = session.run(&[InferenceInput {
+            name: "input_ids".to_string(),
+            tensor: t,
+        }]);
+    }
+
     let _ = fs::remove_dir_all(&dir);
 }

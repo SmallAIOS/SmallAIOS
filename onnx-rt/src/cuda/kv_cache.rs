@@ -156,10 +156,12 @@ impl GpuKvCache {
                 size: usize::MAX,
                 code: -1,
             })?;
-        let per_layer_bytes = per_layer_elems.checked_mul(elem).ok_or(CudaError::AllocFailed {
-            size: usize::MAX,
-            code: -1,
-        })?;
+        let per_layer_bytes = per_layer_elems
+            .checked_mul(elem)
+            .ok_or(CudaError::AllocFailed {
+                size: usize::MAX,
+                code: -1,
+            })?;
 
         let mut layers: Vec<LayerCache> = Vec::with_capacity(num_layers);
         for kind in layer_kinds.iter().copied() {
