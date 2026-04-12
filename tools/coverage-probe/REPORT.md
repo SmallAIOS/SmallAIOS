@@ -485,3 +485,83 @@ done
 
 No probe / walker hardening was needed for the new fixtures —
 Agent K's streaming scan already handled them on first try.
+
+## Full Model Validation with HF Auth (2026-04-12)
+
+The download script (`scripts/download-test-fixtures.sh`) was updated to
+support HuggingFace token authentication, enabling download of gated
+models. The token is resolved from `$HF_TOKEN` env var or
+`~/.cache/huggingface/token` (written by `hf auth login`).
+
+### Download Results
+
+| Model | Source | Size | Token Required | Downloaded |
+|---|---|---|---|---|
+| `bert-base-uncased.onnx` | `Xenova/bert-base-uncased` | 418 MB | No | Yes |
+| `vit-base-patch16-224.onnx` | `Xenova/vit-base-patch16-224` | 330 MB | No | Yes |
+| `distilgpt2.onnx` | `Xenova/distilgpt2` | 313 MB | No | Yes |
+| `llama-3.2-1b.onnx` | `onnx-community/Llama-3.2-1B-Instruct` | 105 KB | No | Yes |
+| `deepseek-r1-distill-qwen-1.5b.onnx` | `onnx-community/DeepSeek-R1-Distill-Qwen-1.5B-ONNX` | 519 KB | No | Yes |
+| `mobilenet_v2.onnx` | `onnx/models` model zoo | 13 MB | No | Yes |
+| `gemma-3-1b-it.onnx` | `onnx-community/gemma-3-1b-it-ONNX` | 258 KB | No | Yes |
+| `gemma-2-2b-it.onnx` | `onnx-community/gemma-2-2b-it` | N/A | Yes (gated) | No (HTTP 404 - repo does not exist) |
+
+**Gemma 2 2B note:** The `onnx-community/gemma-2-2b-it` repo does not
+exist on HuggingFace. Only a Japanese variant (`gemma-2-2b-jpn-it`)
+exists, gated under the Gemma license. The Gemma 3 1B export from
+`onnx-community/gemma-3-1b-it-ONNX` is public and downloaded
+successfully with authentication headers.
+
+### Pipeline Stage Results: `decode_model` (develop branch, pre-PR #98)
+
+All `decode_model` calls fail on develop because the in-tree protobuf
+parser does not handle all wire-format features used by real ONNX
+exports. These failures are expected and will become passes after
+PR #98 (parser hardening) merges.
+
+| Model | decode_model | Error | build_execution_graph | Notes |
+|---|---|---|---|---|
+| `bert-base-uncased.onnx` | FAIL | `UnexpectedEof` | Blocked | 418 MB with embedded weights |
+| `vit-base-patch16-224.onnx` | FAIL | `InvalidFieldNumber` | Blocked | 330 MB with embedded weights |
+| `distilgpt2.onnx` | FAIL | `BufferTooSmall` | Blocked | 313 MB with embedded weights |
+| `llama-3.2-1b.onnx` | FAIL | `InvalidWireType` | Blocked | 105 KB graph-only -- real parser bug |
+| `deepseek-r1-distill-qwen-1.5b.onnx` | FAIL | `InvalidFieldNumber` | Blocked | 519 KB graph-only -- real parser bug |
+| `mobilenet_v2.onnx` | FAIL | `InvalidFieldNumber` | Blocked | 13 MB with weights |
+| `gemma-3-1b-it.onnx` | FAIL | `InvalidFieldNumber` | Blocked | 258 KB graph-only -- real parser bug |
+
+**Key observation:** The three graph-only files (Llama, DeepSeek,
+Gemma 3) are small enough that `decode_model` should succeed -- these
+are real parser bugs, not size limitations. PR #98 targets exactly
+these failures.
+
+### Coverage Probe Results (streaming scanner, bypasses decode_model)
+
+The coverage probe uses its own streaming scanner that skips unknown
+fields and successfully processes all fixtures:
+
+| Model | Nodes | Distinct ops | Implemented | Unrecognized | Verdict |
+|---|---:|---:|---:|---:|---|
+| `bert-base-uncased` | 1268 | 19 | 19 | 0 | loadable_today |
+| `vit-base-patch16-224` | 1242 | 24 | 24 | 0 | loadable_today |
+| `distilgpt2` | 683 | 27 | 27 | 0 | loadable_today |
+| `mobilenet_v2` | 105 | 11 | 11 | 0 | loadable_today |
+| `llama-3.2-1b` | 220 | 13 | 10 | 3 | has_unrecognized_ops |
+| `deepseek-r1-distill-qwen-1.5b` | 1503 | 25 | 21 | 4 | has_unrecognized_ops |
+| `gemma-3-1b-it` | 597 | 15 | 13 | 2 | has_unrecognized_ops |
+
+### What blocks end-to-end validation
+
+1. **PR #98 (parser hardening)** -- must merge for `decode_model` to
+   succeed on real ONNX files. Currently all 7 fixtures fail at the
+   parse stage.
+2. **Graph builder initializer fix** (in-flight PR) -- required for
+   `build_execution_graph` to handle models with initializers
+   correctly.
+3. Once both merge, re-run:
+   ```bash
+   cargo test -p smallaios-onnx-rt --test test_model_fixtures -- --ignored --nocapture
+   ```
+   The graph-only files (Llama, DeepSeek, Gemma 3) should parse and
+   build. The weight-embedded files (BERT, ViT, DistilGPT-2) may
+   still fail due to large tensor data unless PR #98 also handles
+   external-data / large-varint tensor fields.

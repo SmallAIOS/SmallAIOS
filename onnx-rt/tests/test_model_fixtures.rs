@@ -372,6 +372,42 @@ fn test_gemma_3_1b_loads() {
 
 #[test]
 #[ignore]
+fn test_gemma_3_270m_loads() {
+    let Some(_) = fixture_path("gemma-3-270m-it.onnx") else {
+        eprintln!("SKIP: gemma-3-270m fixture not found");
+        return;
+    };
+    let result = validate_model("gemma-3-270m-it.onnx");
+    // Gemma 3 270M graph-only (~181 KB) — small graph-only file.
+    // Coverage probe: 421 nodes, 15 ops, 2 unrecognized (com.microsoft fused ops).
+    match result {
+        ModelResult::Ok {
+            total_nodes,
+            unsupported_ops,
+            ..
+        } => {
+            assert!(
+                total_nodes > 10,
+                "Gemma-3-270M should have many nodes, got {}",
+                total_nodes
+            );
+            eprintln!(
+                "Gemma-3-270M: {} nodes, {} unsupported ops",
+                total_nodes,
+                unsupported_ops.len()
+            );
+        }
+        ModelResult::ParseFailed(e) => {
+            eprintln!("Gemma-3-270M: decode_model failed: {}", e);
+        }
+        ModelResult::GraphBuildFailed(e) => {
+            panic!("Gemma-3-270M: unexpected graph build failure: {}", e);
+        }
+    }
+}
+
+#[test]
+#[ignore]
 fn test_deepseek_r1_loads() {
     let Some(_) = fixture_path("deepseek-r1-distill-qwen-1.5b.onnx") else {
         eprintln!("SKIP: deepseek fixture not found");
