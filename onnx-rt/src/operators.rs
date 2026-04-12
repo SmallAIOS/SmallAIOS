@@ -48,6 +48,35 @@ impl fmt::Display for OpError {
 }
 
 // ---------------------------------------------------------------------------
+// Operator domain
+// ---------------------------------------------------------------------------
+
+/// ONNX operator domain. SmallAIOS distinguishes the standard ONNX op set
+/// from the `com.microsoft` contrib op set so that operators with the same
+/// name but different semantics can coexist in the registry (see the
+/// `microsoft-fused-ops-v1` OpenSpec change).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Domain {
+    /// The default ONNX operator set (`""` or `"ai.onnx"`).
+    StandardOnnx,
+    /// The `com.microsoft` contrib op set: fused operators emitted by
+    /// HuggingFace `optimum-cli export onnx` for modern decoder-only LLMs.
+    MicrosoftFused,
+}
+
+impl Domain {
+    /// Parse an ONNX `NodeProto.domain` string to a [`Domain`]. The empty
+    /// string and `"ai.onnx"` both map to [`Domain::StandardOnnx`].
+    pub fn parse_str(s: &str) -> Option<Self> {
+        match s {
+            "" | "ai.onnx" => Some(Domain::StandardOnnx),
+            "com.microsoft" => Some(Domain::MicrosoftFused),
+            _ => None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Operator kind enumeration
 // ---------------------------------------------------------------------------
 
@@ -368,9 +397,54 @@ pub enum OpKind {
     MeanVarianceNormalization,
     /// Softplus activation: ln(1 + e^x).
     Softplus,
+
+    // ---- microsoft-fused-ops-v1: com.microsoft-domain fused LLM ops ----
+    /// `com.microsoft.SimplifiedLayerNormalization` — RMSNorm alias used
+    /// by canonical HF ONNX exports of Llama / Gemma / DeepSeek.
+    SimplifiedLayerNormalization,
+    /// `com.microsoft.SkipSimplifiedLayerNormalization` — fused residual
+    /// add + RMSNorm, emits both the normalized output and the pre-sum.
+    SkipSimplifiedLayerNormalization,
+    /// `com.microsoft.RotaryEmbedding` — standalone fused RoPE op used by
+    /// DeepSeek upstream of MultiHeadAttention.
+    RotaryEmbedding,
+    /// `com.microsoft.MultiHeadAttention` — non-grouped attention fusion
+    /// with KV-cache support (DeepSeek).
+    MultiHeadAttention,
+    /// `com.microsoft.GroupQueryAttention` — grouped-query attention with
+    /// fused RoPE, KV-cache concat, and on-the-fly causal masking
+    /// (Llama / Gemma).
+    GroupQueryAttention,
 }
 
 impl OpKind {
+    /// Returns the [`Domain`] this operator belongs to. Every variant
+    /// except the `microsoft-fused-ops-v1` additions is
+    /// [`Domain::StandardOnnx`].
+    pub fn domain(&self) -> Domain {
+        match self {
+            OpKind::SimplifiedLayerNormalization
+            | OpKind::SkipSimplifiedLayerNormalization
+            | OpKind::RotaryEmbedding
+            | OpKind::MultiHeadAttention
+            | OpKind::GroupQueryAttention => Domain::MicrosoftFused,
+            _ => Domain::StandardOnnx,
+        }
+    }
+
+    /// Resolve a `(domain, op_type)` pair to a canonical [`OpKind`]
+    /// variant. Used by the dispatcher to differentiate standard-domain
+    /// ops from `com.microsoft`-domain contrib ops that may share names.
+    pub fn lookup_by_domain_and_name(domain: &str, name: &str) -> Option<Self> {
+        let d = Domain::parse_str(domain)?;
+        let kind = Self::parse_str(name)?;
+        if kind.domain() == d {
+            Some(kind)
+        } else {
+            None
+        }
+    }
+
     /// Converts an ONNX operator type string to an `OpKind`.
     ///
     /// Returns `None` if the operator name is not recognized.
@@ -525,6 +599,12 @@ impl OpKind {
             "LpNormalization" => Some(OpKind::LpNormalization),
             "MeanVarianceNormalization" => Some(OpKind::MeanVarianceNormalization),
             "Softplus" => Some(OpKind::Softplus),
+            // microsoft-fused-ops-v1: com.microsoft-domain fused LLM ops
+            "SimplifiedLayerNormalization" => Some(OpKind::SimplifiedLayerNormalization),
+            "SkipSimplifiedLayerNormalization" => Some(OpKind::SkipSimplifiedLayerNormalization),
+            "RotaryEmbedding" => Some(OpKind::RotaryEmbedding),
+            "MultiHeadAttention" => Some(OpKind::MultiHeadAttention),
+            "GroupQueryAttention" => Some(OpKind::GroupQueryAttention),
             _ => None,
         }
     }
@@ -664,6 +744,12 @@ impl OpKind {
             OpKind::LpNormalization => "LpNormalization",
             OpKind::MeanVarianceNormalization => "MeanVarianceNormalization",
             OpKind::Softplus => "Softplus",
+            // microsoft-fused-ops-v1
+            OpKind::SimplifiedLayerNormalization => "SimplifiedLayerNormalization",
+            OpKind::SkipSimplifiedLayerNormalization => "SkipSimplifiedLayerNormalization",
+            OpKind::RotaryEmbedding => "RotaryEmbedding",
+            OpKind::MultiHeadAttention => "MultiHeadAttention",
+            OpKind::GroupQueryAttention => "GroupQueryAttention",
         }
     }
 }
@@ -809,6 +895,12 @@ const ALL_OPS: &[OpKind] = &[
     OpKind::LpNormalization,
     OpKind::MeanVarianceNormalization,
     OpKind::Softplus,
+    // microsoft-fused-ops-v1: com.microsoft-domain fused LLM operators
+    OpKind::SimplifiedLayerNormalization,
+    OpKind::SkipSimplifiedLayerNormalization,
+    OpKind::RotaryEmbedding,
+    OpKind::MultiHeadAttention,
+    OpKind::GroupQueryAttention,
 ];
 
 /// Registry of supported ONNX operators.
@@ -1027,6 +1119,15 @@ pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("LpNormalization", OperatorStatus::Implemented),
     ("MeanVarianceNormalization", OperatorStatus::Implemented),
     ("Softplus", OperatorStatus::Implemented),
+    // ---- microsoft-fused-ops-v1: com.microsoft-domain fused LLM ops ----
+    ("SimplifiedLayerNormalization", OperatorStatus::Implemented),
+    (
+        "SkipSimplifiedLayerNormalization",
+        OperatorStatus::Implemented,
+    ),
+    ("RotaryEmbedding", OperatorStatus::Implemented),
+    ("MultiHeadAttention", OperatorStatus::Implemented),
+    ("GroupQueryAttention", OperatorStatus::Implemented),
     // Phase 2 deferred: attention + integer conv still pending
     ("Attention", OperatorStatus::Planned(Phase::P2)),
     ("ConvInteger", OperatorStatus::Planned(Phase::P2)),
@@ -3574,7 +3675,7 @@ mod tests {
     #[test]
     fn test_registry_supported_count() {
         let registry = OperatorRegistry::new();
-        assert_eq!(registry.supported_count(), 131);
+        assert_eq!(registry.supported_count(), 136);
     }
 
     #[test]
@@ -3616,8 +3717,9 @@ mod tests {
             );
         }
 
-        // Sanity: must match the advertised 131-op count.
-        assert_eq!(impl_names.len(), 131);
+        // Sanity: must match the advertised 136-op count (131 standard
+        // ONNX + 5 microsoft-fused-ops-v1 additions).
+        assert_eq!(impl_names.len(), 136);
 
         // No duplicate entries in the inventory.
         let mut all_names: alloc::vec::Vec<&str> =
