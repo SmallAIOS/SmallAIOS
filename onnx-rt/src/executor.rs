@@ -10,10 +10,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::byte_io::{self, allocate_tensor_data, I64_SIZE};
-use crate::graph::ExecutionGraph;
+use crate::graph::{ExecutionGraph, ExecutionNode};
 use crate::onnx_types::{AttributeProto, AttributeType, TensorProto};
 use crate::operators::{self, OpError, OpKind};
 use crate::ops;
+use crate::sub_executor;
 #[cfg(test)]
 use crate::profile::NullTimeSource;
 use crate::profile::{
@@ -72,6 +73,24 @@ pub fn execute_graph(
                 }
             })
             .collect();
+
+        // Control-flow ops need the full ExecutionNode + outer value map,
+        // so they bypass `dispatch_node` and go through the compiled inner
+        // graph path.
+        if is_control_flow_op(&node.op_type) {
+            let outputs = dispatch_control_flow(node, &value_map, initializers)?;
+            for (i, output_name) in node.outputs.iter().enumerate() {
+                if !output_name.is_empty() {
+                    if let Some(tensor) = outputs.get(i) {
+                        value_map.insert(output_name.clone(), tensor.clone());
+                    }
+                }
+            }
+            if let Some(f) = yield_fn {
+                f();
+            }
+            continue;
+        }
 
         // Dispatch operator (optionally wrapped in timing measurement).
         let outputs = if let Some(prof) = profile.as_mut() {
@@ -415,15 +434,15 @@ pub(crate) fn dispatch_node(
         | OpKind::LpNormalization
         | OpKind::MeanVarianceNormalization
         | OpKind::Softplus => dispatch_generative(kind, inputs, attrs),
-        // Phase 2 control-flow ops. In this runtime the in-graph body
-        // deserialization is still a follow-up work-item, so the dispatcher
-        // returns `NotImplemented` here. The sub-graph executor module
-        // (`sub_executor.rs`) exposes an alternative API that accepts
-        // pre-built `ExecutionGraph` bodies directly and is fully tested.
+        // Phase 2 control-flow ops are intercepted by `execute_graph` /
+        // `run_sub_graph` before reaching `dispatch_node` — they need the
+        // full `ExecutionNode` (for `inner_graphs`) and the outer value
+        // map, which this op-level dispatcher does not carry. If a caller
+        // somehow reaches this arm directly (e.g., an older test harness),
+        // surface a clear error rather than silently mis-dispatching.
         OpKind::If | OpKind::Loop | OpKind::Scan => Err(OpError::InvalidAttribute(String::from(
-            "control-flow op dispatched from flat graph — inner body \
-                 must be executed via sub_executor::run_sub_graph, not \
-                 dispatch_node",
+            "control-flow op must be dispatched via dispatch_control_flow \
+             with the full ExecutionNode and outer value map",
         ))),
         // Multi-output kinds handled above and returned early.
         OpKind::Split
@@ -435,6 +454,298 @@ pub(crate) fn dispatch_node(
     };
 
     result.map(|t| alloc::vec![t])
+}
+
+// ---------------------------------------------------------------------------
+// Control-flow dispatch (If / Loop / Scan)
+// ---------------------------------------------------------------------------
+
+/// Returns `true` if the operator is a control-flow op that requires the
+/// compiled-inner-graph dispatch path rather than the flat `dispatch_node`.
+pub(crate) fn is_control_flow_op(op_type: &str) -> bool {
+    matches!(op_type, "If" | "Loop" | "Scan")
+}
+
+/// Dispatches an `If`/`Loop`/`Scan` node using its compiled inner graphs
+/// and the current value map.
+///
+/// Unlike [`dispatch_node`], this helper has access to the full
+/// [`ExecutionNode`] (for `inner_graphs`) and the outer value map, which
+/// the sub-graph executor needs to seed the body's evaluation scope.
+///
+/// On success returns the node's output tensors in `node.outputs` order.
+/// On error returns a [`SessionError`] describing the failure, including
+/// `"missing inner graph '<name>'"` when a required body attribute is
+/// absent.
+pub(crate) fn dispatch_control_flow(
+    node: &ExecutionNode,
+    value_map: &BTreeMap<String, Tensor>,
+    initializers: &[TensorProto],
+) -> Result<Vec<Tensor>, SessionError> {
+    match node.op_type.as_str() {
+        "If" => dispatch_if(node, value_map, initializers),
+        "Loop" => dispatch_loop(node, value_map, initializers),
+        "Scan" => dispatch_scan(node, value_map, initializers),
+        other => Err(SessionError::ExecutionFailed(alloc::format!(
+            "dispatch_control_flow called on non-control-flow op '{}'",
+            other
+        ))),
+    }
+}
+
+fn require_inner_graph<'a>(
+    node: &'a ExecutionNode,
+    key: &'static str,
+) -> Result<&'a ExecutionGraph, SessionError> {
+    node.inner_graphs.get(key).ok_or_else(|| {
+        SessionError::ExecutionFailed(alloc::format!(
+            "{}: missing inner graph '{}'",
+            node.name,
+            key
+        ))
+    })
+}
+
+fn dispatch_if(
+    node: &ExecutionNode,
+    value_map: &BTreeMap<String, Tensor>,
+    initializers: &[TensorProto],
+) -> Result<Vec<Tensor>, SessionError> {
+    // ONNX `If`: inputs[0] is the scalar bool condition.
+    let cond_name = node
+        .inputs
+        .first()
+        .ok_or_else(|| SessionError::ExecutionFailed(String::from("If: missing cond input")))?;
+    let cond_tensor = value_map.get(cond_name).ok_or_else(|| {
+        SessionError::ExecutionFailed(alloc::format!("If: cond tensor '{}' not found", cond_name))
+    })?;
+    let cond = sub_executor::read_bool_scalar(cond_tensor)
+        .map_err(|e| SessionError::ExecutionFailed(alloc::format!("If: {}", e)))?;
+
+    let branch = if cond {
+        require_inner_graph(node, "then_branch")?
+    } else {
+        require_inner_graph(node, "else_branch")?
+    };
+
+    // Run the selected branch with the outer value_map as its seed scope.
+    let result = sub_executor::run_sub_graph(branch, value_map.clone(), initializers)?;
+    // Extract the branch's declared outputs in order and return them
+    // as this node's outputs. The ONNX spec guarantees both branches'
+    // output lists align one-to-one with the If node's outputs.
+    let mut out = Vec::with_capacity(node.outputs.len());
+    for (i, _out_name) in node.outputs.iter().enumerate() {
+        let branch_out_name = branch.output_names.get(i).ok_or_else(|| {
+            SessionError::ExecutionFailed(alloc::format!(
+                "If: branch output {} not declared",
+                i
+            ))
+        })?;
+        let tensor = result.get(branch_out_name).ok_or_else(|| {
+            SessionError::ExecutionFailed(alloc::format!(
+                "If: branch missing output '{}'",
+                branch_out_name
+            ))
+        })?;
+        out.push(tensor.clone());
+    }
+    Ok(out)
+}
+
+fn dispatch_loop(
+    node: &ExecutionNode,
+    value_map: &BTreeMap<String, Tensor>,
+    initializers: &[TensorProto],
+) -> Result<Vec<Tensor>, SessionError> {
+    // ONNX `Loop` signature (opset-21):
+    //   inputs:  M (optional), cond (optional), v_initial_0..N-1
+    //   outputs: v_final_0..N-1, scan_output_0..K-1
+    //
+    // Body signature:
+    //   inputs:  iter_num, cond_in, v_in_0..N-1
+    //   outputs: cond_out, v_out_0..N-1, scan_out_0..K-1
+    //
+    // This implementation handles the loop-carried case (N >= 0) with no
+    // scan outputs (K = 0), which is sufficient for the autoregressive
+    // LLM decoder pattern this change targets.
+    let body = require_inner_graph(node, "body")?;
+
+    // Read M and cond inputs (both optional — empty string means absent).
+    let m: Option<i64> = read_optional_i64(node, 0, value_map);
+    let cond_initial: Option<bool> = read_optional_bool(node, 1, value_map);
+
+    // Collect initial loop-carried values (inputs[2..]).
+    let mut v_current: Vec<Tensor> = Vec::new();
+    for name in node.inputs.iter().skip(2) {
+        if name.is_empty() {
+            continue;
+        }
+        let tensor = value_map.get(name).ok_or_else(|| {
+            SessionError::ExecutionFailed(alloc::format!(
+                "Loop: carried input '{}' not found",
+                name
+            ))
+        })?;
+        v_current.push(tensor.clone());
+    }
+
+    // Trivial-skip cases match the ONNX semantics.
+    if m == Some(0) || cond_initial == Some(false) {
+        return Ok(v_current);
+    }
+
+    // The body's input names: [iter_num, cond_in, v_in_0, v_in_1, ...].
+    let carried_input_names: Vec<String> = if body.input_names.len() > 2 {
+        body.input_names[2..].to_vec()
+    } else {
+        Vec::new()
+    };
+    // Body outputs: [cond_out, v_out_0, v_out_1, ...].
+    let carried_output_names: Vec<String> = if body.output_names.len() > 1 {
+        body.output_names[1..].to_vec()
+    } else {
+        Vec::new()
+    };
+    let cond_out_name = body.output_names.first().cloned();
+
+    let mut cond_current = cond_initial.unwrap_or(true);
+    let mut iter: i64 = 0;
+
+    loop {
+        if iter >= sub_executor::MAX_LOOP_ITERATIONS {
+            return Err(SessionError::ExecutionFailed(alloc::format!(
+                "Loop exceeded safety limit ({})",
+                sub_executor::MAX_LOOP_ITERATIONS
+            )));
+        }
+        if let Some(max) = m {
+            if iter >= max {
+                break;
+            }
+        }
+        if !cond_current {
+            break;
+        }
+
+        // Seed the inner value map from the outer scope and bind the
+        // body's iter_num / cond_in / v_in_* inputs.
+        let mut inner = value_map.clone();
+        if let Some(name) = body.input_names.first() {
+            if !name.is_empty() {
+                inner.insert(name.clone(), sub_executor::i64_scalar(iter));
+            }
+        }
+        if let Some(name) = body.input_names.get(1) {
+            if !name.is_empty() {
+                inner.insert(name.clone(), sub_executor::bool_scalar(cond_current));
+            }
+        }
+        for (name, val) in carried_input_names.iter().zip(v_current.iter()) {
+            inner.insert(name.clone(), val.clone());
+        }
+
+        let result = sub_executor::run_sub_graph(body, inner, initializers)?;
+
+        // Extract loop-carried outputs.
+        let mut next_v = Vec::with_capacity(carried_output_names.len());
+        for name in &carried_output_names {
+            let t = result.get(name).ok_or_else(|| {
+                SessionError::ExecutionFailed(alloc::format!(
+                    "Loop body missing output '{}'",
+                    name
+                ))
+            })?;
+            next_v.push(t.clone());
+        }
+        v_current = next_v;
+
+        // Read body-emitted cond_out for the next iteration's gate.
+        if let Some(name) = &cond_out_name {
+            if let Some(t) = result.get(name) {
+                cond_current = sub_executor::read_bool_scalar(t).unwrap_or(true);
+            }
+        }
+
+        iter += 1;
+    }
+
+    Ok(v_current)
+}
+
+fn dispatch_scan(
+    node: &ExecutionNode,
+    value_map: &BTreeMap<String, Tensor>,
+    initializers: &[TensorProto],
+) -> Result<Vec<Tensor>, SessionError> {
+    // Simplified Scan: num_scan_inputs = 1, forward direction, default axis.
+    // This matches the Phase 2 `op_scan_with_body` semantics.
+    let body = require_inner_graph(node, "body")?;
+
+    // The single scan input is the last input of the node. We iterate
+    // one body execution per "element" (current implementation treats
+    // scan_input as pre-chunked and reuses the outer scope so a
+    // sequence-capable Scan can be layered on later).
+    let scan_input_name = node
+        .inputs
+        .last()
+        .ok_or_else(|| SessionError::ExecutionFailed(String::from("Scan: missing input")))?;
+    let _scan_tensor = value_map.get(scan_input_name).ok_or_else(|| {
+        SessionError::ExecutionFailed(alloc::format!(
+            "Scan: input '{}' not found",
+            scan_input_name
+        ))
+    })?;
+
+    // Run the body exactly once over the full sequence tensor. Proper
+    // sequence slicing along a scan axis is deferred to a follow-up
+    // change — this path is sufficient for smoke-testing on-disk Scan
+    // nodes compiled via `inner_graphs`.
+    let result = sub_executor::run_sub_graph(body, value_map.clone(), initializers)?;
+
+    let mut out = Vec::with_capacity(node.outputs.len());
+    for (i, _out_name) in node.outputs.iter().enumerate() {
+        let body_out_name = body.output_names.get(i).ok_or_else(|| {
+            SessionError::ExecutionFailed(alloc::format!("Scan: body output {} not declared", i))
+        })?;
+        let tensor = result.get(body_out_name).ok_or_else(|| {
+            SessionError::ExecutionFailed(alloc::format!(
+                "Scan: body missing output '{}'",
+                body_out_name
+            ))
+        })?;
+        out.push(tensor.clone());
+    }
+    Ok(out)
+}
+
+fn read_optional_i64(
+    node: &ExecutionNode,
+    input_idx: usize,
+    value_map: &BTreeMap<String, Tensor>,
+) -> Option<i64> {
+    let name = node.inputs.get(input_idx)?;
+    if name.is_empty() {
+        return None;
+    }
+    let t = value_map.get(name)?;
+    if t.raw_data.len() >= I64_SIZE {
+        Some(byte_io::read_i64(&t.raw_data, 0))
+    } else {
+        None
+    }
+}
+
+fn read_optional_bool(
+    node: &ExecutionNode,
+    input_idx: usize,
+    value_map: &BTreeMap<String, Tensor>,
+) -> Option<bool> {
+    let name = node.inputs.get(input_idx)?;
+    if name.is_empty() {
+        return None;
+    }
+    let t = value_map.get(name)?;
+    sub_executor::read_bool_scalar(t).ok()
 }
 
 // ---------------------------------------------------------------------------
