@@ -824,6 +824,17 @@ pub fn op_multi_head_attention(
 /// - `sin_cache`  `(max_seq_len, head_dim/2)` — required when `do_rotary`.
 ///
 /// Outputs: `attention_out`, `present_key`, `present_value`.
+///
+/// **KV cache lifecycle (deviation from spec D8):** the spec describes
+/// in-place mutation of the KV cache, but `dispatch_node` passes inputs as
+/// `&[Option<&Tensor>]` (read-only) and returns owned outputs. Rather than
+/// rework the dispatcher to support interior mutability, this op returns
+/// fresh `present_key` / `present_value` tensors that the executor inserts
+/// into the value map. When called inside a `Loop` body via the Phase 2
+/// sub-graph executor, these become loop-carried values rotated into the
+/// next iteration's input slot — observably identical to in-place mutation,
+/// at the cost of one full KV-cache copy per iteration. The pending
+/// `kv-cache-quantization-v1` work compresses this cost ~6x.
 #[allow(clippy::too_many_arguments)]
 pub fn op_group_query_attention(
     inputs: &[Option<&Tensor>],
