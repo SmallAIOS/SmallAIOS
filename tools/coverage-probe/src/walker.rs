@@ -82,28 +82,7 @@ pub fn walk_bytes(
 /// surface real op-coverage findings over bailing out on an oversized
 /// doc_string or non-UTF8 producer field.
 fn tolerant_skip(dec: &mut ProtoDecoder, wire: WireType) -> Result<(), ProtoError> {
-    match wire {
-        WireType::Varint => {
-            dec.read_varint()?;
-        }
-        WireType::Fixed64 => {
-            if dec.remaining() < 8 {
-                return Err(ProtoError::UnexpectedEof);
-            }
-            // read_fixed64 advances the cursor
-            dec.read_fixed64()?;
-        }
-        WireType::Fixed32 => {
-            if dec.remaining() < 4 {
-                return Err(ProtoError::UnexpectedEof);
-            }
-            dec.read_fixed32()?;
-        }
-        WireType::LengthDelimited => {
-            dec.read_length_delimited()?;
-        }
-    }
-    Ok(())
+    dec.skip_field(wire)
 }
 
 /// Scan a GraphProto byte region, recursively descending into nodes,
