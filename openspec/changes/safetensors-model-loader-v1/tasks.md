@@ -1,14 +1,14 @@
 ## 1. Safetensors Parser
 
-- [ ] 1.1 Add `memmap2` as a dev-dependency of `onnx-rt` (or `container`) gated behind a `safetensors` feature flag
-- [ ] 1.2 Create `onnx-rt/src/model_loader/mod.rs` module behind `#[cfg(feature = "safetensors")]`
-- [ ] 1.3 Create `onnx-rt/src/model_loader/safetensors.rs` with `SafetensorsFile` struct (mmap + parsed header)
-- [ ] 1.4 Implement header parsing: read 8-byte LE u64 length, parse JSON header into `BTreeMap<String, TensorEntry>`
-- [ ] 1.5 Implement `TensorEntry { dtype, shape, data_offset_start, data_offset_end }` and dtype string → `DataType` mapping (`BF16`, `F16`, `F32`, `I8`, `I32`, `I64`)
-- [ ] 1.6 Implement `SafetensorsFile::tensor_view(name)` returning a borrowed slice into the mmap region
-- [ ] 1.7 Create `onnx-rt/src/model_loader/sharded.rs` with `MultiShardSafetensors` — parses `model.safetensors.index.json` and opens all shards eagerly
-- [ ] 1.8 Unit tests: parse a minimal safetensors file, lookup tensor by name, verify byte slice contents
-- [ ] 1.9 Unit test: sharded model loading with a 2-shard synthetic fixture
+- [x] 1.1 Add `memmap2` as a dev-dependency of `onnx-rt` (or `container`) gated behind a `safetensors` feature flag
+- [x] 1.2 Create `onnx-rt/src/model_loader/mod.rs` module behind `#[cfg(feature = "safetensors")]`
+- [x] 1.3 Create `onnx-rt/src/model_loader/safetensors.rs` with `SafetensorsFile` struct (mmap + parsed header)
+- [x] 1.4 Implement header parsing: read 8-byte LE u64 length, parse JSON header into `BTreeMap<String, TensorEntry>`
+- [x] 1.5 Implement `TensorEntry { dtype, shape, data_offset_start, data_offset_end }` and dtype string → `DataType` mapping (`BF16`, `F16`, `F32`, `I8`, `I32`, `I64`)
+- [x] 1.6 Implement `SafetensorsFile::tensor_view(name)` returning a borrowed slice into the mmap region
+- [x] 1.7 Create `onnx-rt/src/model_loader/sharded.rs` with `MultiShardSafetensors` — parses `model.safetensors.index.json` and opens all shards eagerly
+- [x] 1.8 Unit tests: parse a minimal safetensors file, lookup tensor by name, verify byte slice contents
+- [x] 1.9 Unit test: sharded model loading with a 2-shard synthetic fixture
 
 ## 2. HuggingFace Config Parser
 

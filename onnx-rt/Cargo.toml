@@ -11,6 +11,7 @@ publish = false
 default = ["cpu"]
 cpu = []
 std = []
+safetensors = ["std", "dep:memmap2"]
 cuda = ["smallaios-arch-nvidia", "gpu"]
 tegra = ["cuda", "smallaios-arch-nvidia/tegra"]
 rocm = ["gpu"]
@@ -27,3 +28,4 @@ smallaios-compute = { path = "../compute", optional = true }
 smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }
 smallaios-arch-apple = { path = "../arch/apple", optional = true }
 smallaios-security = { path = "../security", optional = true }
+memmap2 = { version = "0.9", optional = true }
