@@ -46,3 +46,7 @@ sonar-coverage.xml
 *.pem
 *.key
 .env
+
+# ONNX coverage probe fixture downloads (large; see
+# tools/coverage-probe/REPORT.md for re-download instructions).
+tests/fixtures/onnx-models/
