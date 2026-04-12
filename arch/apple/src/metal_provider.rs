@@ -348,6 +348,14 @@ impl ComputeProvider for MetalProvider {
                 | "Gemm"
                 | "Softmax"
                 | "Conv"
+                | "LayerNormalization"
+                | "RMSNormalization"
+                | "SimplifiedLayerNormalization"
+                | "RotaryEmbedding"
+                | "ScaledDotProductAttention"
+                | "GroupQueryAttention"
+                | "MatMulInteger"
+                | "BatchNormalization"
         )
     }
 }
@@ -518,6 +526,15 @@ mod tests {
         assert!(prov.supports_op("Relu"));
         assert!(prov.supports_op("Softmax"));
         assert!(prov.supports_op("Conv"));
+        // Tier 2 ops
+        assert!(prov.supports_op("LayerNormalization"));
+        assert!(prov.supports_op("RMSNormalization"));
+        assert!(prov.supports_op("SimplifiedLayerNormalization"));
+        assert!(prov.supports_op("RotaryEmbedding"));
+        assert!(prov.supports_op("ScaledDotProductAttention"));
+        assert!(prov.supports_op("GroupQueryAttention"));
+        assert!(prov.supports_op("MatMulInteger"));
+        assert!(prov.supports_op("BatchNormalization"));
         assert!(!prov.supports_op("Reshape"));
         assert!(!prov.supports_op("UnknownOp"));
     }
