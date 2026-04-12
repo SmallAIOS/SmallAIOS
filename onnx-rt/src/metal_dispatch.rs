@@ -276,7 +276,7 @@ fn plan_softmax(input_shapes: &[&[i64]]) -> Option<KernelLaunchPlan> {
         threadgroup_size: [tg, 1, 1],
         input_buffer_count: 1,
         output_buffer_count: 1,
-        param_buffers: vec![rows, cols],
+        param_buffers: vec![cols],
         needs_dims_buffer: true,
         output_shape: dims.to_vec(),
         output_elements: total,
@@ -426,21 +426,11 @@ fn execute_plan(
 ) -> Result<Vec<Tensor>, OpError> {
     let out_byte_size = plan.output_elements * core::mem::size_of::<f32>();
 
-    // Upload inputs to device
+    // Upload each input to a numbered device buffer.
     for (i, input) in inputs.iter().enumerate() {
-        let label = match i {
-            0 => "__gpu_a",
-            1 => "__gpu_b",
-            _ => "__gpu_in",
-        };
-        // For unary ops the first input uses "__gpu_in"
-        let label = if plan.input_buffer_count == 1 {
-            "__gpu_in"
-        } else {
-            label
-        };
+        let label = format!("__gpu_in_{}", i);
         cache
-            .copy_to_device(provider, label, &input.raw_data)
+            .copy_to_device(provider, &label, &input.raw_data)
             .map_err(metal_err)?;
     }
 
@@ -467,13 +457,11 @@ fn execute_plan(
         .load_kernel(plan.kernel_name, source.as_bytes())
         .map_err(metal_err)?;
 
-    // Gather buffer references for launch
-    let mut bufs = Vec::new();
-    if plan.input_buffer_count == 1 {
-        bufs.push(cache.get("__gpu_in").unwrap());
-    } else {
-        bufs.push(cache.get("__gpu_a").unwrap());
-        bufs.push(cache.get("__gpu_b").unwrap());
+    // Gather buffer references for launch: inputs + output [+ dims].
+    let mut bufs: Vec<&_> = Vec::with_capacity(inputs.len() + 2);
+    for i in 0..inputs.len() {
+        let label = format!("__gpu_in_{}", i);
+        bufs.push(cache.get(&label).unwrap());
     }
     bufs.push(cache.get("__gpu_out").unwrap());
     if plan.needs_dims_buffer {
@@ -836,7 +824,7 @@ mod tests {
         let plan = plan_kernel_launch("Softmax", &[&[4, 100]], &[]).unwrap();
         assert_eq!(plan.kernel_name, "softmax");
         assert_eq!(plan.kernel_source_id, "SOFTMAX");
-        assert_eq!(plan.param_buffers, vec![4, 100]); // rows=4, cols=100
+        assert_eq!(plan.param_buffers, vec![100]); // N = cols (row length)
         assert_eq!(plan.grid_size[0], 400); // total elements
         assert!(plan.needs_dims_buffer);
         assert_eq!(plan.output_shape, vec![4, 100]);
@@ -846,15 +834,15 @@ mod tests {
     #[test]
     fn test_plan_softmax_1d() {
         let plan = plan_kernel_launch("Softmax", &[&[10]], &[]).unwrap();
-        assert_eq!(plan.param_buffers, vec![1, 10]); // 1 row, 10 cols
+        assert_eq!(plan.param_buffers, vec![10]); // N = cols (row length)
         assert_eq!(plan.output_elements, 10);
     }
 
     #[test]
     fn test_plan_softmax_3d() {
         let plan = plan_kernel_launch("Softmax", &[&[2, 3, 50]], &[]).unwrap();
-        // rows = 2*3 = 6, cols = 50
-        assert_eq!(plan.param_buffers, vec![6, 50]);
+        // N = cols (row length) = 50
+        assert_eq!(plan.param_buffers, vec![50]);
         assert_eq!(plan.output_elements, 300);
     }
 
