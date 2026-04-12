@@ -176,6 +176,11 @@ test:
         -p smallaios-bus \
         -p smallaios-bench
 
+# Run Metal GPU tests (macOS only)
+test-metal:
+    {{cargo}} test -p smallaios-onnx-rt --features metal --lib -- metal_dispatch
+    {{cargo}} test -p smallaios-arch-apple
+
 # Run clippy lints
 clippy:
     {{cargo}} clippy \

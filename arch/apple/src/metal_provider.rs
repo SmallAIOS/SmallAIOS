@@ -25,6 +25,107 @@ pub struct MetalBuffer {
     size: usize,
 }
 
+impl MetalBuffer {
+    /// Returns the size in bytes of this buffer.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MetalTensorCache
+// ---------------------------------------------------------------------------
+
+/// Cache of named GPU buffers for tensor reuse across operator dispatches.
+///
+/// Avoids redundant host-to-device copies when a tensor produced by one GPU
+/// operator is consumed by the next. Buffers are keyed by tensor name and
+/// reallocated only when the required size exceeds the cached allocation.
+pub struct MetalTensorCache {
+    cache: BTreeMap<String, MetalBuffer>,
+}
+
+impl Default for MetalTensorCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MetalTensorCache {
+    /// Creates a new empty tensor cache.
+    pub fn new() -> Self {
+        Self {
+            cache: BTreeMap::new(),
+        }
+    }
+
+    /// Returns a mutable reference to a cached buffer for `name`, creating or
+    /// reallocating it if the existing buffer is too small.
+    pub fn get_or_create(
+        &mut self,
+        provider: &mut MetalProvider,
+        name: &str,
+        size: usize,
+    ) -> Result<&mut MetalBuffer, MetalError> {
+        // Check if we already have a large-enough buffer.
+        let needs_alloc = !matches!(self.cache.get(name), Some(buf) if buf.size >= size);
+
+        if needs_alloc {
+            let buf = provider.alloc(size)?;
+            self.cache.insert(String::from(name), buf);
+        }
+
+        Ok(self.cache.get_mut(name).unwrap())
+    }
+
+    /// Copies tensor data (raw bytes) to a device buffer, reusing the cache.
+    ///
+    /// Returns a reference to the cached buffer after the copy.
+    pub fn copy_to_device(
+        &mut self,
+        provider: &mut MetalProvider,
+        name: &str,
+        data: &[u8],
+    ) -> Result<&MetalBuffer, MetalError> {
+        let buf = self.get_or_create(provider, name, data.len())?;
+        use smallaios_compute::ComputeProvider;
+        provider.copy_host_to_device(data, buf)?;
+        Ok(self.cache.get(name).unwrap())
+    }
+
+    /// Copies data from a device buffer back to a host byte vector.
+    pub fn copy_from_device(
+        provider: &MetalProvider,
+        buffer: &MetalBuffer,
+        size: usize,
+    ) -> Result<alloc::vec::Vec<u8>, MetalError> {
+        use smallaios_compute::ComputeProvider;
+        let mut dst = alloc::vec![0u8; size];
+        provider.copy_device_to_host(buffer, &mut dst)?;
+        Ok(dst)
+    }
+
+    /// Returns a reference to a cached buffer by name, if present.
+    pub fn get(&self, name: &str) -> Option<&MetalBuffer> {
+        self.cache.get(name)
+    }
+
+    /// Removes all cached buffers.
+    pub fn clear(&mut self) {
+        self.cache.clear();
+    }
+
+    /// Returns the number of cached buffers.
+    pub fn len(&self) -> usize {
+        self.cache.len()
+    }
+
+    /// Returns `true` if the cache is empty.
+    pub fn is_empty(&self) -> bool {
+        self.cache.is_empty()
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MetalKernel
 // ---------------------------------------------------------------------------

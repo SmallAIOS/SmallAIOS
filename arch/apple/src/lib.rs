@@ -24,10 +24,10 @@ mod metal_provider;
 pub mod shaders;
 
 #[cfg(target_os = "macos")]
-pub use metal_provider::{MetalBuffer, MetalError, MetalKernel, MetalProvider};
+pub use metal_provider::{MetalBuffer, MetalError, MetalKernel, MetalProvider, MetalTensorCache};
 
 // Re-export stubs for non-macOS so the crate still compiles in the workspace.
 #[cfg(not(target_os = "macos"))]
 mod stub;
 #[cfg(not(target_os = "macos"))]
-pub use stub::{MetalBuffer, MetalError, MetalKernel, MetalProvider};
+pub use stub::{MetalBuffer, MetalError, MetalKernel, MetalProvider, MetalTensorCache};
