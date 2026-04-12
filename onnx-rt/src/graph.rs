@@ -8,10 +8,15 @@
 //! using Kahn's algorithm to ensure operators execute only after all their
 //! inputs are available.
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::onnx_types::{AttributeProto, GraphProto};
+
+/// Maximum depth of nested inner `ExecutionGraph`s produced by the graph
+/// builder. Matches the protobuf parser's `MAX_GRAPH_NESTING_DEPTH`.
+pub const MAX_GRAPH_NESTING_DEPTH: usize = 16;
 
 // Re-export for downstream consumers that need the tensor DataType.
 #[allow(unused_imports)]
@@ -32,6 +37,8 @@ pub enum GraphError {
     UnsupportedOperator(String),
     /// Tensor shapes are incompatible between connected nodes.
     ShapeMismatch,
+    /// Nested inner-graph compilation exceeded [`MAX_GRAPH_NESTING_DEPTH`].
+    NestingTooDeep,
 }
 
 impl core::fmt::Display for GraphError {
@@ -51,6 +58,9 @@ impl core::fmt::Display for GraphError {
                 write!(f, "unsupported operator: {}", op)
             }
             GraphError::ShapeMismatch => write!(f, "tensor shape mismatch"),
+            GraphError::NestingTooDeep => {
+                write!(f, "nested inner-graph compilation exceeded max depth")
+            }
         }
     }
 }
@@ -104,6 +114,15 @@ pub struct ExecutionNode {
     pub dependencies: Vec<NodeIndex>,
     /// Operator-specific attributes from the ONNX NodeProto.
     pub attributes: Vec<AttributeProto>,
+    /// Compiled inner graphs for control-flow operators (`If`/`Loop`/
+    /// `Scan`), keyed by the originating attribute's name (e.g. `"body"`
+    /// for `Loop`/`Scan`, `"then_branch"` / `"else_branch"` for `If`).
+    ///
+    /// Empty for operators that do not carry graph-valued attributes.
+    /// Populated by the graph builder at session-load time via
+    /// [`build_execution_graph`], which recursively compiles each
+    /// `AttributeProto.g` value into its own standalone `ExecutionGraph`.
+    pub inner_graphs: BTreeMap<String, ExecutionGraph>,
 }
 
 /// A directed acyclic graph of execution nodes with a computed
@@ -149,12 +168,27 @@ impl ExecutionGraph {
 }
 
 /// Creates execution nodes from ONNX NodeProto entries.
-fn create_execution_nodes(graph: &GraphProto) -> Vec<ExecutionNode> {
-    graph
-        .node
-        .iter()
-        .enumerate()
-        .map(|(i, node_proto)| ExecutionNode {
+///
+/// For each attribute whose `g` field is populated, recursively compiles
+/// the inner `GraphProto` into its own standalone [`ExecutionGraph`] via
+/// [`build_execution_graph_inner`] and stores the result in the node's
+/// `inner_graphs` map, keyed by the attribute name. Returns
+/// [`GraphError::NestingTooDeep`] if the nesting depth exceeds
+/// [`MAX_GRAPH_NESTING_DEPTH`].
+fn create_execution_nodes(
+    graph: &GraphProto,
+    depth: usize,
+) -> Result<Vec<ExecutionNode>, GraphError> {
+    let mut out = Vec::with_capacity(graph.node.len());
+    for (i, node_proto) in graph.node.iter().enumerate() {
+        let mut inner_graphs: BTreeMap<String, ExecutionGraph> = BTreeMap::new();
+        for attr in &node_proto.attribute {
+            if let Some(inner_proto) = &attr.g {
+                let inner_exec = build_execution_graph_inner(inner_proto, depth + 1)?;
+                inner_graphs.insert(attr.name.clone(), inner_exec);
+            }
+        }
+        out.push(ExecutionNode {
             node_index: NodeIndex::new(i),
             op_type: node_proto.op_type.clone(),
             name: node_proto.name.clone(),
@@ -162,8 +196,10 @@ fn create_execution_nodes(graph: &GraphProto) -> Vec<ExecutionNode> {
             outputs: node_proto.output.clone(),
             dependencies: Vec::new(),
             attributes: node_proto.attribute.clone(),
-        })
-        .collect()
+            inner_graphs,
+        });
+    }
+    Ok(out)
 }
 
 /// Builds the output-tensor-name to producing-node-index mapping.
@@ -179,10 +215,19 @@ fn build_output_producer_map(nodes: &[ExecutionNode]) -> Vec<(String, NodeIndex)
 
 /// Resolves data dependencies for each node by matching inputs to
 /// producing nodes. Returns per-node dependency lists.
+///
+/// When `allow_outer_refs` is `true`, input names that match neither a
+/// graph input nor a sibling node output are treated as outer-scope
+/// references (captured values from an enclosing graph) rather than
+/// errors. This is required for the inner graphs of `If`/`Loop`/`Scan`
+/// nodes, whose body graphs legitimately reference tensors defined in
+/// the parent graph. The sub-graph executor supplies these names at
+/// runtime from its parent scope.
 fn resolve_dependencies(
     nodes: &[ExecutionNode],
     input_names: &[String],
     output_producers: &[(String, NodeIndex)],
+    allow_outer_refs: bool,
 ) -> Result<Vec<Vec<NodeIndex>>, GraphError> {
     let num_nodes = nodes.len();
     let mut deps_per_node: Vec<Vec<NodeIndex>> = Vec::with_capacity(num_nodes);
@@ -193,7 +238,13 @@ fn resolve_dependencies(
     for (node_idx, deps) in deps_per_node.iter_mut().enumerate() {
         let inputs = &nodes[node_idx].inputs;
         for input_name in inputs {
-            resolve_single_input(input_name, input_names, output_producers, deps)?;
+            resolve_single_input(
+                input_name,
+                input_names,
+                output_producers,
+                deps,
+                allow_outer_refs,
+            )?;
         }
     }
 
@@ -206,6 +257,7 @@ fn resolve_single_input(
     input_names: &[String],
     output_producers: &[(String, NodeIndex)],
     deps: &mut Vec<NodeIndex>,
+    allow_outer_refs: bool,
 ) -> Result<(), GraphError> {
     if input_names.iter().any(|n| n == input_name) {
         return Ok(());
@@ -218,7 +270,7 @@ fn resolve_single_input(
             }
         }
         None => {
-            if !input_name.is_empty() {
+            if !input_name.is_empty() && !allow_outer_refs {
                 return Err(GraphError::MissingInput(String::from(input_name)));
             }
         }
@@ -230,19 +282,50 @@ fn resolve_single_input(
 ///
 /// This function:
 /// 1. Creates an `ExecutionNode` for each `NodeProto` in the graph.
+///    Any attribute whose `g` field is populated is recursively compiled
+///    into a standalone inner `ExecutionGraph` and stored on the parent
+///    node under `inner_graphs[attr.name]`.
 /// 2. Resolves data dependencies by matching each node's inputs to the
 ///    outputs of other nodes.
 /// 3. Performs a topological sort using Kahn's algorithm.
 /// 4. Detects cycles (returns `GraphError::CyclicGraph` if found).
+///
+/// Returns `GraphError::NestingTooDeep` if inner-graph nesting exceeds
+/// [`MAX_GRAPH_NESTING_DEPTH`].
 pub fn build_execution_graph(graph: &GraphProto) -> Result<ExecutionGraph, GraphError> {
+    build_execution_graph_with_depth(graph, 0, false)
+}
+
+/// Compiles an inner sub-graph (body of an `If`/`Loop`/`Scan`).
+///
+/// Unlike [`build_execution_graph`], inner compilation treats input
+/// names that are neither declared graph inputs nor sibling outputs as
+/// implicit outer-scope references rather than errors. The sub-graph
+/// executor seeds these names at runtime from the parent value map.
+pub fn build_execution_graph_inner(
+    graph: &GraphProto,
+    depth: usize,
+) -> Result<ExecutionGraph, GraphError> {
+    build_execution_graph_with_depth(graph, depth, true)
+}
+
+fn build_execution_graph_with_depth(
+    graph: &GraphProto,
+    depth: usize,
+    allow_outer_refs: bool,
+) -> Result<ExecutionGraph, GraphError> {
+    if depth > MAX_GRAPH_NESTING_DEPTH {
+        return Err(GraphError::NestingTooDeep);
+    }
+
     let mut exec_graph = ExecutionGraph::new();
 
     // Copy graph-level input/output names from ValueInfoProto entries.
     exec_graph.input_names = graph.input.iter().map(|vi| vi.name.clone()).collect();
     exec_graph.output_names = graph.output.iter().map(|vi| vi.name.clone()).collect();
 
-    // Phase 1: Create execution nodes.
-    exec_graph.nodes = create_execution_nodes(graph);
+    // Phase 1: Create execution nodes (recursively compiles inner graphs).
+    exec_graph.nodes = create_execution_nodes(graph, depth)?;
 
     // Phase 2: Resolve dependencies.
     let output_producers = build_output_producer_map(&exec_graph.nodes);
@@ -250,6 +333,7 @@ pub fn build_execution_graph(graph: &GraphProto) -> Result<ExecutionGraph, Graph
         &exec_graph.nodes,
         &exec_graph.input_names,
         &output_producers,
+        allow_outer_refs,
     )?;
 
     for (i, deps) in deps_per_node.into_iter().enumerate() {
@@ -565,6 +649,205 @@ mod tests {
     // ---------------------------------------------------------------
     // GraphError Display
     // ---------------------------------------------------------------
+
+    // ---------------------------------------------------------------
+    // Inner graph compilation (graph-attr-parser-v1)
+    // ---------------------------------------------------------------
+
+    use crate::onnx_types::{AttributeProto, AttributeType};
+
+    fn graph_attr(name: &str, inner: GraphProto) -> AttributeProto {
+        AttributeProto {
+            name: name.to_string(),
+            attr_type: AttributeType::Graph,
+            g: Some(alloc::boxed::Box::new(inner)),
+            ..AttributeProto::default()
+        }
+    }
+
+    #[test]
+    fn test_inner_graph_loop_body_compiled() {
+        // Top-level graph with a single Loop node whose `body` attribute
+        // carries an inner graph containing MatMul + Add.
+        let inner_nodes = vec![
+            make_node("MatMul", "mm", &["a", "W"], &["mm_out"]),
+            make_node("Add", "add", &["mm_out", "b"], &["y"]),
+        ];
+        let inner_graph_proto = GraphProto {
+            name: "body".to_string(),
+            node: inner_nodes,
+            // Body inputs: loop carries iter_num, cond_in, and a; W and b
+            // are captured from the outer scope.
+            input: vec![ValueInfoProto {
+                name: "a".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "y".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            ..GraphProto::default()
+        };
+
+        let loop_node = NodeProto {
+            op_type: "Loop".to_string(),
+            name: "lp".to_string(),
+            input: vec!["M".to_string(), "cond".to_string(), "a0".to_string()],
+            output: vec!["y_final".to_string()],
+            attribute: vec![graph_attr("body", inner_graph_proto)],
+            ..NodeProto::default()
+        };
+
+        let outer = GraphProto {
+            name: "outer".to_string(),
+            node: vec![loop_node],
+            input: vec![
+                ValueInfoProto {
+                    name: "M".to_string(),
+                    ..ValueInfoProto::default()
+                },
+                ValueInfoProto {
+                    name: "cond".to_string(),
+                    ..ValueInfoProto::default()
+                },
+                ValueInfoProto {
+                    name: "a0".to_string(),
+                    ..ValueInfoProto::default()
+                },
+            ],
+            output: vec![ValueInfoProto {
+                name: "y_final".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            ..GraphProto::default()
+        };
+
+        let exec = build_execution_graph(&outer).unwrap();
+        assert_eq!(exec.nodes.len(), 1);
+        let loop_exec = &exec.nodes[0];
+        assert_eq!(loop_exec.op_type, "Loop");
+        assert_eq!(loop_exec.inner_graphs.len(), 1);
+        let body = loop_exec
+            .inner_graphs
+            .get("body")
+            .expect("body inner graph should be populated");
+        assert_eq!(body.node_count(), 2);
+        assert_eq!(body.execution_order().len(), 2);
+        // Parent still keeps the raw attribute too.
+        assert_eq!(loop_exec.attributes.len(), 1);
+    }
+
+    #[test]
+    fn test_inner_graph_if_both_branches() {
+        let then_graph_proto = GraphProto {
+            node: vec![make_node("Relu", "r", &["x"], &["y"])],
+            input: vec![ValueInfoProto {
+                name: "x".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "y".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            ..GraphProto::default()
+        };
+        let else_graph_proto = GraphProto {
+            node: vec![make_node("Neg", "n", &["x"], &["y"])],
+            input: vec![ValueInfoProto {
+                name: "x".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "y".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            ..GraphProto::default()
+        };
+        let if_node = NodeProto {
+            op_type: "If".to_string(),
+            input: vec!["cond".to_string()],
+            output: vec!["y".to_string()],
+            attribute: vec![
+                graph_attr("then_branch", then_graph_proto),
+                graph_attr("else_branch", else_graph_proto),
+            ],
+            ..NodeProto::default()
+        };
+        let outer = make_graph("outer", vec![if_node], &["cond", "x"], &["y"]);
+        let exec = build_execution_graph(&outer).unwrap();
+        let if_exec = &exec.nodes[0];
+        assert_eq!(if_exec.inner_graphs.len(), 2);
+        assert!(if_exec.inner_graphs.contains_key("then_branch"));
+        assert!(if_exec.inner_graphs.contains_key("else_branch"));
+        assert_eq!(
+            if_exec.inner_graphs["then_branch"].nodes[0].op_type,
+            "Relu"
+        );
+        assert_eq!(if_exec.inner_graphs["else_branch"].nodes[0].op_type, "Neg");
+    }
+
+    #[test]
+    fn test_inner_graph_outer_referenced_name_is_allowed() {
+        // Inner graph references a name (`W`) that is neither an inner
+        // input nor produced by an inner sibling node. This legitimately
+        // refers to an outer-scope initializer. The inner builder must
+        // NOT return MissingInput for it.
+        let inner_graph_proto = GraphProto {
+            node: vec![make_node("MatMul", "mm", &["x", "W"], &["y"])],
+            input: vec![ValueInfoProto {
+                name: "x".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "y".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            ..GraphProto::default()
+        };
+        let outer_node = NodeProto {
+            op_type: "Loop".to_string(),
+            input: vec!["M".to_string(), "c".to_string(), "x0".to_string()],
+            output: vec!["y".to_string()],
+            attribute: vec![graph_attr("body", inner_graph_proto)],
+            ..NodeProto::default()
+        };
+        // Note: `W` is an outer input in the top-level graph.
+        let outer = make_graph("outer", vec![outer_node], &["M", "c", "x0", "W"], &["y"]);
+        let exec = build_execution_graph(&outer).expect("outer ref should not be rejected");
+        assert_eq!(exec.nodes[0].inner_graphs.len(), 1);
+    }
+
+    #[test]
+    fn test_inner_graph_nesting_depth_overflow() {
+        // Construct a chain of nested Loop bodies 17 levels deep and
+        // verify the builder rejects the 17th level.
+        fn wrap_loop(inner: GraphProto) -> GraphProto {
+            let lp = NodeProto {
+                op_type: "Loop".to_string(),
+                attribute: vec![graph_attr("body", inner)],
+                ..NodeProto::default()
+            };
+            GraphProto {
+                node: vec![lp],
+                ..GraphProto::default()
+            }
+        }
+        let mut g = GraphProto::default();
+        for _ in 0..17 {
+            g = wrap_loop(g);
+        }
+        let err = build_execution_graph(&g).expect_err("depth 17 should reject");
+        assert_eq!(err, GraphError::NestingTooDeep);
+    }
+
+    #[test]
+    fn test_graph_error_nesting_too_deep_display() {
+        use alloc::format;
+        assert_eq!(
+            format!("{}", GraphError::NestingTooDeep),
+            "nested inner-graph compilation exceeded max depth"
+        );
+    }
 
     #[test]
     fn test_graph_error_display() {
