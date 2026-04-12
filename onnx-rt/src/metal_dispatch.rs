@@ -150,19 +150,13 @@ fn plan_elementwise_binary(op_type: &str, input_shapes: &[&[i64]]) -> Option<Ker
         _ => return None,
     };
 
-    let tg = n.min(256);
-    Some(KernelLaunchPlan {
+    Some(elementwise_plan(
         kernel_name,
         kernel_source_id,
-        grid_size: [n, 1, 1],
-        threadgroup_size: [tg, 1, 1],
-        input_buffer_count: 2,
-        output_buffer_count: 1,
-        param_buffers: vec![n],
-        needs_dims_buffer: false,
-        output_shape: input_shapes[0].to_vec(),
-        output_elements: n as usize,
-    })
+        n,
+        2,
+        input_shapes[0],
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -185,19 +179,37 @@ fn plan_elementwise_unary(op_type: &str, input_shapes: &[&[i64]]) -> Option<Kern
         _ => return None,
     };
 
+    Some(elementwise_plan(
+        kernel_name,
+        kernel_source_id,
+        n,
+        1,
+        input_shapes[0],
+    ))
+}
+
+/// Shared constructor for elementwise plans — eliminates struct-literal
+/// duplication between binary (Add/Sub/Mul/Div) and unary (Relu/Sigmoid/Tanh).
+fn elementwise_plan(
+    kernel_name: &'static str,
+    kernel_source_id: &'static str,
+    n: u32,
+    input_buffer_count: usize,
+    shape: &[i64],
+) -> KernelLaunchPlan {
     let tg = n.min(256);
-    Some(KernelLaunchPlan {
+    KernelLaunchPlan {
         kernel_name,
         kernel_source_id,
         grid_size: [n, 1, 1],
         threadgroup_size: [tg, 1, 1],
-        input_buffer_count: 1,
+        input_buffer_count,
         output_buffer_count: 1,
         param_buffers: vec![n],
         needs_dims_buffer: false,
-        output_shape: input_shapes[0].to_vec(),
+        output_shape: shape.to_vec(),
         output_elements: n as usize,
-    })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -665,52 +677,28 @@ mod tests {
 
     // ---- Elementwise binary planning ----
 
+    /// Data-driven test for all elementwise binary ops — eliminates per-op
+    /// test duplication that SonarCloud flags.
     #[test]
-    fn test_plan_add_returns_correct_grid() {
-        let plan = plan_kernel_launch("Add", &[&[2, 3]], &[]).unwrap();
-        assert_eq!(plan.kernel_name, "elementwise_add");
-        assert_eq!(plan.kernel_source_id, "ELEMENTWISE_ADD");
-        assert_eq!(plan.grid_size, [6, 1, 1]);
-        assert_eq!(plan.threadgroup_size, [6, 1, 1]); // min(256, 6)
-        assert_eq!(plan.input_buffer_count, 2);
-        assert_eq!(plan.output_buffer_count, 1);
-        assert_eq!(plan.output_elements, 6);
-        assert_eq!(plan.output_shape, vec![2, 3]);
-        assert!(!plan.needs_dims_buffer);
-    }
-
-    #[test]
-    fn test_plan_sub_returns_correct_kernel() {
-        let plan = plan_kernel_launch("Sub", &[&[10]], &[]).unwrap();
-        assert_eq!(plan.kernel_name, "elementwise_sub");
-        assert_eq!(plan.kernel_source_id, "ELEMENTWISE_SUB");
-    }
-
-    #[test]
-    fn test_plan_mul_returns_correct_kernel() {
-        let plan = plan_kernel_launch("Mul", &[&[5, 4]], &[]).unwrap();
-        assert_eq!(plan.kernel_name, "elementwise_mul");
-        assert_eq!(plan.kernel_source_id, "ELEMENTWISE_MUL");
-        assert_eq!(plan.output_elements, 20);
-    }
-
-    #[test]
-    fn test_plan_div_returns_correct_kernel() {
-        let plan = plan_kernel_launch("Div", &[&[8]], &[]).unwrap();
-        assert_eq!(plan.kernel_name, "elementwise_div");
-        assert_eq!(plan.kernel_source_id, "ELEMENTWISE_DIV");
-    }
-
-    #[test]
-    fn test_plan_all_elementwise_binary_ops() {
-        for op in &["Add", "Sub", "Mul", "Div"] {
-            let plan = plan_kernel_launch(op, &[&[10]], &[]);
-            assert!(plan.is_some(), "{} should be supported", op);
-            let plan = plan.unwrap();
-            assert_eq!(plan.input_buffer_count, 2);
-            assert_eq!(plan.output_buffer_count, 1);
-            assert_eq!(plan.grid_size, [10, 1, 1]);
-            assert_eq!(plan.threadgroup_size, [10, 1, 1]);
+    fn test_plan_elementwise_binary_ops() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("Add", "elementwise_add", "ELEMENTWISE_ADD"),
+            ("Sub", "elementwise_sub", "ELEMENTWISE_SUB"),
+            ("Mul", "elementwise_mul", "ELEMENTWISE_MUL"),
+            ("Div", "elementwise_div", "ELEMENTWISE_DIV"),
+        ];
+        for &(op, expected_kernel, expected_source) in cases {
+            let plan = plan_kernel_launch(op, &[&[2, 3]], &[])
+                .unwrap_or_else(|| panic!("{} should produce a plan", op));
+            assert_eq!(plan.kernel_name, expected_kernel, "{} kernel name", op);
+            assert_eq!(plan.kernel_source_id, expected_source, "{} source id", op);
+            assert_eq!(plan.grid_size, [6, 1, 1], "{} grid", op);
+            assert_eq!(plan.threadgroup_size, [6, 1, 1], "{} threadgroup", op);
+            assert_eq!(plan.input_buffer_count, 2, "{} inputs", op);
+            assert_eq!(plan.output_buffer_count, 1, "{} outputs", op);
+            assert_eq!(plan.output_elements, 6, "{} elements", op);
+            assert_eq!(plan.output_shape, vec![2, 3], "{} shape", op);
+            assert!(!plan.needs_dims_buffer, "{} dims buffer", op);
         }
     }
 
@@ -728,35 +716,29 @@ mod tests {
 
     // ---- Elementwise unary planning ----
 
+    /// Data-driven test for all elementwise unary activation ops.
     #[test]
-    fn test_plan_all_activation_ops() {
-        for op in &["Relu", "Sigmoid", "Tanh"] {
-            let plan = plan_kernel_launch(op, &[&[256]], &[]);
-            assert!(plan.is_some(), "{} should be supported", op);
-            let plan = plan.unwrap();
-            assert_eq!(plan.input_buffer_count, 1);
-            assert_eq!(plan.output_buffer_count, 1);
-            assert_eq!(plan.grid_size, [256, 1, 1]);
-            assert_eq!(plan.threadgroup_size, [256, 1, 1]);
-            assert!(!plan.needs_dims_buffer);
+    fn test_plan_elementwise_unary_ops() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("Relu", "elementwise_relu", "ELEMENTWISE_RELU"),
+            ("Sigmoid", "elementwise_sigmoid", "ELEMENTWISE_SIGMOID"),
+            ("Tanh", "elementwise_tanh", "ELEMENTWISE_TANH"),
+        ];
+        for &(op, expected_kernel, expected_source) in cases {
+            let plan = plan_kernel_launch(op, &[&[256]], &[])
+                .unwrap_or_else(|| panic!("{} should produce a plan", op));
+            assert_eq!(plan.kernel_name, expected_kernel, "{} kernel name", op);
+            assert_eq!(plan.kernel_source_id, expected_source, "{} source id", op);
+            assert_eq!(plan.input_buffer_count, 1, "{} inputs", op);
+            assert_eq!(plan.output_buffer_count, 1, "{} outputs", op);
+            assert_eq!(plan.grid_size, [256, 1, 1], "{} grid", op);
+            assert_eq!(plan.threadgroup_size, [256, 1, 1], "{} threadgroup", op);
+            assert!(!plan.needs_dims_buffer, "{} dims buffer", op);
         }
     }
 
     #[test]
-    fn test_plan_relu_kernel_name() {
-        let plan = plan_kernel_launch("Relu", &[&[100]], &[]).unwrap();
-        assert_eq!(plan.kernel_name, "elementwise_relu");
-        assert_eq!(plan.kernel_source_id, "ELEMENTWISE_RELU");
-    }
-
-    #[test]
-    fn test_plan_sigmoid_kernel_name() {
-        let plan = plan_kernel_launch("Sigmoid", &[&[50]], &[]).unwrap();
-        assert_eq!(plan.kernel_name, "elementwise_sigmoid");
-    }
-
-    #[test]
-    fn test_plan_tanh_kernel_name() {
+    fn test_plan_unary_small_shape() {
         let plan = plan_kernel_launch("Tanh", &[&[50]], &[]).unwrap();
         assert_eq!(plan.kernel_name, "elementwise_tanh");
     }
