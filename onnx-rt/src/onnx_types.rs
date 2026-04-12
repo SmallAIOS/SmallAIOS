@@ -87,6 +87,9 @@ pub struct AttributeProto {
     pub ints: Vec<i64>,
     /// Byte string list (when `attr_type == Strings`).
     pub strings: Vec<Vec<u8>>,
+    /// Tensor value (when `attr_type == Tensor`). Boxed to keep
+    /// `AttributeProto` small when the common scalar case applies.
+    pub t: Option<alloc::boxed::Box<TensorProto>>,
 }
 
 impl Default for AttributeProto {
@@ -100,6 +103,7 @@ impl Default for AttributeProto {
             floats: Vec::new(),
             ints: Vec::new(),
             strings: Vec::new(),
+            t: None,
         }
     }
 }
@@ -259,6 +263,7 @@ mod tests {
         assert!(attr.floats.is_empty());
         assert!(attr.ints.is_empty());
         assert!(attr.strings.is_empty());
+        assert!(attr.t.is_none());
     }
 
     #[test]

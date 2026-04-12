@@ -99,9 +99,10 @@ pub fn op_constant(value: &Tensor) -> Result<Tensor, OpError> {
 }
 
 /// ConstantOfShape: produce a tensor of the given shape filled with a
-/// scalar value. The current runtime stores float32 fills; if the
-/// fill-value tensor is Int64 we emit a Float32 with the integer
-/// converted to float (good enough for BERT-style integer masks).
+/// scalar value. The current runtime stores float32 fills; the executor
+/// dispatcher accepts the standard tensor-typed `value` attribute as well
+/// as the `value_float` / `value_int` scalar shortcuts and projects the
+/// fill down to f32 before invoking this function.
 pub fn op_constant_of_shape(shape: &[i64], value: f32) -> Result<Tensor, OpError> {
     // Reject negative dims rather than silently absorbing them.
     if shape.iter().any(|&d| d < 0) {
