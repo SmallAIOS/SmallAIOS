@@ -209,10 +209,6 @@ fmt:
 fmt-check:
     {{cargo}} fmt --all -- --check
 
-# Test Metal backend (macOS only)
-test-metal:
-    {{cargo}} test -p smallaios-arch-apple
-
 # === TLA+ Formal Verification ===
 
 tla_dir := "formal/tla"
