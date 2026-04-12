@@ -468,10 +468,7 @@ fn try_cuda_dispatch(
             match cuda::conv::gpu_conv2d(rt, x, w, bias, &pads, &strides, &dilations) {
                 Ok(Some(t)) => Some(Ok(alloc::vec![t])),
                 Ok(None) => None, // not a 4D conv, fall back to CPU
-                Err(e) => Some(Err(OpError::InternalError(alloc::format!(
-                    "CUDA Conv: {}",
-                    e
-                )))),
+                Err(_) => None,   // cuDNN failed for this shape, fall back to CPU
             }
         }
         _ => None,

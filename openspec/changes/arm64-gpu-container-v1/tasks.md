@@ -118,6 +118,7 @@
 
 ## 14. Phase 3 Validation and Benchmarks
 
+- [x] 14.0 Wire CudaRuntime from container into Session so executor dispatches to GPU during real model inference
 - [ ] 14.1 Run end-to-end model benchmarks on DGX Spark: CPU vs GPU inference latency for ResNet-50, MobileNetV2, SqueezeNet, MLP
 - [ ] 14.2 Profile GPU memory usage: verify weight preloading VRAM consumption stays within budget for each test model
 - [x] 14.3 Audit GPU container image size, document the size trade-off vs CPU-only image

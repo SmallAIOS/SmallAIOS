@@ -168,6 +168,8 @@ pub enum cudnnConvolutionFwdAlgo_t {
 extern "C" {
     pub fn cudaGetDeviceCount(count: *mut i32) -> cudaError_t;
     pub fn cudaGetDeviceProperties(prop: *mut cudaDeviceProp, device: i32) -> cudaError_t;
+    pub fn cudaDeviceGetAttribute(value: *mut i32, attr: i32, device: i32) -> cudaError_t;
+    pub fn cudaMemGetInfo(free: *mut usize, total: *mut usize) -> cudaError_t;
     pub fn cudaSetDevice(device: i32) -> cudaError_t;
     pub fn cudaMalloc(devPtr: *mut *mut core::ffi::c_void, size: usize) -> cudaError_t;
     pub fn cudaFree(devPtr: *mut core::ffi::c_void) -> cudaError_t;

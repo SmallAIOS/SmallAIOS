@@ -106,17 +106,54 @@ pub fn device_count() -> Result<i32, CudaError> {
 }
 
 /// Query properties of a specific CUDA device.
+///
+/// Uses `cudaDeviceGetAttribute` for reliable access across CUDA versions
+/// (the `cudaDeviceProp` struct layout changes between major versions).
 pub fn device_info(device: i32) -> Result<CudaDeviceInfo, CudaError> {
-    let mut props = ffi::cudaDeviceProp::default();
-    let err = unsafe { ffi::cudaGetDeviceProperties(&mut props, device) };
+    fn get_attr(attr: i32, device: i32) -> Result<i32, CudaError> {
+        let mut val: i32 = 0;
+        let err = unsafe { ffi::cudaDeviceGetAttribute(&mut val, attr, device) };
+        if err != ffi::CUDA_SUCCESS {
+            return Err(CudaError::RuntimeError {
+                op: "cudaDeviceGetAttribute",
+                code: err,
+            });
+        }
+        Ok(val)
+    }
+
+    // Attribute IDs (from cuda_runtime_api.h).
+    const COMPUTE_MAJOR: i32 = 75;
+    const COMPUTE_MINOR: i32 = 76;
+    const MAX_THREADS_PER_BLOCK: i32 = 1;
+    const WARP_SIZE: i32 = 10;
+
+    let compute_major = get_attr(COMPUTE_MAJOR, device)?;
+    let compute_minor = get_attr(COMPUTE_MINOR, device)?;
+    let max_threads_per_block = get_attr(MAX_THREADS_PER_BLOCK, device)?;
+    let warp_size = get_attr(WARP_SIZE, device)?;
+
+    // Get total memory via cudaMemGetInfo (need to set device first).
+    let prev_err = unsafe { ffi::cudaSetDevice(device) };
+    if prev_err != ffi::CUDA_SUCCESS {
+        return Err(CudaError::RuntimeError {
+            op: "cudaSetDevice",
+            code: prev_err,
+        });
+    }
+    let mut free_mem: usize = 0;
+    let mut total_mem: usize = 0;
+    let err = unsafe { ffi::cudaMemGetInfo(&mut free_mem, &mut total_mem) };
     if err != ffi::CUDA_SUCCESS {
         return Err(CudaError::RuntimeError {
-            op: "cudaGetDeviceProperties",
+            op: "cudaMemGetInfo",
             code: err,
         });
     }
 
-    // Extract name from null-terminated C string.
+    // Get device name from cudaDeviceProp (only the name field at offset 0).
+    let mut props = ffi::cudaDeviceProp::default();
+    let _ = unsafe { ffi::cudaGetDeviceProperties(&mut props, device) };
     let name_len = props.name.iter().position(|&b| b == 0).unwrap_or(255);
     let name = core::str::from_utf8(&props.name[..name_len])
         .unwrap_or("unknown")
@@ -125,11 +162,11 @@ pub fn device_info(device: i32) -> Result<CudaDeviceInfo, CudaError> {
     Ok(CudaDeviceInfo {
         device_id: device,
         name,
-        total_mem_bytes: props.total_global_mem,
-        compute_major: props.major,
-        compute_minor: props.minor,
-        max_threads_per_block: props.max_threads_per_block,
-        warp_size: props.warp_size,
+        total_mem_bytes: total_mem,
+        compute_major,
+        compute_minor,
+        max_threads_per_block,
+        warp_size,
     })
 }
 

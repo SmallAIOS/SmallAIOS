@@ -64,7 +64,7 @@ fn main() {
                     rt.device.total_mem_bytes / (1024 * 1024),
                     rt.cuda_version / 1000,
                 );
-                Some(rt)
+                Some(std::sync::Arc::new(rt))
             }
             Err(e) => {
                 eprintln!("WARNING: GPU backend=cuda requested but CUDA init failed: {}", e);
@@ -165,7 +165,7 @@ fn main() {
 /// skipped; the runner can still start with the remaining sessions.
 fn load_sessions(
     manager: &model_manager::ModelManager,
-    #[cfg(feature = "cuda")] _cuda_runtime: &Option<smallaios_onnx_rt::cuda::CudaRuntime>,
+    #[cfg(feature = "cuda")] cuda_runtime: &Option<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
 ) -> BTreeMap<String, Session> {
     let mut sessions = BTreeMap::new();
     for info in manager.list_models() {
@@ -187,10 +187,18 @@ fn load_sessions(
             }
         };
         let mut s = Session::new(SessionConfig::default());
+        #[cfg(feature = "cuda")]
+        {
+            s.cuda_runtime = cuda_runtime.clone();
+        }
         match s.initialize(&model) {
             Ok(()) => {
+                #[cfg(feature = "cuda")]
+                let gpu_tag = if cuda_runtime.is_some() { " [GPU]" } else { "" };
+                #[cfg(not(feature = "cuda"))]
+                let gpu_tag = "";
+                println!("  Session ready: {}{}", info.name, gpu_tag);
                 sessions.insert(info.name.clone(), s);
-                println!("  Session ready: {}", info.name);
             }
             Err(e) => eprintln!("  load_sessions: failed to initialize {}: {}", info.name, e),
         }
@@ -206,7 +214,7 @@ fn build_runner(manager: &model_manager::ModelManager) -> Option<DataflowRunner>
     let sessions = load_sessions(
         manager,
         #[cfg(feature = "cuda")]
-        &None,
+        &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
     );
     if sessions.is_empty() {
         eprintln!("  no models loaded — runner will not start");
@@ -558,7 +566,7 @@ mod tests {
         let sessions = load_sessions(
             &mgr,
             #[cfg(feature = "cuda")]
-            &None,
+            &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
         );
         assert!(sessions.is_empty());
     }
@@ -573,7 +581,7 @@ mod tests {
         let sessions = load_sessions(
             &mgr,
             #[cfg(feature = "cuda")]
-            &None,
+            &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
         );
         assert!(sessions.is_empty());
     }
@@ -584,7 +592,7 @@ mod tests {
         let sessions = load_sessions(
             &mgr,
             #[cfg(feature = "cuda")]
-            &None,
+            &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
         );
         assert_eq!(sessions.len(), 1, "expected exactly one loaded session");
         assert!(

@@ -214,8 +214,9 @@ pub struct Session {
     #[cfg(all(feature = "metal", target_os = "macos"))]
     pub metal_dispatcher: core::cell::RefCell<Option<crate::metal_dispatch::MetalDispatcher>>,
     /// Optional CUDA runtime for real GPU dispatch (container mode).
+    /// Shared via Arc so multiple sessions can use the same GPU context.
     #[cfg(feature = "cuda")]
-    pub cuda_runtime: Option<crate::cuda::CudaRuntime>,
+    pub cuda_runtime: Option<alloc::sync::Arc<crate::cuda::CudaRuntime>>,
 }
 
 /// ONNX model file magic bytes: `\x08` (field 1, varint wire type).
@@ -506,7 +507,7 @@ impl Session {
             #[cfg(feature = "gpu")]
             self.gpu_backend.as_ref(),
             #[cfg(feature = "cuda")]
-            self.cuda_runtime.as_ref(),
+            self.cuda_runtime.as_deref(),
             #[cfg(all(feature = "metal", target_os = "macos"))]
             metal_guard.as_mut(),
         )
@@ -575,7 +576,7 @@ impl Session {
             #[cfg(feature = "gpu")]
             self.gpu_backend.as_ref(),
             #[cfg(feature = "cuda")]
-            self.cuda_runtime.as_ref(),
+            self.cuda_runtime.as_deref(),
             #[cfg(all(feature = "metal", target_os = "macos"))]
             metal_guard.as_mut(),
         )?;
