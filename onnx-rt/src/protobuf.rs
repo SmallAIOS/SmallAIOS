@@ -25,6 +25,12 @@ pub enum WireType {
     Fixed64 = 1,
     /// Length-delimited bytes (wire type 2).
     LengthDelimited = 2,
+    /// Start group (wire type 3, deprecated). Included so the decoder can
+    /// skip over group-encoded fields in real-world exports.
+    StartGroup = 3,
+    /// End group (wire type 4, deprecated). Included so the decoder can
+    /// recognize group boundaries.
+    EndGroup = 4,
     /// 32-bit fixed-width value (wire type 5).
     Fixed32 = 5,
 }
@@ -33,11 +39,16 @@ impl WireType {
     /// Construct a `WireType` from its numeric representation.
     ///
     /// Returns `None` for unrecognized wire type values.
+    /// Note: wire types 3 (StartGroup) and 4 (EndGroup) are deprecated
+    /// but may appear in real-world exports; they are not represented here
+    /// and are handled separately during tag decoding.
     pub fn from_u8(value: u8) -> Option<WireType> {
         match value {
             0 => Some(WireType::Varint),
             1 => Some(WireType::Fixed64),
             2 => Some(WireType::LengthDelimited),
+            3 => Some(WireType::StartGroup),
+            4 => Some(WireType::EndGroup),
             5 => Some(WireType::Fixed32),
             _ => None,
         }
@@ -378,7 +389,8 @@ impl<'a> ProtoDecoder<'a> {
     /// Skip over a field value based on its wire type.
     ///
     /// This is used to ignore unknown fields while still advancing the
-    /// cursor past them.
+    /// cursor past them. Handles deprecated group wire types (3/4) by
+    /// recursively skipping fields until the matching end-group tag.
     pub fn skip_field(&mut self, wire_type: WireType) -> Result<(), ProtoError> {
         match wire_type {
             WireType::Varint => {
@@ -396,6 +408,22 @@ impl<'a> ProtoDecoder<'a> {
                     return Err(ProtoError::BufferTooSmall);
                 }
                 self.pos += len;
+            }
+            WireType::StartGroup => {
+                // Skip all fields until EndGroup (wire type 4).
+                loop {
+                    if self.remaining() == 0 {
+                        return Err(ProtoError::UnexpectedEof);
+                    }
+                    let inner = self.read_tag()?;
+                    if inner.wire_type == WireType::EndGroup {
+                        break;
+                    }
+                    self.skip_field(inner.wire_type)?;
+                }
+            }
+            WireType::EndGroup => {
+                // Nothing to consume; end-group is a marker only.
             }
             WireType::Fixed32 => {
                 if self.remaining() < 4 {
@@ -418,9 +446,12 @@ pub fn decode_opset_import(data: &[u8]) -> Result<OperatorSetIdProto, ProtoError
     let mut opset = OperatorSetIdProto::default();
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => opset.domain = String::from(decoder.read_string()?),
-            2 => opset.version = decoder.read_varint()? as i64,
+        match (header.field_number, header.wire_type) {
+            (1, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                opset.domain = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (2, WireType::Varint) => opset.version = decoder.read_varint()? as i64,
             _ => decoder.skip_field(header.wire_type)?,
         }
     }
@@ -444,19 +475,19 @@ fn decode_attribute_with_depth(data: &[u8], depth: usize) -> Result<AttributePro
     let mut attr = AttributeProto::default();
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => attr.name = String::from(decoder.read_string()?),
-            2 => attr.f = decoder.read_float()?,
-            3 => attr.i = decoder.read_varint()? as i64,
-            4 => {
+        match (header.field_number, header.wire_type) {
+            (1, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                attr.name = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (2, WireType::Fixed32) => attr.f = decoder.read_float()?,
+            (3, WireType::Varint) => attr.i = decoder.read_varint()? as i64,
+            (4, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 attr.s = bytes.to_vec();
             }
-            5 => {
+            (5, WireType::LengthDelimited) => {
                 // t (TensorProto) — length-delimited nested message.
-                // Decode and store the tensor; also flip `attr_type` to
-                // Tensor so downstream consumers don't see an Undefined
-                // attribute when field 20 is absent.
                 let tensor_data = decoder.read_length_delimited()?;
                 let tensor = decode_tensor(tensor_data)?;
                 attr.t = Some(alloc::boxed::Box::new(tensor));
@@ -464,11 +495,8 @@ fn decode_attribute_with_depth(data: &[u8], depth: usize) -> Result<AttributePro
                     attr.attr_type = AttributeType::Tensor;
                 }
             }
-            6 => {
+            (6, WireType::LengthDelimited) => {
                 // g (GraphProto) — length-delimited nested sub-graph body
-                // for `If`/`Loop`/`Scan`. Recursively decode the inner
-                // graph with a bumped depth counter so malicious models
-                // can't blow the host stack.
                 if depth + 1 > MAX_GRAPH_NESTING_DEPTH {
                     return Err(ProtoError::NestingTooDeep);
                 }
@@ -479,19 +507,30 @@ fn decode_attribute_with_depth(data: &[u8], depth: usize) -> Result<AttributePro
                     attr.attr_type = AttributeType::Graph;
                 }
             }
-            7 => {
-                // packed floats
+            // floats: packed (length-delimited blob of f32) or individual fixed32
+            (7, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
-                attr.floats = sub.read_packed_f32(bytes.len())?;
+                attr.floats.extend(sub.read_packed_f32(bytes.len())?);
             }
-            8 => {
-                // packed varint ints
+            (7, WireType::Fixed32) => {
+                attr.floats.push(decoder.read_float()?);
+            }
+            // ints: packed (length-delimited blob of varints) or individual varint
+            (8, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
-                attr.ints = sub.read_packed_varint_i64(bytes.len())?;
+                attr.ints.extend(sub.read_packed_varint_i64(bytes.len())?);
             }
-            20 => {
+            (8, WireType::Varint) => {
+                attr.ints.push(decoder.read_varint()? as i64);
+            }
+            // strings: repeated length-delimited
+            (9, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                attr.strings.push(bytes.to_vec());
+            }
+            (20, WireType::Varint) => {
                 let type_val = decoder.read_varint()? as i32;
                 if let Some(at) = AttributeType::from_i32(type_val) {
                     attr.attr_type = at;
@@ -504,49 +543,87 @@ fn decode_attribute_with_depth(data: &[u8], depth: usize) -> Result<AttributePro
 }
 
 /// Decode an ONNX `TensorProto` from raw protobuf bytes.
+///
+/// Handles both packed (wire type 2) and individual element encodings for
+/// all repeated numeric fields (`dims`, `float_data`, `int32_data`,
+/// `int64_data`, `double_data`), as required by the protobuf spec.
 pub fn decode_tensor(data: &[u8]) -> Result<TensorProto, ProtoError> {
     let mut decoder = ProtoDecoder::new(data);
     let mut tensor = TensorProto::default();
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => {
-                // dims: packed varint
+        match (header.field_number, header.wire_type) {
+            // dims (repeated int64): packed or individual
+            (1, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
-                tensor.dims = sub.read_packed_varint_i64(bytes.len())?;
+                tensor.dims.extend(sub.read_packed_varint_i64(bytes.len())?);
             }
-            2 => tensor.data_type = decoder.read_varint()? as i32,
-            4 => {
-                // float_data: packed f32
+            (1, WireType::Varint) => {
+                tensor.dims.push(decoder.read_varint()? as i64);
+            }
+            // data_type (int32)
+            (2, WireType::Varint) => tensor.data_type = decoder.read_varint()? as i32,
+            // segment (TensorProto.Segment) — skip
+            (3, WireType::LengthDelimited) => {
+                decoder.skip_field(header.wire_type)?;
+            }
+            // float_data (repeated float): packed or individual
+            (4, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
-                tensor.float_data = sub.read_packed_f32(bytes.len())?;
+                tensor.float_data.extend(sub.read_packed_f32(bytes.len())?);
             }
-            5 => {
-                // int32_data: packed varint i32
+            (4, WireType::Fixed32) => {
+                tensor.float_data.push(decoder.read_float()?);
+            }
+            // int32_data (repeated int32): packed or individual
+            (5, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
-                tensor.int32_data = sub.read_packed_varint_i32(bytes.len())?;
+                tensor
+                    .int32_data
+                    .extend(sub.read_packed_varint_i32(bytes.len())?);
             }
-            7 => {
-                // int64_data: packed varint i64
+            (5, WireType::Varint) => {
+                tensor.int32_data.push(decoder.read_varint()? as i32);
+            }
+            // string_data (repeated bytes) — field 6, skip for now
+            (6, WireType::LengthDelimited) => {
+                decoder.skip_field(header.wire_type)?;
+            }
+            // int64_data (repeated int64): packed or individual
+            (7, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
-                tensor.int64_data = sub.read_packed_varint_i64(bytes.len())?;
+                tensor
+                    .int64_data
+                    .extend(sub.read_packed_varint_i64(bytes.len())?);
             }
-            8 => tensor.name = String::from(decoder.read_string()?),
-            9 => {
-                // raw_data
+            (7, WireType::Varint) => {
+                tensor.int64_data.push(decoder.read_varint()? as i64);
+            }
+            // name (string)
+            (8, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                tensor.name = String::from_utf8_lossy(bytes).into_owned();
+            }
+            // raw_data (bytes)
+            (9, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 tensor.raw_data = bytes.to_vec();
             }
-            10 => {
-                // double_data: packed f64
+            // double_data (repeated double): packed or individual
+            (10, WireType::LengthDelimited) => {
                 let bytes = decoder.read_length_delimited()?;
                 let mut sub = ProtoDecoder::new(bytes);
-                tensor.double_data = sub.read_packed_f64(bytes.len())?;
+                tensor.double_data.extend(sub.read_packed_f64(bytes.len())?);
             }
+            (10, WireType::Fixed64) => {
+                tensor.double_data.push(decoder.read_double()?);
+            }
+            // doc_string (field 12), external_data (field 13),
+            // data_location (field 14), etc. — skip unknown/unhandled
             _ => decoder.skip_field(header.wire_type)?,
         }
     }
@@ -561,10 +638,12 @@ pub fn decode_value_info(data: &[u8]) -> Result<ValueInfoProto, ProtoError> {
     let mut vi = ValueInfoProto::default();
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => vi.name = String::from(decoder.read_string()?),
-            2 => {
-                // TypeProto (nested message)
+        match (header.field_number, header.wire_type) {
+            (1, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                vi.name = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (2, WireType::LengthDelimited) => {
                 let type_data = decoder.read_length_delimited()?;
                 decode_type_proto(type_data, &mut vi)?;
             }
@@ -579,9 +658,8 @@ fn decode_type_proto(data: &[u8], vi: &mut ValueInfoProto) -> Result<(), ProtoEr
     let mut decoder = ProtoDecoder::new(data);
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => {
-                // TensorTypeProto (nested message)
+        match (header.field_number, header.wire_type) {
+            (1, WireType::LengthDelimited) => {
                 let tensor_type_data = decoder.read_length_delimited()?;
                 decode_tensor_type_proto(tensor_type_data, vi)?;
             }
@@ -596,10 +674,9 @@ fn decode_tensor_type_proto(data: &[u8], vi: &mut ValueInfoProto) -> Result<(), 
     let mut decoder = ProtoDecoder::new(data);
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => vi.elem_type = decoder.read_varint()? as i32,
-            2 => {
-                // TensorShapeProto (nested message)
+        match (header.field_number, header.wire_type) {
+            (1, WireType::Varint) => vi.elem_type = decoder.read_varint()? as i32,
+            (2, WireType::LengthDelimited) => {
                 let shape_data = decoder.read_length_delimited()?;
                 decode_tensor_shape_proto(shape_data, vi)?;
             }
@@ -614,9 +691,8 @@ fn decode_tensor_shape_proto(data: &[u8], vi: &mut ValueInfoProto) -> Result<(),
     let mut decoder = ProtoDecoder::new(data);
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => {
-                // Dimension (nested message)
+        match (header.field_number, header.wire_type) {
+            (1, WireType::LengthDelimited) => {
                 let dim_data = decoder.read_length_delimited()?;
                 let dim = decode_dimension(dim_data)?;
                 vi.shape.push(dim);
@@ -633,8 +709,9 @@ fn decode_dimension(data: &[u8]) -> Result<i64, ProtoError> {
     let mut dim_value: i64 = -1; // default to symbolic
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => dim_value = decoder.read_varint()? as i64,
+        match (header.field_number, header.wire_type) {
+            (1, WireType::Varint) => dim_value = decoder.read_varint()? as i64,
+            // field 2 is dim_param (string) — symbolic name; skip it
             _ => decoder.skip_field(header.wire_type)?,
         }
     }
@@ -655,27 +732,33 @@ fn decode_node_with_depth(data: &[u8], depth: usize) -> Result<NodeProto, ProtoE
     let mut node = NodeProto::default();
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => {
-                let s = decoder.read_string()?;
-                node.input.push(String::from(s));
+        match (header.field_number, header.wire_type) {
+            (1, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                node.input.push(String::from_utf8_lossy(bytes).into_owned());
             }
-            2 => {
-                let s = decoder.read_string()?;
-                node.output.push(String::from(s));
+            (2, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                node.output
+                    .push(String::from_utf8_lossy(bytes).into_owned());
             }
-            3 => node.name = String::from(decoder.read_string()?),
-            4 => node.op_type = String::from(decoder.read_string()?),
-            5 => {
+            (3, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                node.name = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (4, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                node.op_type = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (5, WireType::LengthDelimited) => {
                 let sub_data = decoder.read_length_delimited()?;
                 node.attribute
                     .push(decode_attribute_with_depth(sub_data, depth)?);
             }
-            6 => {
-                // doc_string — skip
-                decoder.skip_field(header.wire_type)?;
+            (7, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                node.domain = String::from_utf8_lossy(bytes).into_owned();
             }
-            7 => node.domain = String::from(decoder.read_string()?),
             _ => decoder.skip_field(header.wire_type)?,
         }
     }
@@ -702,25 +785,24 @@ fn decode_graph_with_depth(data: &[u8], depth: usize) -> Result<GraphProto, Prot
     let mut graph = GraphProto::default();
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => {
+        match (header.field_number, header.wire_type) {
+            (1, WireType::LengthDelimited) => {
                 let sub_data = decoder.read_length_delimited()?;
                 graph.node.push(decode_node_with_depth(sub_data, depth)?);
             }
-            2 => graph.name = String::from(decoder.read_string()?),
-            5 => {
+            (2, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                graph.name = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (5, WireType::LengthDelimited) => {
                 let sub_data = decoder.read_length_delimited()?;
                 graph.initializer.push(decode_tensor(sub_data)?);
             }
-            10 => {
-                // doc_string — skip
-                decoder.skip_field(header.wire_type)?;
-            }
-            11 => {
+            (11, WireType::LengthDelimited) => {
                 let sub_data = decoder.read_length_delimited()?;
                 graph.input.push(decode_value_info(sub_data)?);
             }
-            12 => {
+            (12, WireType::LengthDelimited) => {
                 let sub_data = decoder.read_length_delimited()?;
                 graph.output.push(decode_value_info(sub_data)?);
             }
@@ -731,23 +813,40 @@ fn decode_graph_with_depth(data: &[u8], depth: usize) -> Result<GraphProto, Prot
 }
 
 /// Decode an ONNX `ModelProto` from raw protobuf bytes.
+///
+/// Tolerant of unknown fields (silently skipped), non-UTF-8 strings
+/// (replaced via lossy conversion), and unexpected wire types for known
+/// fields (skipped instead of erroring).
 pub fn decode_model(data: &[u8]) -> Result<ModelProto, ProtoError> {
     let mut decoder = ProtoDecoder::new(data);
     let mut model = ModelProto::default();
     while decoder.remaining() > 0 {
         let header = decoder.read_tag()?;
-        match header.field_number {
-            1 => model.ir_version = decoder.read_varint()? as i64,
-            2 => model.producer_name = String::from(decoder.read_string()?),
-            3 => model.producer_version = String::from(decoder.read_string()?),
-            4 => model.domain = String::from(decoder.read_string()?),
-            5 => model.model_version = decoder.read_varint()? as i64,
-            6 => model.doc_string = String::from(decoder.read_string()?),
-            7 => {
+        match (header.field_number, header.wire_type) {
+            (1, WireType::Varint) => model.ir_version = decoder.read_varint()? as i64,
+            (2, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                model.producer_name = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (3, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                model.producer_version = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (4, WireType::LengthDelimited) => {
+                let bytes = decoder.read_length_delimited()?;
+                model.domain = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (5, WireType::Varint) => model.model_version = decoder.read_varint()? as i64,
+            (6, WireType::LengthDelimited) => {
+                // doc_string may contain non-UTF-8 in real exports.
+                let bytes = decoder.read_length_delimited()?;
+                model.doc_string = String::from_utf8_lossy(bytes).into_owned();
+            }
+            (7, WireType::LengthDelimited) => {
                 let sub_data = decoder.read_length_delimited()?;
                 model.graph = Some(decode_graph(sub_data)?);
             }
-            8 => {
+            (8, WireType::LengthDelimited) => {
                 let sub_data = decoder.read_length_delimited()?;
                 model.opset_import.push(decode_opset_import(sub_data)?);
             }
@@ -1021,8 +1120,9 @@ mod tests {
 
     #[test]
     fn wire_type_from_u8_invalid() {
-        assert!(WireType::from_u8(3).is_none());
-        assert!(WireType::from_u8(4).is_none());
+        // Wire types 3 (StartGroup) and 4 (EndGroup) are now recognized.
+        assert_eq!(WireType::from_u8(3), Some(WireType::StartGroup));
+        assert_eq!(WireType::from_u8(4), Some(WireType::EndGroup));
         assert!(WireType::from_u8(6).is_none());
         assert!(WireType::from_u8(7).is_none());
     }
@@ -1130,13 +1230,20 @@ mod tests {
 
     #[test]
     fn fuzz_tag_invalid_wire_types_rejected() {
-        // Wire types 3, 4, 6, 7 are invalid
-        for invalid_wt in [3u8, 4, 6, 7] {
-            // field_number=1, wire_type=invalid: tag = (1 << 3) | invalid_wt
+        // Wire types 3 and 4 are now recognized (deprecated groups).
+        // Only 6 and 7 are still invalid.
+        for invalid_wt in [6u8, 7] {
             let tag_byte = (1 << 3) | invalid_wt;
             let data = [tag_byte];
             let mut dec = ProtoDecoder::new(&data);
             assert_eq!(dec.read_tag().unwrap_err(), ProtoError::InvalidWireType);
+        }
+        // Wire types 3 and 4 should now parse as valid tags.
+        for valid_wt in [3u8, 4] {
+            let tag_byte = (1 << 3) | valid_wt;
+            let data = [tag_byte];
+            let mut dec = ProtoDecoder::new(&data);
+            assert!(dec.read_tag().is_ok());
         }
     }
 
@@ -2051,5 +2158,163 @@ mod tests {
             format!("{}", ProtoError::NestingTooDeep),
             "nested GraphProto attributes exceed maximum depth"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Protobuf decoder hardening tests
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn hardening_unknown_field_silently_skipped_in_model() {
+        // A ModelProto with known field (ir_version) and several unknown
+        // fields of various wire types. decode_model must skip them all.
+        let mut data = Vec::new();
+        data.extend(encode_varint_field(1, 9)); // ir_version
+        data.extend(encode_varint_field(50, 999)); // unknown varint
+        data.extend(encode_length_delimited(51, b"mystery")); // unknown string
+                                                              // Unknown fixed32 field
+        data.extend(encode_tag(52, 5)); // wire type 5 = fixed32
+        data.extend(0xDEAD_BEEFu32.to_le_bytes());
+        let model = decode_model(&data).unwrap();
+        assert_eq!(model.ir_version, 9);
+    }
+
+    #[test]
+    fn hardening_unknown_field_silently_skipped_in_node() {
+        // A NodeProto with a future field number the decoder doesn't know.
+        let mut data = Vec::new();
+        data.extend(encode_length_delimited(4, b"Relu")); // op_type
+        data.extend(encode_varint_field(99, 42)); // unknown field
+        data.extend(encode_length_delimited(100, b"future")); // unknown field
+        let node = decode_node(&data).unwrap();
+        assert_eq!(node.op_type, "Relu");
+    }
+
+    #[test]
+    fn hardening_packed_repeated_int64_in_tensor() {
+        // dims encoded as packed (wire type 2) — the standard encoding.
+        let mut data = Vec::new();
+        let mut dims_bytes = Vec::new();
+        dims_bytes.extend(encode_varint(2));
+        dims_bytes.extend(encode_varint(3));
+        dims_bytes.extend(encode_varint(4));
+        data.extend(encode_length_delimited(1, &dims_bytes));
+        data.extend(encode_varint_field(2, 1)); // FLOAT
+        let tensor = decode_tensor(&data).unwrap();
+        assert_eq!(tensor.dims, alloc::vec![2i64, 3, 4]);
+    }
+
+    #[test]
+    fn hardening_individual_repeated_int64_in_tensor() {
+        // dims encoded as individual varints (wire type 0) — alternative encoding.
+        let mut data = Vec::new();
+        // field 1, wire type 0 (varint) three times
+        data.extend(encode_varint_field(1, 2));
+        data.extend(encode_varint_field(1, 3));
+        data.extend(encode_varint_field(1, 4));
+        data.extend(encode_varint_field(2, 1)); // data_type
+        let tensor = decode_tensor(&data).unwrap();
+        assert_eq!(tensor.dims, alloc::vec![2i64, 3, 4]);
+    }
+
+    #[test]
+    fn hardening_packed_repeated_float_in_tensor() {
+        // float_data as packed f32 blob (standard).
+        let mut data = Vec::new();
+        data.extend(encode_varint_field(2, 1)); // FLOAT
+        let mut float_bytes = Vec::new();
+        float_bytes.extend(1.0f32.to_le_bytes());
+        float_bytes.extend(2.0f32.to_le_bytes());
+        data.extend(encode_length_delimited(4, &float_bytes));
+        let tensor = decode_tensor(&data).unwrap();
+        assert_eq!(tensor.float_data.len(), 2);
+        assert!((tensor.float_data[0] - 1.0).abs() < f32::EPSILON);
+        assert!((tensor.float_data[1] - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn hardening_individual_repeated_float_in_tensor() {
+        // float_data as individual fixed32 values (alternative encoding).
+        let mut data = Vec::new();
+        data.extend(encode_varint_field(2, 1)); // FLOAT
+        data.extend(encode_fixed32_field(4, 1.0f32.to_bits()));
+        data.extend(encode_fixed32_field(4, 2.0f32.to_bits()));
+        let tensor = decode_tensor(&data).unwrap();
+        assert_eq!(tensor.float_data.len(), 2);
+        assert!((tensor.float_data[0] - 1.0).abs() < f32::EPSILON);
+        assert!((tensor.float_data[1] - 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn hardening_submessage_with_trailing_unknown_fields() {
+        // A NodeProto with known fields followed by extra unknown fields
+        // (simulating a newer opset version that added fields).
+        let mut data = Vec::new();
+        data.extend(encode_length_delimited(1, b"input0")); // input
+        data.extend(encode_length_delimited(2, b"output0")); // output
+        data.extend(encode_length_delimited(4, b"Add")); // op_type
+                                                         // Simulate newer proto fields:
+        data.extend(encode_varint_field(8, 1)); // unknown field 8
+        data.extend(encode_length_delimited(9, b"overload_name")); // unknown
+        data.extend(encode_length_delimited(10, b"metadata")); // unknown
+        let node = decode_node(&data).unwrap();
+        assert_eq!(node.op_type, "Add");
+        assert_eq!(node.input, alloc::vec!["input0"]);
+        assert_eq!(node.output, alloc::vec!["output0"]);
+    }
+
+    #[test]
+    fn hardening_decode_model_empty_bytes_returns_default() {
+        // Empty input should return a default model, not panic.
+        let model = decode_model(&[]).unwrap();
+        assert_eq!(model.ir_version, 0);
+        assert!(model.graph.is_none());
+        assert!(model.opset_import.is_empty());
+    }
+
+    #[test]
+    fn hardening_wire_type_mismatch_skipped() {
+        // A ModelProto where field 1 (ir_version, normally varint) is
+        // encoded as length-delimited. The decoder should skip it
+        // gracefully instead of crashing.
+        let mut data = Vec::new();
+        data.extend(encode_length_delimited(1, &[0x09])); // field 1 as LD
+        data.extend(encode_varint_field(5, 42)); // model_version as varint
+        let model = decode_model(&data).unwrap();
+        // ir_version stays default (skipped due to wire type mismatch).
+        assert_eq!(model.ir_version, 0);
+        assert_eq!(model.model_version, 42);
+    }
+
+    #[test]
+    fn hardening_group_wire_type_skipped_in_model() {
+        // A ModelProto that contains a deprecated group-encoded field.
+        // The decoder should skip the group without error.
+        let mut data = Vec::new();
+        data.extend(encode_varint_field(1, 9)); // ir_version
+                                                // Start group for field 15: tag = (15 << 3) | 3
+        data.extend(encode_varint(((15u64) << 3) | 3));
+        // Inner field inside the group: field 1, varint 42
+        data.extend(encode_varint_field(1, 42));
+        // End group for field 15: tag = (15 << 3) | 4
+        data.extend(encode_varint(((15u64) << 3) | 4));
+        // Another known field after the group
+        data.extend(encode_varint_field(5, 7)); // model_version
+        let model = decode_model(&data).unwrap();
+        assert_eq!(model.ir_version, 9);
+        assert_eq!(model.model_version, 7);
+    }
+
+    #[test]
+    fn hardening_non_utf8_doc_string_tolerated() {
+        // A ModelProto with a doc_string containing invalid UTF-8.
+        // Should decode with lossy replacement, not error.
+        let mut data = Vec::new();
+        data.extend(encode_varint_field(1, 9));
+        data.extend(encode_length_delimited(6, &[0xFF, 0xFE, 0x41])); // invalid UTF-8
+        let model = decode_model(&data).unwrap();
+        assert_eq!(model.ir_version, 9);
+        // Should contain replacement characters + 'A'
+        assert!(model.doc_string.contains('A'));
     }
 }
