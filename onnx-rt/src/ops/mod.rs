@@ -18,6 +18,15 @@
 pub mod activations;
 pub mod common;
 pub mod compare;
+/// Test-only helpers for driving the sub-graph executor with in-memory
+/// body graphs. Production control-flow dispatch happens in
+/// `crate::executor::dispatch_control_flow`, which reads compiled inner
+/// graphs from `ExecutionNode.inner_graphs` (populated by the graph
+/// builder from `AttributeProto.g`). These helpers are retained only
+/// because Phase 2's in-process tests still exercise the sub-graph
+/// executor directly.
+#[cfg(test)]
+#[doc(hidden)]
 pub mod control_flow;
 pub mod data_select;
 pub mod generative;

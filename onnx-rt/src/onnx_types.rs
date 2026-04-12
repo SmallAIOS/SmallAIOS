@@ -90,6 +90,11 @@ pub struct AttributeProto {
     /// Tensor value (when `attr_type == Tensor`). Boxed to keep
     /// `AttributeProto` small when the common scalar case applies.
     pub t: Option<alloc::boxed::Box<TensorProto>>,
+    /// Nested sub-graph value (when `attr_type == Graph`). Boxed because
+    /// `GraphProto` is much larger than the scalar attribute fields and
+    /// the common case does not carry a sub-graph. Used by `If`/`Loop`/
+    /// `Scan` control-flow operators whose body is an embedded graph.
+    pub g: Option<alloc::boxed::Box<GraphProto>>,
 }
 
 impl Default for AttributeProto {
@@ -104,6 +109,7 @@ impl Default for AttributeProto {
             ints: Vec::new(),
             strings: Vec::new(),
             t: None,
+            g: None,
         }
     }
 }
@@ -264,6 +270,35 @@ mod tests {
         assert!(attr.ints.is_empty());
         assert!(attr.strings.is_empty());
         assert!(attr.t.is_none());
+        assert!(attr.g.is_none());
+    }
+
+    #[test]
+    fn test_attribute_proto_graph_valued() {
+        // An attribute with a nested body GraphProto mimics the `body`
+        // attribute of a `Loop` / `Scan` node, or the `then_branch` /
+        // `else_branch` attributes of an `If` node.
+        let inner = GraphProto {
+            name: String::from("body"),
+            node: vec![NodeProto {
+                op_type: String::from("Add"),
+                input: vec![String::from("a"), String::from("b")],
+                output: vec![String::from("y")],
+                ..NodeProto::default()
+            }],
+            ..GraphProto::default()
+        };
+        let attr = AttributeProto {
+            name: String::from("body"),
+            attr_type: AttributeType::Graph,
+            g: Some(alloc::boxed::Box::new(inner)),
+            ..AttributeProto::default()
+        };
+        assert_eq!(attr.attr_type, AttributeType::Graph);
+        let g = attr.g.as_ref().expect("g should be populated");
+        assert_eq!(g.name, "body");
+        assert_eq!(g.node.len(), 1);
+        assert_eq!(g.node[0].op_type, "Add");
     }
 
     #[test]
