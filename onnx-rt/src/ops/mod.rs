@@ -19,6 +19,7 @@ pub mod activations;
 pub mod common;
 pub mod compare;
 pub mod data_select;
+pub mod generative;
 pub mod math;
 pub mod normalization;
 pub mod quantized;
