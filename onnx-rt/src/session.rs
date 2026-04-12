@@ -217,6 +217,15 @@ pub struct Session {
     /// Shared via Arc so multiple sessions can use the same GPU context.
     #[cfg(feature = "cuda")]
     pub cuda_runtime: Option<alloc::sync::Arc<crate::cuda::CudaRuntime>>,
+    /// Optional GPU-resident KV cache for autoregressive decoding.
+    ///
+    /// Populated by `Session::from_safetensors` (Section 9); `None` for
+    /// sessions that thread KV state externally through input tensors.
+    /// Interior mutability via `Mutex` so `&Session` can update the cache
+    /// across successive `Session::run()` calls.
+    #[cfg(feature = "cuda")]
+    pub kv_cache:
+        Option<alloc::sync::Arc<std::sync::Mutex<crate::cuda::GpuKvCache>>>,
 }
 
 /// ONNX model file magic bytes: `\x08` (field 1, varint wire type).
@@ -397,6 +406,8 @@ impl Session {
             metal_dispatcher: core::cell::RefCell::new(metal_dispatcher),
             #[cfg(feature = "cuda")]
             cuda_runtime: None,
+            #[cfg(feature = "cuda")]
+            kv_cache: None,
         }
     }
 

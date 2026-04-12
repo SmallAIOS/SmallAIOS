@@ -74,14 +74,14 @@
 
 ## 8. KV Cache Management
 
-- [ ] 8.1 Create `onnx-rt/src/cuda/kv_cache.rs` with `GpuKvCache` struct owning `Vec<(DeviceBuffer, DeviceBuffer)>` for (K, V) per layer
-- [ ] 8.2 Implement `GpuKvCache::allocate(config, max_seq_len, runtime)` — pre-allocate per-layer buffers sized for max context
-- [ ] 8.3 Implement `GpuKvCache::append(layer_idx, new_k, new_v, position)` — write new token's K/V into the cache at the current position
-- [ ] 8.4 Implement `GpuKvCache::view(layer_idx, up_to_position)` — return a view into cached K/V up to current position for attention
-- [ ] 8.5 Implement `GpuKvCache::reset()` — clear position counter, reuse allocated buffers
-- [ ] 8.6 Implement sliding-window pruning for Gemma local attention layers (keep last 1024 tokens)
-- [ ] 8.7 Add `kv_cache: Option<Arc<Mutex<GpuKvCache>>>` field to `Session` (interior mutability so `&Session` can update cache)
-- [ ] 8.8 Unit test: KV cache append/view/reset lifecycle on GPU
+- [x] 8.1 Create `onnx-rt/src/cuda/kv_cache.rs` with `GpuKvCache` struct owning `Vec<(DeviceBuffer, DeviceBuffer)>` for (K, V) per layer
+- [x] 8.2 Implement `GpuKvCache::allocate(config, max_seq_len, runtime)` — pre-allocate per-layer buffers sized for max context
+- [x] 8.3 Implement `GpuKvCache::append(layer_idx, new_k, new_v, position)` — write new token's K/V into the cache at the current position
+- [x] 8.4 Implement `GpuKvCache::view(layer_idx, up_to_position)` — return a view into cached K/V up to current position for attention
+- [x] 8.5 Implement `GpuKvCache::reset()` — clear position counter, reuse allocated buffers
+- [x] 8.6 Implement sliding-window pruning for Gemma local attention layers (keep last 1024 tokens)
+- [x] 8.7 Add `kv_cache: Option<Arc<Mutex<GpuKvCache>>>` field to `Session` (interior mutability so `&Session` can update cache)
+- [x] 8.8 Unit test: KV cache append/view/reset lifecycle on GPU
 
 ## 9. Session Integration
 

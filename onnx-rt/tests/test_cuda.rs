@@ -1075,3 +1075,314 @@ fn test_gpu_executor_unsupported_op() {
         msg
     );
 }
+
+// ── Section 8: KV cache tests ───────────────────────────────────────
+
+/// Build a BF16 `DeviceTensor` with shape `[1, num_kv_heads, head_dim]`
+/// where every element is `fill`.
+fn make_kv_device_tensor(num_kv_heads: usize, head_dim: usize, fill: f32) -> cuda::DeviceTensor {
+    let vals: Vec<f32> = vec![fill; num_kv_heads * head_dim];
+    let t = make_bf16_tensor(&[1, num_kv_heads as i64, head_dim as i64], &vals);
+    cuda::DeviceTensor::from_host(&t).expect("bf16 tensor -> device")
+}
+
+/// Read `count` tokens worth of BF16 data from a device pointer returned by
+/// `KvView` and decode to f32. Copies via `cudaMemcpy` device->host.
+fn read_kv_view_as_f32(
+    base_ptr: *const core::ffi::c_void,
+    token_count: usize,
+    stride_bytes: usize,
+) -> Vec<f32> {
+    if token_count == 0 {
+        return Vec::new();
+    }
+    let total = token_count * stride_bytes;
+    let mut host = vec![0u8; total];
+    let err = unsafe {
+        cuda::ffi::cudaMemcpy(
+            host.as_mut_ptr() as *mut core::ffi::c_void,
+            base_ptr,
+            total,
+            cuda::ffi::cudaMemcpyKind::cudaMemcpyDeviceToHost,
+        )
+    };
+    assert_eq!(err, cuda::ffi::CUDA_SUCCESS, "D2H copy failed: {}", err);
+    smallaios_onnx_rt::tensor::bf16_to_f32(&host)
+}
+
+#[test]
+#[ignore]
+fn test_kv_cache_allocate_and_append() {
+    cuda::set_device(0).expect("set device");
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    let num_layers = 4;
+    let num_kv_heads = 8;
+    let head_dim = 128;
+    let max_seq_len = 16;
+    let kinds = vec![cuda::LayerKind::Global; num_layers];
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        num_layers,
+        num_kv_heads,
+        head_dim,
+        max_seq_len,
+        DataType::BFloat16,
+        &kinds,
+    )
+    .expect("GpuKvCache::allocate");
+
+    assert_eq!(cache.num_layers(), num_layers);
+    assert_eq!(cache.current_position(), 0);
+    assert_eq!(cache.max_seq_len(), max_seq_len);
+
+    // Fresh view before any append: token_count == 0.
+    let v0 = cache.view(0).expect("empty view");
+    assert_eq!(v0.token_count, 0);
+    assert_eq!(v0.stride_bytes, num_kv_heads * head_dim * 2);
+
+    // Append token 0 K/V to all layers. Use a different fill per layer so
+    // we can assert that the per-layer buffers are independent.
+    for layer in 0..num_layers {
+        let fill = (layer as f32 + 1.0) * 0.25;
+        let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+        let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill + 0.5);
+        cache.append(layer, &k_dev, &v_dev).expect("append");
+    }
+    cache.advance_position().expect("advance_position");
+    assert_eq!(cache.current_position(), 1);
+
+    // Each layer should now have exactly 1 token in its view, with the
+    // expected fill value.
+    for layer in 0..num_layers {
+        let view = cache.view(layer).expect("view");
+        assert_eq!(view.token_count, 1);
+        assert_eq!(view.num_kv_heads, num_kv_heads);
+        assert_eq!(view.head_dim, head_dim);
+        assert_eq!(view.dtype, DataType::BFloat16);
+
+        let k_vals = read_kv_view_as_f32(view.k_ptr, view.token_count, view.stride_bytes);
+        let v_vals = read_kv_view_as_f32(view.v_ptr, view.token_count, view.stride_bytes);
+        assert_eq!(k_vals.len(), num_kv_heads * head_dim);
+        let expect_k = (layer as f32 + 1.0) * 0.25;
+        let expect_v = expect_k + 0.5;
+        for (i, (k, v)) in k_vals.iter().zip(v_vals.iter()).enumerate() {
+            assert!(
+                (k - expect_k).abs() < 1e-3,
+                "layer {} elem {}: k {} != expected {}",
+                layer,
+                i,
+                k,
+                expect_k
+            );
+            assert!(
+                (v - expect_v).abs() < 1e-3,
+                "layer {} elem {}: v {} != expected {}",
+                layer,
+                i,
+                v,
+                expect_v
+            );
+        }
+    }
+    eprintln!("test_kv_cache_allocate_and_append: OK");
+}
+
+#[test]
+#[ignore]
+fn test_kv_cache_multiple_tokens() {
+    cuda::set_device(0).expect("set device");
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    let num_layers = 2;
+    let num_kv_heads = 4;
+    let head_dim = 16;
+    let max_seq_len = 8;
+    let kinds = vec![cuda::LayerKind::Global; num_layers];
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        num_layers,
+        num_kv_heads,
+        head_dim,
+        max_seq_len,
+        DataType::BFloat16,
+        &kinds,
+    )
+    .expect("allocate");
+
+    // Append 3 tokens' worth of K/V, with a unique fill per token so we can
+    // verify slot ordering in the cache.
+    for pos in 0..3 {
+        for layer in 0..num_layers {
+            let fill_k = (pos as f32 + 1.0) * 0.125;
+            let fill_v = (pos as f32 + 1.0) * 0.25;
+            let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill_k);
+            let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill_v);
+            cache.append(layer, &k_dev, &v_dev).expect("append");
+        }
+        cache.advance_position().expect("advance");
+    }
+    assert_eq!(cache.current_position(), 3);
+
+    for layer in 0..num_layers {
+        let view = cache.view(layer).expect("view");
+        assert_eq!(view.token_count, 3);
+        let k_vals = read_kv_view_as_f32(view.k_ptr, view.token_count, view.stride_bytes);
+        let v_vals = read_kv_view_as_f32(view.v_ptr, view.token_count, view.stride_bytes);
+        let token_elems = num_kv_heads * head_dim;
+        for pos in 0..3 {
+            let expect_k = (pos as f32 + 1.0) * 0.125;
+            let expect_v = (pos as f32 + 1.0) * 0.25;
+            for i in 0..token_elems {
+                let idx = pos * token_elems + i;
+                assert!(
+                    (k_vals[idx] - expect_k).abs() < 1e-3,
+                    "layer {} pos {} elem {}: k {} != {}",
+                    layer,
+                    pos,
+                    i,
+                    k_vals[idx],
+                    expect_k
+                );
+                assert!(
+                    (v_vals[idx] - expect_v).abs() < 1e-3,
+                    "layer {} pos {} elem {}: v {} != {}",
+                    layer,
+                    pos,
+                    i,
+                    v_vals[idx],
+                    expect_v
+                );
+            }
+        }
+    }
+    eprintln!("test_kv_cache_multiple_tokens: OK");
+}
+
+#[test]
+#[ignore]
+fn test_kv_cache_sliding_window() {
+    cuda::set_device(0).expect("set device");
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    let num_kv_heads = 2;
+    let head_dim = 8;
+    let max_seq_len = 16;
+    // Layer 0: global. Layer 1: sliding window of 4.
+    let kinds = vec![
+        cuda::LayerKind::Global,
+        cuda::LayerKind::SlidingWindow(4),
+    ];
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        2,
+        num_kv_heads,
+        head_dim,
+        max_seq_len,
+        DataType::BFloat16,
+        &kinds,
+    )
+    .expect("allocate");
+
+    // Append 6 tokens.
+    for pos in 0..6 {
+        let fill = (pos as f32 + 1.0) * 0.1;
+        for layer in 0..2 {
+            let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+            let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+            cache.append(layer, &k_dev, &v_dev).expect("append");
+        }
+        cache.advance_position().expect("advance");
+    }
+    assert_eq!(cache.current_position(), 6);
+
+    // Global layer 0 should expose all 6 tokens.
+    let global = cache.view(0).expect("view global");
+    assert_eq!(global.token_count, 6);
+
+    // Sliding-window layer 1 should expose only the last 4 tokens (pos 2..6).
+    let local = cache.view(1).expect("view local");
+    assert_eq!(local.token_count, 4);
+    let k_vals = read_kv_view_as_f32(local.k_ptr, local.token_count, local.stride_bytes);
+    let token_elems = num_kv_heads * head_dim;
+    for view_pos in 0..4 {
+        let src_pos = view_pos + 2; // window starts at pos 2
+        let expect = (src_pos as f32 + 1.0) * 0.1;
+        for i in 0..token_elems {
+            let idx = view_pos * token_elems + i;
+            // BF16 has ~8 bits of mantissa so small fractions like 0.6 are
+            // rounded; allow ~0.01 absolute slack.
+            assert!(
+                (k_vals[idx] - expect).abs() < 1e-2,
+                "local view pos {} elem {}: {} != {}",
+                view_pos,
+                i,
+                k_vals[idx],
+                expect
+            );
+        }
+    }
+    eprintln!("test_kv_cache_sliding_window: OK");
+}
+
+#[test]
+#[ignore]
+fn test_kv_cache_reset() {
+    cuda::set_device(0).expect("set device");
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    let num_kv_heads = 2;
+    let head_dim = 4;
+    let max_seq_len = 8;
+    let kinds = vec![cuda::LayerKind::Global];
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        1,
+        num_kv_heads,
+        head_dim,
+        max_seq_len,
+        DataType::BFloat16,
+        &kinds,
+    )
+    .expect("allocate");
+
+    // Append 2 tokens with distinct fills.
+    for pos in 0..2 {
+        let fill = (pos as f32 + 1.0) * 0.5;
+        let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+        let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+        cache.append(0, &k_dev, &v_dev).expect("append");
+        cache.advance_position().expect("advance");
+    }
+    assert_eq!(cache.current_position(), 2);
+
+    cache.reset();
+    assert_eq!(cache.current_position(), 0);
+    let empty_view = cache.view(0).expect("view after reset");
+    assert_eq!(empty_view.token_count, 0);
+
+    // Next append writes at slot 0 — fill with a distinctive value and verify
+    // it lands at position 0.
+    let fill = 0.875_f32;
+    let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+    let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+    cache.append(0, &k_dev, &v_dev).expect("append post-reset");
+    cache.advance_position().expect("advance post-reset");
+    let view = cache.view(0).expect("view post-reset");
+    assert_eq!(view.token_count, 1);
+    let k_vals = read_kv_view_as_f32(view.k_ptr, view.token_count, view.stride_bytes);
+    for (i, k) in k_vals.iter().enumerate() {
+        assert!(
+            (k - fill).abs() < 1e-3,
+            "post-reset slot 0 elem {}: {} != {}",
+            i,
+            k,
+            fill
+        );
+    }
+    eprintln!("test_kv_cache_reset: OK");
+}
