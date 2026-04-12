@@ -70,7 +70,21 @@ pub enum ProtoError {
     Overflow,
     /// The buffer does not contain enough data for the requested operation.
     BufferTooSmall,
+    /// Nested `GraphProto` attributes exceeded [`MAX_GRAPH_NESTING_DEPTH`].
+    ///
+    /// Emitted when a model's inner-graph attributes (`If.then_branch`,
+    /// `Loop.body`, `Scan.body`, etc.) nest more deeply than the parser's
+    /// compile-time safety bound. The limit prevents a maliciously-crafted
+    /// model from blowing the host stack via unbounded recursion.
+    NestingTooDeep,
 }
+
+/// Maximum depth of nested `GraphProto` attributes the parser will decode.
+///
+/// Typical hand-written models nest at most 1–2 levels (a `Loop` body, or a
+/// `Loop` containing an `If`). 16 is a generous safety bound that keeps
+/// parser stack usage bounded while accommodating any realistic model.
+pub const MAX_GRAPH_NESTING_DEPTH: usize = 16;
 
 impl fmt::Display for ProtoError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -82,6 +96,9 @@ impl fmt::Display for ProtoError {
             ProtoError::InvalidFieldNumber => write!(f, "invalid field number"),
             ProtoError::Overflow => write!(f, "numeric overflow"),
             ProtoError::BufferTooSmall => write!(f, "buffer too small for requested data"),
+            ProtoError::NestingTooDeep => {
+                write!(f, "nested GraphProto attributes exceed maximum depth")
+            }
         }
     }
 }
@@ -411,7 +428,18 @@ pub fn decode_opset_import(data: &[u8]) -> Result<OperatorSetIdProto, ProtoError
 }
 
 /// Decode an ONNX `AttributeProto` from raw protobuf bytes.
+///
+/// Public entry point — starts decoding at nesting depth 0. Inner
+/// sub-graph attributes (field 6, `g: GraphProto`) recurse via
+/// [`decode_graph_with_depth`] and increment the depth counter.
 pub fn decode_attribute(data: &[u8]) -> Result<AttributeProto, ProtoError> {
+    decode_attribute_with_depth(data, 0)
+}
+
+/// Internal `AttributeProto` decoder that threads a nesting depth counter.
+///
+/// See [`decode_attribute`] for the public entry point.
+fn decode_attribute_with_depth(data: &[u8], depth: usize) -> Result<AttributeProto, ProtoError> {
     let mut decoder = ProtoDecoder::new(data);
     let mut attr = AttributeProto::default();
     while decoder.remaining() > 0 {
@@ -437,8 +465,19 @@ pub fn decode_attribute(data: &[u8]) -> Result<AttributeProto, ProtoError> {
                 }
             }
             6 => {
-                // g (GraphProto) — skip for now
-                decoder.skip_field(header.wire_type)?;
+                // g (GraphProto) — length-delimited nested sub-graph body
+                // for `If`/`Loop`/`Scan`. Recursively decode the inner
+                // graph with a bumped depth counter so malicious models
+                // can't blow the host stack.
+                if depth + 1 > MAX_GRAPH_NESTING_DEPTH {
+                    return Err(ProtoError::NestingTooDeep);
+                }
+                let graph_data = decoder.read_length_delimited()?;
+                let inner = decode_graph_with_depth(graph_data, depth + 1)?;
+                attr.g = Some(alloc::boxed::Box::new(inner));
+                if attr.attr_type == AttributeType::Undefined {
+                    attr.attr_type = AttributeType::Graph;
+                }
             }
             7 => {
                 // packed floats
@@ -603,7 +642,15 @@ fn decode_dimension(data: &[u8]) -> Result<i64, ProtoError> {
 }
 
 /// Decode an ONNX `NodeProto` from raw protobuf bytes.
+///
+/// Public entry point — decodes at nesting depth 0. Inner attributes
+/// carrying `GraphProto` bodies recurse via [`decode_attribute_with_depth`].
 pub fn decode_node(data: &[u8]) -> Result<NodeProto, ProtoError> {
+    decode_node_with_depth(data, 0)
+}
+
+/// Internal `NodeProto` decoder that threads a nesting depth counter.
+fn decode_node_with_depth(data: &[u8], depth: usize) -> Result<NodeProto, ProtoError> {
     let mut decoder = ProtoDecoder::new(data);
     let mut node = NodeProto::default();
     while decoder.remaining() > 0 {
@@ -621,7 +668,7 @@ pub fn decode_node(data: &[u8]) -> Result<NodeProto, ProtoError> {
             4 => node.op_type = String::from(decoder.read_string()?),
             5 => {
                 let sub_data = decoder.read_length_delimited()?;
-                node.attribute.push(decode_attribute(sub_data)?);
+                node.attribute.push(decode_attribute_with_depth(sub_data, depth)?);
             }
             6 => {
                 // doc_string — skip
@@ -635,7 +682,21 @@ pub fn decode_node(data: &[u8]) -> Result<NodeProto, ProtoError> {
 }
 
 /// Decode an ONNX `GraphProto` from raw protobuf bytes.
+///
+/// Public entry point — starts decoding at nesting depth 0.
 pub fn decode_graph(data: &[u8]) -> Result<GraphProto, ProtoError> {
+    decode_graph_with_depth(data, 0)
+}
+
+/// Internal `GraphProto` decoder that threads a nesting depth counter.
+///
+/// Inner sub-graphs reached via `AttributeProto.g` recurse through this
+/// helper with `depth + 1`. [`MAX_GRAPH_NESTING_DEPTH`] caps recursion to
+/// keep parser stack usage bounded.
+fn decode_graph_with_depth(data: &[u8], depth: usize) -> Result<GraphProto, ProtoError> {
+    if depth > MAX_GRAPH_NESTING_DEPTH {
+        return Err(ProtoError::NestingTooDeep);
+    }
     let mut decoder = ProtoDecoder::new(data);
     let mut graph = GraphProto::default();
     while decoder.remaining() > 0 {
@@ -643,7 +704,7 @@ pub fn decode_graph(data: &[u8]) -> Result<GraphProto, ProtoError> {
         match header.field_number {
             1 => {
                 let sub_data = decoder.read_length_delimited()?;
-                graph.node.push(decode_node(sub_data)?);
+                graph.node.push(decode_node_with_depth(sub_data, depth)?);
             }
             2 => graph.name = String::from(decoder.read_string()?),
             5 => {
@@ -1826,5 +1887,168 @@ mod tests {
         assert_eq!(graph.initializer.len(), 1);
         assert_eq!(graph.initializer[0].name, "bias");
         assert_eq!(graph.initializer[0].float_data.len(), 2);
+    }
+
+    // ---- AttributeProto.g (field 6) — graph-attr-parser-v1 ----
+
+    /// Builds the protobuf bytes for a minimal `NodeProto` with no attributes.
+    fn encode_simple_node(op_type: &str, inputs: &[&str], outputs: &[&str]) -> Vec<u8> {
+        let mut node_bytes = Vec::new();
+        for inp in inputs {
+            node_bytes.extend(encode_length_delimited(1, inp.as_bytes()));
+        }
+        for out in outputs {
+            node_bytes.extend(encode_length_delimited(2, out.as_bytes()));
+        }
+        node_bytes.extend(encode_length_delimited(4, op_type.as_bytes()));
+        node_bytes
+    }
+
+    /// Builds a `GraphProto` containing the given pre-encoded nodes and
+    /// `input`/`output` names.
+    fn encode_simple_graph(node_bodies: &[Vec<u8>], inputs: &[&str], outputs: &[&str]) -> Vec<u8> {
+        let mut graph_bytes = Vec::new();
+        for nb in node_bodies {
+            graph_bytes.extend(encode_length_delimited(1, nb));
+        }
+        // Field 11: input ValueInfoProto. Each entry is a length-delimited
+        // ValueInfoProto containing only a name (field 1).
+        for name in inputs {
+            let inner = encode_length_delimited(1, name.as_bytes());
+            graph_bytes.extend(encode_length_delimited(11, &inner));
+        }
+        for name in outputs {
+            let inner = encode_length_delimited(1, name.as_bytes());
+            graph_bytes.extend(encode_length_delimited(12, &inner));
+        }
+        graph_bytes
+    }
+
+    #[test]
+    fn decode_attribute_graph_loop_body_roundtrip() {
+        // Build an inner GraphProto: one MatMul node and one Add node,
+        // matching the `body` attribute of a `Loop` op.
+        let matmul = encode_simple_node("MatMul", &["a", "b"], &["mm"]);
+        let add = encode_simple_node("Add", &["mm", "c"], &["y"]);
+        let graph_bytes = encode_simple_graph(&[matmul, add], &["a", "b", "c"], &["y"]);
+
+        // Wrap it in an AttributeProto { name: "body", g: <graph> }.
+        let mut attr_bytes = Vec::new();
+        attr_bytes.extend(encode_length_delimited(1, b"body"));
+        attr_bytes.extend(encode_length_delimited(6, &graph_bytes));
+
+        let attr = decode_attribute(&attr_bytes).unwrap();
+        assert_eq!(attr.name, "body");
+        // attr_type should auto-flip to Graph when field 20 is absent.
+        assert_eq!(attr.attr_type, AttributeType::Graph);
+        let g = attr.g.as_ref().expect("g should be populated");
+        assert_eq!(g.node.len(), 2);
+        assert_eq!(g.node[0].op_type, "MatMul");
+        assert_eq!(g.node[1].op_type, "Add");
+        assert_eq!(g.input.len(), 3);
+        assert_eq!(g.output.len(), 1);
+        assert_eq!(g.output[0].name, "y");
+    }
+
+    #[test]
+    fn decode_attribute_graph_scalar_unaffected() {
+        // A Float attribute with no graph field should still round-trip
+        // with g == None and attr_type == Float.
+        let mut attr_bytes = Vec::new();
+        attr_bytes.extend(encode_length_delimited(1, b"alpha"));
+        attr_bytes.extend(encode_fixed32_field(2, 0.5f32.to_bits()));
+        attr_bytes.extend(encode_varint_field(20, 1)); // Float
+
+        let attr = decode_attribute(&attr_bytes).unwrap();
+        assert_eq!(attr.attr_type, AttributeType::Float);
+        assert!((attr.f - 0.5).abs() < f32::EPSILON);
+        assert!(attr.g.is_none());
+    }
+
+    #[test]
+    fn decode_attribute_graph_nesting_rejects_overflow() {
+        // Build a chain of nested GraphProto attributes 17 levels deep.
+        // The parser must return NestingTooDeep at the 17th level before
+        // recursing further.
+        //
+        // Innermost (level 17): empty graph bytes.
+        let mut current_graph: Vec<u8> = Vec::new();
+        // Wrap it in a node with an AttributeProto.g over and over.
+        for _ in 0..17 {
+            // AttributeProto { name: "body", g: <current_graph> }
+            let mut attr_bytes = Vec::new();
+            attr_bytes.extend(encode_length_delimited(1, b"body"));
+            attr_bytes.extend(encode_length_delimited(6, &current_graph));
+            // NodeProto { op_type: "Loop", attribute: [attr] }
+            let mut node_bytes = Vec::new();
+            node_bytes.extend(encode_length_delimited(4, b"Loop"));
+            node_bytes.extend(encode_length_delimited(5, &attr_bytes));
+            // GraphProto containing that node.
+            let mut graph_bytes = Vec::new();
+            graph_bytes.extend(encode_length_delimited(1, &node_bytes));
+            current_graph = graph_bytes;
+        }
+
+        // The outermost bytes represent the top-level graph. Decoding it
+        // must fail at depth 17 (when the 17th nested AttributeProto.g is
+        // encountered).
+        let err = decode_graph(&current_graph).expect_err("should reject depth 17");
+        assert_eq!(err, ProtoError::NestingTooDeep);
+    }
+
+    #[test]
+    fn decode_attribute_graph_nesting_depth_16_ok() {
+        // A 16-deep chain is the maximum permissible and must decode
+        // successfully. This verifies the boundary condition.
+        let mut current_graph: Vec<u8> = Vec::new();
+        for _ in 0..16 {
+            let mut attr_bytes = Vec::new();
+            attr_bytes.extend(encode_length_delimited(1, b"body"));
+            attr_bytes.extend(encode_length_delimited(6, &current_graph));
+            let mut node_bytes = Vec::new();
+            node_bytes.extend(encode_length_delimited(4, b"Loop"));
+            node_bytes.extend(encode_length_delimited(5, &attr_bytes));
+            let mut graph_bytes = Vec::new();
+            graph_bytes.extend(encode_length_delimited(1, &node_bytes));
+            current_graph = graph_bytes;
+        }
+        let decoded = decode_graph(&current_graph).expect("depth 16 should decode");
+        assert_eq!(decoded.node.len(), 1);
+    }
+
+    #[test]
+    fn decode_node_with_graph_attribute() {
+        // A NodeProto containing an AttributeProto whose g field carries
+        // a single-node body graph. Exercises decode_node -> decode_attribute
+        // -> decode_graph_with_depth recursion.
+        let inner_node = encode_simple_node("Relu", &["x"], &["y"]);
+        let inner_graph = encode_simple_graph(&[inner_node], &["x"], &["y"]);
+
+        let mut attr_bytes = Vec::new();
+        attr_bytes.extend(encode_length_delimited(1, b"body"));
+        attr_bytes.extend(encode_length_delimited(6, &inner_graph));
+
+        let mut node_bytes = Vec::new();
+        node_bytes.extend(encode_length_delimited(4, b"Loop"));
+        node_bytes.extend(encode_length_delimited(5, &attr_bytes));
+
+        let node = decode_node(&node_bytes).unwrap();
+        assert_eq!(node.op_type, "Loop");
+        assert_eq!(node.attribute.len(), 1);
+        let attr = &node.attribute[0];
+        assert_eq!(attr.name, "body");
+        assert_eq!(attr.attr_type, AttributeType::Graph);
+        let g = attr.g.as_ref().unwrap();
+        assert_eq!(g.node.len(), 1);
+        assert_eq!(g.node[0].op_type, "Relu");
+    }
+
+    #[test]
+    fn proto_error_nesting_too_deep_display() {
+        use alloc::format;
+        assert_eq!(
+            format!("{}", ProtoError::NestingTooDeep),
+            "nested GraphProto attributes exceed maximum depth"
+        );
     }
 }
