@@ -9,10 +9,24 @@
 //! GEMM kernel is future work.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
-use crate::operators::{op_conv, op_matmul, OpError};
+#[cfg(test)]
+use crate::operators::op_matmul;
+use crate::operators::{op_conv, OpError};
 use crate::tensor::{DataType, Tensor};
+
+/// Round-half-away-from-zero without depending on `f32::round` (unavailable
+/// in `no_std`).
+#[inline]
+fn round_f32(x: f32) -> f32 {
+    if x >= 0.0 {
+        (x + 0.5) as i64 as f32
+    } else {
+        (x - 0.5) as i64 as f32
+    }
+}
 
 /// Banker's rounding (round half to even) without depending on the
 /// nightly `f32::round_ties_even` inherent method.
@@ -189,6 +203,17 @@ pub fn op_dequantize_linear(
 // QLinearMatMul / QLinearConv
 // ---------------------------------------------------------------------------
 
+/// Real int8 GEMM path for `QLinearMatMul`.
+///
+/// Phase 2 (`generative-llm-v1`) replaces the previous
+/// "dequantize -> f32 MatMul -> requantize" shim with a tiled i32-accumulator
+/// kernel that reads bytes as i8/u8, folds zero-points at the edges, and
+/// saturates on store. The shared `gemm_i8` implementation lives in
+/// `ops::generative` (see `docs/sub-graph-executor-design.md` D6 for the
+/// mathematical derivation).
+///
+/// Only 2D inputs are supported; per-axis scales/zero-points are still
+/// rejected. Output dtype is `Int8` if `y_zp` is `Int8`, otherwise `Uint8`.
 #[allow(clippy::too_many_arguments)]
 pub fn op_qlinear_matmul(
     a: &Tensor,
@@ -200,10 +225,105 @@ pub fn op_qlinear_matmul(
     y_scale: &Tensor,
     y_zp: &Tensor,
 ) -> Result<Tensor, OpError> {
-    let a_f32 = op_dequantize_linear(a, a_scale, Some(a_zp))?;
-    let b_f32 = op_dequantize_linear(b, b_scale, Some(b_zp))?;
-    let y_f32 = op_matmul(&a_f32, &b_f32)?;
-    op_quantize_linear(&y_f32, y_scale, Some(y_zp))
+    if a.shape.ndim() != 2 || b.shape.ndim() != 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "QLinearMatMul requires 2D inputs",
+        )));
+    }
+    if !matches!(a.data_type, DataType::Int8 | DataType::Uint8) {
+        return Err(OpError::ShapeMismatch(String::from(
+            "QLinearMatMul: A must be Int8 or Uint8",
+        )));
+    }
+    if !matches!(b.data_type, DataType::Int8 | DataType::Uint8) {
+        return Err(OpError::ShapeMismatch(String::from(
+            "QLinearMatMul: B must be Int8 or Uint8",
+        )));
+    }
+    let m = a.shape.dims[0] as usize;
+    let ka = a.shape.dims[1] as usize;
+    let kb = b.shape.dims[0] as usize;
+    let n = b.shape.dims[1] as usize;
+    if ka != kb {
+        return Err(OpError::ShapeMismatch(String::from(
+            "QLinearMatMul: inner dim mismatch",
+        )));
+    }
+
+    let a_s = read_scale(a_scale)?;
+    let b_s = read_scale(b_scale)?;
+    let y_s = read_scale(y_scale)?;
+    let a_zp_i = read_zero_point(Some(a_zp))?;
+    let b_zp_i = read_zero_point(Some(b_zp))?;
+    let y_zp_i = read_zero_point(Some(y_zp))?;
+
+    // Shift u8 inputs into the signed [-128, 127] domain so the i8 kernel
+    // sees them correctly. For u8 with zero-point `zp_u`, subtracting 128
+    // from both the byte and the zero-point is equivalent to keeping the
+    // original arithmetic (the `zp` term in the kernel's subtraction just
+    // rebases).
+    let (a_bytes, a_zp_kernel): (Vec<i8>, i32) = match a.data_type {
+        DataType::Int8 => (a.raw_data.iter().map(|&b| b as i8).collect(), a_zp_i),
+        DataType::Uint8 => (
+            a.raw_data
+                .iter()
+                .map(|&b| ((b as i32) - 128) as i8)
+                .collect(),
+            a_zp_i - 128,
+        ),
+        _ => unreachable!(),
+    };
+    let (b_bytes, b_zp_kernel): (Vec<i8>, i32) = match b.data_type {
+        DataType::Int8 => (b.raw_data.iter().map(|&b| b as i8).collect(), b_zp_i),
+        DataType::Uint8 => (
+            b.raw_data
+                .iter()
+                .map(|&b| ((b as i32) - 128) as i8)
+                .collect(),
+            b_zp_i - 128,
+        ),
+        _ => unreachable!(),
+    };
+
+    let c_int =
+        crate::ops::generative::gemm_i8(&a_bytes, &b_bytes, m, ka, n, a_zp_kernel, b_zp_kernel);
+
+    // Scale the i32 accumulator to the output domain and requantize.
+    //
+    //   y = clamp(round(c_int * a_s * b_s / y_s) + y_zp)
+    //
+    // We compute this in f32 which is good enough for the target ±1
+    // quantized-step accuracy. A future pass can replace with a fixed-
+    // point multiplier for DO-178C determinism.
+    let scale_ratio = (a_s * b_s) / y_s;
+    let mut data = alloc::vec![0u8; m * n];
+    let out_dtype = y_zp.data_type;
+    match out_dtype {
+        DataType::Int8 => {
+            for (i, slot) in data.iter_mut().enumerate().take(m * n) {
+                let scaled = round_f32(c_int[i] as f32 * scale_ratio) as i32 + y_zp_i;
+                *slot = scaled.clamp(-128, 127) as i8 as u8;
+            }
+        }
+        DataType::Uint8 => {
+            for (i, slot) in data.iter_mut().enumerate().take(m * n) {
+                let scaled = round_f32(c_int[i] as f32 * scale_ratio) as i32 + y_zp_i;
+                *slot = scaled.clamp(0, 255) as u8;
+            }
+        }
+        _ => {
+            return Err(OpError::ShapeMismatch(String::from(
+                "QLinearMatMul: y_zero_point must be Int8 or Uint8",
+            )));
+        }
+    }
+
+    Ok(Tensor {
+        data_type: out_dtype,
+        shape: crate::tensor::TensorShape::new(alloc::vec![m as i64, n as i64]),
+        name: String::new(),
+        raw_data: data,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -466,6 +586,181 @@ mod tests {
             1
         )
         .is_err());
+    }
+
+    // ---- Real i8 kernel correctness tests ----
+
+    #[test]
+    fn test_qlinear_matmul_symmetric_int8_matches_f32_reference() {
+        // Uses a larger K that crosses the 64-wide tile boundary so the
+        // blocked kernel is exercised.
+        let m = 4;
+        let k = 80;
+        let n = 3;
+        let a_f: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
+        let b_f: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.02).cos()).collect();
+        let a_tensor = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(alloc::vec![m as i64, k as i64]),
+            name: String::new(),
+            raw_data: {
+                let mut r = alloc::vec![0u8; 4 * m * k];
+                for (i, &v) in a_f.iter().enumerate() {
+                    write_f32(&mut r, i, v);
+                }
+                r
+            },
+        };
+        let b_tensor = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(alloc::vec![k as i64, n as i64]),
+            name: String::new(),
+            raw_data: {
+                let mut r = alloc::vec![0u8; 4 * k * n];
+                for (i, &v) in b_f.iter().enumerate() {
+                    write_f32(&mut r, i, v);
+                }
+                r
+            },
+        };
+
+        let s = scalar_f32(0.01);
+        let zp = scalar_i8(0);
+        let a_q = op_quantize_linear(&a_tensor, &s, Some(&zp)).unwrap();
+        let b_q = op_quantize_linear(&b_tensor, &s, Some(&zp)).unwrap();
+
+        // Pick a y_scale that keeps outputs in [-128, 127] after requantize
+        // for the K=80 dot-product range (~ ±15 with these inputs).
+        let y_s = scalar_f32(0.2);
+        let y_zp = scalar_i8(0);
+        let y_q = op_qlinear_matmul(&a_q, &s, &zp, &b_q, &s, &zp, &y_s, &y_zp).unwrap();
+
+        let y_f_ref = op_matmul(&a_tensor, &b_tensor).unwrap();
+        let y_dq = op_dequantize_linear(&y_q, &y_s, Some(&y_zp)).unwrap();
+        for i in 0..(m * n) {
+            let r = read_f32(&y_f_ref.raw_data, i);
+            let d = read_f32(&y_dq.raw_data, i);
+            // Error tolerance includes quantization noise plus requantization.
+            let tol = r.abs() * 0.1 + 0.4;
+            assert!((r - d).abs() <= tol, "r={} dq={} tol={}", r, d, tol);
+        }
+    }
+
+    #[test]
+    fn test_qlinear_matmul_saturates_overflow() {
+        // Values that blow past i8 range in the accumulator should saturate.
+        let a = Tensor {
+            data_type: DataType::Int8,
+            shape: TensorShape::new(alloc::vec![1, 4]),
+            name: String::new(),
+            raw_data: alloc::vec![127u8, 127, 127, 127],
+        };
+        let b = Tensor {
+            data_type: DataType::Int8,
+            shape: TensorShape::new(alloc::vec![4, 1]),
+            name: String::new(),
+            raw_data: alloc::vec![127u8, 127, 127, 127],
+        };
+        // Use a small y_scale so the requantized value blows past i8.
+        let s = scalar_f32(1.0);
+        let zp = scalar_i8(0);
+        let y_s = scalar_f32(0.001);
+        let y_zp = scalar_i8(0);
+        let out = op_qlinear_matmul(&a, &s, &zp, &b, &s, &zp, &y_s, &y_zp).unwrap();
+        assert_eq!(out.raw_data[0] as i8, 127);
+    }
+
+    #[test]
+    fn test_qlinear_matmul_asymmetric_zero_points() {
+        // A quantized with u8/zero_point=128, B with i8/zero_point=0.
+        // We verify the dequant-quant path still matches via roundtrip.
+        let a_f = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(alloc::vec![2, 2]),
+            name: String::new(),
+            raw_data: {
+                let mut r = alloc::vec![0u8; 16];
+                write_f32(&mut r, 0, 0.5);
+                write_f32(&mut r, 1, -0.5);
+                write_f32(&mut r, 2, 1.0);
+                write_f32(&mut r, 3, 0.0);
+                r
+            },
+        };
+        let b_f = Tensor {
+            data_type: DataType::Float,
+            shape: TensorShape::new(alloc::vec![2, 2]),
+            name: String::new(),
+            raw_data: {
+                let mut r = alloc::vec![0u8; 16];
+                write_f32(&mut r, 0, 1.0);
+                write_f32(&mut r, 1, 0.0);
+                write_f32(&mut r, 2, 0.0);
+                write_f32(&mut r, 3, 1.0);
+                r
+            },
+        };
+        let a_s = scalar_f32(0.01);
+        let a_zp = scalar_u8(128);
+        let b_s = scalar_f32(0.01);
+        let b_zp = scalar_i8(0);
+        let a_q = op_quantize_linear(&a_f, &a_s, Some(&a_zp)).unwrap();
+        let b_q = op_quantize_linear(&b_f, &b_s, Some(&b_zp)).unwrap();
+
+        let y_s = scalar_f32(0.01);
+        let y_zp = scalar_i8(0);
+        let y_q = op_qlinear_matmul(&a_q, &a_s, &a_zp, &b_q, &b_s, &b_zp, &y_s, &y_zp).unwrap();
+        let y_f_ref = op_matmul(&a_f, &b_f).unwrap();
+        let y_dq = op_dequantize_linear(&y_q, &y_s, Some(&y_zp)).unwrap();
+        for i in 0..4 {
+            let r = read_f32(&y_f_ref.raw_data, i);
+            let d = read_f32(&y_dq.raw_data, i);
+            assert!((r - d).abs() <= 0.1, "r={} dq={}", r, d);
+        }
+    }
+
+    #[test]
+    fn test_qlinear_matmul_tile_boundary_k() {
+        // K exactly equal to and just past the 64-wide tile; validates both
+        // the tile-complete and tile-remainder code paths.
+        for k in [64usize, 65, 128, 129] {
+            let a: Vec<i8> = (0..(2 * k)).map(|i| ((i % 7) as i8) - 3).collect();
+            let b: Vec<i8> = (0..(k * 2)).map(|i| ((i % 5) as i8) - 2).collect();
+            let a_t = Tensor {
+                data_type: DataType::Int8,
+                shape: TensorShape::new(alloc::vec![2, k as i64]),
+                name: String::new(),
+                raw_data: a.iter().map(|&v| v as u8).collect(),
+            };
+            let b_t = Tensor {
+                data_type: DataType::Int8,
+                shape: TensorShape::new(alloc::vec![k as i64, 2]),
+                name: String::new(),
+                raw_data: b.iter().map(|&v| v as u8).collect(),
+            };
+            let s = scalar_f32(1.0);
+            let zp = scalar_i8(0);
+            let y_s = scalar_f32(1.0);
+            let y_zp = scalar_i8(0);
+            let out = op_qlinear_matmul(&a_t, &s, &zp, &b_t, &s, &zp, &y_s, &y_zp).unwrap();
+
+            // Naive reference (clamp to i8 since y_zp = 0 and y_s = 1).
+            let mut expected = alloc::vec![0i32; 4];
+            for i in 0..2 {
+                for j in 0..2 {
+                    let mut acc = 0i32;
+                    for kk in 0..k {
+                        acc += (a[i * k + kk] as i32) * (b[kk * 2 + j] as i32);
+                    }
+                    expected[i * 2 + j] = acc;
+                }
+            }
+            for (i, &exp_raw) in expected.iter().enumerate() {
+                let got = out.raw_data[i] as i8 as i32;
+                let exp = exp_raw.clamp(-128, 127);
+                assert_eq!(got, exp, "k={} i={} exp={} got={}", k, i, exp, got);
+            }
+        }
     }
 
     #[test]
