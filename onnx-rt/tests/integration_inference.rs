@@ -477,12 +477,19 @@ fn protobuf_tag_field_zero_rejected() {
 
 #[test]
 fn protobuf_tag_invalid_wire_type_rejected() {
-    // Wire types 3, 4, 6, 7 are not recognized.
-    for invalid_wt in [3u8, 4, 6, 7] {
-        let tag_byte = (1 << 3) | invalid_wt; // field 1, invalid wire type
+    // Wire types 3 and 4 (deprecated groups) are now recognized.
+    // Only 6 and 7 remain invalid.
+    for invalid_wt in [6u8, 7] {
+        let tag_byte = (1 << 3) | invalid_wt;
         let data = [tag_byte];
         let mut dec = ProtoDecoder::new(&data);
         assert_eq!(dec.read_tag().unwrap_err(), ProtoError::InvalidWireType);
+    }
+    for valid_wt in [3u8, 4] {
+        let tag_byte = (1 << 3) | valid_wt;
+        let data = [tag_byte];
+        let mut dec = ProtoDecoder::new(&data);
+        assert!(dec.read_tag().is_ok());
     }
 }
 
@@ -491,9 +498,9 @@ fn protobuf_wire_type_from_u8_valid_and_invalid() {
     assert_eq!(WireType::from_u8(0), Some(WireType::Varint));
     assert_eq!(WireType::from_u8(1), Some(WireType::Fixed64));
     assert_eq!(WireType::from_u8(2), Some(WireType::LengthDelimited));
+    assert_eq!(WireType::from_u8(3), Some(WireType::StartGroup));
+    assert_eq!(WireType::from_u8(4), Some(WireType::EndGroup));
     assert_eq!(WireType::from_u8(5), Some(WireType::Fixed32));
-    assert!(WireType::from_u8(3).is_none());
-    assert!(WireType::from_u8(4).is_none());
     assert!(WireType::from_u8(6).is_none());
     assert!(WireType::from_u8(7).is_none());
 }
