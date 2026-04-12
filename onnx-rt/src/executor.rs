@@ -33,6 +33,7 @@ use crate::tensor::{DataType, Tensor, TensorShape};
 /// When the `gpu` feature is enabled and a [`GpuBackend`] is provided,
 /// operators that the backend supports will be dispatched to GPU (once
 /// fully implemented). Currently falls through to CPU for all ops.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_graph(
     graph: &ExecutionGraph,
     inputs: &[(String, Tensor)],
@@ -42,6 +43,9 @@ pub fn execute_graph(
     budget: &OperatorBudget,
     time_source: &dyn TimeSource,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
+    #[cfg(all(feature = "metal", target_os = "macos"))] mut metal_dispatcher: Option<
+        &mut crate::metal_dispatch::MetalDispatcher,
+    >,
 ) -> Result<Vec<InferenceOutput>, SessionError> {
     let mut value_map: BTreeMap<String, Tensor> = BTreeMap::new();
 
@@ -92,7 +96,81 @@ pub fn execute_graph(
             continue;
         }
 
+        // Try Metal GPU dispatch first (if available). Falls back to CPU
+        // if the dispatcher returns None (unsupported op).
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let metal_gpu_result = {
+            if let Some(ref mut dispatcher) = metal_dispatcher {
+                dispatcher
+                    .try_execute(&node.op_type, &input_tensors, &node.attributes)
+                    .map_err(|e| {
+                        SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e))
+                    })?
+            } else {
+                None
+            }
+        };
+
         // Dispatch operator (optionally wrapped in timing measurement).
+        // If Metal GPU already handled this op, use that result directly.
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let outputs = if let Some(gpu_outputs) = metal_gpu_result {
+            gpu_outputs
+        } else if let Some(prof) = profile.as_mut() {
+            let start = time_source.now_us();
+            let outputs = dispatch_node_with_domain(
+                &node.op_type,
+                &node.domain,
+                &input_tensors,
+                &node.attributes,
+                node.outputs.len(),
+                #[cfg(feature = "gpu")]
+                gpu_backend,
+            )
+            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
+            let elapsed = time_source.now_us().saturating_sub(start);
+
+            let class = classify_op(&node.op_type);
+            let budget_result = budget.check(class, elapsed);
+
+            prof.operators.push(OperatorMeasurement {
+                op_type: node.op_type.clone(),
+                class,
+                actual_us: elapsed,
+                budget_result,
+            });
+            prof.total_us = prof.total_us.saturating_add(elapsed);
+
+            match budget_result {
+                BudgetResult::Ok => {}
+                BudgetResult::Warning => prof.warnings_count += 1,
+                BudgetResult::SoftLimit => prof.soft_limit_count += 1,
+                BudgetResult::HardLimit => {
+                    prof.hard_limit_aborted = true;
+                    return Err(SessionError::ExecutionFailed(alloc::format!(
+                        "operator '{}' exceeded hard time limit: {} us",
+                        node.op_type,
+                        elapsed
+                    )));
+                }
+            }
+
+            outputs
+        } else {
+            // Zero-overhead path: no profiling.
+            dispatch_node_with_domain(
+                &node.op_type,
+                &node.domain,
+                &input_tensors,
+                &node.attributes,
+                node.outputs.len(),
+                #[cfg(feature = "gpu")]
+                gpu_backend,
+            )
+            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?
+        };
+
+        #[cfg(not(all(feature = "metal", target_os = "macos")))]
         let outputs = if let Some(prof) = profile.as_mut() {
             let start = time_source.now_us();
             let outputs = dispatch_node_with_domain(
@@ -2156,6 +2234,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         assert_eq!(results.len(), 1);
@@ -2195,6 +2277,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         let out_data: Vec<f32> = (0..3)
@@ -2243,6 +2329,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         // MatMul: [1,2] @ [2,2] = [1,2] → [1.0, 2.0]
@@ -2321,6 +2411,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         let out_data: Vec<f32> = (0..2)
@@ -2370,6 +2464,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         assert_eq!(results.len(), 1);
@@ -2407,6 +2505,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         let out_data = read_f32_output(&results[0].tensor, 3);
@@ -2442,6 +2544,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         let out_data = read_f32_output(&results[0].tensor, 3);
@@ -2470,6 +2576,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         let out_data = read_f32_output(&results[0].tensor, 3);
@@ -2501,6 +2611,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         assert_eq!(results.len(), 2);
@@ -2534,6 +2648,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2568,6 +2686,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         );
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -2616,6 +2738,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -2695,6 +2821,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         assert_eq!(results.len(), 1);
@@ -2738,6 +2868,10 @@ mod tests {
             None,
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
+            #[cfg(feature = "gpu")]
+            None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            None,
         )
         .unwrap();
         assert_eq!(results.len(), 1);
