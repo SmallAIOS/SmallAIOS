@@ -570,14 +570,17 @@ mod tests {
     }
 
     #[test]
-    fn planned_p1_op_marks_phase1_verdict() {
-        let src = "| Gelu | Planned-P1 | transformer activation |";
+    fn planned_p2_op_marks_phase2_verdict() {
+        // After Phase 1 merged, no ops are still Planned-P1 in develop.
+        // The same logic applies to any future phase: a model that uses
+        // a Planned-P2 op should produce a LoadableAfterPhase2 verdict.
+        let src = "| Bernoulli | Planned-P2 | stochastic masking |";
         let inv = Inventory::from_roadmap_str(src);
-        let m = model_with_ops(&["MatMul", "Gelu"]);
-        let report = walk_model(&m, "bert-ish.onnx", &inv).unwrap();
-        assert_eq!(report.counts.planned_p1, 1);
+        let m = model_with_ops(&["MatMul", "Bernoulli"]);
+        let report = walk_model(&m, "llm-ish.onnx", &inv).unwrap();
+        assert_eq!(report.counts.planned_p2, 1);
         assert_eq!(report.counts.implemented, 1);
-        assert_eq!(report.verdict, Verdict::LoadableAfterPhase1);
+        assert_eq!(report.verdict, Verdict::LoadableAfterPhase2);
     }
 
     #[test]

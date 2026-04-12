@@ -341,36 +341,38 @@ mod tests {
 
     #[test]
     fn markdown_contains_verdict_and_breakdown() {
-        let inv = Inventory::from_roadmap_str("| Gelu | Planned-P1 | x |");
-        let m = model_with_ops(&["MatMul", "Gelu"]);
+        // Bernoulli is Phase 2 generative, not yet in develop registry.
+        let inv = Inventory::from_roadmap_str("| Bernoulli | Planned-P2 | x |");
+        let m = model_with_ops(&["MatMul", "Bernoulli"]);
         let report = walk_model(&m, "m.onnx", &inv).unwrap();
         let md = report.to_markdown(false);
         assert!(md.contains("# ONNX Coverage Report"));
         assert!(md.contains("MatMul"));
-        assert!(md.contains("Gelu"));
-        assert!(md.contains("Phase 1"));
+        assert!(md.contains("Bernoulli"));
+        assert!(md.contains("Phase 2"));
     }
 
     #[cfg(feature = "json")]
     #[test]
     fn json_round_trip_contains_verdict_tag() {
-        let inv = Inventory::from_roadmap_str("| Gelu | Planned-P1 | x |");
-        let m = model_with_ops(&["MatMul", "Gelu"]);
+        let inv = Inventory::from_roadmap_str("| Bernoulli | Planned-P2 | x |");
+        let m = model_with_ops(&["MatMul", "Bernoulli"]);
         let report = walk_model(&m, "m.onnx", &inv).unwrap();
         let json = report.to_json();
         assert!(json.contains("\"verdict\""));
-        assert!(json.contains("loadable_after_phase1"));
+        assert!(json.contains("loadable_after_phase2"));
     }
 
     #[test]
     fn status_counts_verdict_precedence() {
-        // P2 beats P1; unrecognized beats everything.
-        let inv = Inventory::from_roadmap_str("| Gelu | Planned-P1 | |\n| Loop | Planned-P2 | |");
-        let m = model_with_ops(&["MatMul", "Gelu", "Loop"]);
+        // P3 beats P2; unrecognized beats everything.
+        let inv =
+            Inventory::from_roadmap_str("| Bernoulli | Planned-P2 | |\n| STFT | Planned-P3 | |");
+        let m = model_with_ops(&["MatMul", "Bernoulli", "STFT"]);
         let r = walk_model(&m, "m.onnx", &inv).unwrap();
-        assert_eq!(r.verdict, Verdict::LoadableAfterPhase2);
-        assert_eq!(r.counts.planned_p1, 1);
+        assert_eq!(r.verdict, Verdict::LoadableAfterPhase3);
         assert_eq!(r.counts.planned_p2, 1);
+        assert_eq!(r.counts.planned_p3, 1);
 
         let m2 = model_with_ops(&["MatMul", "FooBar"]);
         let r2 = walk_model(&m2, "m.onnx", &inv).unwrap();
