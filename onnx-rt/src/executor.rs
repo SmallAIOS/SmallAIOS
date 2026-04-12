@@ -265,7 +265,7 @@ fn read_first_f32(tensor: Option<&Tensor>) -> Option<f32> {
 /// category-specific dispatcher (`dispatch_arithmetic`,
 /// `dispatch_activation`, etc.) to reduce cognitive complexity. Returns
 /// a vector of output tensors (most operators produce exactly one).
-fn dispatch_node(
+pub(crate) fn dispatch_node(
     op_type: &str,
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
@@ -290,6 +290,7 @@ fn dispatch_node(
         OpKind::GRU => return dispatch_gru(inputs, attrs),
         OpKind::RNN => return dispatch_rnn(inputs, attrs),
         OpKind::TopK => return dispatch_top_k(inputs, attrs),
+        OpKind::DynamicQuantizeLinear => return dispatch_dynamic_quantize(inputs),
         _ => {}
     }
 
@@ -395,8 +396,42 @@ fn dispatch_node(
         OpKind::GroupNormalization | OpKind::InstanceNormalization => {
             dispatch_normalization_v2(kind, inputs, attrs)
         }
+        // Phase 2 generative / normalization / quantized ops.
+        OpKind::RMSNormalization
+        | OpKind::MatMulInteger
+        | OpKind::RandomNormal
+        | OpKind::RandomNormalLike
+        | OpKind::RandomUniform
+        | OpKind::RandomUniformLike
+        | OpKind::Multinomial
+        | OpKind::Bernoulli
+        | OpKind::Dropout
+        | OpKind::EyeLike
+        | OpKind::ReduceL1
+        | OpKind::ReduceL2
+        | OpKind::ReduceLogSum
+        | OpKind::ReduceLogSumExp
+        | OpKind::ReduceSumSquare
+        | OpKind::LpNormalization
+        | OpKind::MeanVarianceNormalization
+        | OpKind::Softplus => dispatch_generative(kind, inputs, attrs),
+        // Phase 2 control-flow ops. In this runtime the in-graph body
+        // deserialization is still a follow-up work-item, so the dispatcher
+        // returns `NotImplemented` here. The sub-graph executor module
+        // (`sub_executor.rs`) exposes an alternative API that accepts
+        // pre-built `ExecutionGraph` bodies directly and is fully tested.
+        OpKind::If | OpKind::Loop | OpKind::Scan => Err(OpError::InvalidAttribute(String::from(
+            "control-flow op dispatched from flat graph — inner body \
+                 must be executed via sub_executor::run_sub_graph, not \
+                 dispatch_node",
+        ))),
         // Multi-output kinds handled above and returned early.
-        OpKind::Split | OpKind::LSTM | OpKind::GRU | OpKind::RNN | OpKind::TopK => unreachable!(),
+        OpKind::Split
+        | OpKind::LSTM
+        | OpKind::GRU
+        | OpKind::RNN
+        | OpKind::TopK
+        | OpKind::DynamicQuantizeLinear => unreachable!(),
     };
 
     result.map(|t| alloc::vec![t])
@@ -1486,6 +1521,126 @@ fn require_inputs<'a>(
         )));
     }
     Ok(refs)
+}
+
+/// Dispatches Phase 2 generative / normalization / random / reduction ops.
+fn dispatch_generative(
+    kind: OpKind,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    match kind {
+        OpKind::Softplus => ops::generative::op_softplus(require_input(inputs, 0, "Softplus")?),
+        OpKind::EyeLike => {
+            let x = require_input(inputs, 0, "EyeLike")?;
+            let k = get_attr_int(attrs, "k", 0);
+            ops::generative::op_eye_like(x, k)
+        }
+        OpKind::Dropout => ops::generative::op_dropout(require_input(inputs, 0, "Dropout")?),
+        OpKind::RandomNormal => {
+            let shape = get_attr_ints(attrs, "shape").unwrap_or(&[]);
+            let seed = get_attr_float(attrs, "seed", 0.0);
+            let mean = get_attr_float(attrs, "mean", 0.0);
+            let scale = get_attr_float(attrs, "scale", 1.0);
+            ops::generative::op_random_normal(shape, seed, mean, scale)
+        }
+        OpKind::RandomNormalLike => {
+            let x = require_input(inputs, 0, "RandomNormalLike")?;
+            let seed = get_attr_float(attrs, "seed", 0.0);
+            let mean = get_attr_float(attrs, "mean", 0.0);
+            let scale = get_attr_float(attrs, "scale", 1.0);
+            ops::generative::op_random_normal_like(x, seed, mean, scale)
+        }
+        OpKind::RandomUniform => {
+            let shape = get_attr_ints(attrs, "shape").unwrap_or(&[]);
+            let seed = get_attr_float(attrs, "seed", 0.0);
+            let low = get_attr_float(attrs, "low", 0.0);
+            let high = get_attr_float(attrs, "high", 1.0);
+            ops::generative::op_random_uniform(shape, seed, low, high)
+        }
+        OpKind::RandomUniformLike => {
+            let x = require_input(inputs, 0, "RandomUniformLike")?;
+            let seed = get_attr_float(attrs, "seed", 0.0);
+            let low = get_attr_float(attrs, "low", 0.0);
+            let high = get_attr_float(attrs, "high", 1.0);
+            ops::generative::op_random_uniform_like(x, seed, low, high)
+        }
+        OpKind::Bernoulli => {
+            let x = require_input(inputs, 0, "Bernoulli")?;
+            let seed = get_attr_float(attrs, "seed", 0.0);
+            ops::generative::op_bernoulli(x, seed)
+        }
+        OpKind::Multinomial => {
+            let x = require_input(inputs, 0, "Multinomial")?;
+            let sample_size = get_attr_int(attrs, "sample_size", 1);
+            let seed = get_attr_float(attrs, "seed", 0.0);
+            ops::generative::op_multinomial(x, sample_size, seed)
+        }
+        OpKind::RMSNormalization => {
+            let x = require_input(inputs, 0, "RMSNormalization")?;
+            let scale = require_input(inputs, 1, "RMSNormalization")?;
+            let axis = get_attr_int(attrs, "axis", -1);
+            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
+            ops::generative::op_rms_normalization(x, scale, axis, epsilon)
+        }
+        OpKind::LpNormalization => {
+            let x = require_input(inputs, 0, "LpNormalization")?;
+            let axis = get_attr_int(attrs, "axis", -1);
+            let p = get_attr_int(attrs, "p", 2);
+            ops::generative::op_lp_normalization(x, axis, p)
+        }
+        OpKind::MeanVarianceNormalization => {
+            let x = require_input(inputs, 0, "MeanVarianceNormalization")?;
+            let axes = get_attr_ints(attrs, "axes").unwrap_or(&[]);
+            ops::generative::op_mean_variance_normalization(x, axes)
+        }
+        OpKind::ReduceL1 => {
+            let x = require_input(inputs, 0, "ReduceL1")?;
+            let axes = get_attr_ints(attrs, "axes").unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::generative::op_reduce_l1(x, axes, keepdims)
+        }
+        OpKind::ReduceL2 => {
+            let x = require_input(inputs, 0, "ReduceL2")?;
+            let axes = get_attr_ints(attrs, "axes").unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::generative::op_reduce_l2(x, axes, keepdims)
+        }
+        OpKind::ReduceLogSum => {
+            let x = require_input(inputs, 0, "ReduceLogSum")?;
+            let axes = get_attr_ints(attrs, "axes").unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::generative::op_reduce_log_sum(x, axes, keepdims)
+        }
+        OpKind::ReduceLogSumExp => {
+            let x = require_input(inputs, 0, "ReduceLogSumExp")?;
+            let axes = get_attr_ints(attrs, "axes").unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::generative::op_reduce_log_sum_exp(x, axes, keepdims)
+        }
+        OpKind::ReduceSumSquare => {
+            let x = require_input(inputs, 0, "ReduceSumSquare")?;
+            let axes = get_attr_ints(attrs, "axes").unwrap_or(&[]);
+            let keepdims = get_attr_int(attrs, "keepdims", 1) != 0;
+            ops::generative::op_reduce_sum_square(x, axes, keepdims)
+        }
+        OpKind::MatMulInteger => {
+            let a = require_input(inputs, 0, "MatMulInteger")?;
+            let b = require_input(inputs, 1, "MatMulInteger")?;
+            let a_zp = optional_input(inputs, 2);
+            let b_zp = optional_input(inputs, 3);
+            ops::generative::op_matmul_integer(a, b, a_zp, b_zp)
+        }
+        _ => Err(OpError::UnsupportedOp(String::from("generative"))),
+    }
+}
+
+/// Dispatches `DynamicQuantizeLinear` which produces three outputs:
+/// quantized tensor (u8), scale (f32 scalar), zero-point (u8 scalar).
+fn dispatch_dynamic_quantize(inputs: &[Option<&Tensor>]) -> Result<Vec<Tensor>, OpError> {
+    let x = require_input(inputs, 0, "DynamicQuantizeLinear")?;
+    let (q, s, z) = ops::generative::op_dynamic_quantize_linear(x)?;
+    Ok(alloc::vec![q, s, z])
 }
 
 /// Reads an integer tensor's raw_data as a `Vec<i64>`.

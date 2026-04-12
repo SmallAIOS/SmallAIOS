@@ -314,6 +314,60 @@ pub enum OpKind {
     PRelu,
     /// Mish activation (x * tanh(softplus(x))).
     Mish,
+
+    // ---- Phase 2 (generative-llm-v1): control flow ----
+    /// Conditional branch selecting `then_branch` or `else_branch`.
+    If,
+    /// Iterated sub-graph with loop-carried state.
+    Loop,
+    /// Sequence-axis scan over an inner body.
+    Scan,
+
+    // ---- Phase 2: generative / quantized LLM primitives ----
+    /// RMS-based layer normalization (LLaMA/Mistral).
+    RMSNormalization,
+    /// Integer matrix multiply with zero-point folding.
+    MatMulInteger,
+    /// Compute scale + zero-point at runtime and quantize.
+    DynamicQuantizeLinear,
+
+    // ---- Phase 2: samplers / random ----
+    /// Gaussian random tensor.
+    RandomNormal,
+    /// Gaussian random tensor with input-derived shape.
+    RandomNormalLike,
+    /// Uniform random tensor.
+    RandomUniform,
+    /// Uniform random tensor with input-derived shape.
+    RandomUniformLike,
+    /// Multinomial sampling (per-row categorical).
+    Multinomial,
+    /// Bernoulli draws (per-element probability).
+    Bernoulli,
+    /// Dropout (inference-mode pass-through by default).
+    Dropout,
+    /// Identity matrix generator.
+    EyeLike,
+
+    // ---- Phase 2: extra reductions ----
+    /// Sum of absolute values.
+    ReduceL1,
+    /// Euclidean norm.
+    ReduceL2,
+    /// Log of sum.
+    ReduceLogSum,
+    /// Log of sum of exponentials.
+    ReduceLogSumExp,
+    /// Sum of squares.
+    ReduceSumSquare,
+
+    // ---- Phase 2: normalization + elementwise ----
+    /// Lp normalization.
+    LpNormalization,
+    /// Mean/variance normalization.
+    MeanVarianceNormalization,
+    /// Softplus activation: ln(1 + e^x).
+    Softplus,
 }
 
 impl OpKind {
@@ -444,6 +498,33 @@ impl OpKind {
             "HardSwish" => Some(OpKind::HardSwish),
             "PRelu" => Some(OpKind::PRelu),
             "Mish" => Some(OpKind::Mish),
+            // Phase 2: control flow
+            "If" => Some(OpKind::If),
+            "Loop" => Some(OpKind::Loop),
+            "Scan" => Some(OpKind::Scan),
+            // Phase 2: generative / quantized
+            "RMSNormalization" => Some(OpKind::RMSNormalization),
+            "MatMulInteger" => Some(OpKind::MatMulInteger),
+            "DynamicQuantizeLinear" => Some(OpKind::DynamicQuantizeLinear),
+            // Phase 2: random / samplers
+            "RandomNormal" => Some(OpKind::RandomNormal),
+            "RandomNormalLike" => Some(OpKind::RandomNormalLike),
+            "RandomUniform" => Some(OpKind::RandomUniform),
+            "RandomUniformLike" => Some(OpKind::RandomUniformLike),
+            "Multinomial" => Some(OpKind::Multinomial),
+            "Bernoulli" => Some(OpKind::Bernoulli),
+            "Dropout" => Some(OpKind::Dropout),
+            "EyeLike" => Some(OpKind::EyeLike),
+            // Phase 2: reductions
+            "ReduceL1" => Some(OpKind::ReduceL1),
+            "ReduceL2" => Some(OpKind::ReduceL2),
+            "ReduceLogSum" => Some(OpKind::ReduceLogSum),
+            "ReduceLogSumExp" => Some(OpKind::ReduceLogSumExp),
+            "ReduceSumSquare" => Some(OpKind::ReduceSumSquare),
+            // Phase 2: normalization / elementwise
+            "LpNormalization" => Some(OpKind::LpNormalization),
+            "MeanVarianceNormalization" => Some(OpKind::MeanVarianceNormalization),
+            "Softplus" => Some(OpKind::Softplus),
             _ => None,
         }
     }
@@ -560,6 +641,29 @@ impl OpKind {
             OpKind::HardSwish => "HardSwish",
             OpKind::PRelu => "PRelu",
             OpKind::Mish => "Mish",
+            // Phase 2
+            OpKind::If => "If",
+            OpKind::Loop => "Loop",
+            OpKind::Scan => "Scan",
+            OpKind::RMSNormalization => "RMSNormalization",
+            OpKind::MatMulInteger => "MatMulInteger",
+            OpKind::DynamicQuantizeLinear => "DynamicQuantizeLinear",
+            OpKind::RandomNormal => "RandomNormal",
+            OpKind::RandomNormalLike => "RandomNormalLike",
+            OpKind::RandomUniform => "RandomUniform",
+            OpKind::RandomUniformLike => "RandomUniformLike",
+            OpKind::Multinomial => "Multinomial",
+            OpKind::Bernoulli => "Bernoulli",
+            OpKind::Dropout => "Dropout",
+            OpKind::EyeLike => "EyeLike",
+            OpKind::ReduceL1 => "ReduceL1",
+            OpKind::ReduceL2 => "ReduceL2",
+            OpKind::ReduceLogSum => "ReduceLogSum",
+            OpKind::ReduceLogSumExp => "ReduceLogSumExp",
+            OpKind::ReduceSumSquare => "ReduceSumSquare",
+            OpKind::LpNormalization => "LpNormalization",
+            OpKind::MeanVarianceNormalization => "MeanVarianceNormalization",
+            OpKind::Softplus => "Softplus",
         }
     }
 }
@@ -682,6 +786,29 @@ const ALL_OPS: &[OpKind] = &[
     OpKind::HardSwish,
     OpKind::PRelu,
     OpKind::Mish,
+    // Phase 2 (generative-llm-v1)
+    OpKind::If,
+    OpKind::Loop,
+    OpKind::Scan,
+    OpKind::RMSNormalization,
+    OpKind::MatMulInteger,
+    OpKind::DynamicQuantizeLinear,
+    OpKind::RandomNormal,
+    OpKind::RandomNormalLike,
+    OpKind::RandomUniform,
+    OpKind::RandomUniformLike,
+    OpKind::Multinomial,
+    OpKind::Bernoulli,
+    OpKind::Dropout,
+    OpKind::EyeLike,
+    OpKind::ReduceL1,
+    OpKind::ReduceL2,
+    OpKind::ReduceLogSum,
+    OpKind::ReduceLogSumExp,
+    OpKind::ReduceSumSquare,
+    OpKind::LpNormalization,
+    OpKind::MeanVarianceNormalization,
+    OpKind::Softplus,
 ];
 
 /// Registry of supported ONNX operators.
@@ -877,15 +1004,32 @@ pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("HardSwish", OperatorStatus::Implemented),
     ("PRelu", OperatorStatus::Implemented),
     ("Mish", OperatorStatus::Implemented),
-    // ---------------- Phase 2: generative / control-flow ----
-    ("If", OperatorStatus::Planned(Phase::P2)),
-    ("Loop", OperatorStatus::Planned(Phase::P2)),
-    ("Scan", OperatorStatus::Planned(Phase::P2)),
-    ("DynamicQuantizeLinear", OperatorStatus::Planned(Phase::P2)),
+    // ---------------- Phase 2: generative / control-flow (generative-llm-v1) ----
+    ("If", OperatorStatus::Implemented),
+    ("Loop", OperatorStatus::Implemented),
+    ("Scan", OperatorStatus::Implemented),
+    ("RMSNormalization", OperatorStatus::Implemented),
+    ("MatMulInteger", OperatorStatus::Implemented),
+    ("DynamicQuantizeLinear", OperatorStatus::Implemented),
+    ("RandomNormal", OperatorStatus::Implemented),
+    ("RandomNormalLike", OperatorStatus::Implemented),
+    ("RandomUniform", OperatorStatus::Implemented),
+    ("RandomUniformLike", OperatorStatus::Implemented),
+    ("Multinomial", OperatorStatus::Implemented),
+    ("Bernoulli", OperatorStatus::Implemented),
+    ("Dropout", OperatorStatus::Implemented),
+    ("EyeLike", OperatorStatus::Implemented),
+    ("ReduceL1", OperatorStatus::Implemented),
+    ("ReduceL2", OperatorStatus::Implemented),
+    ("ReduceLogSum", OperatorStatus::Implemented),
+    ("ReduceLogSumExp", OperatorStatus::Implemented),
+    ("ReduceSumSquare", OperatorStatus::Implemented),
+    ("LpNormalization", OperatorStatus::Implemented),
+    ("MeanVarianceNormalization", OperatorStatus::Implemented),
+    ("Softplus", OperatorStatus::Implemented),
+    // Phase 2 deferred: attention + integer conv still pending
     ("Attention", OperatorStatus::Planned(Phase::P2)),
-    ("MatMulInteger", OperatorStatus::Planned(Phase::P2)),
     ("ConvInteger", OperatorStatus::Planned(Phase::P2)),
-    ("Multinomial", OperatorStatus::Planned(Phase::P2)),
     // ---------------- Phase 3: audio + detection ----
     ("NonMaxSuppression", OperatorStatus::Planned(Phase::P3)),
     ("STFT", OperatorStatus::Planned(Phase::P3)),
@@ -913,25 +1057,13 @@ pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("Tan", OperatorStatus::Planned(Phase::P4)),
     ("IsNaN", OperatorStatus::Planned(Phase::P4)),
     ("IsInf", OperatorStatus::Planned(Phase::P4)),
-    ("ReduceL1", OperatorStatus::Planned(Phase::P4)),
-    ("ReduceL2", OperatorStatus::Planned(Phase::P4)),
-    ("ReduceLogSum", OperatorStatus::Planned(Phase::P4)),
-    ("ReduceLogSumExp", OperatorStatus::Planned(Phase::P4)),
-    ("ReduceSumSquare", OperatorStatus::Planned(Phase::P4)),
     ("Selu", OperatorStatus::Planned(Phase::P4)),
-    ("Softplus", OperatorStatus::Planned(Phase::P4)),
     ("Softsign", OperatorStatus::Planned(Phase::P4)),
     ("ThresholdedRelu", OperatorStatus::Planned(Phase::P4)),
     ("CastLike", OperatorStatus::Planned(Phase::P4)),
-    ("EyeLike", OperatorStatus::Planned(Phase::P4)),
     ("Shrink", OperatorStatus::Planned(Phase::P4)),
-    ("LpNormalization", OperatorStatus::Planned(Phase::P4)),
     ("LpPool", OperatorStatus::Planned(Phase::P4)),
     ("GlobalLpPool", OperatorStatus::Planned(Phase::P4)),
-    (
-        "MeanVarianceNormalization",
-        OperatorStatus::Planned(Phase::P4),
-    ),
     // ---------------- Deferred: needs subsystems we haven't built ----
     (
         "SequenceConstruct",
@@ -1048,7 +1180,6 @@ pub const SUPPORTED_OPS_INVENTORY: &[(&str, OperatorStatus)] = &[
     ("Adam", OperatorStatus::SkippedTraining),
     ("SoftmaxCrossEntropyLoss", OperatorStatus::SkippedTraining),
     ("NegativeLogLikelihoodLoss", OperatorStatus::SkippedTraining),
-    ("Dropout", OperatorStatus::SkippedTraining),
     // ---------------- Skipped: deprecated / replaced ----
     ("Upsample", OperatorStatus::SkippedDeprecated),
     ("Scatter", OperatorStatus::SkippedDeprecated),
@@ -3443,7 +3574,7 @@ mod tests {
     #[test]
     fn test_registry_supported_count() {
         let registry = OperatorRegistry::new();
-        assert_eq!(registry.supported_count(), 109);
+        assert_eq!(registry.supported_count(), 131);
     }
 
     #[test]
@@ -3485,8 +3616,8 @@ mod tests {
             );
         }
 
-        // Sanity: must match the advertised 109-op count.
-        assert_eq!(impl_names.len(), 109);
+        // Sanity: must match the advertised 131-op count.
+        assert_eq!(impl_names.len(), 131);
 
         // No duplicate entries in the inventory.
         let mut all_names: alloc::vec::Vec<&str> =

@@ -94,7 +94,11 @@ pub fn classify_op(op_type: &str) -> OperatorClass {
         | "TopK" | "Compress" | "NonZero" | "Unique"
         | "GatherElements" | "ScatterElements"
         // Phase 1 vision: composite activations
-        | "HardSigmoid" | "HardSwish" | "PRelu" | "Mish" => {
+        | "HardSigmoid" | "HardSwish" | "PRelu" | "Mish"
+        // Phase 2 generative: elementwise / samplers / small utilities
+        | "DynamicQuantizeLinear" | "EyeLike" | "RandomNormal" | "RandomNormalLike"
+        | "RandomUniform" | "RandomUniformLike" | "Bernoulli" | "Multinomial"
+        | "Dropout" | "Softplus" => {
             OperatorClass::Elementwise
         }
         "Softmax" | "LayerNormalization" | "BatchNormalization" | "MaxPool" | "AveragePool"
@@ -104,12 +108,20 @@ pub fn classify_op(op_type: &str) -> OperatorClass {
         | "LogSoftmax"
         // Phase 1 vision: pooling/resize/align — reduction-class budget.
         | "GlobalMaxPool" | "Resize" | "RoiAlign" | "GridSample"
-        | "GroupNormalization" | "InstanceNormalization" => OperatorClass::Reduction,
+        | "GroupNormalization" | "InstanceNormalization"
+        // Phase 2 reductions + RMS-style normalizations
+        | "RMSNormalization" | "LpNormalization" | "MeanVarianceNormalization"
+        | "ReduceL1" | "ReduceL2" | "ReduceLogSum" | "ReduceLogSumExp" | "ReduceSumSquare"
+            => OperatorClass::Reduction,
         "MatMul" | "Gemm" | "Conv"
         // Tier 2: Einsum is matmul-like; quantized GEMM/Conv same.
-        | "Einsum" | "QLinearMatMul" | "QLinearConv" => OperatorClass::Gemm,
+        | "Einsum" | "QLinearMatMul" | "QLinearConv"
+        // Phase 2: integer matmul.
+        | "MatMulInteger" => OperatorClass::Gemm,
         // Recurrent layers do many GEMMs across time; classify as Attention budget.
         "RNN" | "LSTM" | "GRU" => OperatorClass::Attention,
+        // Phase 2 control-flow ops: aggregate budget.
+        "If" | "Loop" | "Scan" => OperatorClass::ControlFlow,
         _ => OperatorClass::Elementwise,
     }
 }
