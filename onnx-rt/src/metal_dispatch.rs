@@ -405,23 +405,28 @@ fn metal_err(e: MetalError) -> OpError {
     OpError::InternalError(format!("Metal GPU error: {}", e.0))
 }
 
-/// Resolves a `kernel_source_id` to the actual MSL source string.
+/// Maps a `kernel_source_id` to its MSL source string via a static table.
 #[cfg(all(feature = "metal", target_os = "macos"))]
 fn resolve_kernel_source(id: &str) -> &'static str {
-    match id {
-        "ELEMENTWISE_ADD" => smallaios_arch_apple::shaders::ELEMENTWISE_ADD,
-        "ELEMENTWISE_SUB" => smallaios_arch_apple::shaders::ELEMENTWISE_SUB,
-        "ELEMENTWISE_MUL" => smallaios_arch_apple::shaders::ELEMENTWISE_MUL,
-        "ELEMENTWISE_DIV" => smallaios_arch_apple::shaders::ELEMENTWISE_DIV,
-        "ELEMENTWISE_RELU" => smallaios_arch_apple::shaders::ELEMENTWISE_RELU,
-        "ELEMENTWISE_SIGMOID" => smallaios_arch_apple::shaders::ELEMENTWISE_SIGMOID,
-        "ELEMENTWISE_TANH" => smallaios_arch_apple::shaders::ELEMENTWISE_TANH,
-        "MATMUL" => smallaios_arch_apple::shaders::MATMUL,
-        "MATMUL_TILED" => smallaios_arch_apple::shaders::MATMUL_TILED,
-        "SOFTMAX" => smallaios_arch_apple::shaders::SOFTMAX,
-        "CONV2D" => smallaios_arch_apple::shaders::CONV2D,
-        _ => "",
-    }
+    use smallaios_arch_apple::shaders;
+    const TABLE: &[(&str, &str)] = &[
+        ("ELEMENTWISE_ADD", shaders::ELEMENTWISE_ADD),
+        ("ELEMENTWISE_SUB", shaders::ELEMENTWISE_SUB),
+        ("ELEMENTWISE_MUL", shaders::ELEMENTWISE_MUL),
+        ("ELEMENTWISE_DIV", shaders::ELEMENTWISE_DIV),
+        ("ELEMENTWISE_RELU", shaders::ELEMENTWISE_RELU),
+        ("ELEMENTWISE_SIGMOID", shaders::ELEMENTWISE_SIGMOID),
+        ("ELEMENTWISE_TANH", shaders::ELEMENTWISE_TANH),
+        ("MATMUL", shaders::MATMUL),
+        ("MATMUL_TILED", shaders::MATMUL_TILED),
+        ("SOFTMAX", shaders::SOFTMAX),
+        ("CONV2D", shaders::CONV2D),
+    ];
+    TABLE
+        .iter()
+        .find(|(k, _)| *k == id)
+        .map(|(_, v)| *v)
+        .unwrap_or("")
 }
 
 /// Executes a planned kernel launch on the Metal GPU.
