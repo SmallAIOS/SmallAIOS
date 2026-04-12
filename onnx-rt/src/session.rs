@@ -77,6 +77,34 @@ impl fmt::Display for SessionError {
 }
 
 // ---------------------------------------------------------------------------
+// GPU configuration
+// ---------------------------------------------------------------------------
+
+/// GPU backend type for accelerated operator dispatch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuBackendType {
+    /// Apple Metal (macOS / Apple Silicon).
+    Metal,
+    // Future: Cuda, Vulkan, Rocm, LevelZero
+}
+
+/// Configuration for GPU-accelerated inference.
+#[derive(Debug, Clone)]
+pub struct GpuConfig {
+    /// The GPU backend to use.
+    pub backend: GpuBackendType,
+}
+
+impl GpuConfig {
+    /// Creates a GPU configuration for the Metal backend.
+    pub fn metal() -> Self {
+        Self {
+            backend: GpuBackendType::Metal,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Session configuration
 // ---------------------------------------------------------------------------
 
@@ -94,6 +122,8 @@ pub struct SessionConfig {
     pub thread_count: usize,
     /// Parallel execution configuration for operator-level parallelism.
     pub parallel: ParallelConfig,
+    /// Optional GPU configuration for accelerated dispatch.
+    pub gpu_config: Option<GpuConfig>,
 }
 
 impl Default for SessionConfig {
@@ -104,6 +134,7 @@ impl Default for SessionConfig {
             max_batch_size: 1,
             thread_count: 1,
             parallel: ParallelConfig::default(),
+            gpu_config: None,
         }
     }
 }
@@ -176,6 +207,12 @@ pub struct Session {
     /// Optional GPU backend for accelerated operator dispatch.
     #[cfg(feature = "gpu")]
     pub gpu_backend: Option<smallaios_compute::GpuBackend>,
+    /// Optional Metal GPU dispatcher for accelerated operator execution.
+    ///
+    /// Wrapped in `RefCell` to allow `&self` on `run()` while the
+    /// dispatcher mutates its internal cache and kernel state.
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    pub metal_dispatcher: core::cell::RefCell<Option<crate::metal_dispatch::MetalDispatcher>>,
 }
 
 /// ONNX model file magic bytes: `\x08` (field 1, varint wire type).
@@ -328,6 +365,19 @@ impl Session {
         use core::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+        // Initialize Metal dispatcher if configured.
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let metal_dispatcher = if config
+            .gpu_config
+            .as_ref()
+            .map(|c| c.backend == GpuBackendType::Metal)
+            .unwrap_or(false)
+        {
+            crate::metal_dispatch::MetalDispatcher::new().ok()
+        } else {
+            None
+        };
+
         Self {
             id: SessionId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
             config,
@@ -339,7 +389,22 @@ impl Session {
             is_initialized: false,
             #[cfg(feature = "gpu")]
             gpu_backend: None,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            metal_dispatcher: core::cell::RefCell::new(metal_dispatcher),
         }
+    }
+
+    /// Creates a new session with Metal GPU acceleration enabled.
+    ///
+    /// This is a convenience constructor that configures the session
+    /// to use the Metal backend for supported operators, falling back
+    /// to CPU for unsupported ones.
+    pub fn with_gpu(gpu_config: GpuConfig) -> Self {
+        let config = SessionConfig {
+            gpu_config: Some(gpu_config),
+            ..SessionConfig::default()
+        };
+        Self::new(config)
     }
 
     /// Initializes the session with a parsed ONNX model.
@@ -422,6 +487,9 @@ impl Session {
         // Get initializers from the model (stored during initialize)
         let initializers = &self.initializers;
 
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let mut metal_guard = self.metal_dispatcher.borrow_mut();
+
         crate::executor::execute_graph(
             graph,
             &input_pairs,
@@ -432,6 +500,8 @@ impl Session {
             &crate::profile::NullTimeSource,
             #[cfg(feature = "gpu")]
             self.gpu_backend.as_ref(),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            metal_guard.as_mut(),
         )
     }
 
@@ -484,6 +554,9 @@ impl Session {
         let budget = crate::profile::OperatorBudget::DEFAULT;
         let time_source = crate::profile::StdTimeSource::new();
 
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let mut metal_guard = self.metal_dispatcher.borrow_mut();
+
         let outputs = crate::executor::execute_graph(
             graph,
             &input_pairs,
@@ -494,6 +567,8 @@ impl Session {
             &time_source,
             #[cfg(feature = "gpu")]
             self.gpu_backend.as_ref(),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            metal_guard.as_mut(),
         )?;
         Ok((outputs, profile))
     }
@@ -574,6 +649,7 @@ mod tests {
             max_batch_size: 8,
             thread_count: 4,
             parallel: crate::parallel::ParallelConfig::default_for_cores(4),
+            gpu_config: None,
         };
         assert_eq!(config.optimization_level, OptimizationLevel::Extended);
         assert!(config.enable_profiling);

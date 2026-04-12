@@ -38,6 +38,7 @@ fn session_custom_config() {
         max_batch_size: 16,
         thread_count: 4,
         parallel: smallaios_onnx_rt::parallel::ParallelConfig::default(),
+        gpu_config: None,
     };
     let session = Session::new(config);
     assert!(!session.is_initialized());
@@ -65,6 +66,7 @@ fn session_no_optimization_config() {
         max_batch_size: 1,
         thread_count: 1,
         parallel: smallaios_onnx_rt::parallel::ParallelConfig::default(),
+        gpu_config: None,
     };
     let session = Session::new(config);
     assert!(!session.is_initialized());

@@ -809,6 +809,7 @@ dependencies = [
 name = "smallaios-onnx-rt"
 version = "0.2.1"
 dependencies = [
+ "smallaios-arch-apple",
  "smallaios-arch-nvidia",
  "smallaios-compute",
  "smallaios-kernel",

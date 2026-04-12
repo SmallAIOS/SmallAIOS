@@ -24,6 +24,8 @@ pub mod gemm;
 pub mod graph;
 pub mod kv_compression;
 pub mod memory_planner;
+#[cfg(all(feature = "metal", target_os = "macos"))]
+pub mod metal_dispatch;
 #[cfg(feature = "formal-gate")]
 pub mod model_policy;
 #[cfg(feature = "verified-boot")]

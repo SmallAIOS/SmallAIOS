@@ -25,6 +25,16 @@ impl core::fmt::Display for MetalError {
     }
 }
 
+/// Stub tensor cache for non-macOS platforms.
+pub struct MetalTensorCache;
+
+impl MetalTensorCache {
+    /// Always returns an empty cache on non-macOS.
+    pub fn new() -> Self {
+        MetalTensorCache
+    }
+}
+
 /// Stub Metal provider for non-macOS platforms.
 pub struct MetalProvider;
 
