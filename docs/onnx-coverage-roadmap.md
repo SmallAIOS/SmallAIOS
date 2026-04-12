@@ -131,19 +131,19 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| Mod | Planned-P1 | Integer/float modulo; positional encoding |
-| Sin | Planned-P1 | Sinusoidal positional embeddings |
-| Cos | Planned-P1 | Sinusoidal positional embeddings |
-| Reciprocal | Planned-P1 | 1/x; LayerNorm and attention scaling |
-| Sign | Planned-P1 | Sign extraction; quant + transformers |
-| Sum | Planned-P1 | Variadic elementwise sum |
-| Mean | Planned-P1 | Variadic elementwise mean |
-| And | Planned-P1 | Boolean mask composition |
-| Or | Planned-P1 | Boolean mask composition |
-| LogSoftmax | Planned-P1 | Common classifier head |
-| PRelu | Planned-P1 | Parametric ReLU; older vision nets |
-| HardSigmoid | Planned-P1 | MobileNet/EfficientNet activation |
-| HardSwish | Planned-P1 | MobileNetV3 activation |
+| Mod | Implemented | Integer/float modulo; positional encoding |
+| Sin | Implemented | Sinusoidal positional embeddings |
+| Cos | Implemented | Sinusoidal positional embeddings |
+| Reciprocal | Implemented | 1/x; LayerNorm and attention scaling |
+| Sign | Implemented | Sign extraction; quant + transformers |
+| Sum | Implemented | Variadic elementwise sum |
+| Mean | Implemented | Variadic elementwise mean |
+| And | Implemented | Boolean mask composition |
+| Or | Implemented | Boolean mask composition |
+| LogSoftmax | Implemented | Common classifier head |
+| PRelu | Implemented | Parametric ReLU; older vision nets |
+| HardSigmoid | Implemented | MobileNet/EfficientNet activation |
+| HardSwish | Implemented | MobileNetV3 activation |
 | Softplus | Planned-P2 | Smooth ReLU; generative models |
 | Sinh | Planned-P3 | Hyperbolic trig; audio models |
 | Cosh | Planned-P3 | Hyperbolic trig; audio models |
@@ -180,11 +180,11 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| ReduceMax | Planned-P1 | Attention / classifier max pooling |
-| ReduceMin | Planned-P1 | Counterpart to ReduceMax |
-| ReduceProd | Planned-P1 | Shape/volume computations |
-| ArgMax | Planned-P1 | Classifier decode |
-| ArgMin | Planned-P1 | Counterpart to ArgMax |
+| ReduceMax | Implemented | Attention / classifier max pooling |
+| ReduceMin | Implemented | Counterpart to ReduceMax |
+| ReduceProd | Implemented | Shape/volume computations |
+| ArgMax | Implemented | Classifier decode |
+| ArgMin | Implemented | Counterpart to ArgMax |
 | ReduceL1 | Planned-P2 | L1 norm reductions |
 | ReduceL2 | Planned-P2 | L2 norm reductions |
 | ReduceLogSum | Planned-P2 | Log-domain reductions |
@@ -195,8 +195,8 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| GlobalMaxPool | Planned-P1 | Common classifier head |
-| RoiAlign | Planned-P1 | ViT detection / Mask R-CNN |
+| GlobalMaxPool | Implemented | Common classifier head |
+| RoiAlign | Implemented | ViT detection / Mask R-CNN |
 | MaxRoiPool | Planned-P3 | Object detection ROI pooling |
 | GlobalLpPool | Planned-P4 | Rare Lp pooling |
 | LpPool | Planned-P4 | Rare Lp pooling |
@@ -206,8 +206,8 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| InstanceNormalization | Planned-P1 | Style transfer / vision transformers |
-| GroupNormalization | Planned-P1 | ConvNeXt / Swin / diffusion |
+| InstanceNormalization | Implemented | Style transfer / vision transformers |
+| GroupNormalization | Implemented | ConvNeXt / Swin / diffusion |
 | RMSNormalization | Planned-P2 | LLaMA / T5 normalization |
 | LRN | Planned-P3 | Legacy AlexNet; whisper preprocess |
 
@@ -215,27 +215,27 @@ QLinearMatMul, QLinearConv
 
 | Op | Status | Rationale |
 |---|---|---|
-| Shape | Planned-P1 | Dynamic shape queries; BERT |
-| Size | Planned-P1 | Element count queries |
-| Identity | Planned-P1 | Pass-through; constant folding |
-| ConstantOfShape | Planned-P1 | Masking / attention patterns |
-| Constant | Planned-P1 | Inline constant tensors |
-| Range | Planned-P1 | Positional indices |
-| Trilu | Planned-P1 | Causal mask for attention |
-| CumSum | Planned-P1 | Positional offsets; attention |
-| GatherND | Planned-P1 | N-dim gather; transformers |
-| ScatterND | Planned-P1 | N-dim scatter; transformers |
-| GatherElements | Planned-P1 | Element-wise gather |
-| ScatterElements | Planned-P1 | Element-wise scatter |
-| TopK | Planned-P1 | Beam search; classifier top-k |
-| NonZero | Planned-P1 | Mask indexing |
-| Compress | Planned-P1 | Boolean mask selection |
-| Unique | Planned-P1 | Deduplication |
-| DepthToSpace | Planned-P1 | Super-resolution; pixel shuffle |
-| SpaceToDepth | Planned-P1 | YOLO / ViT patchify |
-| Resize | Planned-P1 | Image scaling; ViT/U-Net |
-| GridSample | Planned-P1 | Spatial transformers / STN |
-| CenterCropPad | Planned-P1 | Vision preprocessing (opset 18+) |
+| Shape | Implemented | Dynamic shape queries; BERT |
+| Size | Implemented | Element count queries |
+| Identity | Implemented | Pass-through; constant folding |
+| ConstantOfShape | Implemented | Masking / attention patterns |
+| Constant | Implemented | Inline constant tensors |
+| Range | Implemented | Positional indices |
+| Trilu | Implemented | Causal mask for attention |
+| CumSum | Implemented | Positional offsets; attention |
+| GatherND | Implemented | N-dim gather; transformers |
+| ScatterND | Implemented | N-dim scatter; transformers |
+| GatherElements | Implemented | Element-wise gather |
+| ScatterElements | Implemented | Element-wise scatter |
+| TopK | Implemented | Beam search; classifier top-k |
+| NonZero | Implemented | Mask indexing |
+| Compress | Implemented | Boolean mask selection |
+| Unique | Implemented | Deduplication |
+| DepthToSpace | Implemented | Super-resolution; pixel shuffle |
+| SpaceToDepth | Implemented | YOLO / ViT patchify |
+| Resize | Implemented | Image scaling; ViT/U-Net |
+| GridSample | Implemented | Spatial transformers / STN |
+| CenterCropPad | Implemented | Vision preprocessing (opset 18+) |
 | EyeLike | Planned-P2 | Identity matrix generation |
 | Reverse | Planned-P4 | Rare axis reversal |
 | ReverseSequence | Planned-P4 | Bi-directional RNN support |

@@ -495,11 +495,17 @@ mod tests {
 
     #[test]
     fn inventory_records_planned_op_not_in_registry() {
-        let src = "| Gelu | Planned-P1 | transformer activation |";
+        // Pick an op genuinely not yet in the runtime registry. Phase 1
+        // (Sin/Cos/etc.) and Phase 2 building blocks (Gelu/Pow/etc.) are
+        // already implemented in develop, so they would be overridden by
+        // the registry to `Implemented`. `Bernoulli` is a Phase 2
+        // generative op still listed as Planned-P2.
+        let src = "| Bernoulli | Planned-P2 | stochastic masking |";
         let inv = Inventory::from_roadmap_str(src);
-        // Gelu is not in the develop registry (29 ops).
-        // The walker will see it as Planned(P1).
-        assert_eq!(inv.status_of("Gelu"), OperatorStatus::Planned(Phase::P1));
+        assert_eq!(
+            inv.status_of("Bernoulli"),
+            OperatorStatus::Planned(Phase::P2)
+        );
     }
 
     #[test]
@@ -516,9 +522,12 @@ mod tests {
             "expected roadmap to contribute >30 ops, got {}",
             inv.len()
         );
-        // Known Phase 1 planned ops.
-        assert_eq!(inv.status_of("Sin"), OperatorStatus::Planned(Phase::P1));
-        assert_eq!(inv.status_of("Cos"), OperatorStatus::Planned(Phase::P1));
+        // Known Phase 2 planned ops (not yet implemented in develop).
+        assert_eq!(
+            inv.status_of("Bernoulli"),
+            OperatorStatus::Planned(Phase::P2)
+        );
+        assert_eq!(inv.status_of("Loop"), OperatorStatus::Planned(Phase::P2));
         // Known deprecated skip.
         assert_eq!(inv.status_of("Affine"), OperatorStatus::SkippedDeprecated);
     }

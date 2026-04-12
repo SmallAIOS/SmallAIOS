@@ -26,10 +26,11 @@ fn model(ops: &[&str]) -> ModelProto {
 }
 
 #[test]
-fn end_to_end_bert_like_model_is_loadable_after_phase1() {
-    // A very rough BERT-shaped op set: most are implemented in
-    // develop, but `Sin` (for positional encoding) is Planned-P1 in
-    // the real roadmap.
+fn end_to_end_bert_like_model_is_loadable_today() {
+    // A rough BERT-shaped op set: every op here is implemented in
+    // develop after Phase 1 merged (Sin/Cos/Mod/etc. are no longer
+    // Planned-P1; they're Implemented). So a real BERT-shaped model
+    // should produce a LoadableToday verdict.
     let m = model(&[
         "MatMul",
         "Add",
@@ -46,9 +47,10 @@ fn end_to_end_bert_like_model_is_loadable_after_phase1() {
     let report = walk_model(&m, "bert-like.onnx", &inv).unwrap();
     assert_eq!(report.total_nodes, 6);
     assert_eq!(report.distinct_ops, 5);
-    // `Sin` is Planned-P1 in the real roadmap.
-    assert!(report.counts.planned_p1 >= 1);
-    assert_eq!(report.verdict, Verdict::LoadableAfterPhase1);
+    // After Phase 1 lands, Sin/Cos/etc. are Implemented, not Planned-P1.
+    assert_eq!(report.counts.planned_p1, 0);
+    assert_eq!(report.counts.implemented, 5);
+    assert_eq!(report.verdict, Verdict::LoadableToday);
 }
 
 #[test]

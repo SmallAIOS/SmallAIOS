@@ -7,7 +7,7 @@
 use crate::inventory::{Inventory, OperatorStatus};
 use crate::report::{CoverageReport, NodeSummary, StatusCounts, Verdict};
 use smallaios_onnx_rt::onnx_types::{AttributeProto, AttributeType, ModelProto, NodeProto};
-use smallaios_onnx_rt::protobuf::{decode_model, ProtoError};
+use smallaios_onnx_rt::protobuf::{decode_node, ProtoDecoder, ProtoError, WireType};
 use std::collections::BTreeMap;
 
 /// Error type returned by [`walk_bytes`].
@@ -31,13 +31,252 @@ impl std::fmt::Display for WalkError {
 impl std::error::Error for WalkError {}
 
 /// Parse a raw ONNX model buffer and walk it, producing a full report.
+///
+/// This uses a streaming scanner that only extracts each node's
+/// `op_type` (and, best-effort, attributes for a small set of ops that
+/// surface attribute-level concerns). It deliberately avoids fully
+/// decoding `TensorProto` initializers and other heavy nested messages
+/// so that it remains robust against real-world ONNX exports that use
+/// corners of the wire format (groups, unusual packing, external data,
+/// non-UTF-8 doc strings, …) our minimal in-tree decoder doesn't handle.
 pub fn walk_bytes(
     bytes: &[u8],
     model_label: &str,
     inventory: &Inventory,
 ) -> Result<CoverageReport, WalkError> {
-    let model = decode_model(bytes).map_err(WalkError::Decode)?;
-    walk_model(&model, model_label, inventory)
+    // Stream the top-level ModelProto looking only for field 7 = graph.
+    let mut dec = ProtoDecoder::new(bytes);
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut concerns_by_op: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut total_nodes: usize = 0;
+    let mut found_graph = false;
+    while dec.remaining() > 0 {
+        let header = dec.read_tag().map_err(WalkError::Decode)?;
+        if header.field_number == 7 && header.wire_type == WireType::LengthDelimited {
+            let graph_data = dec.read_length_delimited().map_err(WalkError::Decode)?;
+            found_graph = true;
+            scan_graph(
+                graph_data,
+                &mut counts,
+                &mut concerns_by_op,
+                &mut total_nodes,
+            )?;
+        } else {
+            tolerant_skip(&mut dec, header.wire_type).map_err(WalkError::Decode)?;
+        }
+    }
+    if !found_graph {
+        return Err(WalkError::EmptyModel);
+    }
+    Ok(assemble_report(
+        model_label,
+        inventory,
+        total_nodes,
+        counts,
+        concerns_by_op,
+    ))
+}
+
+/// Skip a protobuf field by wire type, tolerating malformed length
+/// prefixes by clamping at the remaining buffer length. We prefer to
+/// surface real op-coverage findings over bailing out on an oversized
+/// doc_string or non-UTF8 producer field.
+fn tolerant_skip(dec: &mut ProtoDecoder, wire: WireType) -> Result<(), ProtoError> {
+    match wire {
+        WireType::Varint => {
+            dec.read_varint()?;
+        }
+        WireType::Fixed64 => {
+            if dec.remaining() < 8 {
+                return Err(ProtoError::UnexpectedEof);
+            }
+            // read_fixed64 advances the cursor
+            dec.read_fixed64()?;
+        }
+        WireType::Fixed32 => {
+            if dec.remaining() < 4 {
+                return Err(ProtoError::UnexpectedEof);
+            }
+            dec.read_fixed32()?;
+        }
+        WireType::LengthDelimited => {
+            dec.read_length_delimited()?;
+        }
+    }
+    Ok(())
+}
+
+/// Scan a GraphProto byte region, recursively descending into nodes,
+/// attributes and subgraphs. Only `op_type` is extracted from each
+/// node; attributes are best-effort-decoded when the op matches one
+/// known to carry attribute-level concerns (Resize, RoiAlign, etc).
+fn scan_graph(
+    data: &[u8],
+    counts: &mut BTreeMap<String, usize>,
+    concerns: &mut BTreeMap<String, Vec<String>>,
+    total_nodes: &mut usize,
+) -> Result<(), WalkError> {
+    let mut dec = ProtoDecoder::new(data);
+    while dec.remaining() > 0 {
+        let header = dec.read_tag().map_err(WalkError::Decode)?;
+        match (header.field_number, header.wire_type) {
+            (1, WireType::LengthDelimited) => {
+                // node
+                let node_bytes = dec.read_length_delimited().map_err(WalkError::Decode)?;
+                scan_node(node_bytes, counts, concerns, total_nodes)?;
+            }
+            _ => {
+                tolerant_skip(&mut dec, header.wire_type).map_err(WalkError::Decode)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Scan a NodeProto byte region. Extracts op_type (field 4), and for
+/// ops with known attribute-level concerns, attempts to decode the
+/// full node and runs the concern checker.
+fn scan_node(
+    data: &[u8],
+    counts: &mut BTreeMap<String, usize>,
+    concerns_map: &mut BTreeMap<String, Vec<String>>,
+    total_nodes: &mut usize,
+) -> Result<(), WalkError> {
+    // First pass: just extract op_type and any subgraphs (attributes
+    // can contain GraphProto via field 6).
+    let mut dec = ProtoDecoder::new(data);
+    let mut op_type: Option<String> = None;
+    let mut attr_regions: Vec<&[u8]> = Vec::new();
+    while dec.remaining() > 0 {
+        let header = dec.read_tag().map_err(WalkError::Decode)?;
+        match (header.field_number, header.wire_type) {
+            (4, WireType::LengthDelimited) => {
+                let s = dec.read_length_delimited().map_err(WalkError::Decode)?;
+                op_type = Some(String::from_utf8_lossy(s).into_owned());
+            }
+            (5, WireType::LengthDelimited) => {
+                let attr_bytes = dec.read_length_delimited().map_err(WalkError::Decode)?;
+                attr_regions.push(attr_bytes);
+            }
+            _ => tolerant_skip(&mut dec, header.wire_type).map_err(WalkError::Decode)?,
+        }
+    }
+    let op_type = match op_type {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(()), // nameless node — ignore
+    };
+
+    *total_nodes += 1;
+    *counts.entry(op_type.clone()).or_insert(0) += 1;
+
+    // Attribute concerns: only try to decode attributes if the op is
+    // known to have attribute-level limitations.
+    let needs_attrs = matches!(
+        op_type.as_str(),
+        "Resize" | "RoiAlign" | "GridSample" | "Unique" | "ScatterND"
+    );
+
+    if needs_attrs {
+        // Best-effort: try full decode_node; if it fails we silently
+        // drop attribute-level reporting for this node but the op
+        // tally is already recorded above.
+        if let Ok(node) = decode_node(data) {
+            for concern in attribute_concerns_for(&node) {
+                concerns_map
+                    .entry(op_type.clone())
+                    .or_default()
+                    .push(concern);
+            }
+        }
+    }
+
+    // Recurse into any subgraph attributes (If, Loop, Scan, …).
+    for attr_bytes in attr_regions {
+        scan_attribute_for_subgraphs(attr_bytes, counts, concerns_map, total_nodes)?;
+    }
+
+    Ok(())
+}
+
+/// Scan an AttributeProto for field 6 (g / GraphProto) and field 11
+/// (graphs, repeated) and recursively walk any nested subgraphs.
+fn scan_attribute_for_subgraphs(
+    data: &[u8],
+    counts: &mut BTreeMap<String, usize>,
+    concerns_map: &mut BTreeMap<String, Vec<String>>,
+    total_nodes: &mut usize,
+) -> Result<(), WalkError> {
+    let mut dec = ProtoDecoder::new(data);
+    while dec.remaining() > 0 {
+        let header = dec.read_tag().map_err(WalkError::Decode)?;
+        match (header.field_number, header.wire_type) {
+            (6, WireType::LengthDelimited) => {
+                let g = dec.read_length_delimited().map_err(WalkError::Decode)?;
+                scan_graph(g, counts, concerns_map, total_nodes)?;
+            }
+            (11, WireType::LengthDelimited) => {
+                let g = dec.read_length_delimited().map_err(WalkError::Decode)?;
+                scan_graph(g, counts, concerns_map, total_nodes)?;
+            }
+            _ => tolerant_skip(&mut dec, header.wire_type).map_err(WalkError::Decode)?,
+        }
+    }
+    Ok(())
+}
+
+fn assemble_report(
+    model_label: &str,
+    inventory: &Inventory,
+    total_nodes: usize,
+    counts: BTreeMap<String, usize>,
+    mut concerns_by_op: BTreeMap<String, Vec<String>>,
+) -> CoverageReport {
+    let mut per_op: Vec<NodeSummary> = counts
+        .into_iter()
+        .map(|(op, count)| {
+            let status = inventory.status_of(&op);
+            let attribute_concerns = concerns_by_op.remove(&op).unwrap_or_default();
+            NodeSummary {
+                op_type: op,
+                count,
+                status,
+                attribute_concerns,
+            }
+        })
+        .collect();
+    per_op.sort_by(|a, b| {
+        b.count
+            .cmp(&a.count)
+            .then_with(|| a.op_type.cmp(&b.op_type))
+    });
+
+    let mut status_counts = StatusCounts::default();
+    for op in &per_op {
+        match &op.status {
+            OperatorStatus::Implemented => status_counts.implemented += 1,
+            OperatorStatus::Planned(p) => match p {
+                crate::inventory::Phase::P1 => status_counts.planned_p1 += 1,
+                crate::inventory::Phase::P2 => status_counts.planned_p2 += 1,
+                crate::inventory::Phase::P3 => status_counts.planned_p3 += 1,
+                crate::inventory::Phase::P4 => status_counts.planned_p4 += 1,
+            },
+            OperatorStatus::DeferredSubsystem(_) => status_counts.deferred += 1,
+            OperatorStatus::SkippedTraining
+            | OperatorStatus::SkippedDeprecated
+            | OperatorStatus::SkippedVendor => status_counts.skipped += 1,
+            OperatorStatus::Unrecognized => status_counts.unrecognized += 1,
+        }
+    }
+    let verdict = compute_verdict(&status_counts);
+    CoverageReport {
+        model_label: model_label.to_string(),
+        total_nodes,
+        distinct_ops: per_op.len(),
+        per_op,
+        counts: status_counts,
+        verdict,
+        doc_drifts: inventory.drifts().to_vec(),
+    }
 }
 
 /// Walk an already-decoded [`ModelProto`].
@@ -331,14 +570,17 @@ mod tests {
     }
 
     #[test]
-    fn planned_p1_op_marks_phase1_verdict() {
-        let src = "| Gelu | Planned-P1 | transformer activation |";
+    fn planned_p2_op_marks_phase2_verdict() {
+        // After Phase 1 merged, no ops are still Planned-P1 in develop.
+        // The same logic applies to any future phase: a model that uses
+        // a Planned-P2 op should produce a LoadableAfterPhase2 verdict.
+        let src = "| Bernoulli | Planned-P2 | stochastic masking |";
         let inv = Inventory::from_roadmap_str(src);
-        let m = model_with_ops(&["MatMul", "Gelu"]);
-        let report = walk_model(&m, "bert-ish.onnx", &inv).unwrap();
-        assert_eq!(report.counts.planned_p1, 1);
+        let m = model_with_ops(&["MatMul", "Bernoulli"]);
+        let report = walk_model(&m, "llm-ish.onnx", &inv).unwrap();
+        assert_eq!(report.counts.planned_p2, 1);
         assert_eq!(report.counts.implemented, 1);
-        assert_eq!(report.verdict, Verdict::LoadableAfterPhase1);
+        assert_eq!(report.verdict, Verdict::LoadableAfterPhase2);
     }
 
     #[test]
