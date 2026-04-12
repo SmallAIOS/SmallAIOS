@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 use crate::byte_io::{allocate_tensor_data, read_f32, write_f32, write_i64};
 use crate::operators::OpError;
 use crate::ops::common::{next_coord, require_float};
-use crate::tensor::{DataType, Tensor, TensorShape};
+use crate::tensor::{bf16_to_f32, f32_to_bf16, DataType, Tensor, TensorShape};
 
 // ---------------------------------------------------------------------------
 // Deterministic xorshift32 PRNG (for the random-sampling ops)
@@ -391,6 +391,92 @@ pub fn op_multinomial(input: &Tensor, sample_size: i64, seed: f32) -> Result<Ten
 // RMSNormalization / LpNormalization / MeanVarianceNormalization
 // ---------------------------------------------------------------------------
 
+/// BFloat16 implementation of RMSNormalization. Converts inputs from BF16
+/// to `f32`, runs the full-precision normalization, and writes BF16 outputs.
+fn rms_normalization_bf16(
+    input: &Tensor,
+    scale: &Tensor,
+    axis: i64,
+    epsilon: f32,
+) -> Result<Tensor, OpError> {
+    // Scale may be Float or BFloat16 — widen both to f32 up front.
+    let scale_f32: Vec<f32> = match scale.data_type {
+        DataType::BFloat16 => bf16_to_f32(&scale.raw_data),
+        DataType::Float => (0..scale.shape.total_elements())
+            .map(|i| read_f32(&scale.raw_data, i))
+            .collect(),
+        _ => {
+            return Err(OpError::InternalError(alloc::format!(
+                "RMSNormalization does not support {} scale",
+                scale.data_type
+            )));
+        }
+    };
+    let ndim = input.shape.ndim() as i64;
+    if ndim == 0 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RMSNormalization: input must have at least 1 dim",
+        )));
+    }
+    let axis = if axis < 0 { ndim + axis } else { axis };
+    if axis < 0 || axis >= ndim {
+        return Err(OpError::InvalidAttribute(String::from(
+            "RMSNormalization: axis out of range",
+        )));
+    }
+    let axis = axis as usize;
+    let dims = &input.shape.dims;
+    let norm_size: usize = dims[axis..].iter().map(|&d| d as usize).product();
+    if norm_size == 0 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RMSNormalization: normalized region is empty",
+        )));
+    }
+    let outer: usize = dims[..axis]
+        .iter()
+        .map(|&d| d as usize)
+        .product::<usize>()
+        .max(1);
+    let total = outer * norm_size;
+    let scale_n = scale_f32.len();
+    if scale_n != 1 && scale_n != norm_size {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RMSNormalization: scale must match normalized region",
+        )));
+    }
+    let input_f32 = bf16_to_f32(&input.raw_data);
+    if input_f32.len() < total {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RMSNormalization: BF16 input buffer smaller than shape",
+        )));
+    }
+    let mut out_f32 = alloc::vec![0.0f32; total];
+    for o in 0..outer {
+        let base = o * norm_size;
+        let mut ss = 0.0f32;
+        for i in 0..norm_size {
+            let v = input_f32[base + i];
+            ss += v * v;
+        }
+        let rms_inv = 1.0 / libm_sqrt(ss / norm_size as f32 + epsilon);
+        for i in 0..norm_size {
+            let v = input_f32[base + i];
+            let s = if scale_n == 1 {
+                scale_f32[0]
+            } else {
+                scale_f32[i]
+            };
+            out_f32[base + i] = v * rms_inv * s;
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::BFloat16,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data: f32_to_bf16(&out_f32),
+    })
+}
+
 /// RMS normalization (LLaMA/Mistral): `y = x / sqrt(mean(x^2) + eps) * scale`
 /// over the last `axis`-many dimensions (ONNX opset 23 default: normalize
 /// the single innermost axis).
@@ -400,6 +486,11 @@ pub fn op_rms_normalization(
     axis: i64,
     epsilon: f32,
 ) -> Result<Tensor, OpError> {
+    // Accept Float or BFloat16. For BF16, convert -> compute in f32 ->
+    // convert back so the output tensor keeps the same dtype as the input.
+    if input.data_type == DataType::BFloat16 {
+        return rms_normalization_bf16(input, scale, axis, epsilon);
+    }
     require_float(input, "RMSNormalization")?;
     require_float(scale, "RMSNormalization")?;
     let ndim = input.shape.ndim() as i64;
@@ -1532,5 +1623,57 @@ mod tests {
         for _ in 0..16 {
             assert_eq!(a.next_u32(), b.next_u32());
         }
+    }
+
+    // ---- BFloat16 RMSNormalization (safetensors-model-loader-v1 §3) ----
+
+    fn make_bf16(dims: &[i64], vals: &[f32]) -> Tensor {
+        Tensor {
+            data_type: DataType::BFloat16,
+            shape: TensorShape::new(dims.to_vec()),
+            name: String::new(),
+            raw_data: f32_to_bf16(vals),
+        }
+    }
+
+    #[test]
+    fn rms_normalization_bf16_matches_f32_reference() {
+        // Values deliberately chosen with BF16-exact representations so
+        // round-tripping doesn't introduce additional error.
+        let vals = [1.0f32, 2.0, 3.0, 4.0, 0.5, -1.5, 2.5, -3.0];
+        let scale_vals = [1.0f32, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+
+        let input_f32 = make_f32(&[1, 8], &vals);
+        let scale_f32 = make_f32(&[8], &scale_vals);
+        let ref_out = op_rms_normalization(&input_f32, &scale_f32, -1, 1e-5).unwrap();
+        let ref_vals = read_all_f32(&ref_out);
+
+        let input_bf = make_bf16(&[1, 8], &vals);
+        let scale_bf = make_bf16(&[8], &scale_vals);
+        let bf_out = op_rms_normalization(&input_bf, &scale_bf, -1, 1e-5).unwrap();
+        assert_eq!(bf_out.data_type, DataType::BFloat16);
+        let decoded = bf16_to_f32(&bf_out.raw_data);
+
+        for (r, b) in ref_vals.iter().zip(decoded.iter()) {
+            // BF16 mantissa has ~8 bits -> relative error ~1/128 = 0.78%.
+            let rel = (r - b).abs() / r.abs().max(1e-3);
+            assert!(
+                rel < 2e-2,
+                "rms_norm bf16 mismatch: ref={} bf={} rel={}",
+                r,
+                b,
+                rel
+            );
+        }
+    }
+
+    #[test]
+    fn rms_normalization_bf16_preserves_shape_and_dtype() {
+        let x = make_bf16(&[2, 4], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        let scale = make_bf16(&[4], &[1.0, 1.0, 1.0, 1.0]);
+        let out = op_rms_normalization(&x, &scale, -1, 1e-5).unwrap();
+        assert_eq!(out.data_type, DataType::BFloat16);
+        assert_eq!(out.shape.dims, alloc::vec![2, 4]);
+        assert_eq!(out.raw_data.len(), 2 * 4 * 2);
     }
 }

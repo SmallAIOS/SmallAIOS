@@ -21,14 +21,14 @@
 
 ## 3. BF16 Tensor Support
 
-- [ ] 3.1 Add `bf16_to_f32(bytes: &[u8]) -> Vec<f32>` helper in `onnx-rt/src/tensor.rs` (zero-extend mantissa)
-- [ ] 3.2 Add `f32_to_bf16(values: &[f32]) -> Vec<u8>` helper (round-to-nearest-even truncation)
-- [ ] 3.3 Verify `DataType::BFloat16::element_size() == 2` and `byte_size()` math is correct for BF16 tensors
-- [ ] 3.4 Add BF16 path to `RMSNormalization` CPU operator (convert on read, compute in f32, convert on write)
-- [ ] 3.5 Add BF16 path to `Add`, `Mul` CPU operators (element-wise convert-compute-convert)
-- [ ] 3.6 Add BF16 path to `SiLU` and element-wise activation CPU operators
-- [ ] 3.7 Reject BF16 tensors with a clear error in operators that don't support it (no silent coercion)
-- [ ] 3.8 Unit tests: BF16 round-trip, RMSNorm with BF16 input, Add/Mul with BF16 inputs
+- [x] 3.1 Add `bf16_to_f32(bytes: &[u8]) -> Vec<f32>` helper in `onnx-rt/src/tensor.rs` (zero-extend mantissa)
+- [x] 3.2 Add `f32_to_bf16(values: &[f32]) -> Vec<u8>` helper (round-to-nearest-even truncation)
+- [x] 3.3 Verify `DataType::BFloat16::element_size() == 2` and `byte_size()` math is correct for BF16 tensors
+- [x] 3.4 Add BF16 path to `RMSNormalization` CPU operator (convert on read, compute in f32, convert on write)
+- [x] 3.5 Add BF16 path to `Add`, `Mul` CPU operators (element-wise convert-compute-convert)
+- [x] 3.6 Add BF16 path to `SiLU` and element-wise activation CPU operators
+- [x] 3.7 Reject BF16 tensors with a clear error in operators that don't support it (no silent coercion)
+- [x] 3.8 Unit tests: BF16 round-trip, RMSNorm with BF16 input, Add/Mul with BF16 inputs
 
 ## 4. BF16 GPU Dispatch
 

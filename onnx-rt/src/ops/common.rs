@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 
 use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
 use crate::operators::OpError;
-use crate::tensor::{DataType, Tensor};
+use crate::tensor::{bf16_to_f32, f32_to_bf16, DataType, Tensor};
 
 /// Returns the broadcast output shape of two NumPy-style shape vectors.
 ///
@@ -111,9 +111,30 @@ pub(crate) fn require_float_attr(t: &Tensor, op: &str) -> Result<(), OpError> {
 }
 
 /// Element-wise unary helper. Allocates an output tensor with the same shape
-/// as `input` and applies `f` to every element. Rejects non-float inputs via
-/// [`require_float`].
+/// and dtype as `input` and applies `f` to every element. BFloat16 inputs are
+/// widened to `f32` for the computation and packed back to BF16 on write.
+/// Non-float inputs are rejected via [`require_float`].
 pub(crate) fn unary<F: Fn(f32) -> f32>(input: &Tensor, op: &str, f: F) -> Result<Tensor, OpError> {
+    if input.data_type == DataType::BFloat16 {
+        let values = bf16_to_f32(&input.raw_data);
+        let n = input.shape.total_elements();
+        if values.len() < n {
+            return Err(OpError::ShapeMismatch(format!(
+                "{} BF16 input buffer smaller than shape",
+                op
+            )));
+        }
+        let mut out = alloc::vec![0.0f32; n];
+        for i in 0..n {
+            out[i] = f(values[i]);
+        }
+        return Ok(Tensor {
+            data_type: DataType::BFloat16,
+            shape: input.shape.clone(),
+            name: String::new(),
+            raw_data: f32_to_bf16(&out),
+        });
+    }
     require_float(input, op)?;
     let n = input.shape.total_elements();
     let mut data = allocate_tensor_data(n, DataType::Float);
