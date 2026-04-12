@@ -98,7 +98,9 @@ pub fn classify_op(op_type: &str) -> OperatorClass {
         // Phase 2 generative: elementwise / samplers / small utilities
         | "DynamicQuantizeLinear" | "EyeLike" | "RandomNormal" | "RandomNormalLike"
         | "RandomUniform" | "RandomUniformLike" | "Bernoulli" | "Multinomial"
-        | "Dropout" | "Softplus" => {
+        | "Dropout" | "Softplus"
+        // microsoft-fused-ops-v1: RoPE is elementwise per query position.
+        | "RotaryEmbedding" => {
             OperatorClass::Elementwise
         }
         "Softmax" | "LayerNormalization" | "BatchNormalization" | "MaxPool" | "AveragePool"
@@ -112,6 +114,8 @@ pub fn classify_op(op_type: &str) -> OperatorClass {
         // Phase 2 reductions + RMS-style normalizations
         | "RMSNormalization" | "LpNormalization" | "MeanVarianceNormalization"
         | "ReduceL1" | "ReduceL2" | "ReduceLogSum" | "ReduceLogSumExp" | "ReduceSumSquare"
+        // microsoft-fused-ops-v1: RMSNorm wrappers classify as reduction.
+        | "SimplifiedLayerNormalization" | "SkipSimplifiedLayerNormalization"
             => OperatorClass::Reduction,
         "MatMul" | "Gemm" | "Conv"
         // Tier 2: Einsum is matmul-like; quantized GEMM/Conv same.
@@ -119,7 +123,9 @@ pub fn classify_op(op_type: &str) -> OperatorClass {
         // Phase 2: integer matmul.
         | "MatMulInteger" => OperatorClass::Gemm,
         // Recurrent layers do many GEMMs across time; classify as Attention budget.
-        "RNN" | "LSTM" | "GRU" => OperatorClass::Attention,
+        "RNN" | "LSTM" | "GRU"
+        // microsoft-fused-ops-v1: fused attention operators.
+        | "MultiHeadAttention" | "GroupQueryAttention" => OperatorClass::Attention,
         // Phase 2 control-flow ops: aggregate budget.
         "If" | "Loop" | "Scan" => OperatorClass::ControlFlow,
         _ => OperatorClass::Elementwise,
