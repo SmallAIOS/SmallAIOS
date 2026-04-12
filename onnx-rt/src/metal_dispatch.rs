@@ -113,6 +113,18 @@ pub fn plan_kernel_launch(
     input_shapes: &[&[i64]],
     attrs: &[(&str, &[i64])],
 ) -> Option<KernelLaunchPlan> {
+    // Try Tier 2 ops first (they don't go through classify_op).
+    match op_type {
+        "LayerNormalization" => return plan_layer_norm(input_shapes, attrs),
+        "RMSNormalization" | "SimplifiedLayerNormalization" => return plan_rms_norm(input_shapes),
+        "RotaryEmbedding" => return plan_rotary_embedding(input_shapes, attrs),
+        "ScaledDotProductAttention" => return plan_sdpa(input_shapes),
+        "GroupQueryAttention" => return plan_gqa(input_shapes, attrs),
+        "MatMulInteger" => return plan_gemm_i8(input_shapes),
+        "BatchNormalization" => return plan_batch_norm(input_shapes, attrs),
+        _ => {}
+    }
+
     let category = classify_op(op_type)?;
 
     match category {
@@ -126,7 +138,17 @@ pub fn plan_kernel_launch(
 
 /// Returns `true` if the given operator is supported on Metal GPU.
 pub fn is_gpu_supported(op_type: &str) -> bool {
-    classify_op(op_type).is_some()
+    matches!(
+        op_type,
+        "LayerNormalization"
+            | "RMSNormalization"
+            | "SimplifiedLayerNormalization"
+            | "RotaryEmbedding"
+            | "ScaledDotProductAttention"
+            | "GroupQueryAttention"
+            | "MatMulInteger"
+            | "BatchNormalization"
+    ) || classify_op(op_type).is_some()
 }
 
 // ---------------------------------------------------------------------------
@@ -299,6 +321,24 @@ fn plan_softmax(input_shapes: &[&[i64]]) -> Option<KernelLaunchPlan> {
 // Conv2D
 // ---------------------------------------------------------------------------
 
+/// `no_std`-compatible square root approximation using Newton-Raphson.
+///
+/// Starts from the classic fast inverse square root seed and refines with
+/// two Newton iterations. Sufficient accuracy for GPU dispatch scale factors.
+fn sqrt_approx(x: f32) -> f32 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    // Initial estimate via bit manipulation (Quake-style seed).
+    let i = x.to_bits();
+    let guess_bits = 0x1FBD_1DF5 + (i >> 1);
+    let mut y = f32::from_bits(guess_bits);
+    // Two Newton-Raphson refinements: y = (y + x/y) / 2
+    y = 0.5 * (y + x / y);
+    y = 0.5 * (y + x / y);
+    y
+}
+
 /// Extracts an integer list attribute from the simplified attr slice.
 fn get_ints_attr_from_pairs(attrs: &[(&str, &[i64])], name: &str, default: &[i64]) -> Vec<i64> {
     attrs
@@ -396,6 +436,319 @@ fn plan_conv2d(input_shapes: &[&[i64]], attrs: &[(&str, &[i64])]) -> Option<Kern
     })
 }
 
+// ---------------------------------------------------------------------------
+// Tier 2: Layer Normalization
+// ---------------------------------------------------------------------------
+
+/// Shared plan constructor for normalization ops that operate row-wise over
+/// the last axis (LayerNorm, RMSNorm).
+fn plan_norm(
+    kernel_name: &'static str,
+    kernel_source_id: &'static str,
+    input_buffer_count: usize,
+    input_shapes: &[&[i64]],
+    epsilon_bits: u32,
+) -> Option<KernelLaunchPlan> {
+    if input_shapes.is_empty() || input_shapes[0].len() < 2 {
+        return None;
+    }
+    let dims = input_shapes[0];
+    let d = *dims.last().unwrap() as u32;
+    if d == 0 {
+        return None;
+    }
+    let n: u32 = dims[..dims.len() - 1].iter().product::<i64>() as u32;
+    if n == 0 {
+        return None;
+    }
+    let tg = d.min(256);
+    let total = (n as usize) * (d as usize);
+
+    Some(KernelLaunchPlan {
+        kernel_name,
+        kernel_source_id,
+        grid_size: [n, 1, 1],
+        threadgroup_size: [tg, 1, 1],
+        input_buffer_count,
+        output_buffer_count: 1,
+        param_buffers: vec![d, epsilon_bits],
+        needs_dims_buffer: true,
+        output_shape: dims.to_vec(),
+        output_elements: total,
+    })
+}
+
+/// Extracts a float attribute from simplified attr pairs, returning its
+/// raw bit pattern as u32. Defaults to `default_val` bits.
+fn get_float_attr_bits(attrs: &[(&str, &[i64])], name: &str, default_val: f32) -> u32 {
+    attrs
+        .iter()
+        .find(|(n, _)| *n == name)
+        .and_then(|(_, v)| v.first().map(|&i| i as u32))
+        .unwrap_or_else(|| default_val.to_bits())
+}
+
+fn plan_layer_norm(input_shapes: &[&[i64]], attrs: &[(&str, &[i64])]) -> Option<KernelLaunchPlan> {
+    let epsilon_bits = get_float_attr_bits(attrs, "epsilon", 1e-5);
+    plan_norm(
+        "layer_normalization",
+        "LAYER_NORMALIZATION",
+        3, // data + scale + bias
+        input_shapes,
+        epsilon_bits,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: RMS Normalization
+// ---------------------------------------------------------------------------
+
+fn plan_rms_norm(input_shapes: &[&[i64]]) -> Option<KernelLaunchPlan> {
+    let epsilon_bits = 1e-5_f32.to_bits();
+    plan_norm(
+        "rms_normalization",
+        "RMS_NORMALIZATION",
+        2, // data + scale (no bias)
+        input_shapes,
+        epsilon_bits,
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: Rotary Embedding
+// ---------------------------------------------------------------------------
+
+fn plan_rotary_embedding(
+    input_shapes: &[&[i64]],
+    attrs: &[(&str, &[i64])],
+) -> Option<KernelLaunchPlan> {
+    if input_shapes.is_empty() || input_shapes[0].len() < 3 {
+        return None;
+    }
+    let dims = input_shapes[0];
+    let d = *dims.last().unwrap() as u32;
+    if d == 0 || !d.is_multiple_of(2) {
+        return None;
+    }
+    // Assume [B, seq_len, D] or [B, seq_len, heads, D].
+    let batch: u32 = dims[0] as u32;
+    let seq_len: u32 = dims[1] as u32;
+    if batch == 0 || seq_len == 0 {
+        return None;
+    }
+
+    let half_d = d / 2;
+    let grid_total = batch * seq_len * half_d;
+    let tg = grid_total.min(256);
+    let total_elements: usize = dims.iter().product::<i64>() as usize;
+
+    let interleaved = get_ints_attr_from_pairs(attrs, "interleaved", &[0]);
+    let interleaved_flag = interleaved.first().copied().unwrap_or(0) as u32;
+
+    Some(KernelLaunchPlan {
+        kernel_name: "rotary_embedding",
+        kernel_source_id: "ROTARY_EMBEDDING",
+        grid_size: [grid_total, 1, 1],
+        threadgroup_size: [tg, 1, 1],
+        input_buffer_count: 3, // input + cos_cache + sin_cache
+        output_buffer_count: 1,
+        param_buffers: vec![d, seq_len, interleaved_flag],
+        needs_dims_buffer: true,
+        output_shape: dims.to_vec(),
+        output_elements: total_elements,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: Scaled Dot-Product Attention
+// ---------------------------------------------------------------------------
+
+fn plan_sdpa(input_shapes: &[&[i64]]) -> Option<KernelLaunchPlan> {
+    // Q: [batch*heads, Sq, D], K: [batch*heads, Sk, D], V: [batch*heads, Sk, D]
+    if input_shapes.len() < 3 {
+        return None;
+    }
+    let q_dims = input_shapes[0];
+    let k_dims = input_shapes[1];
+    if q_dims.len() < 3 || k_dims.len() < 3 {
+        return None;
+    }
+
+    let batch_heads = q_dims[0] as u32;
+    let sq = q_dims[1] as u32;
+    let d = q_dims[2] as u32;
+    let sk = k_dims[1] as u32;
+
+    if batch_heads == 0 || sq == 0 || sk == 0 || d == 0 {
+        return None;
+    }
+
+    let scale = 1.0_f32 / sqrt_approx(d as f32);
+    let scale_bits = scale.to_bits();
+
+    let grid_x = batch_heads * sq;
+    let tg = 256u32.min(grid_x);
+    let out_elements = (batch_heads as usize) * (sq as usize) * (d as usize);
+
+    Some(KernelLaunchPlan {
+        kernel_name: "scaled_dot_product_attention",
+        kernel_source_id: "SCALED_DOT_PRODUCT_ATTENTION",
+        grid_size: [grid_x, 1, 1],
+        threadgroup_size: [tg, 1, 1],
+        input_buffer_count: 3, // Q + K + V
+        output_buffer_count: 1,
+        param_buffers: vec![sq, sk, d, batch_heads, scale_bits],
+        needs_dims_buffer: true,
+        output_shape: q_dims.to_vec(),
+        output_elements: out_elements,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: Group Query Attention
+// ---------------------------------------------------------------------------
+
+fn plan_gqa(input_shapes: &[&[i64]], attrs: &[(&str, &[i64])]) -> Option<KernelLaunchPlan> {
+    // Inputs: Q[B,Sq,num_heads*D], K[B,Sq,num_kv*D], V[B,Sq,num_kv*D],
+    //         past_K[B,num_kv,past_len,D], past_V[B,num_kv,past_len,D],
+    //         cos_cache, sin_cache
+    if input_shapes.len() < 5 {
+        return None;
+    }
+    let q_dims = input_shapes[0]; // [B, Sq, num_heads*D]
+    let past_k_dims = input_shapes[3]; // [B, num_kv_heads, past_len, D]
+
+    if q_dims.len() < 3 || past_k_dims.len() < 4 {
+        return None;
+    }
+
+    let batch = q_dims[0] as u32;
+    let sq = q_dims[1] as u32;
+
+    let num_heads_attr = get_ints_attr_from_pairs(attrs, "num_heads", &[0]);
+    let num_heads = num_heads_attr.first().copied().unwrap_or(0) as u32;
+    if num_heads == 0 || batch == 0 || sq == 0 {
+        return None;
+    }
+
+    let num_kv_heads = past_k_dims[1] as u32;
+    let past_len = past_k_dims[2] as u32;
+    let d = past_k_dims[3] as u32;
+    if num_kv_heads == 0 || d == 0 {
+        return None;
+    }
+
+    let total_len = past_len + sq;
+
+    // Grid: (B, num_heads, Sq) — each threadgroup handles one (batch, head, query_row).
+    let grid_x = batch;
+    let grid_y = num_heads;
+    let grid_z = sq;
+    let tg = d.min(256);
+
+    let out_elements = (batch as usize) * (sq as usize) * (num_heads as usize) * (d as usize);
+    let out_shape = vec![batch as i64, sq as i64, (num_heads * d) as i64];
+
+    // present_K/V sizes: [B, num_kv_heads, total_len, D]
+    let _present_elements =
+        (batch as usize) * (num_kv_heads as usize) * (total_len as usize) * (d as usize);
+
+    Some(KernelLaunchPlan {
+        kernel_name: "group_query_attention",
+        kernel_source_id: "GROUP_QUERY_ATTENTION",
+        grid_size: [grid_x, grid_y, grid_z],
+        threadgroup_size: [tg, 1, 1],
+        input_buffer_count: 7,  // Q + K + V + past_K + past_V + cos + sin
+        output_buffer_count: 3, // attention_out + present_K + present_V
+        param_buffers: vec![num_heads, num_kv_heads, d, sq, past_len],
+        needs_dims_buffer: true,
+        output_shape: out_shape,
+        output_elements: out_elements,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: Int8 GEMM
+// ---------------------------------------------------------------------------
+
+fn plan_gemm_i8(input_shapes: &[&[i64]]) -> Option<KernelLaunchPlan> {
+    if input_shapes.len() < 2 {
+        return None;
+    }
+    let a_dims = input_shapes[0];
+    let b_dims = input_shapes[1];
+    if a_dims.len() < 2 || b_dims.len() < 2 {
+        return None;
+    }
+
+    let m = a_dims[a_dims.len() - 2] as u32;
+    let k = a_dims[a_dims.len() - 1] as u32;
+    let n = b_dims[b_dims.len() - 1] as u32;
+
+    if k != b_dims[b_dims.len() - 2] as u32 {
+        return None;
+    }
+    if m == 0 || k == 0 || n == 0 {
+        return None;
+    }
+
+    let gx = m.div_ceil(16);
+    let gy = n.div_ceil(16);
+    let out_elements = (m as usize) * (n as usize);
+
+    Some(KernelLaunchPlan {
+        kernel_name: "gemm_i8",
+        kernel_source_id: "GEMM_I8",
+        grid_size: [gx * 16, gy * 16, 1],
+        threadgroup_size: [16, 16, 1],
+        input_buffer_count: 2, // A (i8) + B (i8)
+        output_buffer_count: 1,
+        param_buffers: vec![m, k, n],
+        needs_dims_buffer: true,
+        output_shape: vec![m as i64, n as i64],
+        output_elements: out_elements,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2: Batch Normalization
+// ---------------------------------------------------------------------------
+
+fn plan_batch_norm(input_shapes: &[&[i64]], attrs: &[(&str, &[i64])]) -> Option<KernelLaunchPlan> {
+    // Input: [N, C, H, W] (NCHW)
+    if input_shapes.is_empty() || input_shapes[0].len() != 4 {
+        return None;
+    }
+    let dims = input_shapes[0];
+    let n_batch = dims[0] as u32;
+    let c = dims[1] as u32;
+    let h = dims[2] as u32;
+    let w = dims[3] as u32;
+    let hw = h * w;
+
+    if n_batch == 0 || c == 0 || hw == 0 {
+        return None;
+    }
+
+    let grid = n_batch * c;
+    let tg = hw.min(256);
+    let total = (n_batch as usize) * (c as usize) * (hw as usize);
+    let epsilon_bits = get_float_attr_bits(attrs, "epsilon", 1e-5);
+
+    Some(KernelLaunchPlan {
+        kernel_name: "batch_normalization",
+        kernel_source_id: "BATCH_NORMALIZATION",
+        grid_size: [grid, 1, 1],
+        threadgroup_size: [tg, 1, 1],
+        input_buffer_count: 5, // data + scale + bias + mean + var
+        output_buffer_count: 1,
+        param_buffers: vec![c, hw, epsilon_bits],
+        needs_dims_buffer: true,
+        output_shape: dims.to_vec(),
+        output_elements: total,
+    })
+}
+
 // ===========================================================================
 // Layer 2: Platform-specific Metal execution (macOS only)
 // ===========================================================================
@@ -421,6 +774,17 @@ fn resolve_kernel_source(id: &str) -> &'static str {
         ("MATMUL_TILED", shaders::MATMUL_TILED),
         ("SOFTMAX", shaders::SOFTMAX),
         ("CONV2D", shaders::CONV2D),
+        ("LAYER_NORMALIZATION", shaders::LAYER_NORMALIZATION),
+        ("RMS_NORMALIZATION", shaders::RMS_NORMALIZATION),
+        ("ROTARY_EMBEDDING", shaders::ROTARY_EMBEDDING),
+        (
+            "SCALED_DOT_PRODUCT_ATTENTION",
+            shaders::SCALED_DOT_PRODUCT_ATTENTION,
+        ),
+        ("GROUP_QUERY_ATTENTION", shaders::GROUP_QUERY_ATTENTION),
+        ("GEMM_I8", shaders::GEMM_I8),
+        ("GEMM_F16", shaders::GEMM_F16),
+        ("BATCH_NORMALIZATION", shaders::BATCH_NORMALIZATION),
     ];
     TABLE
         .iter()
@@ -933,6 +1297,220 @@ mod tests {
             get_ints_attr_from_pairs(&attrs, "strides", &[1, 1]),
             vec![1, 1]
         );
+    }
+
+    // ---- Tier 2: Layer Normalization planning ----
+
+    #[test]
+    fn test_plan_layer_norm_basic() {
+        let plan = plan_kernel_launch("LayerNormalization", &[&[4, 128]], &[]).unwrap();
+        assert_eq!(plan.kernel_name, "layer_normalization");
+        assert_eq!(plan.kernel_source_id, "LAYER_NORMALIZATION");
+        assert_eq!(plan.grid_size, [4, 1, 1]); // N rows
+        assert_eq!(plan.threadgroup_size, [128, 1, 1]); // min(D, 256)
+        assert_eq!(plan.input_buffer_count, 3); // data + scale + bias
+        assert_eq!(plan.output_buffer_count, 1);
+        assert!(plan.needs_dims_buffer);
+        assert_eq!(plan.output_shape, vec![4, 128]);
+        assert_eq!(plan.output_elements, 512);
+        assert_eq!(plan.param_buffers[0], 128); // D
+    }
+
+    #[test]
+    fn test_plan_layer_norm_large_d_capped() {
+        let plan = plan_kernel_launch("LayerNormalization", &[&[2, 512]], &[]).unwrap();
+        assert_eq!(plan.threadgroup_size, [256, 1, 1]); // capped at 256
+        assert_eq!(plan.grid_size, [2, 1, 1]);
+    }
+
+    #[test]
+    fn test_plan_layer_norm_empty_returns_none() {
+        assert!(plan_kernel_launch("LayerNormalization", &[], &[]).is_none());
+        // 1-D input not valid (needs at least 2 dims)
+        assert!(plan_kernel_launch("LayerNormalization", &[&[128]], &[]).is_none());
+    }
+
+    // ---- Tier 2: RMS Normalization planning ----
+
+    #[test]
+    fn test_plan_rms_norm_basic() {
+        let plan = plan_kernel_launch("RMSNormalization", &[&[8, 64]], &[]).unwrap();
+        assert_eq!(plan.kernel_name, "rms_normalization");
+        assert_eq!(plan.kernel_source_id, "RMS_NORMALIZATION");
+        assert_eq!(plan.input_buffer_count, 2); // data + scale (no bias)
+        assert_eq!(plan.grid_size, [8, 1, 1]);
+        assert_eq!(plan.threadgroup_size, [64, 1, 1]);
+    }
+
+    #[test]
+    fn test_plan_rms_norm_via_simplified() {
+        let plan = plan_kernel_launch("SimplifiedLayerNormalization", &[&[4, 256]], &[]).unwrap();
+        assert_eq!(plan.kernel_name, "rms_normalization");
+        assert_eq!(plan.kernel_source_id, "RMS_NORMALIZATION");
+    }
+
+    // ---- Tier 2: Rotary Embedding planning ----
+
+    #[test]
+    fn test_plan_rotary_embedding_basic() {
+        // [B=2, seq_len=16, D=64]
+        let plan = plan_kernel_launch("RotaryEmbedding", &[&[2, 16, 64]], &[]).unwrap();
+        assert_eq!(plan.kernel_name, "rotary_embedding");
+        assert_eq!(plan.kernel_source_id, "ROTARY_EMBEDDING");
+        assert_eq!(plan.input_buffer_count, 3); // input + cos + sin
+                                                // grid = B * seq_len * (D/2) = 2 * 16 * 32 = 1024
+        assert_eq!(plan.grid_size, [1024, 1, 1]);
+        assert_eq!(plan.param_buffers, vec![64, 16, 0]); // D, seq_len, interleaved=0
+        assert_eq!(plan.output_elements, 2 * 16 * 64);
+    }
+
+    #[test]
+    fn test_plan_rotary_embedding_odd_d_returns_none() {
+        assert!(plan_kernel_launch("RotaryEmbedding", &[&[1, 8, 63]], &[]).is_none());
+    }
+
+    #[test]
+    fn test_plan_rotary_embedding_2d_returns_none() {
+        assert!(plan_kernel_launch("RotaryEmbedding", &[&[8, 64]], &[]).is_none());
+    }
+
+    // ---- Tier 2: Scaled Dot-Product Attention planning ----
+
+    #[test]
+    fn test_plan_sdpa_basic() {
+        // Q: [4, 8, 64], K: [4, 12, 64], V: [4, 12, 64]
+        let plan = plan_kernel_launch(
+            "ScaledDotProductAttention",
+            &[&[4, 8, 64], &[4, 12, 64], &[4, 12, 64]],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(plan.kernel_name, "scaled_dot_product_attention");
+        assert_eq!(plan.input_buffer_count, 3);
+        assert_eq!(plan.output_buffer_count, 1);
+        // grid = batch_heads * Sq = 4 * 8 = 32
+        assert_eq!(plan.grid_size, [32, 1, 1]);
+        assert_eq!(plan.param_buffers[0], 8); // Sq
+        assert_eq!(plan.param_buffers[1], 12); // Sk
+        assert_eq!(plan.param_buffers[2], 64); // D
+        assert_eq!(plan.output_elements, 4 * 8 * 64);
+    }
+
+    #[test]
+    fn test_plan_sdpa_missing_inputs_returns_none() {
+        assert!(plan_kernel_launch("ScaledDotProductAttention", &[&[4, 8, 64]], &[]).is_none());
+    }
+
+    // ---- Tier 2: Group Query Attention planning ----
+
+    #[test]
+    fn test_plan_gqa_basic() {
+        // Q: [1, 4, 256] (B=1, Sq=4, num_heads*D=256)
+        // K: [1, 4, 64], V: [1, 4, 64]
+        // past_K: [1, 2, 8, 32] (B=1, num_kv=2, past_len=8, D=32)
+        // past_V: [1, 2, 8, 32]
+        // cos: [12, 16], sin: [12, 16]
+        let plan = plan_kernel_launch(
+            "GroupQueryAttention",
+            &[
+                &[1, 4, 256],
+                &[1, 4, 64],
+                &[1, 4, 64],
+                &[1, 2, 8, 32],
+                &[1, 2, 8, 32],
+                &[12, 16],
+                &[12, 16],
+            ],
+            &[("num_heads", &[8])],
+        )
+        .unwrap();
+        assert_eq!(plan.kernel_name, "group_query_attention");
+        assert_eq!(plan.input_buffer_count, 7);
+        assert_eq!(plan.output_buffer_count, 3);
+        assert_eq!(plan.grid_size, [1, 8, 4]); // (B, num_heads, Sq)
+        assert_eq!(plan.param_buffers, vec![8, 2, 32, 4, 8]); // heads, kv_heads, D, Sq, past_len
+    }
+
+    #[test]
+    fn test_plan_gqa_missing_num_heads_returns_none() {
+        assert!(plan_kernel_launch(
+            "GroupQueryAttention",
+            &[
+                &[1, 4, 256],
+                &[1, 4, 64],
+                &[1, 4, 64],
+                &[1, 2, 8, 32],
+                &[1, 2, 8, 32],
+                &[12, 16],
+                &[12, 16],
+            ],
+            &[],
+        )
+        .is_none());
+    }
+
+    // ---- Tier 2: Int8 GEMM planning ----
+
+    #[test]
+    fn test_plan_gemm_i8_basic() {
+        let plan = plan_kernel_launch("MatMulInteger", &[&[32, 64], &[64, 48]], &[]).unwrap();
+        assert_eq!(plan.kernel_name, "gemm_i8");
+        assert_eq!(plan.kernel_source_id, "GEMM_I8");
+        // grid = (ceil(32/16)*16, ceil(48/16)*16) = (32, 48)
+        assert_eq!(plan.grid_size, [32, 48, 1]);
+        assert_eq!(plan.threadgroup_size, [16, 16, 1]);
+        assert_eq!(plan.param_buffers, vec![32, 64, 48]);
+        assert_eq!(plan.output_shape, vec![32, 48]);
+    }
+
+    #[test]
+    fn test_plan_gemm_i8_non_tile_aligned() {
+        let plan = plan_kernel_launch("MatMulInteger", &[&[7, 13], &[13, 5]], &[]).unwrap();
+        // ceil(7/16)*16 = 16, ceil(5/16)*16 = 16
+        assert_eq!(plan.grid_size, [16, 16, 1]);
+        assert_eq!(plan.output_elements, 7 * 5);
+    }
+
+    #[test]
+    fn test_plan_gemm_i8_inner_mismatch_returns_none() {
+        assert!(plan_kernel_launch("MatMulInteger", &[&[4, 8], &[7, 3]], &[]).is_none());
+    }
+
+    // ---- Tier 2: Batch Normalization planning ----
+
+    #[test]
+    fn test_plan_batch_norm_basic() {
+        let plan = plan_kernel_launch("BatchNormalization", &[&[2, 64, 32, 32]], &[]).unwrap();
+        assert_eq!(plan.kernel_name, "batch_normalization");
+        assert_eq!(plan.kernel_source_id, "BATCH_NORMALIZATION");
+        assert_eq!(plan.input_buffer_count, 5); // data + scale + bias + mean + var
+                                                // grid = N * C = 2 * 64 = 128
+        assert_eq!(plan.grid_size, [128, 1, 1]);
+        // threadgroup = min(HW, 256) = min(1024, 256) = 256
+        assert_eq!(plan.threadgroup_size, [256, 1, 1]);
+        assert_eq!(plan.output_shape, vec![2, 64, 32, 32]);
+        assert_eq!(plan.output_elements, 2 * 64 * 32 * 32);
+        assert_eq!(plan.param_buffers[0], 64); // C
+        assert_eq!(plan.param_buffers[1], 1024); // HW
+    }
+
+    #[test]
+    fn test_plan_batch_norm_non_4d_returns_none() {
+        assert!(plan_kernel_launch("BatchNormalization", &[&[2, 64, 32]], &[]).is_none());
+    }
+
+    // ---- Tier 2: is_gpu_supported coverage ----
+
+    #[test]
+    fn test_is_gpu_supported_tier2() {
+        assert!(is_gpu_supported("LayerNormalization"));
+        assert!(is_gpu_supported("RMSNormalization"));
+        assert!(is_gpu_supported("SimplifiedLayerNormalization"));
+        assert!(is_gpu_supported("RotaryEmbedding"));
+        assert!(is_gpu_supported("ScaledDotProductAttention"));
+        assert!(is_gpu_supported("GroupQueryAttention"));
+        assert!(is_gpu_supported("MatMulInteger"));
+        assert!(is_gpu_supported("BatchNormalization"));
     }
 
     // -------------------------------------------------------------------
