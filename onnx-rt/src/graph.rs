@@ -9,6 +9,7 @@
 //! inputs are available.
 
 use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -230,6 +231,7 @@ fn build_output_producer_map(nodes: &[ExecutionNode]) -> Vec<(String, NodeIndex)
 fn resolve_dependencies(
     nodes: &[ExecutionNode],
     input_names: &[String],
+    initializer_names: &BTreeSet<String>,
     output_producers: &[(String, NodeIndex)],
     allow_outer_refs: bool,
 ) -> Result<Vec<Vec<NodeIndex>>, GraphError> {
@@ -245,6 +247,7 @@ fn resolve_dependencies(
             resolve_single_input(
                 input_name,
                 input_names,
+                initializer_names,
                 output_producers,
                 deps,
                 allow_outer_refs,
@@ -259,11 +262,21 @@ fn resolve_dependencies(
 fn resolve_single_input(
     input_name: &str,
     input_names: &[String],
+    initializer_names: &BTreeSet<String>,
     output_producers: &[(String, NodeIndex)],
     deps: &mut Vec<NodeIndex>,
     allow_outer_refs: bool,
 ) -> Result<(), GraphError> {
+    // Empty input names represent optional inputs not provided (ONNX convention).
+    if input_name.is_empty() {
+        return Ok(());
+    }
+    // Satisfied by an explicit graph input.
     if input_names.iter().any(|n| n == input_name) {
+        return Ok(());
+    }
+    // Satisfied by an initializer tensor (model weight).
+    if initializer_names.contains(input_name) {
         return Ok(());
     }
     let producer = output_producers.iter().find(|(name, _)| name == input_name);
@@ -274,7 +287,7 @@ fn resolve_single_input(
             }
         }
         None => {
-            if !input_name.is_empty() && !allow_outer_refs {
+            if !allow_outer_refs {
                 return Err(GraphError::MissingInput(String::from(input_name)));
             }
         }
@@ -331,11 +344,18 @@ fn build_execution_graph_with_depth(
     // Phase 1: Create execution nodes (recursively compiles inner graphs).
     exec_graph.nodes = create_execution_nodes(graph, depth)?;
 
+    // Collect initializer tensor names so they are treated as pre-satisfied
+    // inputs during dependency resolution. Since ONNX opset 13, initializers
+    // are no longer required to also appear in GraphProto.input.
+    let initializer_names: BTreeSet<String> =
+        graph.initializer.iter().map(|t| t.name.clone()).collect();
+
     // Phase 2: Resolve dependencies.
     let output_producers = build_output_producer_map(&exec_graph.nodes);
     let deps_per_node = resolve_dependencies(
         &exec_graph.nodes,
         &exec_graph.input_names,
+        &initializer_names,
         &output_producers,
         allow_outer_refs,
     )?;
@@ -848,6 +868,88 @@ mod tests {
             format!("{}", GraphError::NestingTooDeep),
             "nested inner-graph compilation exceeded max depth"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Initializer tensors as implicit inputs
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_initializer_tensors_as_implicit_inputs() {
+        use crate::onnx_types::TensorProto;
+
+        // A MatMul node references both an explicit input ("x") and an
+        // initializer weight ("W") that is NOT listed in graph.input.
+        // Before the fix, this would fail with MissingInput("W").
+        let nodes = vec![make_node("MatMul", "mm", &["x", "W"], &["y"])];
+        let graph_proto = GraphProto {
+            name: "init_test".to_string(),
+            node: nodes,
+            input: vec![ValueInfoProto {
+                name: "x".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "y".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            initializer: vec![TensorProto {
+                name: "W".to_string(),
+                dims: vec![4, 4],
+                data_type: 1, // FLOAT
+                ..TensorProto::default()
+            }],
+        };
+        let exec_graph =
+            build_execution_graph(&graph_proto).expect("initializer should satisfy input");
+        assert_eq!(exec_graph.node_count(), 1);
+        assert_eq!(exec_graph.execution_order().len(), 1);
+    }
+
+    #[test]
+    fn test_initializer_not_in_graph_input_multi_node() {
+        use crate::onnx_types::TensorProto;
+
+        // Two-node chain: MatMul(x, W) -> Add(mm_out, bias)
+        // Both W and bias are initializers, not graph inputs.
+        let nodes = vec![
+            make_node("MatMul", "mm", &["x", "W"], &["mm_out"]),
+            make_node("Add", "add", &["mm_out", "bias"], &["y"]),
+        ];
+        let graph_proto = GraphProto {
+            name: "multi_init".to_string(),
+            node: nodes,
+            input: vec![ValueInfoProto {
+                name: "x".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            output: vec![ValueInfoProto {
+                name: "y".to_string(),
+                ..ValueInfoProto::default()
+            }],
+            initializer: vec![
+                TensorProto {
+                    name: "W".to_string(),
+                    dims: vec![4, 4],
+                    data_type: 1,
+                    ..TensorProto::default()
+                },
+                TensorProto {
+                    name: "bias".to_string(),
+                    dims: vec![4],
+                    data_type: 1,
+                    ..TensorProto::default()
+                },
+            ],
+        };
+        let exec_graph =
+            build_execution_graph(&graph_proto).expect("initializers should satisfy inputs");
+        assert_eq!(exec_graph.node_count(), 2);
+        // MatMul must execute before Add.
+        let order = exec_graph.execution_order();
+        let pos_mm = order.iter().position(|n| n.index() == 0).unwrap();
+        let pos_add = order.iter().position(|n| n.index() == 1).unwrap();
+        assert!(pos_mm < pos_add);
     }
 
     #[test]
