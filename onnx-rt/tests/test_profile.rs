@@ -102,6 +102,7 @@ fn custom_budget_tighter_than_default() {
         gemm_us: 1_000,
         attention_us: 5_000,
         gpu_kernel_us: 10_000,
+        control_flow_us: 20_000,
         soft_multiplier: 2,
         hard_multiplier: 5,
     };
