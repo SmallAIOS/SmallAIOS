@@ -22,6 +22,7 @@ pub mod control_flow;
 pub mod data_select;
 pub mod generative;
 pub mod math;
+pub mod microsoft;
 pub mod normalization;
 pub mod quantized;
 pub mod recurrent;
