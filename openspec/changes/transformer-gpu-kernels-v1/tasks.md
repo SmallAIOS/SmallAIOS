@@ -13,16 +13,16 @@
 
 ## 2. Element-Wise Ops (Add, Mul, Silu)
 
-- [ ] 2.1 Create `onnx-rt/src/cuda/kernels/elementwise.rs` with inline kernel sources for `add_bf16`, `add_f32`, `mul_bf16`, `mul_f32`, `silu_bf16`, `silu_f32`
-- [ ] 2.2 Implement `add_gpu(exec, inputs, attrs) -> Result<DeviceTensor, CudaError>` with matching-shape and broadcast paths, precomputing strides on the host
-- [ ] 2.3 Implement `mul_gpu` mirroring the Add wrapper, including broadcast support
-- [ ] 2.4 Implement `silu_gpu` (pointwise, no broadcasting)
-- [ ] 2.5 Register all six kernels in `CudaRuntime::init_kernels()`
-- [ ] 2.6 Unit tests (GB10): `add_f32` and `add_bf16` against a scalar Rust reference on small inputs
-- [ ] 2.7 Unit tests (GB10): `add_bf16` with broadcasting (`[1, 4096] + [32, 4096]`)
-- [ ] 2.8 Unit tests (GB10): `mul_f32`, `mul_bf16`, `silu_f32`, `silu_bf16` against CPU reference
-- [ ] 2.9 Unit test: unsupported dtype (I32) returns `CudaError::InvalidDtype` without launching a kernel
-- [ ] 2.10 Unit test: mismatched input dtypes return an error without launch
+- [x] 2.1 Create `onnx-rt/src/cuda/kernels/elementwise.rs` with inline kernel sources for `add_bf16`, `add_f32`, `mul_bf16`, `mul_f32`, `silu_bf16`, `silu_f32`
+- [x] 2.2 Implement `add_gpu(exec, inputs, attrs) -> Result<DeviceTensor, CudaError>` with matching-shape and broadcast paths, precomputing strides on the host
+- [x] 2.3 Implement `mul_gpu` mirroring the Add wrapper, including broadcast support
+- [x] 2.4 Implement `silu_gpu` (pointwise, no broadcasting)
+- [x] 2.5 Register all six kernels in `CudaRuntime::init_kernels()`
+- [x] 2.6 Unit tests (GB10): `add_f32` and `add_bf16` against a scalar Rust reference on small inputs
+- [x] 2.7 Unit tests (GB10): `add_bf16` with broadcasting (`[1, 4096] + [32, 4096]`)
+- [x] 2.8 Unit tests (GB10): `mul_f32`, `mul_bf16`, `silu_f32`, `silu_bf16` against CPU reference
+- [x] 2.9 Unit test: unsupported dtype (I32) returns `CudaError::InvalidDtype` without launching a kernel
+- [x] 2.10 Unit test: mismatched input dtypes return an error without launch
 
 ## 3. Gather Kernel
 

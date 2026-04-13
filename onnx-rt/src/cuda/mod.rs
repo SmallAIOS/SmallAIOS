@@ -581,20 +581,52 @@ impl CudaRuntime {
 
     /// Eagerly compile and register all built-in NVRTC kernels.
     ///
-    /// Section 1 of `transformer-gpu-kernels-v1` ships the infrastructure
-    /// only — no kernels are registered yet. Subsequent sections insert
-    /// entries here, e.g.:
+    /// This is **not** called automatically from [`CudaRuntime::init`] —
+    /// callers must invoke it explicitly once per runtime instance
+    /// before dispatching any operator that depends on a JIT kernel.
+    /// Compiling up-front lets the first inference call avoid NVRTC
+    /// latency.
     ///
-    /// ```ignore
-    /// let mut registry = self.kernel_registry.lock().unwrap();
-    /// registry.insert(
-    ///     "add_f32",
-    ///     kernels::compile_kernel("add_f32", ADD_F32_SRC, &[])?,
-    /// );
-    /// ```
+    /// Kernels registered by Section 2 of `transformer-gpu-kernels-v1`:
+    /// `add_f32`, `add_bf16`, `mul_f32`, `mul_bf16`, `silu_f32`,
+    /// `silu_bf16`.
     pub fn init_kernels(&self) -> Result<(), CudaError> {
         // Ensure the driver-API context exists before any kernel compile.
         kernels::lazy_context_init()?;
+
+        let mut registry = self
+            .kernel_registry
+            .lock()
+            .map_err(|_| CudaError::RuntimeError {
+                op: "kernel_registry poisoned",
+                code: -1,
+            })?;
+
+        registry.insert(
+            "add_f32",
+            kernels::compile_kernel("add_f32", kernels::elementwise::ADD_F32_SRC, &[])?,
+        );
+        registry.insert(
+            "add_bf16",
+            kernels::compile_kernel("add_bf16", kernels::elementwise::ADD_BF16_SRC, &[])?,
+        );
+        registry.insert(
+            "mul_f32",
+            kernels::compile_kernel("mul_f32", kernels::elementwise::MUL_F32_SRC, &[])?,
+        );
+        registry.insert(
+            "mul_bf16",
+            kernels::compile_kernel("mul_bf16", kernels::elementwise::MUL_BF16_SRC, &[])?,
+        );
+        registry.insert(
+            "silu_f32",
+            kernels::compile_kernel("silu_f32", kernels::elementwise::SILU_F32_SRC, &[])?,
+        );
+        registry.insert(
+            "silu_bf16",
+            kernels::compile_kernel("silu_bf16", kernels::elementwise::SILU_BF16_SRC, &[])?,
+        );
+
         Ok(())
     }
 

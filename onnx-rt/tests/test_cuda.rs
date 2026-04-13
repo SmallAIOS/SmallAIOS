@@ -1948,3 +1948,272 @@ fn test_nvrtc_compile_reports_syntax_error() {
         Ok(_) => panic!("expected compile failure, got Ok"),
     }
 }
+
+// ── Section 2: Element-wise ops (Add, Mul, Silu) ────────────────────
+
+fn make_f32_device_tensor(shape: &[i64], data: &[f32]) -> cuda::DeviceTensor {
+    let t = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(shape.to_vec()),
+        name: String::new(),
+        raw_data: data.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    cuda::DeviceTensor::from_host(&t).expect("DeviceTensor::from_host")
+}
+
+fn make_bf16_device_tensor(shape: &[i64], data_f32: &[f32]) -> cuda::DeviceTensor {
+    let t = Tensor {
+        data_type: DataType::BFloat16,
+        shape: TensorShape::new(shape.to_vec()),
+        name: String::new(),
+        raw_data: smallaios_onnx_rt::tensor::f32_to_bf16(data_f32),
+    };
+    cuda::DeviceTensor::from_host(&t).expect("DeviceTensor::from_host bf16")
+}
+
+fn make_i32_device_tensor(shape: &[i64], data: &[i32]) -> cuda::DeviceTensor {
+    let t = Tensor {
+        data_type: DataType::Int32,
+        shape: TensorShape::new(shape.to_vec()),
+        name: String::new(),
+        raw_data: data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+    };
+    cuda::DeviceTensor::from_host(&t).expect("DeviceTensor::from_host i32")
+}
+
+fn read_f32_device_tensor(t: &cuda::DeviceTensor) -> Vec<f32> {
+    let host = t.to_host().expect("D2H");
+    host.raw_data
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect()
+}
+
+fn read_bf16_device_tensor(t: &cuda::DeviceTensor) -> Vec<f32> {
+    let host = t.to_host().expect("D2H");
+    smallaios_onnx_rt::tensor::bf16_to_f32(&host.raw_data)
+}
+
+#[test]
+#[ignore]
+fn test_gpu_add_f32_matching_shapes() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let a_data: Vec<f32> = (0..8).map(|i| i as f32).collect();
+    let b_data: Vec<f32> = (0..8).map(|i| (i * 2) as f32).collect();
+
+    let a = make_f32_device_tensor(&[2, 4], &a_data);
+    let b = make_f32_device_tensor(&[2, 4], &b_data);
+
+    let c = cuda::kernels::elementwise::add_gpu(&rt, &a, &b).expect("add_gpu");
+    cuda::kernels::synchronize().expect("sync");
+    let host = read_f32_device_tensor(&c);
+    assert_eq!(host.len(), 8);
+    for i in 0..8 {
+        let expected = a_data[i] + b_data[i];
+        assert!(
+            (host[i] - expected).abs() < 1e-6,
+            "i={i}: {} vs {expected}",
+            host[i]
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_add_bf16_matching_shapes() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let a_data: Vec<f32> = (0..8).map(|i| i as f32 * 0.5).collect();
+    let b_data: Vec<f32> = (0..8).map(|i| i as f32 * -0.25).collect();
+
+    let a = make_bf16_device_tensor(&[2, 4], &a_data);
+    let b = make_bf16_device_tensor(&[2, 4], &b_data);
+
+    let c = cuda::kernels::elementwise::add_gpu(&rt, &a, &b).expect("add_gpu bf16");
+    cuda::kernels::synchronize().expect("sync");
+    let host = read_bf16_device_tensor(&c);
+    assert_eq!(host.len(), 8);
+    // Compare against BF16-rounded inputs for fairness.
+    let a_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&a_data));
+    let b_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&b_data));
+    for i in 0..8 {
+        let expected = a_round[i] + b_round[i];
+        assert!(
+            (host[i] - expected).abs() < 1e-2,
+            "i={i}: got {} expected {expected}",
+            host[i]
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_add_bf16_broadcast_row_vector() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // [1, 4096] + [32, 4096] -> [32, 4096], A broadcasts along axis 0.
+    let row: Vec<f32> = (0..4096).map(|i| (i as f32) * 0.01).collect();
+    let mat: Vec<f32> = (0..(32 * 4096))
+        .map(|i| ((i % 4096) as f32) * 0.001 + (i / 4096) as f32)
+        .collect();
+
+    let a = make_bf16_device_tensor(&[1, 4096], &row);
+    let b = make_bf16_device_tensor(&[32, 4096], &mat);
+
+    let c = cuda::kernels::elementwise::add_gpu(&rt, &a, &b).expect("add_gpu broadcast");
+    cuda::kernels::synchronize().expect("sync");
+    let host = read_bf16_device_tensor(&c);
+    assert_eq!(host.len(), 32 * 4096);
+
+    let row_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&row));
+    let mat_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&mat));
+    // Spot-check a few (row, col) combinations across the broadcast.
+    for &(r, col) in &[(0usize, 0usize), (5, 123), (31, 4095), (17, 1000)] {
+        let idx = r * 4096 + col;
+        let expected = row_round[col] + mat_round[idx];
+        assert!(
+            (host[idx] - expected).abs() < 5e-2,
+            "(r={r},col={col}): got {} expected {expected}",
+            host[idx]
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_mul_f32_matching_shapes() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let a_data: Vec<f32> = (0..16).map(|i| i as f32 * 0.25 - 2.0).collect();
+    let b_data: Vec<f32> = (0..16).map(|i| i as f32 * -0.5 + 1.0).collect();
+
+    let a = make_f32_device_tensor(&[4, 4], &a_data);
+    let b = make_f32_device_tensor(&[4, 4], &b_data);
+
+    let c = cuda::kernels::elementwise::mul_gpu(&rt, &a, &b).expect("mul_gpu");
+    cuda::kernels::synchronize().expect("sync");
+    let host = read_f32_device_tensor(&c);
+    for i in 0..16 {
+        let expected = a_data[i] * b_data[i];
+        assert!((host[i] - expected).abs() < 1e-6);
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_mul_bf16_matching_shapes() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let a_data: Vec<f32> = (0..16).map(|i| (i as f32) * 0.125).collect();
+    let b_data: Vec<f32> = (0..16).map(|i| 2.0 - (i as f32) * 0.1).collect();
+
+    let a = make_bf16_device_tensor(&[4, 4], &a_data);
+    let b = make_bf16_device_tensor(&[4, 4], &b_data);
+
+    let c = cuda::kernels::elementwise::mul_gpu(&rt, &a, &b).expect("mul_gpu bf16");
+    cuda::kernels::synchronize().expect("sync");
+    let host = read_bf16_device_tensor(&c);
+    let a_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&a_data));
+    let b_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&b_data));
+    for i in 0..16 {
+        let expected = a_round[i] * b_round[i];
+        assert!((host[i] - expected).abs() < 2e-2);
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_silu_f32() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let data: Vec<f32> = (-16i32..16).map(|i| i as f32 * 0.25).collect();
+
+    let x = make_f32_device_tensor(&[4, 8], &data);
+    let y = cuda::kernels::elementwise::silu_gpu(&rt, &x).expect("silu_gpu");
+    cuda::kernels::synchronize().expect("sync");
+    let host = read_f32_device_tensor(&y);
+    for (i, &v) in data.iter().enumerate() {
+        let expected = v / (1.0 + (-v).exp());
+        assert!(
+            (host[i] - expected).abs() < 1e-6,
+            "i={i}: {} vs {expected}",
+            host[i]
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_silu_bf16() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let data: Vec<f32> = (-16i32..16).map(|i| i as f32 * 0.25).collect();
+    let x = make_bf16_device_tensor(&[4, 8], &data);
+    let y = cuda::kernels::elementwise::silu_gpu(&rt, &x).expect("silu_gpu bf16");
+    cuda::kernels::synchronize().expect("sync");
+    let host = read_bf16_device_tensor(&y);
+    let data_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&data));
+    for (i, &v) in data_round.iter().enumerate() {
+        let expected = v / (1.0 + (-v).exp());
+        assert!(
+            (host[i] - expected).abs() < 3e-2,
+            "i={i}: got {} expected {expected}",
+            host[i]
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_add_rejects_int32() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let a = make_i32_device_tensor(&[2, 2], &[1, 2, 3, 4]);
+    let b = make_i32_device_tensor(&[2, 2], &[5, 6, 7, 8]);
+
+    let result = cuda::kernels::elementwise::add_gpu(&rt, &a, &b);
+    assert!(result.is_err(), "Int32 should be rejected, got Ok");
+    match result {
+        Err(cuda::CudaError::RuntimeError { op, .. }) => {
+            assert!(op.contains("unsupported"), "op msg: {op}");
+        }
+        Err(other) => panic!("expected RuntimeError, got: {other:?}"),
+        Ok(_) => unreachable!(),
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_add_rejects_dtype_mismatch() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let a = make_f32_device_tensor(&[4], &[1.0, 2.0, 3.0, 4.0]);
+    let b = make_bf16_device_tensor(&[4], &[1.0, 2.0, 3.0, 4.0]);
+
+    let result = cuda::kernels::elementwise::add_gpu(&rt, &a, &b);
+    assert!(result.is_err(), "mixed dtypes should be rejected");
+    match result {
+        Err(cuda::CudaError::RuntimeError { op, .. }) => {
+            assert!(op.contains("mismatch"), "op msg: {op}");
+        }
+        Err(other) => panic!("expected RuntimeError, got: {other:?}"),
+        Ok(_) => unreachable!(),
+    }
+}
