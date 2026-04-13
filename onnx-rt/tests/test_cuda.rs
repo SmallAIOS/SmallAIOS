@@ -2217,3 +2217,137 @@ fn test_gpu_add_rejects_dtype_mismatch() {
         Ok(_) => unreachable!(),
     }
 }
+
+// ── Section 3: Gather (embedding lookup) ────────────────────────────
+
+fn make_i64_device_tensor(shape: &[i64], data: &[i64]) -> cuda::DeviceTensor {
+    let t = Tensor {
+        data_type: DataType::Int64,
+        shape: TensorShape::new(shape.to_vec()),
+        name: String::new(),
+        raw_data: data.iter().flat_map(|v| v.to_le_bytes()).collect(),
+    };
+    cuda::DeviceTensor::from_host(&t).expect("DeviceTensor::from_host i64")
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gather_bf16_embedding_lookup() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // [vocab_size=128, hidden_size=32] BF16 embedding table.
+    // Row v is filled with value v * 0.0625.
+    let vocab = 128usize;
+    let hidden = 32usize;
+    let mut host_data = vec![0f32; vocab * hidden];
+    for v in 0..vocab {
+        let val = (v as f32) * 0.0625;
+        for h in 0..hidden {
+            host_data[v * hidden + h] = val;
+        }
+    }
+    let data = make_bf16_device_tensor(&[vocab as i64, hidden as i64], &host_data);
+    // indices shape [1, 4] Int64, token IDs 5, 42, 0, 127.
+    let indices = make_i64_device_tensor(&[1, 4], &[5i64, 42, 0, 127]);
+
+    let out = cuda::kernels::gather::gather_gpu(&rt, &data, &indices, 0).expect("gather_gpu bf16");
+    cuda::kernels::synchronize().expect("sync");
+
+    assert_eq!(out.shape, vec![1, 4, 32]);
+    assert_eq!(out.dtype, DataType::BFloat16);
+
+    let out_host = read_bf16_device_tensor(&out);
+    let tokens = [5i64, 42, 0, 127];
+    for (row_idx, &token) in tokens.iter().enumerate() {
+        let expected_val = (token as f32) * 0.0625;
+        for h in 0..hidden {
+            let i = row_idx * hidden + h;
+            assert!(
+                (out_host[i] - expected_val).abs() < 1e-2,
+                "row {row_idx} h {h}: got {} expected {expected_val}",
+                out_host[i]
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gather_f32_embedding_lookup() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Small F32 embedding table so we can hand-verify byte-exactly.
+    // [vocab=8, hidden=6]; row v's h-th element = v * 10 + h.
+    let vocab = 8usize;
+    let hidden = 6usize;
+    let mut host_data = vec![0f32; vocab * hidden];
+    for v in 0..vocab {
+        for h in 0..hidden {
+            host_data[v * hidden + h] = (v as f32) * 10.0 + (h as f32);
+        }
+    }
+    let data = make_f32_device_tensor(&[vocab as i64, hidden as i64], &host_data);
+    // indices shape [3] Int64.
+    let indices = make_i64_device_tensor(&[3], &[7i64, 2, 0]);
+
+    let out = cuda::kernels::gather::gather_gpu(&rt, &data, &indices, 0).expect("gather_gpu f32");
+    cuda::kernels::synchronize().expect("sync");
+
+    assert_eq!(out.shape, vec![3, 6]);
+    assert_eq!(out.dtype, DataType::Float);
+
+    let out_host = read_f32_device_tensor(&out);
+    let tokens = [7i64, 2, 0];
+    for (row_idx, &token) in tokens.iter().enumerate() {
+        for h in 0..hidden {
+            let got = out_host[row_idx * hidden + h];
+            let expected = (token as f32) * 10.0 + (h as f32);
+            assert!(
+                (got - expected).abs() < 1e-6,
+                "row {row_idx} h {h}: got {got} expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gather_rejects_nonzero_axis() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let data = make_f32_device_tensor(&[4, 8], &[0f32; 32]);
+    let indices = make_i64_device_tensor(&[2], &[0i64, 1]);
+
+    let result = cuda::kernels::gather::gather_gpu(&rt, &data, &indices, 1);
+    assert!(result.is_err(), "non-zero axis should be rejected");
+    match result {
+        Err(cuda::CudaError::RuntimeError { op, .. }) => {
+            assert!(op.contains("axis=0"), "op msg: {op}");
+        }
+        Err(other) => panic!("expected RuntimeError, got: {other:?}"),
+        Ok(_) => unreachable!(),
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gather_rejects_i32_indices() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let data = make_f32_device_tensor(&[4, 8], &[0f32; 32]);
+    let indices = make_i32_device_tensor(&[2], &[0i32, 1]);
+
+    let result = cuda::kernels::gather::gather_gpu(&rt, &data, &indices, 0);
+    assert!(result.is_err(), "i32 indices should be rejected");
+    match result {
+        Err(cuda::CudaError::RuntimeError { op, .. }) => {
+            assert!(op.contains("Int64"), "op msg: {op}");
+        }
+        Err(other) => panic!("expected RuntimeError, got: {other:?}"),
+        Ok(_) => unreachable!(),
+    }
+}

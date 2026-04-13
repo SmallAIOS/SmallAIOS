@@ -26,13 +26,13 @@
 
 ## 3. Gather Kernel
 
-- [ ] 3.1 Create `onnx-rt/src/cuda/kernels/gather.rs` with inline kernel sources for `gather_bf16` and `gather_f32`
-- [ ] 3.2 Implement `gather_gpu(exec, embedding, indices, axis, attrs) -> Result<DeviceTensor, CudaError>` with `axis=0` support
-- [ ] 3.3 Validate Int64 index dtype, BF16/F32 embedding dtype, and `axis == 0` before launch
-- [ ] 3.4 Register kernels in `init_kernels()`
-- [ ] 3.5 Unit test (GB10): Gather with a `[vocab=128, hidden=32]` BF16 embedding table and `[1, 4]` Int64 indices — byte-exact row copy
-- [ ] 3.6 Unit test (GB10): Gather with F32 embedding table
-- [ ] 3.7 Unit test: unsupported axis returns `CudaError`
+- [x] 3.1 Create `onnx-rt/src/cuda/kernels/gather.rs` with inline kernel sources for `gather_bf16` and `gather_f32`
+- [x] 3.2 Implement `gather_gpu(exec, embedding, indices, axis, attrs) -> Result<DeviceTensor, CudaError>` with `axis=0` support
+- [x] 3.3 Validate Int64 index dtype, BF16/F32 embedding dtype, and `axis == 0` before launch
+- [x] 3.4 Register kernels in `init_kernels()`
+- [x] 3.5 Unit test (GB10): Gather with a `[vocab=128, hidden=32]` BF16 embedding table and `[1, 4]` Int64 indices — byte-exact row copy
+- [x] 3.6 Unit test (GB10): Gather with F32 embedding table
+- [x] 3.7 Unit test: unsupported axis returns `CudaError`
 
 ## 4. RMSNormalization Kernel
 

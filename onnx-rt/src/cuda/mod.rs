@@ -626,6 +626,14 @@ impl CudaRuntime {
             "silu_bf16",
             kernels::compile_kernel("silu_bf16", kernels::elementwise::SILU_BF16_SRC, &[])?,
         );
+        registry.insert(
+            "gather_f32",
+            kernels::compile_kernel("gather_f32", kernels::gather::GATHER_F32_SRC, &[])?,
+        );
+        registry.insert(
+            "gather_bf16",
+            kernels::compile_kernel("gather_bf16", kernels::gather::GATHER_BF16_SRC, &[])?,
+        );
 
         Ok(())
     }
