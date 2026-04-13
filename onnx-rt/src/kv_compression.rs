@@ -1163,6 +1163,7 @@ mod tests {
         // Edge case: all-same values
         let dim = 16;
         let q = PolarQuantizer::new(dim, 4, 42);
+        #[allow(clippy::approx_constant)]
         let input = vec![3.14f32; dim];
 
         let block = q.encode(&input);
@@ -1913,10 +1914,10 @@ mod tests {
         };
         let mut cache_no = CompressedKVCache::new(&config_no);
 
-        for pos in 0..seq_len {
+        for (pos, k) in all_k.iter().enumerate().take(seq_len) {
             let v = test_vector(dim, pos as f32);
-            cache_lr.write_kv(0, 0, pos, &all_k[pos], &v);
-            cache_no.write_kv(0, 0, pos, &all_k[pos], &v);
+            cache_lr.write_kv(0, 0, pos, k, &v);
+            cache_no.write_kv(0, 0, pos, k, &v);
         }
 
         let k_lr = cache_lr.read_k(0, 0, 0, seq_len);

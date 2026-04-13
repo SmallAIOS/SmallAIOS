@@ -538,6 +538,7 @@ mod tests {
     #[test]
     fn test_bf16_roundtrip_approximate() {
         // Values with low-bit mantissa detail lose precision — check ~1e-2.
+        #[allow(clippy::approx_constant)]
         let cases = [3.14159_f32, -2.71828, 0.1, -0.01, 1234.5];
         for &v in &cases {
             let r = f32_to_bf16_roundtrip(v);

@@ -847,7 +847,7 @@ fn test_gpu_conv2d_bf16_3x3() {
     let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::Bf16).expect("CUDA init");
 
     // Input [1,2,4,4], weight [3,2,3,3] → output [1,3,4,4] (pad=1).
-    let x_data: Vec<f32> = (0..(1 * 2 * 4 * 4))
+    let x_data: Vec<f32> = (0..(2 * 4 * 4))
         .map(|i| ((i % 11) as f32) * 0.125 - 0.5)
         .collect();
     let w_data: Vec<f32> = (0..(3 * 2 * 3 * 3))
@@ -856,7 +856,7 @@ fn test_gpu_conv2d_bf16_3x3() {
 
     let x_bf = make_bf16_tensor(&[1, 2, 4, 4], &x_data);
     let w_bf = make_bf16_tensor(&[3, 2, 3, 3], &w_data);
-    assert_eq!(x_bf.raw_data.len(), 1 * 2 * 4 * 4 * 2);
+    assert_eq!(x_bf.raw_data.len(), 2 * 4 * 4 * 2);
     assert_eq!(w_bf.raw_data.len(), 3 * 2 * 3 * 3 * 2);
 
     let result = cuda::conv::gpu_conv2d(&rt, &x_bf, &w_bf, None, &[1, 1, 1, 1], &[1, 1], &[1, 1])
@@ -864,7 +864,7 @@ fn test_gpu_conv2d_bf16_3x3() {
     let y_bf = result.expect("BF16 conv returned None");
     assert_eq!(y_bf.data_type, DataType::BFloat16);
     assert_eq!(y_bf.shape.dims, vec![1, 3, 4, 4]);
-    assert_eq!(y_bf.raw_data.len(), 1 * 3 * 4 * 4 * 2);
+    assert_eq!(y_bf.raw_data.len(), 3 * 4 * 4 * 2);
 
     let gpu_bf16_result = read_bf16_as_f32(&y_bf);
 
