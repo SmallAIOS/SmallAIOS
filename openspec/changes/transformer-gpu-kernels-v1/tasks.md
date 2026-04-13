@@ -1,15 +1,15 @@
 ## 1. NVRTC FFI + Kernel Launch Infrastructure
 
-- [ ] 1.1 Extend `onnx-rt/src/cuda/ffi.rs` with CUDA driver API opaque types (`CUmodule`, `CUfunction`, `CUresult`, `CUcontext`, `CUdevice`)
-- [ ] 1.2 Add `extern "C"` declarations for `cuInit`, `cuDeviceGet`, `cuDevicePrimaryCtxRetain`, `cuCtxSetCurrent`, `cuModuleLoadData`, `cuModuleGetFunction`, `cuModuleUnload`, `cuLaunchKernel`
-- [ ] 1.3 Add `extern "C"` declarations for NVRTC: `nvrtcCreateProgram`, `nvrtcCompileProgram`, `nvrtcGetPTXSize`, `nvrtcGetPTX`, `nvrtcGetProgramLogSize`, `nvrtcGetProgramLog`, `nvrtcDestroyProgram`, plus the `nvrtcProgram` / `nvrtcResult` types
-- [ ] 1.4 Create `onnx-rt/src/cuda/kernels/mod.rs` with `Kernel` struct owning `CUmodule` and caching the `CUfunction` handle
-- [ ] 1.5 Implement `compile_kernel(name: &str, source: &str, options: &[&str]) -> Result<Kernel, CudaError>` that calls NVRTC, retrieves PTX, and loads via `cuModuleLoadData`
-- [ ] 1.6 Implement `launch_kernel(kernel: &Kernel, grid: (u32, u32, u32), block: (u32, u32, u32), args: &[*mut c_void], shared_bytes: u32) -> Result<(), CudaError>` wrapping `cuLaunchKernel`
-- [ ] 1.7 Add `CudaError::KernelCompileFailed { name, log }`, `CudaError::KernelLoadFailed { name, cuda_result }`, `CudaError::KernelLaunchFailed { name, cuda_result }` variants
-- [ ] 1.8 Extend `CudaRuntime` with a `kernel_registry: HashMap<&'static str, Kernel>` field and an `init_kernels()` method that compiles all registered kernels eagerly at runtime construction
-- [ ] 1.9 Unit test (GB10): compile and launch a trivial "add one" kernel to verify the NVRTC + driver API path end-to-end
-- [ ] 1.10 Unit test: a deliberately broken kernel source surfaces `CudaError::KernelCompileFailed` with a non-empty log
+- [x] 1.1 Extend `onnx-rt/src/cuda/ffi.rs` with CUDA driver API opaque types (`CUmodule`, `CUfunction`, `CUresult`, `CUcontext`, `CUdevice`)
+- [x] 1.2 Add `extern "C"` declarations for `cuInit`, `cuDeviceGet`, `cuDevicePrimaryCtxRetain`, `cuCtxSetCurrent`, `cuModuleLoadData`, `cuModuleGetFunction`, `cuModuleUnload`, `cuLaunchKernel`
+- [x] 1.3 Add `extern "C"` declarations for NVRTC: `nvrtcCreateProgram`, `nvrtcCompileProgram`, `nvrtcGetPTXSize`, `nvrtcGetPTX`, `nvrtcGetProgramLogSize`, `nvrtcGetProgramLog`, `nvrtcDestroyProgram`, plus the `nvrtcProgram` / `nvrtcResult` types
+- [x] 1.4 Create `onnx-rt/src/cuda/kernels/mod.rs` with `Kernel` struct owning `CUmodule` and caching the `CUfunction` handle
+- [x] 1.5 Implement `compile_kernel(name: &str, source: &str, options: &[&str]) -> Result<Kernel, CudaError>` that calls NVRTC, retrieves PTX, and loads via `cuModuleLoadData`
+- [x] 1.6 Implement `launch_kernel(kernel: &Kernel, grid: (u32, u32, u32), block: (u32, u32, u32), args: &[*mut c_void], shared_bytes: u32) -> Result<(), CudaError>` wrapping `cuLaunchKernel`
+- [x] 1.7 Add `CudaError::KernelCompileFailed { name, log }`, `CudaError::KernelLoadFailed { name, cuda_result }`, `CudaError::KernelLaunchFailed { name, cuda_result }` variants
+- [x] 1.8 Extend `CudaRuntime` with a `kernel_registry: HashMap<&'static str, Kernel>` field and an `init_kernels()` method that compiles all registered kernels eagerly at runtime construction
+- [x] 1.9 Unit test (GB10): compile and launch a trivial "add one" kernel to verify the NVRTC + driver API path end-to-end
+- [x] 1.10 Unit test: a deliberately broken kernel source surfaces `CudaError::KernelCompileFailed` with a non-empty log
 
 ## 2. Element-Wise Ops (Add, Mul, Silu)
 

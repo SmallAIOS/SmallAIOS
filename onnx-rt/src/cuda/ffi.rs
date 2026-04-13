@@ -333,3 +333,85 @@ extern "C" {
         y: *mut core::ffi::c_void,
     ) -> cudnnStatus_t;
 }
+
+// ── CUDA Driver API types ───────────────────────────────────────────
+
+/// Driver API result code (0 = CUDA_SUCCESS).
+pub type CUresult = i32;
+pub const CU_SUCCESS: CUresult = 0;
+
+/// Driver API device handle (int).
+pub type CUdevice = i32;
+
+/// Opaque driver-API handles.
+pub type CUcontext = *mut core::ffi::c_void;
+pub type CUmodule = *mut core::ffi::c_void;
+pub type CUfunction = *mut core::ffi::c_void;
+pub type CUstream = *mut core::ffi::c_void;
+
+// ── CUDA Driver API FFI ─────────────────────────────────────────────
+
+#[link(name = "cuda")]
+extern "C" {
+    pub fn cuInit(flags: u32) -> CUresult;
+    pub fn cuDeviceGet(device: *mut CUdevice, ordinal: i32) -> CUresult;
+    pub fn cuDevicePrimaryCtxRetain(pctx: *mut CUcontext, dev: CUdevice) -> CUresult;
+    pub fn cuCtxSetCurrent(ctx: CUcontext) -> CUresult;
+    pub fn cuCtxSynchronize() -> CUresult;
+    pub fn cuModuleLoadData(module: *mut CUmodule, image: *const core::ffi::c_void) -> CUresult;
+    pub fn cuModuleGetFunction(
+        func: *mut CUfunction,
+        module: CUmodule,
+        name: *const core::ffi::c_char,
+    ) -> CUresult;
+    pub fn cuModuleUnload(module: CUmodule) -> CUresult;
+    #[allow(clippy::too_many_arguments)]
+    pub fn cuLaunchKernel(
+        f: CUfunction,
+        grid_dim_x: u32,
+        grid_dim_y: u32,
+        grid_dim_z: u32,
+        block_dim_x: u32,
+        block_dim_y: u32,
+        block_dim_z: u32,
+        shared_mem_bytes: u32,
+        stream: CUstream,
+        kernel_params: *mut *mut core::ffi::c_void,
+        extras: *mut *mut core::ffi::c_void,
+    ) -> CUresult;
+    pub fn cuGetErrorString(error: CUresult, p_str: *mut *const core::ffi::c_char) -> CUresult;
+}
+
+// ── NVRTC types ─────────────────────────────────────────────────────
+
+/// NVRTC opaque program handle.
+pub type nvrtcProgram = *mut core::ffi::c_void;
+
+/// NVRTC result code (0 = NVRTC_SUCCESS).
+pub type nvrtcResult = i32;
+pub const NVRTC_SUCCESS: nvrtcResult = 0;
+
+// ── NVRTC FFI ───────────────────────────────────────────────────────
+
+#[link(name = "nvrtc")]
+extern "C" {
+    pub fn nvrtcCreateProgram(
+        prog: *mut nvrtcProgram,
+        src: *const core::ffi::c_char,
+        name: *const core::ffi::c_char,
+        num_headers: i32,
+        headers: *const *const core::ffi::c_char,
+        include_names: *const *const core::ffi::c_char,
+    ) -> nvrtcResult;
+    pub fn nvrtcCompileProgram(
+        prog: nvrtcProgram,
+        num_options: i32,
+        options: *const *const core::ffi::c_char,
+    ) -> nvrtcResult;
+    pub fn nvrtcGetPTXSize(prog: nvrtcProgram, ptx_size: *mut usize) -> nvrtcResult;
+    pub fn nvrtcGetPTX(prog: nvrtcProgram, ptx: *mut core::ffi::c_char) -> nvrtcResult;
+    pub fn nvrtcGetProgramLogSize(prog: nvrtcProgram, log_size: *mut usize) -> nvrtcResult;
+    pub fn nvrtcGetProgramLog(prog: nvrtcProgram, log: *mut core::ffi::c_char) -> nvrtcResult;
+    pub fn nvrtcDestroyProgram(prog: *mut nvrtcProgram) -> nvrtcResult;
+    pub fn nvrtcGetErrorString(result: nvrtcResult) -> *const core::ffi::c_char;
+}

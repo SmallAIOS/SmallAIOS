@@ -16,12 +16,14 @@
 //! ```
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 
 pub mod conv;
 pub mod dispatch;
 pub mod ffi;
 pub mod gpu_executor;
+pub mod kernels;
 pub mod kv_cache;
 pub mod memory;
 
@@ -54,6 +56,13 @@ pub enum CudaError {
     DnnError { op: &'static str, code: i32 },
     /// Generic CUDA runtime error.
     RuntimeError { op: &'static str, code: i32 },
+    /// NVRTC failed to compile a kernel; `log` carries the NVRTC build log.
+    KernelCompileFailed { name: String, log: String },
+    /// `cuModuleLoadData` or `cuModuleGetFunction` failed for a compiled
+    /// kernel.
+    KernelLoadFailed { name: String, cuda_result: i32 },
+    /// `cuLaunchKernel` failed for a previously compiled kernel.
+    KernelLaunchFailed { name: String, cuda_result: i32 },
 }
 
 impl core::fmt::Display for CudaError {
@@ -75,6 +84,19 @@ impl core::fmt::Display for CudaError {
             Self::BlasError { op, code } => write!(f, "cuBLAS {} failed: code {}", op, code),
             Self::DnnError { op, code } => write!(f, "cuDNN {} failed: code {}", op, code),
             Self::RuntimeError { op, code } => write!(f, "CUDA {} failed: code {}", op, code),
+            Self::KernelCompileFailed { name, log } => {
+                write!(f, "NVRTC failed to compile kernel {:?}: {}", name, log)
+            }
+            Self::KernelLoadFailed { name, cuda_result } => write!(
+                f,
+                "cuModule load of kernel {:?} failed: CUresult {}",
+                name, cuda_result
+            ),
+            Self::KernelLaunchFailed { name, cuda_result } => write!(
+                f,
+                "cuLaunchKernel for {:?} failed: CUresult {}",
+                name, cuda_result
+            ),
         }
     }
 }
@@ -508,6 +530,13 @@ pub struct CudaRuntime {
     pub cuda_version: i32,
     pub weight_store: DeviceWeightStore,
     pub precision: GpuPrecision,
+    /// Registry of NVRTC-compiled kernels, keyed by stable symbol name.
+    ///
+    /// Populated eagerly by [`CudaRuntime::init_kernels`] after runtime
+    /// construction. Operator dispatch looks up kernels via
+    /// [`CudaRuntime::with_kernel`]. Interior mutability via `Mutex` lets
+    /// `&CudaRuntime` mutate the map while keeping the runtime `Sync`.
+    pub kernel_registry: std::sync::Mutex<BTreeMap<&'static str, kernels::Kernel>>,
 }
 
 impl CudaRuntime {
@@ -546,7 +575,35 @@ impl CudaRuntime {
             cuda_version,
             weight_store: DeviceWeightStore::new(),
             precision,
+            kernel_registry: std::sync::Mutex::new(BTreeMap::new()),
         })
+    }
+
+    /// Eagerly compile and register all built-in NVRTC kernels.
+    ///
+    /// Section 1 of `transformer-gpu-kernels-v1` ships the infrastructure
+    /// only — no kernels are registered yet. Subsequent sections insert
+    /// entries here, e.g.:
+    ///
+    /// ```ignore
+    /// let mut registry = self.kernel_registry.lock().unwrap();
+    /// registry.insert(
+    ///     "add_f32",
+    ///     kernels::compile_kernel("add_f32", ADD_F32_SRC, &[])?,
+    /// );
+    /// ```
+    pub fn init_kernels(&self) -> Result<(), CudaError> {
+        // Ensure the driver-API context exists before any kernel compile.
+        kernels::lazy_context_init()?;
+        Ok(())
+    }
+
+    /// Invoke `f` with an immutable reference to a named kernel, if the
+    /// registry contains it. Returns `None` when the key is missing; the
+    /// lock is released before returning.
+    pub fn with_kernel<R>(&self, name: &str, f: impl FnOnce(&kernels::Kernel) -> R) -> Option<R> {
+        let guard = self.kernel_registry.lock().ok()?;
+        guard.get(name).map(f)
     }
 
     /// Check whether a given ONNX operator can be dispatched to GPU.

@@ -1871,3 +1871,80 @@ fn test_session_api_contract_for_llm_generation() {
 
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ── Section 1: NVRTC JIT kernel infrastructure ──────────────────────
+
+#[test]
+#[ignore]
+fn test_nvrtc_compile_and_launch_add_one() {
+    // Trivial kernel: increments every int32 element in a buffer by 1.
+    let source = r#"
+extern "C" __global__ void add_one(int *data, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) data[i] += 1;
+}
+"#;
+
+    // Use CudaRuntime to ensure the runtime-API device is also initialized
+    // (our driver-API context is lazy-initialized inside compile_kernel).
+    let _rt = cuda::CudaRuntime::init().expect("CudaRuntime init failed");
+
+    let kernel = cuda::kernels::compile_kernel("add_one", source, &[])
+        .expect("compile_kernel(add_one) failed");
+    assert_eq!(kernel.name(), "add_one");
+
+    // Host-side initial data: 0..16.
+    let host_init: Vec<i32> = (0..16).collect();
+    let bytes = core::mem::size_of::<i32>() * host_init.len();
+    let device_buf = cuda::DeviceBuffer::alloc(bytes).expect("alloc failed");
+    let init_bytes: &[u8] =
+        unsafe { core::slice::from_raw_parts(host_init.as_ptr() as *const u8, bytes) };
+    device_buf
+        .copy_from_host(init_bytes)
+        .expect("H2D copy failed");
+
+    // Build argument pack for cuLaunchKernel. Each slot must be a pointer
+    // to the memory holding the argument value (device pointer goes via a
+    // local variable so we can take its address).
+    let mut dev_ptr = device_buf.as_mut_ptr();
+    let mut n_arg: i32 = 16;
+    let args: [*mut core::ffi::c_void; 2] = [
+        &mut dev_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut n_arg as *mut _ as *mut core::ffi::c_void,
+    ];
+
+    cuda::kernels::launch_kernel(&kernel, (1, 1, 1), (16, 1, 1), &args, 0)
+        .expect("launch_kernel failed");
+    cuda::kernels::synchronize().expect("cuCtxSynchronize failed");
+
+    // Copy back and verify each element was incremented by 1.
+    let mut host_out = vec![0i32; 16];
+    let out_bytes: &mut [u8] =
+        unsafe { core::slice::from_raw_parts_mut(host_out.as_mut_ptr() as *mut u8, bytes) };
+    device_buf.copy_to_host(out_bytes).expect("D2H copy failed");
+
+    for (i, &v) in host_out.iter().enumerate() {
+        assert_eq!(v, i as i32 + 1, "element {i} should be {} got {v}", i + 1);
+    }
+    eprintln!("NVRTC add_one kernel: OK {:?}", &host_out[..8]);
+}
+
+#[test]
+#[ignore]
+fn test_nvrtc_compile_reports_syntax_error() {
+    // Intentionally broken CUDA source — NVRTC must surface a non-empty
+    // log and compile_kernel must return KernelCompileFailed.
+    let source = "extern \"C\" __global__ void broken(int *data) { this is not valid C++ }";
+    let _rt = cuda::CudaRuntime::init().expect("CudaRuntime init failed");
+
+    let result = cuda::kernels::compile_kernel("broken", source, &[]);
+    match result {
+        Err(cuda::CudaError::KernelCompileFailed { name, log }) => {
+            assert_eq!(name, "broken");
+            assert!(!log.is_empty(), "NVRTC build log should not be empty");
+            eprintln!("Got expected NVRTC compile error:\n{log}");
+        }
+        Err(other) => panic!("expected KernelCompileFailed, got: {other:?}"),
+        Ok(_) => panic!("expected compile failure, got Ok"),
+    }
+}
