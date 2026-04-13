@@ -36,13 +36,13 @@
 
 ## 4. RMSNormalization Kernel
 
-- [ ] 4.1 Create `onnx-rt/src/cuda/kernels/rms_norm.rs` with inline kernel sources for `rms_norm_bf16` and `rms_norm_f32`
-- [ ] 4.2 Kernel: one block per outer element, warp-reduced mean-of-squares, F32 accumulation, scale by weight
-- [ ] 4.3 Implement `rms_norm_gpu(exec, input, weight, eps) -> Result<DeviceTensor, CudaError>`
-- [ ] 4.4 Handle `hidden_size > max_threads_per_block` via grid-stride loop within each block
-- [ ] 4.5 Register kernels in `init_kernels()`
-- [ ] 4.6 Unit test (GB10): `rms_norm_f32` against a scalar Rust reference on `[2, 4, 16]`
-- [ ] 4.7 Unit test (GB10): `rms_norm_bf16` against `ops/microsoft.rs::rms_normalization` CPU reference on `[1, 32, 4096]` within 1e-2 tolerance
+- [x] 4.1 Create `onnx-rt/src/cuda/kernels/rms_norm.rs` with inline kernel sources for `rms_norm_bf16` and `rms_norm_f32`
+- [x] 4.2 Kernel: one block per outer element, warp-reduced mean-of-squares, F32 accumulation, scale by weight
+- [x] 4.3 Implement `rms_norm_gpu(exec, input, weight, eps) -> Result<DeviceTensor, CudaError>`
+- [x] 4.4 Handle `hidden_size > max_threads_per_block` via grid-stride loop within each block
+- [x] 4.5 Register kernels in `init_kernels()`
+- [x] 4.6 Unit test (GB10): `rms_norm_f32` against a scalar Rust reference on `[2, 4, 16]`
+- [x] 4.7 Unit test (GB10): `rms_norm_bf16` against `ops/microsoft.rs::rms_normalization` CPU reference on `[1, 32, 4096]` within 1e-2 tolerance
 
 ## 5. RotaryEmbedding Kernel
 

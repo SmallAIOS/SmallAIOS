@@ -2351,3 +2351,126 @@ fn test_gpu_gather_rejects_i32_indices() {
         Ok(_) => unreachable!(),
     }
 }
+
+// ── Section 4: RMSNormalization ────────────────────────────────────
+
+#[test]
+#[ignore]
+fn test_gpu_rms_norm_f32_small() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Input [2, 4, 16] = 8 rows × 16 hidden. Outer = 8.
+    let outer = 8usize;
+    let hidden = 16usize;
+    let mut x_data = vec![0f32; outer * hidden];
+    for row in 0..outer {
+        for h in 0..hidden {
+            x_data[row * hidden + h] = (h as f32) * 0.1 - 0.5 + (row as f32) * 0.01;
+        }
+    }
+    let weight_data: Vec<f32> = (0..hidden).map(|i| 1.0 + (i as f32) * 0.05).collect();
+    let eps = 1e-6f32;
+
+    let x = make_f32_device_tensor(&[2, 4, hidden as i64], &x_data);
+    let w = make_f32_device_tensor(&[hidden as i64], &weight_data);
+
+    let y = cuda::kernels::rms_norm::rms_norm_gpu(&rt, &x, &w, eps).expect("rms_norm_gpu f32");
+    cuda::kernels::synchronize().expect("sync");
+
+    assert_eq!(y.shape, vec![2, 4, hidden as i64]);
+    assert_eq!(y.dtype, DataType::Float);
+
+    let y_host = read_f32_device_tensor(&y);
+    assert_eq!(y_host.len(), outer * hidden);
+
+    // Scalar Rust reference: y = x * rsqrt(mean(x*x) + eps) * weight.
+    for row in 0..outer {
+        let mut sum_sq = 0.0f32;
+        for h in 0..hidden {
+            let v = x_data[row * hidden + h];
+            sum_sq += v * v;
+        }
+        let mean = sum_sq / hidden as f32;
+        let inv_rms = 1.0f32 / (mean + eps).sqrt();
+        for h in 0..hidden {
+            let expected = x_data[row * hidden + h] * inv_rms * weight_data[h];
+            let got = y_host[row * hidden + h];
+            assert!(
+                (got - expected).abs() < 1e-5,
+                "row {row} h {h}: got {got}, expected {expected}"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_rms_norm_bf16_gemma_shape() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Gemma-style dimensions: [1, 32, 4096] — one batch, 32 tokens,
+    // hidden_size 4096. Outer = 32.
+    let outer = 32usize;
+    let hidden = 4096usize;
+    let eps = 1e-6f32;
+
+    // Deterministic input values.
+    let mut x_data = vec![0f32; outer * hidden];
+    for row in 0..outer {
+        for h in 0..hidden {
+            let i = row * hidden + h;
+            x_data[i] = ((i as f32) * 0.01).sin() + ((row % 7) as f32) * 0.1;
+        }
+    }
+    let weight_data: Vec<f32> = (0..hidden)
+        .map(|h| 0.9 + ((h % 13) as f32) * 0.01)
+        .collect();
+
+    // Construct BF16 device tensors directly.
+    let x = make_bf16_device_tensor(&[1, 32, hidden as i64], &x_data);
+    let w = make_bf16_device_tensor(&[hidden as i64], &weight_data);
+
+    let y = cuda::kernels::rms_norm::rms_norm_gpu(&rt, &x, &w, eps).expect("rms_norm_gpu bf16");
+    cuda::kernels::synchronize().expect("sync");
+
+    assert_eq!(y.shape, vec![1, 32, hidden as i64]);
+    assert_eq!(y.dtype, DataType::BFloat16);
+
+    let y_host = read_bf16_device_tensor(&y);
+    assert_eq!(y_host.len(), outer * hidden);
+
+    // CPU reference: operate on BF16-rounded inputs for fairness —
+    // this matches exactly what the kernel loads from device memory.
+    let x_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&x_data));
+    let w_round = smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(
+        &weight_data,
+    ));
+
+    let mut max_abs_err = 0.0f32;
+    for row in 0..outer {
+        // F32 accumulation matches the kernel.
+        let mut sum_sq = 0.0f32;
+        for h in 0..hidden {
+            let v = x_round[row * hidden + h];
+            sum_sq += v * v;
+        }
+        let mean = sum_sq / hidden as f32;
+        let inv_rms = 1.0f32 / (mean + eps).sqrt();
+        for h in 0..hidden {
+            let expected = x_round[row * hidden + h] * inv_rms * w_round[h];
+            let got = y_host[row * hidden + h];
+            let err = (got - expected).abs();
+            if err > max_abs_err {
+                max_abs_err = err;
+            }
+            assert!(
+                err < 1e-2,
+                "row {row} h {h}: got {got}, expected {expected}, err {err}"
+            );
+        }
+    }
+    eprintln!("rms_norm_bf16 [1,32,4096] max_abs_err = {max_abs_err}");
+}

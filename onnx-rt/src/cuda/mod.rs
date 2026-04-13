@@ -634,6 +634,14 @@ impl CudaRuntime {
             "gather_bf16",
             kernels::compile_kernel("gather_bf16", kernels::gather::GATHER_BF16_SRC, &[])?,
         );
+        registry.insert(
+            "rms_norm_f32",
+            kernels::compile_kernel("rms_norm_f32", kernels::rms_norm::RMS_NORM_F32_SRC, &[])?,
+        );
+        registry.insert(
+            "rms_norm_bf16",
+            kernels::compile_kernel("rms_norm_bf16", kernels::rms_norm::RMS_NORM_BF16_SRC, &[])?,
+        );
 
         Ok(())
     }
