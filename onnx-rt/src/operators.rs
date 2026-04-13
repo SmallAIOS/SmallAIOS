@@ -14,7 +14,7 @@ use core::fmt;
 use crate::byte_io::{
     allocate_tensor_data, read_f32, read_i32, read_i64, write_f32, write_i32, write_i64, I64_SIZE,
 };
-use crate::tensor::{DataType, Tensor, TensorShape};
+use crate::tensor::{bf16_to_f32, f32_to_bf16, DataType, Tensor, TensorShape};
 
 // ---------------------------------------------------------------------------
 // Error type
@@ -1425,6 +1425,65 @@ fn broadcast_linear_index(
         })
 }
 
+/// BFloat16 element-wise unary op helper. Widens the input to `f32`, applies
+/// `f`, and packs the result back into a BF16 tensor with the same shape.
+fn bf16_unary<F: Fn(f32) -> f32>(input: &Tensor, f: F) -> Result<Tensor, OpError> {
+    let values = bf16_to_f32(&input.raw_data);
+    let n = input.shape.total_elements();
+    if values.len() < n {
+        return Err(OpError::ShapeMismatch(String::from(
+            "BF16 input buffer smaller than shape",
+        )));
+    }
+    let mut out = alloc::vec![0.0f32; n];
+    for i in 0..n {
+        out[i] = f(values[i]);
+    }
+    Ok(Tensor {
+        data_type: DataType::BFloat16,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data: f32_to_bf16(&out),
+    })
+}
+
+/// BFloat16 element-wise binary op helper. Widens both inputs to `f32`,
+/// applies `f` element-wise using NumPy-style broadcasting, and packs the
+/// result back into a BF16 tensor. Used by the BF16 paths of Add and Mul.
+#[allow(clippy::needless_range_loop)]
+fn bf16_binary_broadcast<F: Fn(f32, f32) -> f32>(
+    a: &Tensor,
+    b: &Tensor,
+    _op: &str,
+    f: F,
+) -> Result<Tensor, OpError> {
+    let a_f32 = bf16_to_f32(&a.raw_data);
+    let b_f32 = bf16_to_f32(&b.raw_data);
+    let out_shape = infer_binary_shape(&a.shape, &b.shape)?;
+    let total = out_shape.total_elements();
+    let mut out = alloc::vec![0.0f32; total];
+    let a_strides = compute_strides(&a.shape.dims);
+    let b_strides = compute_strides(&b.shape.dims);
+    let ndim = out_shape.dims.len();
+    let a_dim_offset = ndim.saturating_sub(a.shape.dims.len());
+    let b_dim_offset = ndim.saturating_sub(b.shape.dims.len());
+    let mut coord = alloc::vec![0usize; ndim];
+    for i in 0..total {
+        if i > 0 {
+            next_coord(&mut coord, &out_shape.dims);
+        }
+        let a_idx = broadcast_linear_index(&coord, &a.shape.dims, &a_strides, a_dim_offset);
+        let b_idx = broadcast_linear_index(&coord, &b.shape.dims, &b_strides, b_dim_offset);
+        out[i] = f(a_f32[a_idx], b_f32[b_idx]);
+    }
+    Ok(Tensor {
+        data_type: DataType::BFloat16,
+        shape: out_shape,
+        name: String::new(),
+        raw_data: f32_to_bf16(&out),
+    })
+}
+
 /// Element-wise addition of two input tensors with broadcasting.
 ///
 /// Supports ONNX NumPy-style broadcasting. Both inputs must be Float type.
@@ -1436,6 +1495,9 @@ pub fn op_add(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     }
     let a = inputs[0];
     let b = inputs[1];
+    if a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16 {
+        return bf16_binary_broadcast(a, b, "Add", |x, y| x + y);
+    }
     if a.data_type != DataType::Float || b.data_type != DataType::Float {
         return Err(OpError::InvalidAttribute(String::from(
             "Add only supports float32",
@@ -1956,6 +2018,9 @@ pub fn op_mul(inputs: &[&Tensor]) -> Result<Tensor, OpError> {
     }
     let a = inputs[0];
     let b = inputs[1];
+    if a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16 {
+        return bf16_binary_broadcast(a, b, "Mul", |x, y| x * y);
+    }
     if a.data_type != DataType::Float || b.data_type != DataType::Float {
         return Err(OpError::InvalidAttribute(String::from(
             "Mul only supports float32",
@@ -2125,6 +2190,9 @@ pub fn op_gemm(
 
 /// Element-wise sigmoid: 1 / (1 + exp(-x)).
 pub fn op_sigmoid(input: &Tensor) -> Result<Tensor, OpError> {
+    if input.data_type == DataType::BFloat16 {
+        return bf16_unary(input, |x| 1.0 / (1.0 + expf_approx(-x)));
+    }
     if input.data_type != DataType::Float {
         return Err(OpError::InvalidAttribute(String::from(
             "Sigmoid only supports float32",
@@ -2147,6 +2215,17 @@ pub fn op_sigmoid(input: &Tensor) -> Result<Tensor, OpError> {
 
 /// Element-wise tanh: (exp(x) - exp(-x)) / (exp(x) + exp(-x)).
 pub fn op_tanh(input: &Tensor) -> Result<Tensor, OpError> {
+    if input.data_type == DataType::BFloat16 {
+        return bf16_unary(input, |x| {
+            let ep = expf_approx(x);
+            let em = expf_approx(-x);
+            if ep + em != 0.0 {
+                (ep - em) / (ep + em)
+            } else {
+                0.0
+            }
+        });
+    }
     if input.data_type != DataType::Float {
         return Err(OpError::InvalidAttribute(String::from(
             "Tanh only supports float32",
@@ -5404,5 +5483,99 @@ mod tests {
         let v = expf_approx(-1000.0);
         assert!(v.is_finite(), "expf_approx(-1000) = {} must be finite", v);
         assert_eq!(v, 0.0);
+    }
+
+    // ---------------------------------------------------------------------
+    // BFloat16 operator coverage (safetensors-model-loader-v1 Section 3)
+    // ---------------------------------------------------------------------
+
+    fn make_bf16_tensor(dims: Vec<i64>, values: &[f32]) -> Tensor {
+        Tensor {
+            data_type: DataType::BFloat16,
+            shape: TensorShape::new(dims),
+            name: String::new(),
+            raw_data: f32_to_bf16(values),
+        }
+    }
+
+    fn read_bf16_tensor(t: &Tensor) -> Vec<f32> {
+        let raw = bf16_to_f32(&t.raw_data);
+        let n = t.shape.total_elements();
+        raw[..n].to_vec()
+    }
+
+    #[test]
+    fn test_op_add_bf16_element_wise() {
+        let a = make_bf16_tensor(vec![4], &[1.0, 2.0, 3.0, 4.0]);
+        let b = make_bf16_tensor(vec![4], &[0.5, 0.5, -1.0, 2.0]);
+        let out = op_add(&[&a, &b]).unwrap();
+        assert_eq!(out.data_type, DataType::BFloat16);
+        assert_eq!(out.shape.dims, vec![4]);
+        let v = read_bf16_tensor(&out);
+        assert_eq!(v, vec![1.5, 2.5, 2.0, 6.0]);
+    }
+
+    #[test]
+    fn test_op_add_bf16_broadcast() {
+        // [2, 3] + [3] -> [2, 3]
+        let a = make_bf16_tensor(vec![2, 3], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let b = make_bf16_tensor(vec![3], &[10.0, 20.0, 30.0]);
+        let out = op_add(&[&a, &b]).unwrap();
+        let v = read_bf16_tensor(&out);
+        assert_eq!(v, vec![11.0, 22.0, 33.0, 14.0, 25.0, 36.0]);
+    }
+
+    #[test]
+    fn test_op_mul_bf16_element_wise() {
+        let a = make_bf16_tensor(vec![3], &[2.0, 4.0, 8.0]);
+        let b = make_bf16_tensor(vec![3], &[0.5, 0.25, -1.0]);
+        let out = op_mul(&[&a, &b]).unwrap();
+        let v = read_bf16_tensor(&out);
+        assert_eq!(v, vec![1.0, 1.0, -8.0]);
+    }
+
+    #[test]
+    fn test_op_sigmoid_bf16() {
+        // sigmoid(0) = 0.5 ; round-trip at BF16 precision.
+        let t = make_bf16_tensor(vec![3], &[0.0, 2.0, -2.0]);
+        let out = op_sigmoid(&t).unwrap();
+        assert_eq!(out.data_type, DataType::BFloat16);
+        let v = read_bf16_tensor(&out);
+        assert!((v[0] - 0.5).abs() < 1e-2);
+        assert!((v[1] - 0.8808).abs() < 1e-2);
+        assert!((v[2] - 0.1192).abs() < 1e-2);
+    }
+
+    #[test]
+    fn test_op_tanh_bf16() {
+        let t = make_bf16_tensor(vec![3], &[0.0, 1.0, -1.0]);
+        let out = op_tanh(&t).unwrap();
+        let v = read_bf16_tensor(&out);
+        assert!(v[0].abs() < 1e-2);
+        assert!((v[1] - 0.7616).abs() < 2e-2);
+        assert!((v[2] + 0.7616).abs() < 2e-2);
+    }
+
+    #[test]
+    fn test_op_relu_bf16_rejected() {
+        // op_relu has not been extended to BF16 — it must return a clear
+        // error rather than panicking or silently coercing.
+        let t = make_bf16_tensor(vec![3], &[-1.0, 0.0, 2.0]);
+        let err = op_relu(&t).unwrap_err();
+        assert!(
+            matches!(err, OpError::InvalidAttribute(_)),
+            "expected InvalidAttribute for BF16 Relu, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_op_conv_bf16_rejected() {
+        // Conv has no BF16 path — handing it BF16 input should surface a
+        // clear error, not panic.
+        let x = make_bf16_tensor(vec![1, 1, 3, 3], &[0.0f32; 9]);
+        let w = make_bf16_tensor(vec![1, 1, 2, 2], &[0.0f32; 4]);
+        let res = op_conv(&x, &w, None);
+        assert!(res.is_err(), "Conv with BF16 must return an error");
     }
 }

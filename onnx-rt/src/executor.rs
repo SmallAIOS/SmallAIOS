@@ -388,8 +388,10 @@ fn try_cuda_dispatch(
         "MatMul" => {
             let a = inputs.first().and_then(|o| *o)?;
             let b = inputs.get(1).and_then(|o| *o)?;
-            if a.data_type != DataType::Float || b.data_type != DataType::Float {
-                return None; // fall through to CPU for non-f32
+            let both_f32 = a.data_type == DataType::Float && b.data_type == DataType::Float;
+            let both_bf16 = a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16;
+            if !both_f32 && !both_bf16 {
+                return None; // fall through to CPU for non-f32/non-BF16
             }
             match cuda::dispatch::gpu_gemm(rt, a, b, false, false, 1.0, 0.0, None) {
                 Ok(t) => Some(Ok(alloc::vec![t])),
@@ -403,7 +405,9 @@ fn try_cuda_dispatch(
             let a = inputs.first().and_then(|o| *o)?;
             let b = inputs.get(1).and_then(|o| *o)?;
             let c_bias = inputs.get(2).and_then(|o| *o);
-            if a.data_type != DataType::Float || b.data_type != DataType::Float {
+            let both_f32 = a.data_type == DataType::Float && b.data_type == DataType::Float;
+            let both_bf16 = a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16;
+            if !both_f32 && !both_bf16 {
                 return None;
             }
             // Parse Gemm attributes.
@@ -450,7 +454,10 @@ fn try_cuda_dispatch(
             let x = inputs.first().and_then(|o| *o)?;
             let w = inputs.get(1).and_then(|o| *o)?;
             let bias = inputs.get(2).and_then(|o| *o);
-            if x.data_type != DataType::Float {
+            if x.data_type != DataType::Float && x.data_type != DataType::BFloat16 {
+                return None;
+            }
+            if w.data_type != x.data_type {
                 return None;
             }
             // Parse Conv attributes.

@@ -178,38 +178,104 @@ fn load_sessions(
         if !info.loaded {
             continue;
         }
-        let bytes = match std::fs::read(&info.file_path) {
-            Ok(b) => b,
-            Err(e) => {
-                eprintln!("  load_sessions: failed to read {}: {}", info.file_path, e);
-                continue;
+
+        match info.kind {
+            model_manager::ModelKind::Onnx => {
+                if let Some(sess) = load_onnx_session(
+                    info,
+                    #[cfg(feature = "cuda")]
+                    cuda_runtime,
+                ) {
+                    sessions.insert(info.name.clone(), sess);
+                }
             }
-        };
-        let model = match session::load_model(&bytes) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("  load_sessions: failed to parse {}: {}", info.name, e);
-                continue;
+            model_manager::ModelKind::Safetensors => {
+                // Safetensors sessions REQUIRE a live CudaRuntime. If
+                // the container was built without `cuda` or failed to
+                // init, we fail fast on this model but keep loading
+                // the rest (§11.5).
+                #[cfg(all(feature = "cuda", feature = "safetensors"))]
+                {
+                    if let Some(rt) = cuda_runtime.as_ref() {
+                        match Session::from_safetensors(
+                            std::path::Path::new(&info.file_path),
+                            rt.clone(),
+                        ) {
+                            Ok(sess) => {
+                                println!("  Session ready: {} [GPU/safetensors]", info.name);
+                                sessions.insert(info.name.clone(), sess);
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "  load_sessions: failed safetensors load for '{}': {}",
+                                    info.name, e
+                                );
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "  load_sessions: model '{}' is safetensors but no \
+                             CudaRuntime is available — skipping (requires \
+                             SMALLAIOS_GPU_BACKEND=cuda and a working GPU).",
+                            info.name
+                        );
+                    }
+                }
+                #[cfg(not(all(feature = "cuda", feature = "safetensors")))]
+                {
+                    eprintln!(
+                        "  load_sessions: model '{}' is safetensors but this \
+                         container build lacks the `cuda,safetensors` features \
+                         — skipping.",
+                        info.name
+                    );
+                }
             }
-        };
-        let mut s = Session::new(SessionConfig::default());
-        #[cfg(feature = "cuda")]
-        {
-            s.cuda_runtime = cuda_runtime.clone();
-        }
-        match s.initialize(&model) {
-            Ok(()) => {
-                #[cfg(feature = "cuda")]
-                let gpu_tag = if cuda_runtime.is_some() { " [GPU]" } else { "" };
-                #[cfg(not(feature = "cuda"))]
-                let gpu_tag = "";
-                println!("  Session ready: {}{}", info.name, gpu_tag);
-                sessions.insert(info.name.clone(), s);
-            }
-            Err(e) => eprintln!("  load_sessions: failed to initialize {}: {}", info.name, e),
         }
     }
     sessions
+}
+
+/// Load a single ONNX session from a `ModelInfo` of kind `Onnx`.
+fn load_onnx_session(
+    info: &model_manager::ModelInfo,
+    #[cfg(feature = "cuda")] cuda_runtime: &Option<
+        std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>,
+    >,
+) -> Option<Session> {
+    let bytes = match std::fs::read(&info.file_path) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("  load_sessions: failed to read {}: {}", info.file_path, e);
+            return None;
+        }
+    };
+    let model = match session::load_model(&bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("  load_sessions: failed to parse {}: {}", info.name, e);
+            return None;
+        }
+    };
+    let mut s = Session::new(SessionConfig::default());
+    #[cfg(feature = "cuda")]
+    {
+        s.cuda_runtime = cuda_runtime.clone();
+    }
+    match s.initialize(&model) {
+        Ok(()) => {
+            #[cfg(feature = "cuda")]
+            let gpu_tag = if cuda_runtime.is_some() { " [GPU]" } else { "" };
+            #[cfg(not(feature = "cuda"))]
+            let gpu_tag = "";
+            println!("  Session ready: {}{}", info.name, gpu_tag);
+            Some(s)
+        }
+        Err(e) => {
+            eprintln!("  load_sessions: failed to initialize {}: {}", info.name, e);
+            None
+        }
+    }
 }
 
 /// Build a [`DataflowRunner`] populated with sessions from the manager.
@@ -604,6 +670,47 @@ mod tests {
         assert!(
             sessions.contains_key("relu"),
             "session map should contain 'relu'"
+        );
+    }
+
+    /// §11 integration: when the model_dir contains a safetensors
+    /// directory but the container was built without the `cuda`
+    /// feature (or CUDA init failed), that model must be skipped with
+    /// a clear log line. Other models in the same directory should
+    /// still load. Runs under default and `safetensors` features.
+    #[test]
+    fn load_sessions_skips_safetensors_without_cuda() {
+        let root = tempfile::tempdir().expect("tempdir");
+
+        // ONNX file that should load.
+        std::fs::write(root.path().join("relu.onnx"), minimal_relu_onnx_bytes())
+            .expect("write relu");
+
+        // Safetensors directory that should be detected but skipped
+        // because the test binary (even with `safetensors`) either
+        // lacks `cuda` or has no GPU.
+        let st = root.path().join("gemma-fake");
+        std::fs::create_dir_all(&st).expect("mkdir");
+        std::fs::write(st.join("config.json"), b"{}").expect("config");
+        std::fs::write(st.join("model.safetensors"), b"hello").expect("weights");
+
+        let mut mgr = model_manager::ModelManager::new(root.path().to_str().unwrap());
+        assert_eq!(mgr.load_directory(), 2, "both models should be discovered");
+
+        let sessions = load_sessions(
+            &mgr,
+            #[cfg(feature = "cuda")]
+            &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
+        );
+        // Only the ONNX session loads; the safetensors one is skipped
+        // (no CUDA runtime or no `cuda,safetensors` feature combo).
+        assert!(
+            sessions.contains_key("relu"),
+            "relu ONNX session should load"
+        );
+        assert!(
+            !sessions.contains_key("gemma-fake"),
+            "safetensors model must be skipped without a CudaRuntime"
         );
     }
 

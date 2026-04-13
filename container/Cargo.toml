@@ -11,6 +11,11 @@ publish = false
 default = []
 nvidia_gpu = ["smallaios-arch-nvidia"]
 cuda = ["smallaios-onnx-rt/cuda"]
+# Enables detection + loading of HuggingFace safetensors model
+# directories alongside `.onnx` files. Meaningful forward-pass
+# inference additionally requires the `cuda` feature (the safetensors
+# Session is strictly GPU-resident).
+safetensors = ["smallaios-onnx-rt/safetensors"]
 formal-gate = ["smallaios-security/formal-gate"]
 # Bus/dataflow runner feature flags. Placeholders until `smallaios-ipc`
 # ships the `onnx` feature and the `DataflowRunner` module — see

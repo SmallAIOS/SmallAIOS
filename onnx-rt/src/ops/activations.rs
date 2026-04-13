@@ -390,6 +390,52 @@ mod tests {
         assert!((v[1] + 0.3034).abs() < 5e-2);
     }
 
+    // ---- BFloat16 activation support (safetensors-model-loader-v1 §3) ----
+
+    fn make_bf16(dims: &[i64], vals: &[f32]) -> Tensor {
+        Tensor {
+            data_type: DataType::BFloat16,
+            shape: TensorShape::new(dims.to_vec()),
+            name: String::new(),
+            raw_data: crate::tensor::f32_to_bf16(vals),
+        }
+    }
+
+    fn read_bf16_all(t: &Tensor) -> alloc::vec::Vec<f32> {
+        let n = t.shape.total_elements();
+        let raw = crate::tensor::bf16_to_f32(&t.raw_data);
+        raw[..n].to_vec()
+    }
+
+    #[test]
+    fn test_swish_bf16_matches_f32_reference() {
+        // SiLU = Swish; values picked for close BF16/F32 alignment.
+        let vals = [0.0f32, 1.0, -1.0, 2.0, -2.0];
+        let t_f = make_f32(&[5], &vals);
+        let ref_out = read_all(&op_swish(&t_f).unwrap());
+
+        let t_bf = make_bf16(&[5], &vals);
+        let out = op_swish(&t_bf).unwrap();
+        assert_eq!(out.data_type, DataType::BFloat16);
+        let bf_out = read_bf16_all(&out);
+
+        for (r, b) in ref_out.iter().zip(bf_out.iter()) {
+            let rel = (r - b).abs() / r.abs().max(1e-3);
+            assert!(rel < 2e-2, "swish bf16 mismatch ref={} bf={}", r, b);
+        }
+    }
+
+    #[test]
+    fn test_gelu_bf16_sanity() {
+        let t = make_bf16(&[3], &[0.0, 1.0, -1.0]);
+        let out = op_gelu(&t).unwrap();
+        assert_eq!(out.data_type, DataType::BFloat16);
+        let v = read_bf16_all(&out);
+        assert!(v[0].abs() < 1e-2);
+        assert!((v[1] - 0.8413).abs() < 5e-2);
+        assert!((v[2] - -0.1587).abs() < 5e-2);
+    }
+
     #[test]
     fn test_activations_reject_non_float() {
         let t = Tensor {

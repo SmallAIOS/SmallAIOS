@@ -14,7 +14,7 @@
 //! - CUDA execution provider (NVIDIA PTX kernels)
 //! - Tensor type system and memory management
 
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
 
@@ -27,6 +27,8 @@ pub mod graph;
 pub mod kv_compression;
 pub mod memory_planner;
 pub mod metal_dispatch;
+#[cfg(feature = "safetensors")]
+pub mod model_loader;
 #[cfg(feature = "formal-gate")]
 pub mod model_policy;
 #[cfg(feature = "verified-boot")]

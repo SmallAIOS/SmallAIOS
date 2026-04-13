@@ -21,8 +21,15 @@ use alloc::string::String;
 pub mod conv;
 pub mod dispatch;
 pub mod ffi;
+pub mod gpu_executor;
+pub mod kv_cache;
 pub mod memory;
 
+pub use gpu_executor::{
+    execute_graph_gpu, execute_graph_gpu_with_weights, gpu_conv2d_device, gpu_gemm_device,
+    gpu_gemm_int8_device, initializers_to_gpu, tensor_to_device, DeviceTensor,
+};
+pub use kv_cache::{GpuKvCache, KvView, LayerKind};
 pub use memory::{DeviceBuffer, DeviceWeightStore};
 
 // ── Error type ──────────────────────────────────────────────────────

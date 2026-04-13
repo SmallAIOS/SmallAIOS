@@ -3,25 +3,44 @@
 
 //! Model manager for SmallAIOS container runtime.
 //!
-//! Scans a directory for `.onnx` files, validates them, and tracks metadata.
-//! Uses `std` for filesystem access -- this module lives on the binary side,
-//! not in the `#![no_std]` library crate.
+//! Scans a directory for `.onnx` files and HuggingFace safetensors
+//! model directories, validates them, and tracks metadata. Uses `std`
+//! for filesystem access -- this module lives on the binary side, not
+//! in the `#![no_std]` library crate.
 
 use std::collections::BTreeMap;
 use std::fs;
 
-/// Metadata about a loaded (or failed-to-load) ONNX model.
+/// Discriminator identifying the on-disk format of a discovered model.
+///
+/// `Onnx` is a single `.onnx` protobuf file (the historical path);
+/// `Safetensors` is a HuggingFace model directory containing a
+/// `config.json` plus either `model.safetensors` or
+/// `model.safetensors.index.json` (Section 11 of
+/// `safetensors-model-loader-v1`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelKind {
+    Onnx,
+    Safetensors,
+}
+
+/// Metadata about a loaded (or failed-to-load) model.
 pub struct ModelInfo {
-    /// Model name derived from the file stem.
+    /// Model name derived from the file stem (for ONNX) or the
+    /// directory name (for safetensors).
     pub name: String,
-    /// Absolute path to the `.onnx` file.
+    /// Absolute path to the `.onnx` file (`ModelKind::Onnx`) or the
+    /// safetensors model directory (`ModelKind::Safetensors`).
     pub file_path: String,
-    /// Size of the file in bytes.
+    /// Size in bytes of the ONNX file, or the sum of all safetensors
+    /// shards' sizes for safetensors directories.
     pub file_size: u64,
-    /// Whether the model was successfully loaded and validated.
+    /// Whether the model was successfully discovered and validated.
     pub loaded: bool,
     /// Error message if loading/validation failed.
     pub error: Option<String>,
+    /// On-disk format of the model.
+    pub kind: ModelKind,
 }
 
 /// Manages ONNX model discovery and metadata tracking.
@@ -56,6 +75,8 @@ impl ModelManager {
         let mut count = 0;
         for entry in dir.flatten() {
             let path = entry.path();
+
+            // ONNX file path.
             if path.extension().map(|e| e == "onnx").unwrap_or(false) {
                 let name = path
                     .file_stem()
@@ -64,7 +85,6 @@ impl ModelManager {
                     .to_string();
                 let file_size = entry.metadata().map(|m| m.len()).unwrap_or(0);
 
-                // Try to read and do a basic header check.
                 // Real ONNX files start with a protobuf varint field tag;
                 // field 1 (ir_version) wire-type 0 => tag byte 0x08.
                 let (loaded, error) = match fs::read(&path) {
@@ -82,7 +102,7 @@ impl ModelManager {
                     count += 1;
                 }
                 println!(
-                    "  Model '{}': {} bytes {}",
+                    "  Model '{}': {} bytes [onnx] {}",
                     name,
                     file_size,
                     if loaded { "OK" } else { "FAILED" }
@@ -96,6 +116,39 @@ impl ModelManager {
                         file_size,
                         loaded,
                         error,
+                        kind: ModelKind::Onnx,
+                    },
+                );
+                continue;
+            }
+
+            // Safetensors model directory path.
+            if path.is_dir() && is_safetensors_dir(&path) {
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                let (total_size, error) = safetensors_total_size(&path);
+                let loaded = error.is_none();
+                if loaded {
+                    count += 1;
+                }
+                println!(
+                    "  Model '{}': {} bytes [safetensors] {}",
+                    name,
+                    total_size,
+                    if loaded { "OK" } else { "FAILED" }
+                );
+                self.models.insert(
+                    name.clone(),
+                    ModelInfo {
+                        name,
+                        file_path: path.to_string_lossy().to_string(),
+                        file_size: total_size,
+                        loaded,
+                        error,
+                        kind: ModelKind::Safetensors,
                     },
                 );
             }
@@ -116,6 +169,56 @@ impl ModelManager {
     /// Count of successfully-loaded models.
     pub fn model_count(&self) -> usize {
         self.models.values().filter(|m| m.loaded).count()
+    }
+}
+
+/// Returns `true` if `path` looks like a HuggingFace safetensors model
+/// directory: it must contain a `config.json` AND either a single
+/// `model.safetensors` OR a `model.safetensors.index.json` manifest.
+fn is_safetensors_dir(path: &std::path::Path) -> bool {
+    if !path.is_dir() {
+        return false;
+    }
+    let has_config = path.join("config.json").is_file();
+    if !has_config {
+        return false;
+    }
+    let has_single = path.join("model.safetensors").is_file();
+    let has_index = path.join("model.safetensors.index.json").is_file();
+    has_single || has_index
+}
+
+/// Sum the byte sizes of all weight files in a safetensors directory.
+/// Returns `(total_bytes, error)`. On error, `total_bytes` is `0` and
+/// `error` contains a human-readable reason.
+fn safetensors_total_size(path: &std::path::Path) -> (u64, Option<String>) {
+    let single = path.join("model.safetensors");
+    let index = path.join("model.safetensors.index.json");
+    if single.is_file() {
+        match fs::metadata(&single) {
+            Ok(m) => (m.len(), None),
+            Err(e) => (0, Some(format!("stat model.safetensors: {}", e))),
+        }
+    } else if index.is_file() {
+        // Sum every `*.safetensors` sibling file. We don't parse the
+        // index JSON at discovery time — the loader will do that when
+        // the session actually constructs.
+        let mut total: u64 = 0;
+        let rd = match fs::read_dir(path) {
+            Ok(d) => d,
+            Err(e) => return (0, Some(format!("read_dir shards: {}", e))),
+        };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            if p.extension().map(|e| e == "safetensors").unwrap_or(false) {
+                if let Ok(md) = entry.metadata() {
+                    total = total.saturating_add(md.len());
+                }
+            }
+        }
+        (total, None)
+    } else {
+        (0, Some("no safetensors weights found".to_string()))
     }
 }
 
@@ -219,5 +322,96 @@ mod tests {
         let m = mgr.get_model("test").unwrap();
         assert!(m.file_path.ends_with("test.onnx"));
         assert_eq!(m.file_size, data.len() as u64);
+        assert_eq!(m.kind, ModelKind::Onnx);
+    }
+
+    // ── Section 11 — safetensors directory detection ─────────────────
+
+    /// Build a minimal safetensors directory layout under `root` with a
+    /// given name. Creates `config.json` and a zero-length
+    /// `model.safetensors` (content is irrelevant at discovery time).
+    fn make_safetensors_dir(root: &std::path::Path, name: &str, with_index: bool) {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).expect("mkdir safetensors");
+        std::fs::write(dir.join("config.json"), b"{}").expect("write config.json");
+        if with_index {
+            std::fs::write(
+                dir.join("model.safetensors.index.json"),
+                b"{\"weight_map\":{}}",
+            )
+            .expect("write index");
+            // Add at least one shard so total size > 0.
+            std::fs::write(dir.join("model-00001-of-00001.safetensors"), b"shard")
+                .expect("write shard");
+        } else {
+            std::fs::write(dir.join("model.safetensors"), b"hello").expect("write weights");
+        }
+    }
+
+    #[test]
+    fn detect_single_file_safetensors_dir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        make_safetensors_dir(root.path(), "gemma-270m", false);
+        let mut mgr = ModelManager::new(root.path().to_str().unwrap());
+        assert_eq!(mgr.load_directory(), 1);
+
+        let m = mgr.get_model("gemma-270m").expect("safetensors model");
+        assert_eq!(m.kind, ModelKind::Safetensors);
+        assert!(m.loaded);
+        assert_eq!(m.file_size, 5); // "hello"
+        assert!(m.file_path.ends_with("gemma-270m"));
+    }
+
+    #[test]
+    fn detect_sharded_safetensors_dir() {
+        let root = tempfile::tempdir().expect("tempdir");
+        make_safetensors_dir(root.path(), "gemma-31b", true);
+        let mut mgr = ModelManager::new(root.path().to_str().unwrap());
+        assert_eq!(mgr.load_directory(), 1);
+
+        let m = mgr.get_model("gemma-31b").expect("sharded model");
+        assert_eq!(m.kind, ModelKind::Safetensors);
+        assert!(m.loaded);
+        assert!(m.file_size > 0, "shard sizes must be summed");
+    }
+
+    #[test]
+    fn directory_without_config_is_not_safetensors() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("random-dir");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("model.safetensors"), b"x").expect("write");
+        // Missing config.json -> should NOT be detected.
+        let mut mgr = ModelManager::new(root.path().to_str().unwrap());
+        assert_eq!(mgr.load_directory(), 0);
+    }
+
+    #[test]
+    fn directory_with_config_but_no_weights_is_not_safetensors() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let dir = root.path().join("configless");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        std::fs::write(dir.join("config.json"), b"{}").expect("write");
+        let mut mgr = ModelManager::new(root.path().to_str().unwrap());
+        assert_eq!(mgr.load_directory(), 0);
+    }
+
+    #[test]
+    fn mixed_onnx_and_safetensors_coexist() {
+        let root = tempfile::tempdir().expect("tempdir");
+        // ONNX file
+        let onnx = valid_onnx_bytes();
+        std::fs::write(root.path().join("resnet.onnx"), &onnx).expect("onnx");
+        // Safetensors dir
+        make_safetensors_dir(root.path(), "gemma-4-270m", false);
+
+        let mut mgr = ModelManager::new(root.path().to_str().unwrap());
+        assert_eq!(mgr.load_directory(), 2);
+        assert_eq!(mgr.model_count(), 2);
+
+        let onnx_m = mgr.get_model("resnet").expect("onnx");
+        assert_eq!(onnx_m.kind, ModelKind::Onnx);
+        let st_m = mgr.get_model("gemma-4-270m").expect("safetensors");
+        assert_eq!(st_m.kind, ModelKind::Safetensors);
     }
 }

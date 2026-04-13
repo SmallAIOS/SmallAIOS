@@ -1,4 +1,7 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.memmap2]]
+who = "Evan Montgomery-Recht <montge@mianetworks.net>"
+criteria = "safe-to-deploy"
+version = "0.9.10"

@@ -232,6 +232,53 @@ pub struct Tensor {
     pub raw_data: Vec<u8>,
 }
 
+/// Converts a byte buffer of little-endian BFloat16 values to `f32`.
+///
+/// BFloat16 is the high 16 bits of the IEEE 754 binary32 representation, so
+/// zero-extending the 16-bit value into the high half of a `u32` and
+/// reinterpreting via [`f32::from_bits`] recovers the corresponding `f32`
+/// exactly (with 8-bit mantissa precision).
+///
+/// Trailing bytes (an odd-length input) are ignored; the returned `Vec`
+/// contains `bytes.len() / 2` elements.
+pub fn bf16_to_f32(bytes: &[u8]) -> Vec<f32> {
+    let n = bytes.len() / 2;
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let lo = bytes[2 * i] as u32;
+        let hi = bytes[2 * i + 1] as u32;
+        let bf = (hi << 8) | lo; // little-endian u16
+                                 // Place BF16 value into the upper half of a u32 (mantissa zero-extend).
+        let bits = bf << 16;
+        out.push(f32::from_bits(bits));
+    }
+    out
+}
+
+/// Converts an `f32` slice to a packed little-endian BFloat16 byte buffer.
+///
+/// Uses IEEE 754 round-to-nearest-even on the 16 discarded mantissa bits.
+/// NaN inputs are preserved as NaN (not flushed to zero); the canonical
+/// BF16 NaN bit pattern with a non-zero payload is emitted.
+pub fn f32_to_bf16(values: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(values.len() * 2);
+    for &v in values {
+        let bits = v.to_bits();
+        let bf = if v.is_nan() {
+            // Preserve NaN — set a non-zero mantissa bit in the BF16 payload
+            // so the result remains a quiet NaN. Keep the sign bit.
+            ((bits >> 16) as u16) | 0x0040
+        } else {
+            // Round-to-nearest-even on the low 16 bits.
+            let rounding_bias = 0x0000_7FFFu32 + ((bits >> 16) & 1);
+            ((bits.wrapping_add(rounding_bias)) >> 16) as u16
+        };
+        out.push((bf & 0xFF) as u8);
+        out.push((bf >> 8) as u8);
+    }
+    out
+}
+
 impl Tensor {
     /// Creates a new empty tensor with the given data type, shape, and name.
     pub fn new(data_type: DataType, shape: TensorShape, name: String) -> Self {
@@ -448,6 +495,110 @@ mod tests {
 
         tensor.raw_data = vec![0, 1, 1, 0];
         assert!(!tensor.is_empty());
+    }
+
+    #[test]
+    fn test_tensor_bf16_byte_size() {
+        // BF16 element_size is 2 bytes.
+        assert_eq!(DataType::BFloat16.element_size(), 2);
+        let t = Tensor::new(
+            DataType::BFloat16,
+            TensorShape::new(vec![4, 8]),
+            String::from("weights"),
+        );
+        // 4 * 8 = 32 elements * 2 bytes = 64
+        assert_eq!(t.byte_size(), 64);
+
+        let scalar = Tensor::new(DataType::BFloat16, TensorShape::scalar(), String::from("s"));
+        assert_eq!(scalar.byte_size(), 2);
+    }
+
+    // ---- BF16 conversion tests ----
+
+    fn f32_to_bf16_roundtrip(v: f32) -> f32 {
+        let bytes = f32_to_bf16(&[v]);
+        bf16_to_f32(&bytes)[0]
+    }
+
+    #[test]
+    fn test_bf16_roundtrip_exact_zero() {
+        assert_eq!(f32_to_bf16_roundtrip(0.0).to_bits(), 0.0f32.to_bits());
+        assert_eq!(f32_to_bf16_roundtrip(-0.0).to_bits(), (-0.0f32).to_bits());
+    }
+
+    #[test]
+    fn test_bf16_roundtrip_exact_one() {
+        // 1.0 has zero mantissa below the BF16 cut, so round-trip is exact.
+        assert_eq!(f32_to_bf16_roundtrip(1.0), 1.0);
+        assert_eq!(f32_to_bf16_roundtrip(-1.0), -1.0);
+        assert_eq!(f32_to_bf16_roundtrip(2.0), 2.0);
+        assert_eq!(f32_to_bf16_roundtrip(0.5), 0.5);
+    }
+
+    #[test]
+    fn test_bf16_roundtrip_approximate() {
+        // Values with low-bit mantissa detail lose precision — check ~1e-2.
+        let cases = [3.14159_f32, -2.71828, 0.1, -0.01, 1234.5];
+        for &v in &cases {
+            let r = f32_to_bf16_roundtrip(v);
+            let rel = (r - v).abs() / v.abs().max(1e-6);
+            assert!(rel < 1e-2, "round-trip {} -> {} rel={}", v, r, rel);
+        }
+    }
+
+    #[test]
+    fn test_bf16_infinity_preserved() {
+        assert!(f32_to_bf16_roundtrip(f32::INFINITY).is_infinite());
+        assert!(f32_to_bf16_roundtrip(f32::INFINITY).is_sign_positive());
+        assert!(f32_to_bf16_roundtrip(f32::NEG_INFINITY).is_infinite());
+        assert!(f32_to_bf16_roundtrip(f32::NEG_INFINITY).is_sign_negative());
+    }
+
+    #[test]
+    fn test_bf16_nan_preserved() {
+        let r = f32_to_bf16_roundtrip(f32::NAN);
+        assert!(r.is_nan(), "NaN must round-trip as NaN");
+    }
+
+    #[test]
+    fn test_bf16_round_to_nearest_even_midpoint() {
+        // Build an f32 whose low 16 bits form an exact-halfway midpoint:
+        // mantissa low word = 0x8000. Round-to-nearest-even breaks ties
+        // toward the value whose LSB is zero.
+        //
+        // Case A: upper BF16 even (LSB of high word == 0) -> round down.
+        // Case B: upper BF16 odd  (LSB of high word == 1) -> round up.
+
+        // Choose high-word patterns that unambiguously preserve the LSB.
+        // f32 bits = 0x3F80_0000 is 1.0; high word LSB = 0 (even). Adding
+        // 0x8000 produces a halfway case that should round *down* to 1.0.
+        let even_mid = f32::from_bits(0x3F80_8000);
+        let r = f32_to_bf16_roundtrip(even_mid);
+        assert_eq!(r.to_bits(), 0x3F80_0000, "even midpoint must round down");
+
+        // f32 bits = 0x3F81_0000 (BF16 = 0x3F81, LSB = 1, odd). Halfway
+        // produces 0x3F81_8000; RNE rounds *up* to 0x3F82_0000.
+        let odd_mid = f32::from_bits(0x3F81_8000);
+        let r = f32_to_bf16_roundtrip(odd_mid);
+        assert_eq!(r.to_bits(), 0x3F82_0000, "odd midpoint must round up");
+    }
+
+    #[test]
+    fn test_bf16_to_f32_handles_odd_length() {
+        // Odd-length input: trailing byte is ignored. 2 bytes = 1 element.
+        let bytes = [0x80u8, 0x3F, 0xAB];
+        let out = bf16_to_f32(&bytes);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0], 1.0);
+    }
+
+    #[test]
+    fn test_bf16_vector_roundtrip_small() {
+        let values = [0.0f32, 1.0, -1.0, 2.0, -2.0, 0.5, -0.5];
+        let bytes = f32_to_bf16(&values);
+        assert_eq!(bytes.len(), values.len() * 2);
+        let decoded = bf16_to_f32(&bytes);
+        assert_eq!(decoded, values);
     }
 
     #[test]

@@ -761,3 +761,1113 @@ fn test_cublas_gemm_ex_int8_raw() {
     assert_eq!(c_vals[1], 70);
     eprintln!("Raw cublasGemmEx INT8: OK {:?}", &c_vals[..4]);
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// BF16 GPU dispatch tests (safetensors-model-loader-v1 Section 4)
+// ──────────────────────────────────────────────────────────────────────
+
+/// Build a BF16 tensor from an f32 slice (round-tripped through f32→BF16).
+fn make_bf16_tensor(shape: &[i64], data: &[f32]) -> Tensor {
+    let raw = smallaios_onnx_rt::tensor::f32_to_bf16(data);
+    Tensor {
+        data_type: DataType::BFloat16,
+        shape: TensorShape::new(shape.to_vec()),
+        name: String::new(),
+        raw_data: raw,
+    }
+}
+
+/// Decode a BF16 tensor's raw bytes to f32 for comparison.
+fn read_bf16_as_f32(t: &Tensor) -> Vec<f32> {
+    assert_eq!(t.data_type, DataType::BFloat16);
+    smallaios_onnx_rt::tensor::bf16_to_f32(&t.raw_data)
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gemm_bf16_16x16() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::Bf16).expect("CUDA init");
+
+    // 16x16 * 16x16 = 16x16, BF16 end-to-end.
+    let n = 16usize;
+    // Small deterministic values so BF16 mantissa loss stays small.
+    let a_data: Vec<f32> = (0..n * n).map(|i| ((i % 7) as f32) * 0.25 - 0.5).collect();
+    let b_data: Vec<f32> = (0..n * n)
+        .map(|i| ((i % 5) as f32) * 0.125 + 0.25)
+        .collect();
+
+    let a_bf = make_bf16_tensor(&[n as i64, n as i64], &a_data);
+    let b_bf = make_bf16_tensor(&[n as i64, n as i64], &b_data);
+    assert_eq!(a_bf.raw_data.len(), n * n * 2);
+    assert_eq!(b_bf.raw_data.len(), n * n * 2);
+
+    let c_bf = cuda::dispatch::gpu_gemm(&rt, &a_bf, &b_bf, false, false, 1.0, 0.0, None)
+        .expect("gpu_gemm BF16 failed");
+    assert_eq!(c_bf.data_type, DataType::BFloat16);
+    assert_eq!(c_bf.shape.dims, vec![n as i64, n as i64]);
+    assert_eq!(c_bf.raw_data.len(), n * n * 2);
+
+    let gpu_bf16_result = read_bf16_as_f32(&c_bf);
+
+    // f32 reference on GPU using the *same* BF16-rounded inputs so we
+    // isolate compute-precision drift from input-rounding drift.
+    let a_rounded = smallaios_onnx_rt::tensor::bf16_to_f32(&a_bf.raw_data);
+    let b_rounded = smallaios_onnx_rt::tensor::bf16_to_f32(&b_bf.raw_data);
+    let a_f32 = make_f32_tensor(&[n as i64, n as i64], &a_rounded);
+    let b_f32 = make_f32_tensor(&[n as i64, n as i64], &b_rounded);
+    let rt_f32 =
+        cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init f32");
+    let c_f32 = cuda::dispatch::gpu_gemm(&rt_f32, &a_f32, &b_f32, false, false, 1.0, 0.0, None)
+        .expect("gpu_gemm f32 ref failed");
+    let ref_vals = read_f32(&c_f32);
+
+    let mut max_abs: f32 = 0.0;
+    for i in 0..n * n {
+        let e = (gpu_bf16_result[i] - ref_vals[i]).abs();
+        if e > max_abs {
+            max_abs = e;
+        }
+    }
+    // BF16 has ~8 bits of mantissa; for a 16-element dot product of values
+    // in roughly [-0.5, 1.25], 5e-2 absolute is generous but realistic.
+    assert!(
+        max_abs < 5e-2,
+        "BF16 GEMM deviated from f32 reference by {} (limit 5e-2)",
+        max_abs
+    );
+    eprintln!(
+        "gpu_gemm BF16 16x16: OK, max abs err vs f32 = {:.6}",
+        max_abs
+    );
+}
+
+#[test]
+#[ignore]
+fn test_gpu_conv2d_bf16_3x3() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::Bf16).expect("CUDA init");
+
+    // Input [1,2,4,4], weight [3,2,3,3] → output [1,3,4,4] (pad=1).
+    let x_data: Vec<f32> = (0..(1 * 2 * 4 * 4))
+        .map(|i| ((i % 11) as f32) * 0.125 - 0.5)
+        .collect();
+    let w_data: Vec<f32> = (0..(3 * 2 * 3 * 3))
+        .map(|i| ((i % 5) as f32) * 0.0625 + 0.125)
+        .collect();
+
+    let x_bf = make_bf16_tensor(&[1, 2, 4, 4], &x_data);
+    let w_bf = make_bf16_tensor(&[3, 2, 3, 3], &w_data);
+    assert_eq!(x_bf.raw_data.len(), 1 * 2 * 4 * 4 * 2);
+    assert_eq!(w_bf.raw_data.len(), 3 * 2 * 3 * 3 * 2);
+
+    let result = cuda::conv::gpu_conv2d(&rt, &x_bf, &w_bf, None, &[1, 1, 1, 1], &[1, 1], &[1, 1])
+        .expect("gpu_conv2d BF16 failed");
+    let y_bf = result.expect("BF16 conv returned None");
+    assert_eq!(y_bf.data_type, DataType::BFloat16);
+    assert_eq!(y_bf.shape.dims, vec![1, 3, 4, 4]);
+    assert_eq!(y_bf.raw_data.len(), 1 * 3 * 4 * 4 * 2);
+
+    let gpu_bf16_result = read_bf16_as_f32(&y_bf);
+
+    // f32 reference on same BF16-rounded inputs.
+    let x_rounded = smallaios_onnx_rt::tensor::bf16_to_f32(&x_bf.raw_data);
+    let w_rounded = smallaios_onnx_rt::tensor::bf16_to_f32(&w_bf.raw_data);
+    let x_f32 = make_f32_tensor(&[1, 2, 4, 4], &x_rounded);
+    let w_f32 = make_f32_tensor(&[3, 2, 3, 3], &w_rounded);
+    let rt_f32 =
+        cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init f32");
+    let ref_result = cuda::conv::gpu_conv2d(
+        &rt_f32,
+        &x_f32,
+        &w_f32,
+        None,
+        &[1, 1, 1, 1],
+        &[1, 1],
+        &[1, 1],
+    )
+    .expect("gpu_conv2d f32 ref failed")
+    .expect("f32 conv returned None");
+    let ref_vals = read_f32(&ref_result);
+
+    let mut max_abs: f32 = 0.0;
+    for (i, (&g, &r)) in gpu_bf16_result.iter().zip(ref_vals.iter()).enumerate() {
+        let e = (g - r).abs();
+        if e > max_abs {
+            max_abs = e;
+        }
+        assert!(
+            e < 5e-2,
+            "BF16 conv[{}] diverged: bf16={}, f32={}, err={}",
+            i,
+            g,
+            r,
+            e
+        );
+    }
+    eprintln!(
+        "gpu_conv2d BF16 3x3 pad=1: OK, max abs err vs f32 = {:.6}",
+        max_abs
+    );
+}
+
+// ── GPU-resident executor tests (Section 5) ─────────────────────────
+
+/// Build a trivial `ExecutionGraph` with two chained MatMul nodes:
+///
+///   tmp = X  @ W1
+///   out = tmp @ W2
+///
+/// Both weights are provided as graph inputs (not initializers) so the
+/// test exercises the input-tensor path through `execute_graph_gpu`.
+fn build_matmul_pipeline_graph() -> smallaios_onnx_rt::graph::ExecutionGraph {
+    use smallaios_onnx_rt::graph::{ExecutionGraph, ExecutionNode, NodeIndex};
+    use std::collections::BTreeMap;
+
+    let n0 = ExecutionNode {
+        node_index: NodeIndex::new(0),
+        op_type: String::from("MatMul"),
+        domain: String::new(),
+        name: String::from("matmul_0"),
+        inputs: vec![String::from("X"), String::from("W1")],
+        outputs: vec![String::from("tmp")],
+        dependencies: Vec::new(),
+        attributes: Vec::new(),
+        inner_graphs: BTreeMap::new(),
+    };
+    let n1 = ExecutionNode {
+        node_index: NodeIndex::new(1),
+        op_type: String::from("MatMul"),
+        domain: String::new(),
+        name: String::from("matmul_1"),
+        inputs: vec![String::from("tmp"), String::from("W2")],
+        outputs: vec![String::from("out")],
+        dependencies: vec![NodeIndex::new(0)],
+        attributes: Vec::new(),
+        inner_graphs: BTreeMap::new(),
+    };
+
+    ExecutionGraph {
+        nodes: vec![n0, n1],
+        topological_order: vec![NodeIndex::new(0), NodeIndex::new(1)],
+        input_names: vec![String::from("X"), String::from("W1"), String::from("W2")],
+        output_names: vec![String::from("out")],
+    }
+}
+
+fn named_f32_tensor(name: &str, rows: usize, cols: usize, data: &[f32]) -> Tensor {
+    let mut t = make_f32_tensor(&[rows as i64, cols as i64], data);
+    t.name = String::from(name);
+    t
+}
+
+fn naive_matmul(a: &[f32], b: &[f32], m: usize, k: usize, n: usize) -> Vec<f32> {
+    let mut out = vec![0f32; m * n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut s = 0f32;
+            for p in 0..k {
+                s += a[i * k + p] * b[p * n + j];
+            }
+            out[i * n + j] = s;
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore]
+fn test_gpu_executor_matmul_pipeline() {
+    use cuda::{execute_graph_gpu, tensor_to_device};
+
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    // Random-ish 4x4 f32 matrices.
+    let x_vals: Vec<f32> = (0..16).map(|i| (i as f32) * 0.1 - 0.3).collect();
+    let w1_vals: Vec<f32> = (0..16).map(|i| 0.05 * ((i as f32) + 1.0).sin()).collect();
+    let w2_vals: Vec<f32> = (0..16).map(|i| 0.07 * ((i as f32) + 2.0).cos()).collect();
+
+    let x = named_f32_tensor("X", 4, 4, &x_vals);
+    let w1 = named_f32_tensor("W1", 4, 4, &w1_vals);
+    let w2 = named_f32_tensor("W2", 4, 4, &w2_vals);
+
+    let x_dev = tensor_to_device(&x, &rt).expect("X -> device");
+    let w1_dev = tensor_to_device(&w1, &rt).expect("W1 -> device");
+    let w2_dev = tensor_to_device(&w2, &rt).expect("W2 -> device");
+
+    let graph = build_matmul_pipeline_graph();
+    let inputs: Vec<(String, cuda::DeviceTensor)> = vec![
+        (String::from("X"), x_dev),
+        (String::from("W1"), w1_dev),
+        (String::from("W2"), w2_dev),
+    ];
+
+    let outputs = execute_graph_gpu(&graph, &inputs, &[], &rt).expect("execute_graph_gpu");
+    assert_eq!(outputs.len(), 1);
+    let host_out = outputs[0].to_host().expect("to_host");
+    assert_eq!(host_out.shape.dims, vec![4, 4]);
+    assert_eq!(host_out.data_type, DataType::Float);
+    let gpu_f32: Vec<f32> = host_out
+        .raw_data
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+
+    // CPU reference: tmp = X @ W1, out = tmp @ W2.
+    let tmp = naive_matmul(&x_vals, &w1_vals, 4, 4, 4);
+    let reference = naive_matmul(&tmp, &w2_vals, 4, 4, 4);
+
+    let mut max_abs = 0f32;
+    for (g, r) in gpu_f32.iter().zip(reference.iter()) {
+        let e = (g - r).abs();
+        if e > max_abs {
+            max_abs = e;
+        }
+    }
+    eprintln!(
+        "test_gpu_executor_matmul_pipeline: max abs err = {:.6e}",
+        max_abs
+    );
+    assert!(max_abs < 1e-3, "max abs err = {}", max_abs);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_executor_unsupported_op() {
+    use cuda::{execute_graph_gpu, tensor_to_device};
+    use smallaios_onnx_rt::graph::{ExecutionGraph, ExecutionNode, NodeIndex};
+    use std::collections::BTreeMap;
+
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    // Build a 1-node graph containing a Relu, which has no GPU dispatch
+    // in the Section 5 executor.
+    let node = ExecutionNode {
+        node_index: NodeIndex::new(0),
+        op_type: String::from("Relu"),
+        domain: String::new(),
+        name: String::from("relu_0"),
+        inputs: vec![String::from("X")],
+        outputs: vec![String::from("Y")],
+        dependencies: Vec::new(),
+        attributes: Vec::new(),
+        inner_graphs: BTreeMap::new(),
+    };
+    let graph = ExecutionGraph {
+        nodes: vec![node],
+        topological_order: vec![NodeIndex::new(0)],
+        input_names: vec![String::from("X")],
+        output_names: vec![String::from("Y")],
+    };
+
+    let x = named_f32_tensor("X", 2, 2, &[-1.0, 0.5, -0.25, 2.0]);
+    let x_dev = tensor_to_device(&x, &rt).expect("X -> device");
+    let inputs = vec![(String::from("X"), x_dev)];
+
+    let err = execute_graph_gpu(&graph, &inputs, &[], &rt)
+        .expect_err("Relu should be rejected by the GPU executor");
+    let msg = format!("{}", err);
+    assert!(
+        msg.contains("no GPU implementation for Relu"),
+        "unexpected error message: {}",
+        msg
+    );
+    eprintln!(
+        "test_gpu_executor_unsupported_op: got expected error: {}",
+        msg
+    );
+}
+
+// ── Section 8: KV cache tests ───────────────────────────────────────
+
+/// Build a BF16 `DeviceTensor` with shape `[1, num_kv_heads, head_dim]`
+/// where every element is `fill`.
+fn make_kv_device_tensor(num_kv_heads: usize, head_dim: usize, fill: f32) -> cuda::DeviceTensor {
+    let vals: Vec<f32> = vec![fill; num_kv_heads * head_dim];
+    let t = make_bf16_tensor(&[1, num_kv_heads as i64, head_dim as i64], &vals);
+    cuda::DeviceTensor::from_host(&t).expect("bf16 tensor -> device")
+}
+
+/// Read `count` tokens worth of BF16 data from a device pointer returned by
+/// `KvView` and decode to f32. Copies via `cudaMemcpy` device->host.
+fn read_kv_view_as_f32(
+    base_ptr: *const core::ffi::c_void,
+    token_count: usize,
+    stride_bytes: usize,
+) -> Vec<f32> {
+    if token_count == 0 {
+        return Vec::new();
+    }
+    let total = token_count * stride_bytes;
+    let mut host = vec![0u8; total];
+    let err = unsafe {
+        cuda::ffi::cudaMemcpy(
+            host.as_mut_ptr() as *mut core::ffi::c_void,
+            base_ptr,
+            total,
+            cuda::ffi::cudaMemcpyKind::cudaMemcpyDeviceToHost,
+        )
+    };
+    assert_eq!(err, cuda::ffi::CUDA_SUCCESS, "D2H copy failed: {}", err);
+    smallaios_onnx_rt::tensor::bf16_to_f32(&host)
+}
+
+#[test]
+#[ignore]
+fn test_kv_cache_allocate_and_append() {
+    cuda::set_device(0).expect("set device");
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    let num_layers = 4;
+    let num_kv_heads = 8;
+    let head_dim = 128;
+    let max_seq_len = 16;
+    let kinds = vec![cuda::LayerKind::Global; num_layers];
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        num_layers,
+        num_kv_heads,
+        head_dim,
+        max_seq_len,
+        DataType::BFloat16,
+        &kinds,
+    )
+    .expect("GpuKvCache::allocate");
+
+    assert_eq!(cache.num_layers(), num_layers);
+    assert_eq!(cache.current_position(), 0);
+    assert_eq!(cache.max_seq_len(), max_seq_len);
+
+    // Fresh view before any append: token_count == 0.
+    let v0 = cache.view(0).expect("empty view");
+    assert_eq!(v0.token_count, 0);
+    assert_eq!(v0.stride_bytes, num_kv_heads * head_dim * 2);
+
+    // Append token 0 K/V to all layers. Use a different fill per layer so
+    // we can assert that the per-layer buffers are independent.
+    for layer in 0..num_layers {
+        let fill = (layer as f32 + 1.0) * 0.25;
+        let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+        let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill + 0.5);
+        cache.append(layer, &k_dev, &v_dev).expect("append");
+    }
+    cache.advance_position().expect("advance_position");
+    assert_eq!(cache.current_position(), 1);
+
+    // Each layer should now have exactly 1 token in its view, with the
+    // expected fill value.
+    for layer in 0..num_layers {
+        let view = cache.view(layer).expect("view");
+        assert_eq!(view.token_count, 1);
+        assert_eq!(view.num_kv_heads, num_kv_heads);
+        assert_eq!(view.head_dim, head_dim);
+        assert_eq!(view.dtype, DataType::BFloat16);
+
+        let k_vals = read_kv_view_as_f32(view.k_ptr, view.token_count, view.stride_bytes);
+        let v_vals = read_kv_view_as_f32(view.v_ptr, view.token_count, view.stride_bytes);
+        assert_eq!(k_vals.len(), num_kv_heads * head_dim);
+        let expect_k = (layer as f32 + 1.0) * 0.25;
+        let expect_v = expect_k + 0.5;
+        for (i, (k, v)) in k_vals.iter().zip(v_vals.iter()).enumerate() {
+            assert!(
+                (k - expect_k).abs() < 1e-3,
+                "layer {} elem {}: k {} != expected {}",
+                layer,
+                i,
+                k,
+                expect_k
+            );
+            assert!(
+                (v - expect_v).abs() < 1e-3,
+                "layer {} elem {}: v {} != expected {}",
+                layer,
+                i,
+                v,
+                expect_v
+            );
+        }
+    }
+    eprintln!("test_kv_cache_allocate_and_append: OK");
+}
+
+#[test]
+#[ignore]
+fn test_kv_cache_multiple_tokens() {
+    cuda::set_device(0).expect("set device");
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    let num_layers = 2;
+    let num_kv_heads = 4;
+    let head_dim = 16;
+    let max_seq_len = 8;
+    let kinds = vec![cuda::LayerKind::Global; num_layers];
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        num_layers,
+        num_kv_heads,
+        head_dim,
+        max_seq_len,
+        DataType::BFloat16,
+        &kinds,
+    )
+    .expect("allocate");
+
+    // Append 3 tokens' worth of K/V, with a unique fill per token so we can
+    // verify slot ordering in the cache.
+    for pos in 0..3 {
+        for layer in 0..num_layers {
+            let fill_k = (pos as f32 + 1.0) * 0.125;
+            let fill_v = (pos as f32 + 1.0) * 0.25;
+            let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill_k);
+            let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill_v);
+            cache.append(layer, &k_dev, &v_dev).expect("append");
+        }
+        cache.advance_position().expect("advance");
+    }
+    assert_eq!(cache.current_position(), 3);
+
+    for layer in 0..num_layers {
+        let view = cache.view(layer).expect("view");
+        assert_eq!(view.token_count, 3);
+        let k_vals = read_kv_view_as_f32(view.k_ptr, view.token_count, view.stride_bytes);
+        let v_vals = read_kv_view_as_f32(view.v_ptr, view.token_count, view.stride_bytes);
+        let token_elems = num_kv_heads * head_dim;
+        for pos in 0..3 {
+            let expect_k = (pos as f32 + 1.0) * 0.125;
+            let expect_v = (pos as f32 + 1.0) * 0.25;
+            for i in 0..token_elems {
+                let idx = pos * token_elems + i;
+                assert!(
+                    (k_vals[idx] - expect_k).abs() < 1e-3,
+                    "layer {} pos {} elem {}: k {} != {}",
+                    layer,
+                    pos,
+                    i,
+                    k_vals[idx],
+                    expect_k
+                );
+                assert!(
+                    (v_vals[idx] - expect_v).abs() < 1e-3,
+                    "layer {} pos {} elem {}: v {} != {}",
+                    layer,
+                    pos,
+                    i,
+                    v_vals[idx],
+                    expect_v
+                );
+            }
+        }
+    }
+    eprintln!("test_kv_cache_multiple_tokens: OK");
+}
+
+#[test]
+#[ignore]
+fn test_kv_cache_sliding_window() {
+    cuda::set_device(0).expect("set device");
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    let num_kv_heads = 2;
+    let head_dim = 8;
+    let max_seq_len = 16;
+    // Layer 0: global. Layer 1: sliding window of 4.
+    let kinds = vec![cuda::LayerKind::Global, cuda::LayerKind::SlidingWindow(4)];
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        2,
+        num_kv_heads,
+        head_dim,
+        max_seq_len,
+        DataType::BFloat16,
+        &kinds,
+    )
+    .expect("allocate");
+
+    // Append 6 tokens.
+    for pos in 0..6 {
+        let fill = (pos as f32 + 1.0) * 0.1;
+        for layer in 0..2 {
+            let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+            let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+            cache.append(layer, &k_dev, &v_dev).expect("append");
+        }
+        cache.advance_position().expect("advance");
+    }
+    assert_eq!(cache.current_position(), 6);
+
+    // Global layer 0 should expose all 6 tokens.
+    let global = cache.view(0).expect("view global");
+    assert_eq!(global.token_count, 6);
+
+    // Sliding-window layer 1 should expose only the last 4 tokens (pos 2..6).
+    let local = cache.view(1).expect("view local");
+    assert_eq!(local.token_count, 4);
+    let k_vals = read_kv_view_as_f32(local.k_ptr, local.token_count, local.stride_bytes);
+    let token_elems = num_kv_heads * head_dim;
+    for view_pos in 0..4 {
+        let src_pos = view_pos + 2; // window starts at pos 2
+        let expect = (src_pos as f32 + 1.0) * 0.1;
+        for i in 0..token_elems {
+            let idx = view_pos * token_elems + i;
+            // BF16 has ~8 bits of mantissa so small fractions like 0.6 are
+            // rounded; allow ~0.01 absolute slack.
+            assert!(
+                (k_vals[idx] - expect).abs() < 1e-2,
+                "local view pos {} elem {}: {} != {}",
+                view_pos,
+                i,
+                k_vals[idx],
+                expect
+            );
+        }
+    }
+    eprintln!("test_kv_cache_sliding_window: OK");
+}
+
+#[test]
+#[ignore]
+fn test_kv_cache_reset() {
+    cuda::set_device(0).expect("set device");
+    let rt = cuda::CudaRuntime::init().expect("CUDA runtime init");
+
+    let num_kv_heads = 2;
+    let head_dim = 4;
+    let max_seq_len = 8;
+    let kinds = vec![cuda::LayerKind::Global];
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        1,
+        num_kv_heads,
+        head_dim,
+        max_seq_len,
+        DataType::BFloat16,
+        &kinds,
+    )
+    .expect("allocate");
+
+    // Append 2 tokens with distinct fills.
+    for pos in 0..2 {
+        let fill = (pos as f32 + 1.0) * 0.5;
+        let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+        let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+        cache.append(0, &k_dev, &v_dev).expect("append");
+        cache.advance_position().expect("advance");
+    }
+    assert_eq!(cache.current_position(), 2);
+
+    cache.reset();
+    assert_eq!(cache.current_position(), 0);
+    let empty_view = cache.view(0).expect("view after reset");
+    assert_eq!(empty_view.token_count, 0);
+
+    // Next append writes at slot 0 — fill with a distinctive value and verify
+    // it lands at position 0.
+    let fill = 0.875_f32;
+    let k_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+    let v_dev = make_kv_device_tensor(num_kv_heads, head_dim, fill);
+    cache.append(0, &k_dev, &v_dev).expect("append post-reset");
+    cache.advance_position().expect("advance post-reset");
+    let view = cache.view(0).expect("view post-reset");
+    assert_eq!(view.token_count, 1);
+    let k_vals = read_kv_view_as_f32(view.k_ptr, view.token_count, view.stride_bytes);
+    for (i, k) in k_vals.iter().enumerate() {
+        assert!(
+            (k - fill).abs() < 1e-3,
+            "post-reset slot 0 elem {}: {} != {}",
+            i,
+            k,
+            fill
+        );
+    }
+    eprintln!("test_kv_cache_reset: OK");
+}
+
+// ── Section 9.6: Session::from_safetensors end-to-end ──────────────────
+//
+// Builds a synthetic 2-layer Gemma-like safetensors directory in a temp
+// dir, loads it via Session::from_safetensors, runs a single forward pass,
+// and checks the logits shape. The underlying Gemma graph uses several
+// operators (Gather, Add, Mul, RMSNormalization, RotaryEmbedding,
+// GroupQueryAttention, Silu) that do NOT yet have GPU implementations in
+// the Section 5 dispatcher (which only supports MatMul/Gemm/
+// MatMulInteger/Conv). As a result this test currently exercises the
+// session construction + dispatch plumbing and expects the forward pass
+// to bottom out in an "no GPU implementation for {op}" error. When the
+// GPU dispatch table is expanded (future sections), this assertion
+// should be upgraded to a successful shape+NaN check on the logits.
+#[cfg(feature = "safetensors")]
+#[test]
+#[ignore]
+fn test_session_from_safetensors_synthetic_gemma() {
+    use smallaios_onnx_rt::session::{InferenceInput, Session, SessionKind};
+    use std::fs;
+    use std::io::Write;
+    use std::sync::Arc;
+
+    // ── Config params (small enough for a 2-layer toy model) ─────────
+    let num_layers = 2usize;
+    let hidden = 128usize;
+    let intermediate = 256usize;
+    let num_heads = 4usize;
+    let num_kv_heads = 2usize;
+    let head_dim = 32usize;
+    let vocab = 256usize;
+    let max_pos = 64usize;
+
+    let config_json = format!(
+        r#"{{
+            "architectures": ["Gemma4ForCausalLM"],
+            "num_hidden_layers": {num_layers},
+            "hidden_size": {hidden},
+            "intermediate_size": {intermediate},
+            "num_attention_heads": {num_heads},
+            "num_key_value_heads": {num_kv_heads},
+            "head_dim": {head_dim},
+            "vocab_size": {vocab},
+            "max_position_embeddings": {max_pos},
+            "rope_theta": 10000.0,
+            "sliding_window": 16,
+            "sliding_window_pattern": 2,
+            "rms_norm_eps": 1e-6,
+            "bos_token_id": 1,
+            "eos_token_id": 2
+        }}"#
+    );
+
+    // ── Synthetic safetensors blob ───────────────────────────────────
+    //
+    // Include every tensor `build_gemma_graph` registers for this
+    // config. Intentionally omit `lm_head.weight` so the graph builder
+    // exercises the weight-tying fallback.
+    #[derive(Clone)]
+    struct Entry {
+        name: String,
+        dtype: &'static str,
+        shape: Vec<i64>,
+    }
+    fn bf16_entry(name: &str, shape: Vec<i64>) -> Entry {
+        Entry {
+            name: name.to_string(),
+            dtype: "BF16",
+            shape,
+        }
+    }
+    fn bytes_for(e: &Entry) -> usize {
+        let numel: usize = e.shape.iter().map(|&d| d as usize).product();
+        numel * 2 // BF16 = 2 bytes
+    }
+
+    let h = hidden as i64;
+    let i = intermediate as i64;
+    let v = vocab as i64;
+    let kv = (num_kv_heads * head_dim) as i64;
+
+    let mut entries: Vec<Entry> = Vec::new();
+    entries.push(bf16_entry("model.embed_tokens.weight", vec![v, h]));
+    for l in 0..num_layers {
+        let p = format!("model.layers.{l}");
+        entries.push(bf16_entry(&format!("{p}.input_layernorm.weight"), vec![h]));
+        entries.push(bf16_entry(
+            &format!("{p}.post_attention_layernorm.weight"),
+            vec![h],
+        ));
+        entries.push(bf16_entry(
+            &format!("{p}.self_attn.q_proj.weight"),
+            vec![h, h],
+        ));
+        entries.push(bf16_entry(
+            &format!("{p}.self_attn.k_proj.weight"),
+            vec![kv, h],
+        ));
+        entries.push(bf16_entry(
+            &format!("{p}.self_attn.v_proj.weight"),
+            vec![kv, h],
+        ));
+        entries.push(bf16_entry(
+            &format!("{p}.self_attn.o_proj.weight"),
+            vec![h, h],
+        ));
+        entries.push(bf16_entry(&format!("{p}.mlp.gate_proj.weight"), vec![i, h]));
+        entries.push(bf16_entry(&format!("{p}.mlp.up_proj.weight"), vec![i, h]));
+        entries.push(bf16_entry(&format!("{p}.mlp.down_proj.weight"), vec![h, i]));
+    }
+    entries.push(bf16_entry("model.norm.weight", vec![h]));
+
+    // Sort by name (matches safetensors ordering convention) and
+    // assign offsets.
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut offset = 0usize;
+    let mut entry_offsets: Vec<(Entry, usize, usize)> = Vec::new();
+    for e in entries {
+        let sz = bytes_for(&e);
+        entry_offsets.push((e.clone(), offset, offset + sz));
+        offset += sz;
+    }
+    let payload_size = offset;
+
+    // Build JSON header.
+    let mut header = String::from("{");
+    for (idx, (e, start, end)) in entry_offsets.iter().enumerate() {
+        if idx > 0 {
+            header.push(',');
+        }
+        let shape_str = e
+            .shape
+            .iter()
+            .map(|d| format!("{d}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        header.push_str(&format!(
+            "\"{}\":{{\"dtype\":\"{}\",\"shape\":[{}],\"data_offsets\":[{},{}]}}",
+            e.name, e.dtype, shape_str, start, end
+        ));
+    }
+    header.push('}');
+
+    let header_bytes = header.as_bytes();
+    let mut blob = Vec::with_capacity(8 + header_bytes.len() + payload_size);
+    blob.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+    blob.extend_from_slice(header_bytes);
+    // Random-ish BF16 payload: use a small deterministic pattern.
+    let payload: Vec<u8> = (0..payload_size)
+        .map(|ix| ((ix as u32).wrapping_mul(2654435761) >> 24) as u8)
+        .collect();
+    blob.extend_from_slice(&payload);
+
+    // ── Write the model directory ─────────────────────────────────────
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("smallaios-sec9-{nanos}"));
+    fs::create_dir_all(&dir).expect("mkdir temp model dir");
+    {
+        let mut f = fs::File::create(dir.join("config.json")).expect("create config.json");
+        f.write_all(config_json.as_bytes())
+            .expect("write config.json");
+    }
+    {
+        let mut f =
+            fs::File::create(dir.join("model.safetensors")).expect("create model.safetensors");
+        f.write_all(&blob).expect("write model.safetensors");
+        f.sync_all().ok();
+    }
+
+    // ── Initialize CUDA + build session ───────────────────────────────
+    cuda::set_device(0).expect("set device");
+    let rt = Arc::new(cuda::CudaRuntime::init().expect("CudaRuntime::init"));
+
+    let session = Session::from_safetensors(&dir, rt).expect("from_safetensors");
+    assert_eq!(session.kind, SessionKind::Safetensors);
+    assert_eq!(session.input_names(), &["input_ids".to_string()]);
+    assert!(session.output_names().len() == 1);
+
+    // ── Build input_ids [1, 4] int64 ─────────────────────────────────
+    let token_ids: [i64; 4] = [1, 42, 99, 7];
+    let mut raw = vec![0u8; token_ids.len() * 8];
+    for (k, &t) in token_ids.iter().enumerate() {
+        raw[k * 8..(k + 1) * 8].copy_from_slice(&t.to_le_bytes());
+    }
+    let mut input_tensor = Tensor::new(
+        DataType::Int64,
+        TensorShape::new(vec![1, 4]),
+        "input_ids".to_string(),
+    );
+    input_tensor.raw_data = raw;
+    let inputs = [InferenceInput {
+        name: "input_ids".to_string(),
+        tensor: input_tensor,
+    }];
+
+    // ── Run forward pass ──────────────────────────────────────────────
+    //
+    // The current GPU dispatcher only implements MatMul/Gemm/
+    // MatMulInteger/Conv. The Gemma graph starts with a Gather (for
+    // embedding lookup), so we expect an ExecutionFailed error whose
+    // message contains "no GPU implementation for Gather". When the GPU
+    // dispatcher is extended in a follow-up change, this assertion
+    // should flip to an Ok() check on the output shape/dtype.
+    let result = session.run(&inputs);
+    match result {
+        Ok(outputs) => {
+            // If a future change makes this path succeed, verify shape.
+            assert_eq!(outputs.len(), 1);
+            let logits = &outputs[0];
+            assert_eq!(
+                logits.tensor.shape.dims,
+                vec![1i64, 4, vocab as i64],
+                "unexpected logits shape"
+            );
+            assert_eq!(logits.tensor.data_type, DataType::BFloat16);
+            eprintln!("test_session_from_safetensors_synthetic_gemma: forward pass OK");
+        }
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("no GPU implementation"),
+                "unexpected error from session.run: {msg}"
+            );
+            eprintln!(
+                "test_session_from_safetensors_synthetic_gemma: \
+                 expected unsupported-op error ({msg})"
+            );
+        }
+    }
+
+    // reset_kv_cache must succeed regardless of forward pass outcome.
+    session.reset_kv_cache().expect("reset_kv_cache");
+
+    // Cleanup the temp dir.
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ── Section 10.5: Session API contract for `llm-generation` ────────────
+//
+// This test pins the Session API that `llm-api-translation-v1`
+// `llm-generation` will call, against a synthetic 2-layer safetensors
+// model. It verifies the interface points documented in
+// `docs/safetensors-integration.md`:
+//
+//   (a) `Session::from_safetensors` succeeds on a synthetic fixture
+//   (b) `Session::kind()` returns `SessionKind::Safetensors`
+//   (c) `Session::manages_kv_cache_internally()` returns `true`
+//   (d) `Session::run()` accepts a single Int64 `input_ids` tensor
+//       (even if the forward pass errors on a missing GPU op, the
+//       dispatch plumbing must be reachable)
+//   (e) `Session::reset_kv_cache()` succeeds
+//
+// `#[ignore]` because it requires a real CUDA device on GB10 class
+// hardware, matching the existing CUDA tests.
+#[cfg(feature = "safetensors")]
+#[test]
+#[ignore]
+fn test_session_api_contract_for_llm_generation() {
+    use smallaios_onnx_rt::session::{InferenceInput, Session, SessionKind};
+    use std::fs;
+    use std::io::Write;
+    use std::sync::Arc;
+
+    let num_layers = 2usize;
+    let hidden = 64usize;
+    let intermediate = 128usize;
+    let num_heads = 4usize;
+    let num_kv_heads = 2usize;
+    let head_dim = 16usize;
+    let vocab = 128usize;
+    let max_pos = 32usize;
+
+    let config_json = format!(
+        r#"{{
+            "architectures": ["Gemma4ForCausalLM"],
+            "num_hidden_layers": {num_layers},
+            "hidden_size": {hidden},
+            "intermediate_size": {intermediate},
+            "num_attention_heads": {num_heads},
+            "num_key_value_heads": {num_kv_heads},
+            "head_dim": {head_dim},
+            "vocab_size": {vocab},
+            "max_position_embeddings": {max_pos},
+            "rope_theta": 10000.0,
+            "sliding_window": 16,
+            "sliding_window_pattern": 2,
+            "rms_norm_eps": 1e-6,
+            "bos_token_id": 1,
+            "eos_token_id": 2
+        }}"#
+    );
+
+    #[derive(Clone)]
+    struct Entry {
+        name: String,
+        shape: Vec<i64>,
+    }
+    fn bf16_bytes(e: &Entry) -> usize {
+        let numel: usize = e.shape.iter().map(|&d| d as usize).product();
+        numel * 2
+    }
+
+    let h = hidden as i64;
+    let ii = intermediate as i64;
+    let v = vocab as i64;
+    let kv = (num_kv_heads * head_dim) as i64;
+
+    let mut entries: Vec<Entry> = Vec::new();
+    entries.push(Entry {
+        name: "model.embed_tokens.weight".to_string(),
+        shape: vec![v, h],
+    });
+    for l in 0..num_layers {
+        let p = format!("model.layers.{l}");
+        entries.push(Entry {
+            name: format!("{p}.input_layernorm.weight"),
+            shape: vec![h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.post_attention_layernorm.weight"),
+            shape: vec![h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.self_attn.q_proj.weight"),
+            shape: vec![h, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.self_attn.k_proj.weight"),
+            shape: vec![kv, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.self_attn.v_proj.weight"),
+            shape: vec![kv, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.self_attn.o_proj.weight"),
+            shape: vec![h, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.mlp.gate_proj.weight"),
+            shape: vec![ii, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.mlp.up_proj.weight"),
+            shape: vec![ii, h],
+        });
+        entries.push(Entry {
+            name: format!("{p}.mlp.down_proj.weight"),
+            shape: vec![h, ii],
+        });
+    }
+    entries.push(Entry {
+        name: "model.norm.weight".to_string(),
+        shape: vec![h],
+    });
+
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    let mut offset = 0usize;
+    let mut entry_offsets: Vec<(Entry, usize, usize)> = Vec::new();
+    for e in entries {
+        let sz = bf16_bytes(&e);
+        entry_offsets.push((e.clone(), offset, offset + sz));
+        offset += sz;
+    }
+    let payload_size = offset;
+
+    let mut header = String::from("{");
+    for (idx, (e, start, end)) in entry_offsets.iter().enumerate() {
+        if idx > 0 {
+            header.push(',');
+        }
+        let shape_str = e
+            .shape
+            .iter()
+            .map(|d| format!("{d}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        header.push_str(&format!(
+            "\"{}\":{{\"dtype\":\"BF16\",\"shape\":[{}],\"data_offsets\":[{},{}]}}",
+            e.name, shape_str, start, end
+        ));
+    }
+    header.push('}');
+
+    let header_bytes = header.as_bytes();
+    let mut blob = Vec::with_capacity(8 + header_bytes.len() + payload_size);
+    blob.extend_from_slice(&(header_bytes.len() as u64).to_le_bytes());
+    blob.extend_from_slice(header_bytes);
+    let payload: Vec<u8> = (0..payload_size)
+        .map(|ix| ((ix as u32).wrapping_mul(2654435761) >> 24) as u8)
+        .collect();
+    blob.extend_from_slice(&payload);
+
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("smallaios-sec10-{nanos}"));
+    fs::create_dir_all(&dir).expect("mkdir temp model dir");
+    {
+        let mut f = fs::File::create(dir.join("config.json")).expect("create config.json");
+        f.write_all(config_json.as_bytes())
+            .expect("write config.json");
+    }
+    {
+        let mut f =
+            fs::File::create(dir.join("model.safetensors")).expect("create model.safetensors");
+        f.write_all(&blob).expect("write model.safetensors");
+        f.sync_all().ok();
+    }
+
+    cuda::set_device(0).expect("set device");
+    let rt = Arc::new(cuda::CudaRuntime::init().expect("CudaRuntime::init"));
+
+    // (a) Construction.
+    let session = Session::from_safetensors(&dir, rt).expect("from_safetensors");
+
+    // (b) Kind discriminator.
+    assert_eq!(session.kind(), SessionKind::Safetensors);
+
+    // (c) Internal-KV flag.
+    assert!(
+        session.manages_kv_cache_internally(),
+        "safetensors session must manage KV cache internally"
+    );
+
+    // Input/output signature matches the contract documented in
+    // docs/safetensors-integration.md.
+    assert_eq!(session.input_names(), &["input_ids".to_string()]);
+    assert_eq!(session.output_names().len(), 1);
+
+    // (d) `run()` accepts a token ID tensor. The forward pass will
+    // bottom out in "no GPU implementation for Gather" with the
+    // current dispatcher — that's fine; we only care that the
+    // dispatch path is reachable through the public API.
+    let token_ids: [i64; 3] = [1, 42, 7];
+    let mut raw = vec![0u8; token_ids.len() * 8];
+    for (k, &t) in token_ids.iter().enumerate() {
+        raw[k * 8..(k + 1) * 8].copy_from_slice(&t.to_le_bytes());
+    }
+    let mut input_tensor = Tensor::new(
+        DataType::Int64,
+        TensorShape::new(vec![1, 3]),
+        "input_ids".to_string(),
+    );
+    input_tensor.raw_data = raw;
+    let inputs = [InferenceInput {
+        name: "input_ids".to_string(),
+        tensor: input_tensor,
+    }];
+    match session.run(&inputs) {
+        Ok(_) => eprintln!("llm-generation contract: forward pass OK"),
+        Err(e) => {
+            let msg = format!("{e}");
+            assert!(
+                msg.contains("no GPU implementation") || msg.contains("GPU"),
+                "unexpected error from session.run: {msg}"
+            );
+        }
+    }
+
+    // (e) reset_kv_cache — must succeed even if `run()` errored.
+    session.reset_kv_cache().expect("reset_kv_cache");
+
+    // Simulate the recommended calling pattern: reset, then run each
+    // token individually. We don't care whether the forward pass
+    // succeeds — we only care that the API contract holds.
+    session.reset_kv_cache().expect("second reset_kv_cache");
+    for tok in [5i64, 6, 7] {
+        let mut raw = vec![0u8; 8];
+        raw.copy_from_slice(&tok.to_le_bytes());
+        let mut t = Tensor::new(
+            DataType::Int64,
+            TensorShape::new(vec![1, 1]),
+            "input_ids".to_string(),
+        );
+        t.raw_data = raw;
+        let _ = session.run(&[InferenceInput {
+            name: "input_ids".to_string(),
+            tensor: t,
+        }]);
+    }
+
+    let _ = fs::remove_dir_all(&dir);
+}

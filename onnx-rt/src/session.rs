@@ -179,6 +179,24 @@ impl fmt::Display for SessionId {
 }
 
 // ---------------------------------------------------------------------------
+// Session kind
+// ---------------------------------------------------------------------------
+
+/// Discriminator describing how a [`Session`] was constructed, and which
+/// execution path [`Session::run`] dispatches through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKind {
+    /// Loaded from a `.onnx` protobuf file via [`Session::initialize`].
+    /// Executes via the mainline [`crate::executor::execute_graph`] path.
+    Onnx,
+    /// Loaded via [`Session::from_safetensors`]. Weights are resident on
+    /// the GPU and inference dispatches through
+    /// [`crate::cuda::execute_graph_gpu_with_weights`] with a persistent
+    /// [`crate::cuda::GpuKvCache`] held by the session.
+    Safetensors,
+}
+
+// ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 
@@ -217,6 +235,28 @@ pub struct Session {
     /// Shared via Arc so multiple sessions can use the same GPU context.
     #[cfg(feature = "cuda")]
     pub cuda_runtime: Option<alloc::sync::Arc<crate::cuda::CudaRuntime>>,
+    /// Optional GPU-resident KV cache for autoregressive decoding.
+    ///
+    /// Populated by `Session::from_safetensors` (Section 9); `None` for
+    /// sessions that thread KV state externally through input tensors.
+    /// Interior mutability via `Mutex` so `&Session` can update the cache
+    /// across successive `Session::run()` calls.
+    #[cfg(feature = "cuda")]
+    pub kv_cache: Option<alloc::sync::Arc<std::sync::Mutex<crate::cuda::GpuKvCache>>>,
+    /// Pre-loaded GPU weight map for safetensors sessions.
+    ///
+    /// Populated by [`Session::from_safetensors`] via
+    /// [`crate::cuda::initializers_to_gpu`]. Wrapped in `Arc` so
+    /// [`Session::run`] (which only has `&self`) can hand it to
+    /// [`crate::cuda::execute_graph_gpu_with_weights`] without moving.
+    #[cfg(feature = "cuda")]
+    pub gpu_weights: Option<
+        alloc::sync::Arc<
+            alloc::collections::BTreeMap<String, crate::cuda::gpu_executor::DeviceTensor>,
+        >,
+    >,
+    /// Discriminator for the session's origin / dispatch path.
+    pub kind: SessionKind,
 }
 
 /// ONNX model file magic bytes: `\x08` (field 1, varint wire type).
@@ -356,6 +396,32 @@ pub fn load_model(data: &[u8]) -> Result<ModelProto, SessionError> {
 }
 
 // ---------------------------------------------------------------------------
+// Gemma KV-cache layer pattern helper
+// ---------------------------------------------------------------------------
+
+/// Build the per-layer [`crate::cuda::LayerKind`] pattern for Gemma's
+/// mixed sliding-window / global attention stack.
+///
+/// The final layer and every `sliding_window_pattern`-th layer (counting
+/// from 1) is a global-attention layer; all others are sliding-window
+/// local attention with the config's `sliding_window` size.
+#[cfg(all(feature = "safetensors", feature = "cuda"))]
+fn layer_kinds_for_gemma(config: &crate::model_loader::GemmaConfig) -> Vec<crate::cuda::LayerKind> {
+    let n = config.num_hidden_layers;
+    let pattern = config.sliding_window_pattern.max(1);
+    (0..n)
+        .map(|i| {
+            let is_global = i + 1 == n || (i + 1) % pattern == 0;
+            if is_global {
+                crate::cuda::LayerKind::Global
+            } else {
+                crate::cuda::LayerKind::SlidingWindow(config.sliding_window.max(1))
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Session implementation
 // ---------------------------------------------------------------------------
 
@@ -397,6 +463,11 @@ impl Session {
             metal_dispatcher: core::cell::RefCell::new(metal_dispatcher),
             #[cfg(feature = "cuda")]
             cuda_runtime: None,
+            #[cfg(feature = "cuda")]
+            kv_cache: None,
+            #[cfg(feature = "cuda")]
+            gpu_weights: None,
+            kind: SessionKind::Onnx,
         }
     }
 
@@ -484,33 +555,146 @@ impl Session {
             .as_ref()
             .ok_or_else(|| SessionError::ExecutionFailed(String::from("no execution graph")))?;
 
-        // Build input pairs for the executor
-        let input_pairs: Vec<(String, Tensor)> = inputs
-            .iter()
-            .map(|i| (i.name.clone(), i.tensor.clone()))
-            .collect();
+        match self.kind {
+            SessionKind::Onnx => {
+                // Build input pairs for the executor
+                let input_pairs: Vec<(String, Tensor)> = inputs
+                    .iter()
+                    .map(|i| (i.name.clone(), i.tensor.clone()))
+                    .collect();
 
-        // Get initializers from the model (stored during initialize)
-        let initializers = &self.initializers;
+                // Get initializers from the model (stored during initialize)
+                let initializers = &self.initializers;
 
-        #[cfg(all(feature = "metal", target_os = "macos"))]
-        let mut metal_guard = self.metal_dispatcher.borrow_mut();
+                #[cfg(all(feature = "metal", target_os = "macos"))]
+                let mut metal_guard = self.metal_dispatcher.borrow_mut();
 
-        crate::executor::execute_graph(
+                crate::executor::execute_graph(
+                    graph,
+                    &input_pairs,
+                    initializers,
+                    None,
+                    None,
+                    &crate::profile::OperatorBudget::DEFAULT,
+                    &crate::profile::NullTimeSource,
+                    #[cfg(feature = "gpu")]
+                    self.gpu_backend.as_ref(),
+                    #[cfg(feature = "cuda")]
+                    self.cuda_runtime.as_deref(),
+                    #[cfg(all(feature = "metal", target_os = "macos"))]
+                    metal_guard.as_mut(),
+                )
+            }
+            SessionKind::Safetensors => {
+                #[cfg(feature = "cuda")]
+                {
+                    self.run_safetensors(graph, inputs)
+                }
+                #[cfg(not(feature = "cuda"))]
+                {
+                    let _ = graph;
+                    Err(SessionError::ExecutionFailed(String::from(
+                        "safetensors session requires the `cuda` feature",
+                    )))
+                }
+            }
+        }
+    }
+
+    /// GPU-resident run path for safetensors-backed sessions.
+    ///
+    /// Converts the caller's host input tensors to [`DeviceTensor`]s,
+    /// dispatches through
+    /// [`crate::cuda::execute_graph_gpu_with_weights`] with the
+    /// preloaded weight map, and copies the outputs back to host
+    /// tensors for the [`InferenceOutput`] return value.
+    ///
+    /// TODO(kv-cache): the KV cache is allocated by
+    /// [`Session::from_safetensors`] and locked here to prove the
+    /// field is used, but it is **not yet threaded into the attention
+    /// dispatch**. The forward pass currently recomputes K/V for every
+    /// token as if it were the first. Wiring `KvView` through into the
+    /// GQA operator is deferred to a follow-up; see the section 9
+    /// design notes.
+    #[cfg(feature = "cuda")]
+    fn run_safetensors(
+        &self,
+        graph: &ExecutionGraph,
+        inputs: &[InferenceInput],
+    ) -> Result<Vec<InferenceOutput>, SessionError> {
+        let runtime = self.cuda_runtime.as_ref().ok_or_else(|| {
+            SessionError::ExecutionFailed(String::from("safetensors session missing cuda runtime"))
+        })?;
+
+        // Convert host inputs -> device tensors.
+        let mut input_pairs: Vec<(String, crate::cuda::gpu_executor::DeviceTensor)> =
+            Vec::with_capacity(inputs.len());
+        for inp in inputs {
+            let dev = crate::cuda::tensor_to_device(&inp.tensor, runtime).map_err(|e| {
+                SessionError::ExecutionFailed(alloc::format!(
+                    "tensor_to_device('{}'): {}",
+                    inp.name,
+                    e
+                ))
+            })?;
+            input_pairs.push((inp.name.clone(), dev));
+        }
+
+        // Lock the KV cache for the duration of the forward pass so its
+        // lifetime is coupled with the run. Currently just proves the
+        // field is live; see TODO(kv-cache) above.
+        let _kv_guard = if let Some(cache) = &self.kv_cache {
+            Some(cache.lock().map_err(|_| {
+                SessionError::ExecutionFailed(String::from("kv_cache mutex poisoned"))
+            })?)
+        } else {
+            None
+        };
+
+        let weights_ref = self.gpu_weights.as_deref();
+
+        let device_outputs = crate::cuda::execute_graph_gpu_with_weights(
             graph,
             &input_pairs,
-            initializers,
-            None,
-            None,
-            &crate::profile::OperatorBudget::DEFAULT,
-            &crate::profile::NullTimeSource,
-            #[cfg(feature = "gpu")]
-            self.gpu_backend.as_ref(),
-            #[cfg(feature = "cuda")]
-            self.cuda_runtime.as_deref(),
-            #[cfg(all(feature = "metal", target_os = "macos"))]
-            metal_guard.as_mut(),
-        )
+            &self.initializers,
+            weights_ref,
+            runtime,
+        )?;
+
+        // Copy device outputs back to host tensors.
+        let mut outputs: Vec<InferenceOutput> = Vec::with_capacity(device_outputs.len());
+        for (dev_t, name) in device_outputs.iter().zip(self.output_names.iter()) {
+            let host_t = dev_t.to_host().map_err(|e| {
+                SessionError::ExecutionFailed(alloc::format!(
+                    "device->host copy for '{}': {}",
+                    name,
+                    e
+                ))
+            })?;
+            outputs.push(InferenceOutput {
+                name: name.clone(),
+                tensor: host_t,
+            });
+        }
+        Ok(outputs)
+    }
+
+    /// Reset the GPU-resident KV cache, if present.
+    ///
+    /// Called by callers driving a fresh generation sequence so that
+    /// the next `run()` call starts at token position 0. No-op for
+    /// sessions without a KV cache (e.g. ONNX-backed sessions).
+    #[cfg(feature = "cuda")]
+    pub fn reset_kv_cache(&self) -> Result<(), SessionError> {
+        if let Some(cache) = &self.kv_cache {
+            cache
+                .lock()
+                .map_err(|_| {
+                    SessionError::ExecutionFailed(String::from("kv_cache mutex poisoned"))
+                })?
+                .reset();
+        }
+        Ok(())
     }
 
     /// Runs inference and returns a per-operator timing profile alongside
@@ -583,6 +767,122 @@ impl Session {
         Ok((outputs, profile))
     }
 
+    /// Load a HuggingFace safetensors model directory and build a
+    /// GPU-resident Gemma session.
+    ///
+    /// `dir` must contain a `config.json` plus either a single
+    /// `model.safetensors` file or a `model.safetensors.index.json`
+    /// manifest and its referenced shards.
+    ///
+    /// The signature takes an `Arc<CudaRuntime>` rather than an
+    /// `Option` because safetensors sessions are strictly GPU-resident:
+    /// a valid, initialized [`crate::cuda::CudaRuntime`] is a
+    /// prerequisite for construction (Section 9.5).
+    #[cfg(all(feature = "safetensors", feature = "cuda"))]
+    pub fn from_safetensors(
+        dir: &std::path::Path,
+        cuda_runtime: alloc::sync::Arc<crate::cuda::CudaRuntime>,
+    ) -> Result<Self, SessionError> {
+        use alloc::collections::BTreeMap;
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::Mutex;
+
+        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+        // 1. Read and parse config.json.
+        let config_path = dir.join("config.json");
+        let config_json = std::fs::read_to_string(&config_path).map_err(|e| {
+            SessionError::InvalidModel(alloc::format!("read {}: {}", config_path.display(), e))
+        })?;
+
+        let gemma_config = crate::model_loader::GemmaConfig::from_json(&config_json)
+            .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?;
+
+        // 2. Detect architecture and reject unsupported families.
+        let arch = crate::model_loader::ModelArchitecture::detect(&config_json)
+            .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?;
+        match arch {
+            crate::model_loader::ModelArchitecture::Gemma3
+            | crate::model_loader::ModelArchitecture::Gemma4 => {}
+            other => {
+                return Err(SessionError::InvalidModel(alloc::format!(
+                    "unsupported architecture: {:?}",
+                    other
+                )));
+            }
+        }
+
+        // 3. Open weights — single file or sharded.
+        let index_path = dir.join("model.safetensors.index.json");
+        let single_path = dir.join("model.safetensors");
+        let built = if index_path.exists() {
+            let sharded =
+                crate::model_loader::MultiShardSafetensors::open_dir(dir).map_err(|e| {
+                    SessionError::InvalidModel(alloc::format!("open sharded safetensors: {}", e))
+                })?;
+            crate::model_loader::build_gemma_graph(&gemma_config, &sharded)
+                .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?
+        } else {
+            let file = crate::model_loader::SafetensorsFile::open(&single_path).map_err(|e| {
+                SessionError::InvalidModel(alloc::format!("open {}: {}", single_path.display(), e))
+            })?;
+            crate::model_loader::build_gemma_graph(&gemma_config, &file)
+                .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?
+        };
+
+        // 4. Materialize initializers -> GPU weight map.
+        let gpu_weights = crate::cuda::initializers_to_gpu(&built.initializers, &cuda_runtime)
+            .map_err(|e| {
+                SessionError::ExecutionFailed(alloc::format!("initializers_to_gpu: {}", e))
+            })?;
+
+        // 5. Allocate the KV cache. Bound max_seq_len at 2048 for now
+        //    so VRAM usage stays sane for a 31B-class model.
+        let max_seq_len = core::cmp::min(gemma_config.max_position_embeddings, 2048).max(1);
+        let layer_kinds = layer_kinds_for_gemma(&gemma_config);
+        let kv_cache = crate::cuda::GpuKvCache::allocate(
+            &cuda_runtime,
+            gemma_config.num_hidden_layers,
+            gemma_config.num_key_value_heads,
+            gemma_config.head_dim,
+            max_seq_len,
+            crate::tensor::DataType::BFloat16,
+            &layer_kinds,
+        )
+        .map_err(|e| SessionError::ExecutionFailed(alloc::format!("kv_cache alloc: {}", e)))?;
+
+        // 6. Derive session metadata.
+        let model_name = alloc::format!(
+            "gemma-{}L-{}d",
+            gemma_config.num_hidden_layers,
+            gemma_config.hidden_size
+        );
+        let input_names = built.graph.input_names.clone();
+        let output_names = built.graph.output_names.clone();
+
+        Ok(Self {
+            id: SessionId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
+            config: SessionConfig::default(),
+            model_name,
+            graph: Some(built.graph),
+            input_names,
+            output_names,
+            initializers: built.initializers,
+            is_initialized: true,
+            #[cfg(feature = "gpu")]
+            gpu_backend: None,
+            cuda_runtime: Some(cuda_runtime),
+            kv_cache: Some(Arc::new(Mutex::new(kv_cache))),
+            gpu_weights: Some(Arc::new(
+                gpu_weights
+                    .into_iter()
+                    .collect::<BTreeMap<String, crate::cuda::gpu_executor::DeviceTensor>>(),
+            )),
+            kind: SessionKind::Safetensors,
+        })
+    }
+
     /// Returns the names of the model's expected inputs.
     pub fn input_names(&self) -> &[String] {
         &self.input_names
@@ -596,6 +896,30 @@ impl Session {
     /// Returns `true` if the session has been initialized with a model.
     pub fn is_initialized(&self) -> bool {
         self.is_initialized
+    }
+
+    /// Returns the [`SessionKind`] discriminator identifying how this
+    /// session was constructed and which execution path `run()` uses.
+    ///
+    /// Callers (in particular the `llm-generation` loop from
+    /// `llm-api-translation-v1`) MUST branch on this when deciding
+    /// whether to thread KV cache through input tensors (ONNX) or rely
+    /// on the Session-managed internal KV cache (Safetensors). See
+    /// `docs/safetensors-integration.md` for the full contract.
+    pub fn kind(&self) -> SessionKind {
+        self.kind
+    }
+
+    /// Returns `true` when this Session owns its KV cache internally and
+    /// callers should NOT thread `past_k`/`past_v` through inputs. This
+    /// is the case for safetensors-backed sessions whose forward pass
+    /// runs entirely on the GPU using a persistent `GpuKvCache`.
+    ///
+    /// For ONNX sessions, returns `false`: the caller is expected to
+    /// thread KV state through the model's input/output tensors as with
+    /// any other ONNX LLM export.
+    pub fn manages_kv_cache_internally(&self) -> bool {
+        matches!(self.kind, SessionKind::Safetensors)
     }
 }
 
@@ -622,6 +946,25 @@ mod tests {
         assert!(session.output_names().is_empty());
         assert!(session.graph.is_none());
         assert!(session.model_name.is_empty());
+    }
+
+    #[test]
+    fn test_session_kind_defaults_to_onnx() {
+        let session = Session::new(SessionConfig::default());
+        assert_eq!(session.kind(), SessionKind::Onnx);
+        assert!(
+            !session.manages_kv_cache_internally(),
+            "a fresh ONNX session must NOT claim internal KV ownership"
+        );
+    }
+
+    #[test]
+    fn test_session_kind_accessor_matches_field() {
+        // Contract: Session::kind() must always return the same value
+        // as the public `kind` field. `llm-api-translation-v1`
+        // branches on this to decide KV cache threading.
+        let session = Session::new(SessionConfig::default());
+        assert_eq!(session.kind(), session.kind);
     }
 
     #[test]
