@@ -48,6 +48,38 @@ fn main() {
         model_dir, port, gpu_backend, bus_backend
     );
 
+    // Initialize CUDA runtime if requested.
+    #[cfg(feature = "cuda")]
+    let cuda_runtime = if gpu_backend == "cuda" {
+        let precision_str =
+            std::env::var("SMALLAIOS_GPU_PRECISION").unwrap_or_else(|_| "tf32".to_string());
+        let precision = smallaios_onnx_rt::cuda::GpuPrecision::from_str(&precision_str);
+        println!("GPU precision mode: {:?}", precision);
+        match smallaios_onnx_rt::cuda::CudaRuntime::init_with_precision(precision) {
+            Ok(rt) => {
+                println!(
+                    "CUDA initialized: {} (compute {}.{}, {} MB VRAM, CUDA {})",
+                    rt.device.name,
+                    rt.device.compute_major,
+                    rt.device.compute_minor,
+                    rt.device.total_mem_bytes / (1024 * 1024),
+                    rt.cuda_version / 1000,
+                );
+                Some(std::sync::Arc::new(rt))
+            }
+            Err(e) => {
+                eprintln!(
+                    "WARNING: GPU backend=cuda requested but CUDA init failed: {}",
+                    e
+                );
+                eprintln!("  Falling back to CPU inference");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Boot phase: discover and validate models.
     println!("Loading models from '{}'...", model_dir);
     let mut manager = model_manager::ModelManager::new(&model_dir);
@@ -64,7 +96,11 @@ fn main() {
     // Build the inference session map for the HTTP handler. This
     // parses each .onnx file once at startup so request handling is
     // pure dispatch. Failures are logged by `load_sessions` itself.
-    let http_sessions: Arc<BTreeMap<String, Session>> = Arc::new(load_sessions(&manager));
+    let http_sessions: Arc<BTreeMap<String, Session>> = Arc::new(load_sessions(
+        &manager,
+        #[cfg(feature = "cuda")]
+        &cuda_runtime,
+    ));
     println!("HTTP inference sessions ready: {}", http_sessions.len());
 
     // Bus/dataflow runner startup (zenoh/dds/can/none).
@@ -131,7 +167,12 @@ fn main() {
 ///
 /// Models that fail to read, parse, or initialise are logged and
 /// skipped; the runner can still start with the remaining sessions.
-fn load_sessions(manager: &model_manager::ModelManager) -> BTreeMap<String, Session> {
+fn load_sessions(
+    manager: &model_manager::ModelManager,
+    #[cfg(feature = "cuda")] cuda_runtime: &Option<
+        std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>,
+    >,
+) -> BTreeMap<String, Session> {
     let mut sessions = BTreeMap::new();
     for info in manager.list_models() {
         if !info.loaded {
@@ -152,10 +193,18 @@ fn load_sessions(manager: &model_manager::ModelManager) -> BTreeMap<String, Sess
             }
         };
         let mut s = Session::new(SessionConfig::default());
+        #[cfg(feature = "cuda")]
+        {
+            s.cuda_runtime = cuda_runtime.clone();
+        }
         match s.initialize(&model) {
             Ok(()) => {
+                #[cfg(feature = "cuda")]
+                let gpu_tag = if cuda_runtime.is_some() { " [GPU]" } else { "" };
+                #[cfg(not(feature = "cuda"))]
+                let gpu_tag = "";
+                println!("  Session ready: {}{}", info.name, gpu_tag);
                 sessions.insert(info.name.clone(), s);
-                println!("  Session ready: {}", info.name);
             }
             Err(e) => eprintln!("  load_sessions: failed to initialize {}: {}", info.name, e),
         }
@@ -168,7 +217,11 @@ fn load_sessions(manager: &model_manager::ModelManager) -> BTreeMap<String, Sess
 /// Returns `None` if no sessions could be loaded — callers use this as
 /// a signal to skip spawning the runner thread entirely.
 fn build_runner(manager: &model_manager::ModelManager) -> Option<DataflowRunner> {
-    let sessions = load_sessions(manager);
+    let sessions = load_sessions(
+        manager,
+        #[cfg(feature = "cuda")]
+        &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
+    );
     if sessions.is_empty() {
         eprintln!("  no models loaded — runner will not start");
         return None;
@@ -516,7 +569,11 @@ mod tests {
     fn load_sessions_empty_manager_returns_empty_map() {
         let dir = tempfile::tempdir().unwrap();
         let mgr = model_manager::ModelManager::new(dir.path().to_str().unwrap());
-        let sessions = load_sessions(&mgr);
+        let sessions = load_sessions(
+            &mgr,
+            #[cfg(feature = "cuda")]
+            &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
+        );
         assert!(sessions.is_empty());
     }
 
@@ -527,14 +584,22 @@ mod tests {
         // `load_sessions` should return empty without panicking even
         // if the path doesn't exist.
         let mgr = model_manager::ModelManager::new("/nonexistent/smallaios/path/xyz");
-        let sessions = load_sessions(&mgr);
+        let sessions = load_sessions(
+            &mgr,
+            #[cfg(feature = "cuda")]
+            &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
+        );
         assert!(sessions.is_empty());
     }
 
     #[test]
     fn load_sessions_with_real_relu_bytes_populates_map() {
         let (mgr, _guard) = make_temp_model_manager();
-        let sessions = load_sessions(&mgr);
+        let sessions = load_sessions(
+            &mgr,
+            #[cfg(feature = "cuda")]
+            &None::<std::sync::Arc<smallaios_onnx_rt::cuda::CudaRuntime>>,
+        );
         assert_eq!(sessions.len(), 1, "expected exactly one loaded session");
         assert!(
             sessions.contains_key("relu"),

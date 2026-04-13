@@ -19,6 +19,14 @@ fuzz_target!(|data: &[u8]| {
                 smallaios_onnx_rt::protobuf::WireType::Fixed32 => {
                     let _ = decoder.read_fixed32();
                 }
+                // Deprecated group wire types — real ONNX exports don't use
+                // them, but the hardened decoder (PR #98) exposes them so
+                // the streaming scanner can skip over group-encoded fields.
+                // For fuzzing we just consume-and-ignore.
+                smallaios_onnx_rt::protobuf::WireType::StartGroup
+                | smallaios_onnx_rt::protobuf::WireType::EndGroup => {
+                    break;
+                }
             }
         } else {
             break;

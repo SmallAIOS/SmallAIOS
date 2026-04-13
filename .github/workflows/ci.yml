@@ -508,6 +508,75 @@ jobs:
           fi
           echo "PASS: Docker image within 15 MB limit"
 
+  docker-build-arm64:
+    name: Docker Build (ARM64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up QEMU for ARM64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build ARM64 container image
+        run: docker buildx build --platform linux/arm64 -t smallaios:arm64-ci --load .
+      - name: Verify image architecture
+        run: |
+          arch=$(docker image inspect smallaios:arm64-ci --format='{{.Architecture}}')
+          echo "Image architecture: ${arch}"
+          if [ "$arch" != "arm64" ]; then
+            echo "FAIL: expected arm64, got ${arch}"
+            exit 1
+          fi
+          echo "PASS: ARM64 image built successfully"
+      - name: Check image size
+        run: |
+          size=$(docker image inspect smallaios:arm64-ci --format='{{.Size}}')
+          max=$((15 * 1024 * 1024))
+          mb=$(( size / 1024 / 1024 ))
+          echo "Docker image size: ${mb} MB (${size} bytes)"
+          if [ "$size" -gt "$max" ]; then
+            echo "FAIL: Docker image exceeds 15 MB"
+            exit 1
+          fi
+          echo "PASS: ARM64 Docker image within 15 MB limit"
+      - name: Smoke test ARM64 container (health check)
+        run: |
+          docker run --rm -d --name arm64-smoke -p 8080:8080 smallaios:arm64-ci
+          sleep 3
+          response=$(curl -sf http://localhost:8080/healthz || echo "FAIL")
+          docker stop arm64-smoke || true
+          echo "Health response: ${response}"
+          if echo "$response" | grep -q "healthy"; then
+            echo "PASS: ARM64 container health check passed"
+          else
+            echo "FAIL: ARM64 container health check failed"
+            exit 1
+          fi
+
+  docker-build-gpu:
+    name: Docker Build (GPU)
+    runs-on: ubuntu-latest
+    # GPU Docker build requires NVIDIA CUDA devel base image (~5 GB pull).
+    # Only runs on manual dispatch or scheduled — too slow for every PR.
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build GPU Dockerfile (full build)
+        run: docker build -f Dockerfile.cuda -t smallaios:gpu-ci .
+      - name: Verify GPU image built
+        run: |
+          arch=$(docker image inspect smallaios:gpu-ci --format='{{.Architecture}}')
+          echo "GPU image architecture: ${arch}"
+          echo "PASS: GPU Dockerfile builds successfully"
+
   semver-check:
     name: Semver PR Title Check
     runs-on: ubuntu-latest

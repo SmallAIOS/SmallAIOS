@@ -10,6 +10,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::byte_io::{self, allocate_tensor_data, I64_SIZE};
+#[cfg(feature = "cuda")]
+use crate::cuda;
 use crate::graph::{ExecutionGraph, ExecutionNode};
 use crate::onnx_types::{AttributeProto, AttributeType, TensorProto};
 use crate::operators::{self, OpError, OpKind};
@@ -43,6 +45,7 @@ pub fn execute_graph(
     budget: &OperatorBudget,
     time_source: &dyn TimeSource,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
+    #[cfg(feature = "cuda")] cuda_runtime: Option<&cuda::CudaRuntime>,
     #[cfg(all(feature = "metal", target_os = "macos"))] mut metal_dispatcher: Option<
         &mut crate::metal_dispatch::MetalDispatcher,
     >,
@@ -126,6 +129,8 @@ pub fn execute_graph(
                 node.outputs.len(),
                 #[cfg(feature = "gpu")]
                 gpu_backend,
+                #[cfg(feature = "cuda")]
+                cuda_runtime,
             )
             .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
             let elapsed = time_source.now_us().saturating_sub(start);
@@ -166,6 +171,8 @@ pub fn execute_graph(
                 node.outputs.len(),
                 #[cfg(feature = "gpu")]
                 gpu_backend,
+                #[cfg(feature = "cuda")]
+                cuda_runtime,
             )
             .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?
         };
@@ -181,6 +188,8 @@ pub fn execute_graph(
                 node.outputs.len(),
                 #[cfg(feature = "gpu")]
                 gpu_backend,
+                #[cfg(feature = "cuda")]
+                cuda_runtime,
             )
             .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
             let elapsed = time_source.now_us().saturating_sub(start);
@@ -221,6 +230,8 @@ pub fn execute_graph(
                 node.outputs.len(),
                 #[cfg(feature = "gpu")]
                 gpu_backend,
+                #[cfg(feature = "cuda")]
+                cuda_runtime,
             )
             .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?
         };
@@ -364,12 +375,113 @@ fn read_first_f32(tensor: Option<&Tensor>) -> Option<f32> {
 /// category-specific dispatcher (`dispatch_arithmetic`,
 /// `dispatch_activation`, etc.) to reduce cognitive complexity. Returns
 /// a vector of output tensors (most operators produce exactly one).
+/// Try to dispatch an operator to CUDA GPU. Returns `Some(result)` if
+/// handled, `None` to fall through to CPU.
+#[cfg(feature = "cuda")]
+fn try_cuda_dispatch(
+    rt: &cuda::CudaRuntime,
+    op_type: &str,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Option<Result<Vec<Tensor>, OpError>> {
+    match op_type {
+        "MatMul" => {
+            let a = inputs.first().and_then(|o| *o)?;
+            let b = inputs.get(1).and_then(|o| *o)?;
+            if a.data_type != DataType::Float || b.data_type != DataType::Float {
+                return None; // fall through to CPU for non-f32
+            }
+            match cuda::dispatch::gpu_gemm(rt, a, b, false, false, 1.0, 0.0, None) {
+                Ok(t) => Some(Ok(alloc::vec![t])),
+                Err(e) => Some(Err(OpError::InternalError(alloc::format!(
+                    "CUDA MatMul: {}",
+                    e
+                )))),
+            }
+        }
+        "Gemm" => {
+            let a = inputs.first().and_then(|o| *o)?;
+            let b = inputs.get(1).and_then(|o| *o)?;
+            let c_bias = inputs.get(2).and_then(|o| *o);
+            if a.data_type != DataType::Float || b.data_type != DataType::Float {
+                return None;
+            }
+            // Parse Gemm attributes.
+            let mut trans_a = false;
+            let mut trans_b = false;
+            let mut alpha = 1.0f32;
+            let mut beta = 1.0f32;
+            for attr in attrs {
+                match attr.name.as_str() {
+                    "transA" => trans_a = attr.i != 0,
+                    "transB" => trans_b = attr.i != 0,
+                    "alpha" => alpha = attr.f,
+                    "beta" => beta = if c_bias.is_some() { attr.f } else { 0.0 },
+                    _ => {}
+                }
+            }
+            if c_bias.is_none() {
+                beta = 0.0;
+            }
+            match cuda::dispatch::gpu_gemm(rt, a, b, trans_a, trans_b, alpha, beta, c_bias) {
+                Ok(t) => Some(Ok(alloc::vec![t])),
+                Err(e) => Some(Err(OpError::InternalError(alloc::format!(
+                    "CUDA Gemm: {}",
+                    e
+                )))),
+            }
+        }
+        "MatMulInteger" => {
+            let a = inputs.first().and_then(|o| *o)?;
+            let b = inputs.get(1).and_then(|o| *o)?;
+            if a.data_type != DataType::Int8 || b.data_type != DataType::Int8 {
+                return None; // fall through to CPU for non-i8
+            }
+            match cuda::dispatch::gpu_gemm_int8(rt, a, b) {
+                Ok(Some(t)) => Some(Ok(alloc::vec![t])),
+                Ok(None) => None, // dimensions not 4-aligned, fall back to CPU
+                Err(e) => Some(Err(OpError::InternalError(alloc::format!(
+                    "CUDA MatMulInteger: {}",
+                    e
+                )))),
+            }
+        }
+        "Conv" => {
+            let x = inputs.first().and_then(|o| *o)?;
+            let w = inputs.get(1).and_then(|o| *o)?;
+            let bias = inputs.get(2).and_then(|o| *o);
+            if x.data_type != DataType::Float {
+                return None;
+            }
+            // Parse Conv attributes.
+            let mut pads = alloc::vec![0i32; 4];
+            let mut strides = alloc::vec![1i32, 1];
+            let mut dilations = alloc::vec![1i32, 1];
+            for attr in attrs {
+                match attr.name.as_str() {
+                    "pads" => pads = attr.ints.iter().map(|&v| v as i32).collect(),
+                    "strides" => strides = attr.ints.iter().map(|&v| v as i32).collect(),
+                    "dilations" => dilations = attr.ints.iter().map(|&v| v as i32).collect(),
+                    _ => {}
+                }
+            }
+            match cuda::conv::gpu_conv2d(rt, x, w, bias, &pads, &strides, &dilations) {
+                Ok(Some(t)) => Some(Ok(alloc::vec![t])),
+                Ok(None) => None, // not a 4D conv, fall back to CPU
+                Err(_) => None,   // cuDNN failed for this shape, fall back to CPU
+            }
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn dispatch_node(
     op_type: &str,
     inputs: &[Option<&Tensor>],
     attrs: &[AttributeProto],
     output_count: usize,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
+    #[cfg(feature = "cuda")] cuda_runtime: Option<&cuda::CudaRuntime>,
 ) -> Result<Vec<Tensor>, OpError> {
     dispatch_node_with_domain(
         op_type,
@@ -379,6 +491,8 @@ pub(crate) fn dispatch_node(
         output_count,
         #[cfg(feature = "gpu")]
         gpu_backend,
+        #[cfg(feature = "cuda")]
+        cuda_runtime,
     )
 }
 
@@ -392,15 +506,24 @@ pub(crate) fn dispatch_node_with_domain(
     attrs: &[AttributeProto],
     output_count: usize,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
+    #[cfg(feature = "cuda")] cuda_runtime: Option<&cuda::CudaRuntime>,
 ) -> Result<Vec<Tensor>, OpError> {
-    // Check if GPU backend can handle this operator. If so, a real
-    // implementation would transfer tensors to device, launch the GPU
-    // kernel, and transfer results back. For now we note the support
-    // and fall through to CPU execution.
+    // Check if GPU backend can handle this operator via the compute
+    // abstraction layer (bare-metal path).
     #[cfg(feature = "gpu")]
     let _gpu_supported = gpu_backend
         .map(|gb| gb.supports_op(op_type))
         .unwrap_or(false);
+
+    // CUDA container path: dispatch supported ops to real GPU via cuBLAS.
+    #[cfg(feature = "cuda")]
+    if let Some(rt) = cuda_runtime {
+        if cuda::CudaRuntime::supports_op(op_type) {
+            if let Some(result) = try_cuda_dispatch(rt, op_type, inputs, attrs) {
+                return result;
+            }
+        }
+    }
     let kind = OpKind::lookup_by_domain_and_name(domain, op_type)
         .ok_or_else(|| OpError::UnsupportedOp(String::from(op_type)))?;
 
@@ -2236,6 +2359,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2278,6 +2403,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2330,6 +2457,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2413,6 +2542,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2466,6 +2597,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2507,6 +2640,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2546,6 +2681,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2577,6 +2714,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2612,6 +2751,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2650,6 +2791,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         );
@@ -2687,6 +2830,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2739,6 +2884,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
@@ -2823,6 +2970,8 @@ mod tests {
             &NullTimeSource,
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,
         )
@@ -2869,6 +3018,8 @@ mod tests {
             &OperatorBudget::DEFAULT,
             &NullTimeSource,
             #[cfg(feature = "gpu")]
+            None,
+            #[cfg(feature = "cuda")]
             None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
             None,

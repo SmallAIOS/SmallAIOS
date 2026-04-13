@@ -128,6 +128,8 @@ pub fn run_sub_graph(
             node.outputs.len(),
             #[cfg(feature = "gpu")]
             None,
+            #[cfg(feature = "cuda")]
+            None,
         )
         .map_err(|e| {
             SessionError::ExecutionFailed(alloc::format!("sub_executor: {}: {}", node.name, e))

@@ -10,6 +10,7 @@ publish = false
 [features]
 default = []
 nvidia_gpu = ["smallaios-arch-nvidia"]
+cuda = ["smallaios-onnx-rt/cuda"]
 formal-gate = ["smallaios-security/formal-gate"]
 # Bus/dataflow runner feature flags. Placeholders until `smallaios-ipc`
 # ships the `onnx` feature and the `DataflowRunner` module — see

@@ -1,0 +1,66 @@
+# SmallAIOS GPU Container Build (ARM64 + NVIDIA CUDA)
+# Usage: docker build -f Dockerfile.cuda -t smallaios:gpu .
+#
+# Requires: NVIDIA Container Toolkit (nvidia-ctk) for GPU runtime
+# Run:   docker run --gpus all smallaios:gpu
+#
+# NOTE: This image is ~200-500 MB due to CUDA runtime libraries.
+# For the <15 MB CPU-only image, use the standard Dockerfile.
+
+# === Builder stage (CUDA devel for linking) ===
+FROM nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
+
+ARG TARGETARCH
+
+# Install Rust nightly + musl cross-compilation tools.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends curl musl-tools ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain nightly-2026-02-01
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN case "$TARGETARCH" in \
+      arm64) RUST_TARGET=aarch64-unknown-linux-musl ;; \
+      *)     RUST_TARGET=x86_64-unknown-linux-musl ;; \
+    esac && \
+    echo "$RUST_TARGET" > /rust_target
+
+RUN rustup target add "$(cat /rust_target)"
+
+WORKDIR /app
+COPY . .
+
+# Build with CUDA feature. The #[link(name = "cudart")] etc. directives
+# resolve against the CUDA devel libs in this stage. The resulting binary
+# dynamically links libcudart/cublas/cudnn at runtime.
+RUN RUST_TARGET=$(cat /rust_target) && \
+    cargo build --release --target "$RUST_TARGET" \
+      -p smallaios-container --features cuda,nvidia_gpu && \
+    cp "/app/target/${RUST_TARGET}/release/smallaios-container" /app/smallaios
+
+# === Runtime stage (NVIDIA CUDA runtime only — smaller) ===
+FROM nvcr.io/nvidia/cuda:13.0.0-runtime-ubuntu24.04
+
+# Install cuDNN runtime (needed for Conv dispatch via cudnnConvolutionForward).
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends libcudnn9-cuda-13 && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/smallaios /smallaios
+
+# Default environment configuration
+ENV SMALLAIOS_MODEL_DIR=/models
+ENV SMALLAIOS_PORT=8080
+ENV SMALLAIOS_GPU_BACKEND=cuda
+ENV SMALLAIOS_BUS_BACKEND=none
+
+# Expose the inference API port
+EXPOSE 8080
+
+# Persistent model storage
+VOLUME /models
+
+ENTRYPOINT ["/smallaios"]
