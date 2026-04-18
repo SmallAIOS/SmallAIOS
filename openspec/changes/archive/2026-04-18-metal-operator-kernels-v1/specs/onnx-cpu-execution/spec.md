@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: Operator Dispatch Path
 The executor's `dispatch_node` function SHALL check for an available GPU backend before falling through to CPU execution. When a GPU backend is present and the operator is in its supported set, execution SHALL occur on the GPU. When no GPU backend is present or the operator is not supported, execution SHALL fall through to the existing CPU implementation with zero behavioral change.
