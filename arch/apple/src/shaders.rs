@@ -312,17 +312,20 @@ pub const LAYER_NORMALIZATION: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
+// Packed dims buffer layout: [D as uint, epsilon as float bits]
 kernel void layer_normalization(
     device const float* input  [[buffer(0)]],
     device const float* scale  [[buffer(1)]],
     device const float* bias   [[buffer(2)]],
     device float*       output [[buffer(3)]],
-    constant uint& D           [[buffer(4)]],
-    constant float& epsilon    [[buffer(5)]],
+    device const uint*  dims   [[buffer(4)]],
     uint tgid [[threadgroup_position_in_grid]],
     uint lid  [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
+    uint  D       = dims[0];
+    float epsilon = as_type<float>(dims[1]);
+
     threadgroup float shared[256];
 
     uint row = tgid;
@@ -371,16 +374,19 @@ pub const RMS_NORMALIZATION: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
+// Packed dims buffer layout: [D as uint, epsilon as float bits]
 kernel void rms_normalization(
     device const float* input  [[buffer(0)]],
     device const float* scale  [[buffer(1)]],
     device float*       output [[buffer(2)]],
-    constant uint& D           [[buffer(3)]],
-    constant float& epsilon    [[buffer(4)]],
+    device const uint*  dims   [[buffer(3)]],
     uint tgid [[threadgroup_position_in_grid]],
     uint lid  [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
+    uint  D       = dims[0];
+    float epsilon = as_type<float>(dims[1]);
+
     threadgroup float shared[256];
 
     uint row = tgid;
@@ -418,16 +424,19 @@ pub const ROTARY_EMBEDDING: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
+// Packed dims buffer layout: [D, seq_len, interleaved] as uint
 kernel void rotary_embedding(
     device const float* input     [[buffer(0)]],
     device const float* cos_cache [[buffer(1)]],
     device const float* sin_cache [[buffer(2)]],
     device float*       output    [[buffer(3)]],
-    constant uint& D              [[buffer(4)]],
-    constant uint& seq_len        [[buffer(5)]],
-    constant uint& interleaved    [[buffer(6)]],
+    device const uint*  dims      [[buffer(4)]],
     uint tid [[thread_position_in_grid]])
 {
+    uint D           = dims[0];
+    uint seq_len     = dims[1];
+    uint interleaved = dims[2];
+
     uint half_d = D / 2;
     uint total_pairs = seq_len * half_d;
     // tid indexes (batch * seq * half_d)
@@ -468,21 +477,22 @@ pub const SCALED_DOT_PRODUCT_ATTENTION: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
+// Packed dims buffer layout: [Sq, Sk, D, num_heads_batch, scale_bits]
 kernel void scaled_dot_product_attention(
     device const float* Q          [[buffer(0)]],
     device const float* K          [[buffer(1)]],
     device const float* V          [[buffer(2)]],
     device float*       out        [[buffer(3)]],
-    constant uint& Sq              [[buffer(4)]],
-    constant uint& Sk              [[buffer(5)]],
-    constant uint& D               [[buffer(6)]],
-    constant uint& num_heads_batch [[buffer(7)]],
-    constant uint& scale_bits      [[buffer(8)]],
+    device const uint*  dims       [[buffer(4)]],
     uint tgid [[threadgroup_position_in_grid]],
     uint lid  [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
-    float scale = as_type<float>(scale_bits);
+    uint  Sq              = dims[0];
+    uint  Sk              = dims[1];
+    uint  D               = dims[2];
+    uint  num_heads_batch = dims[3];
+    float scale           = as_type<float>(dims[4]);
 
     uint head = tgid / Sq;
     uint qi   = tgid % Sq;
@@ -870,6 +880,7 @@ pub const BATCH_NORMALIZATION: &str = r#"
 #include <metal_stdlib>
 using namespace metal;
 
+// Packed dims buffer layout: [C, HW, epsilon as float bits]
 kernel void batch_normalization(
     device const float* input  [[buffer(0)]],
     device const float* scale  [[buffer(1)]],
@@ -877,13 +888,15 @@ kernel void batch_normalization(
     device const float* mean   [[buffer(3)]],
     device const float* var    [[buffer(4)]],
     device float*       output [[buffer(5)]],
-    constant uint& C           [[buffer(6)]],
-    constant uint& HW          [[buffer(7)]],
-    constant float& epsilon    [[buffer(8)]],
+    device const uint*  dims   [[buffer(6)]],
     uint tgid [[threadgroup_position_in_grid]],
     uint lid  [[thread_position_in_threadgroup]],
     uint tg_size [[threads_per_threadgroup]])
 {
+    uint  C       = dims[0];
+    uint  HW      = dims[1];
+    float epsilon = as_type<float>(dims[2]);
+
     // tgid = n * C + c
     uint c = tgid % C;
     uint n = tgid / C;

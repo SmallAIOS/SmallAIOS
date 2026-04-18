@@ -10,6 +10,9 @@ publish = false
 [dependencies]
 smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
 
+[features]
+metal = ["smallaios-onnx-rt/metal"]
+
 [dev-dependencies]
 criterion = { version = "0.8", features = ["html_reports"] }
 smallaios-onnx-rt = { path = "../onnx-rt" }
@@ -20,6 +23,11 @@ smallaios-ipc = { path = "../ipc" }
 [[bench]]
 name = "onnx_operators"
 harness = false
+
+[[bench]]
+name = "metal_operators"
+harness = false
+required-features = ["metal"]
 
 [[bench]]
 name = "crypto"
