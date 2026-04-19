@@ -2939,3 +2939,114 @@ fn test_gpu_strided_batched_gemm_qk_transpose() {
         );
     }
 }
+
+// ── Section 6.5-6.9: Masked softmax ────────────────────────────────
+
+#[test]
+#[ignore]
+fn test_gpu_masked_softmax_causal_row_sums_to_one() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Prefill case: H=4, seq_q=8, seq_kv=8 (causal_offset = 0). Each
+    // query at q_idx attends to keys [0..=q_idx], so the per-row sum
+    // must be exactly 1.0 (not 0.0, since at least k=0 is allowed).
+    let heads = 4usize;
+    let seq_q = 8usize;
+    let seq_kv = 8usize;
+    let n = heads * seq_q * seq_kv;
+
+    // Mildly varied scores to make sure the row-max path works.
+    let scores: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.13).sin() * 2.0).collect();
+    let dev = make_f32_device_tensor(&[heads as i64, seq_q as i64, seq_kv as i64], &scores);
+
+    let scale = 1.0f32 / (16f32).sqrt();
+    cuda::kernels::attention::masked_softmax_gpu(
+        &rt,
+        &dev,
+        seq_q as i32,
+        seq_kv as i32,
+        None,
+        scale,
+    )
+    .expect("masked_softmax_gpu causal");
+    cuda::kernels::synchronize().expect("sync");
+
+    let host = read_f32_device_tensor(&dev);
+    for h in 0..heads {
+        for qi in 0..seq_q {
+            let mut row_sum = 0.0f32;
+            for kj in 0..seq_kv {
+                let v = host[(h * seq_q + qi) * seq_kv + kj];
+                if kj > qi {
+                    assert!(
+                        v.abs() < 1e-6,
+                        "masked position should be 0 (h={h} q={qi} k={kj}, got {v})"
+                    );
+                } else {
+                    assert!(v >= 0.0, "softmax output must be non-negative");
+                }
+                row_sum += v;
+            }
+            assert!(
+                (row_sum - 1.0).abs() < 1e-5,
+                "h={h} q={qi}: row_sum {row_sum} != 1.0"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_masked_softmax_sliding_window() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Sliding-window mask. Query q_pos attends to k in
+    // [q_pos - window, q_pos]. With seq_q == seq_kv == 16, window = 4:
+    //   q=0:  k∈{0}            (q_pos-window=-4 clamps to 0)
+    //   q=5:  k∈{1,2,3,4,5}
+    //   q=15: k∈{11,...,15}
+    let heads = 2usize;
+    let seq = 16usize;
+    let window = 4i32;
+    let n = heads * seq * seq;
+
+    let scores: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.07).cos()).collect();
+    let dev = make_f32_device_tensor(&[heads as i64, seq as i64, seq as i64], &scores);
+
+    cuda::kernels::attention::masked_softmax_gpu(
+        &rt,
+        &dev,
+        seq as i32,
+        seq as i32,
+        Some(window),
+        1.0,
+    )
+    .expect("masked_softmax_gpu sliding");
+    cuda::kernels::synchronize().expect("sync");
+
+    let host = read_f32_device_tensor(&dev);
+    for h in 0..heads {
+        for qi in 0..seq {
+            let q_pos = qi as i32;
+            let mut row_sum = 0.0f32;
+            for kj in 0..seq {
+                let k = kj as i32;
+                let allowed = k <= q_pos && k >= q_pos - window;
+                let v = host[(h * seq + qi) * seq + kj];
+                if !allowed {
+                    assert!(
+                        v.abs() < 1e-6,
+                        "h={h} q={qi} k={kj}: out-of-window must be 0 (got {v})"
+                    );
+                }
+                row_sum += v;
+            }
+            assert!(
+                (row_sum - 1.0).abs() < 1e-5,
+                "h={h} q={qi}: row_sum {row_sum} != 1.0"
+            );
+        }
+    }
+}

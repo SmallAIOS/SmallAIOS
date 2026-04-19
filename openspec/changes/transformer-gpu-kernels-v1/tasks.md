@@ -61,11 +61,11 @@
 - [x] 6.3 Unit test (GB10): strided batched GEMM with BF16 inputs and F32 compute type
 - [x] 6.4 Unit test (GB10): strided batched GEMM with F32 inputs and TF32 compute type
 
-- [ ] 6.5 Create `onnx-rt/src/cuda/kernels/attention.rs` with a `gqa_softmax_mask` kernel source that applies scale, causal mask, optional sliding-window mask, row-max subtract, `expf`, row-sum divide
-- [ ] 6.6 Kernel uses warp-level reductions for row max and row sum
-- [ ] 6.7 Implement `masked_softmax_gpu(scores, seq_len_q, seq_len_kv, window) -> Result<(), CudaError>` in-place on the scratch buffer
-- [ ] 6.8 Unit test (GB10): masked softmax with causal mask produces row-sums of 1.0 within 1e-5
-- [ ] 6.9 Unit test (GB10): masked softmax with sliding window only attends within `[i - window, i]`
+- [x] 6.5 Create `onnx-rt/src/cuda/kernels/attention.rs` with a `gqa_softmax_mask` kernel source that applies scale, causal mask, optional sliding-window mask, row-max subtract, `expf`, row-sum divide
+- [x] 6.6 Kernel uses warp-level reductions for row max and row sum
+- [x] 6.7 Implement `masked_softmax_gpu(scores, seq_len_q, seq_len_kv, window) -> Result<(), CudaError>` in-place on the scratch buffer
+- [x] 6.8 Unit test (GB10): masked softmax with causal mask produces row-sums of 1.0 within 1e-5
+- [x] 6.9 Unit test (GB10): masked softmax with sliding window only attends within `[i - window, i]`
 
 - [ ] 6.10 Add `gqa_kv_expand` kernel source that replicates each KV head `num_heads / num_kv_heads` times along the head axis
 - [ ] 6.11 Unit test (GB10): `kv_expand` with Gemma 4 ratio (32 heads / 16 KV heads) produces correct expanded layout

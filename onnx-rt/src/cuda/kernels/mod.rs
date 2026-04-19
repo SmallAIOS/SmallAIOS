@@ -26,6 +26,7 @@ use std::sync::Once;
 use super::ffi;
 use super::CudaError;
 
+pub mod attention;
 pub mod elementwise;
 pub mod gather;
 pub mod rms_norm;

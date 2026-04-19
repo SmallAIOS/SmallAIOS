@@ -717,6 +717,14 @@ impl CudaRuntime {
             "rotary_bf16",
             kernels::compile_kernel("rotary_bf16", kernels::rotary::ROTARY_BF16_SRC, &[])?,
         );
+        registry.insert(
+            "gqa_softmax_mask_f32",
+            kernels::compile_kernel(
+                "gqa_softmax_mask_f32",
+                kernels::attention::GQA_SOFTMAX_MASK_F32_SRC,
+                &[],
+            )?,
+        );
 
         Ok(())
     }
