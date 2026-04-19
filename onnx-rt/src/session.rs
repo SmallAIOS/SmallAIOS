@@ -701,6 +701,25 @@ impl Session {
         Ok(())
     }
 
+    /// Returns the current committed token position of the KV cache, or
+    /// `None` for sessions without a cache (ONNX-backed sessions).
+    ///
+    /// Equivalent to [`crate::cuda::GpuKvCache::current_position`] on
+    /// the locked cache. Used by tests to assert that the dispatcher
+    /// is actually appending tokens during the forward pass.
+    #[cfg(feature = "cuda")]
+    pub fn kv_cache_position(&self) -> Result<Option<usize>, SessionError> {
+        match &self.kv_cache {
+            Some(cache) => {
+                let g = cache.lock().map_err(|_| {
+                    SessionError::ExecutionFailed(String::from("kv_cache mutex poisoned"))
+                })?;
+                Ok(Some(g.current_position()))
+            }
+            None => Ok(None),
+        }
+    }
+
     /// Runs inference and returns a per-operator timing profile alongside
     /// the outputs.
     ///
@@ -834,6 +853,15 @@ impl Session {
             crate::model_loader::build_gemma_graph(&gemma_config, &file)
                 .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?
         };
+
+        // 3.5 Compile + register the NVRTC kernels the dispatcher will
+        //     need (Gather/Add/Mul/Silu/RMSNorm/Rotary/GQA support
+        //     kernels). Idempotent on subsequent sessions sharing the
+        //     same runtime — `init_kernels` no-ops on already-registered
+        //     entries by overwriting them.
+        cuda_runtime
+            .init_kernels()
+            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("init_kernels: {}", e)))?;
 
         // 4. Materialize initializers -> GPU weight map.
         let gpu_weights = crate::cuda::initializers_to_gpu(&built.initializers, &cuda_runtime)

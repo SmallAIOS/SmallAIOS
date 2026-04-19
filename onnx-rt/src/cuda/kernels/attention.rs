@@ -561,6 +561,59 @@ extern "C" __global__ void softmax_cast_f32_to_bf16(
 }
 "#;
 
+/// `bf16_to_f32_gpu`: cast a BF16 buffer to F32 (mirror of
+/// [`SOFTMAX_CAST_F32_TO_BF16_SRC`]). Used by `rotary_gpu` to accept
+/// BF16 cos/sin tables (the rope kernels require F32 tables).
+pub const CAST_BF16_TO_F32_SRC: &str = r#"
+#include <cuda_bf16.h>
+extern "C" __global__ void cast_bf16_to_f32(
+    const __nv_bfloat16* __restrict__ in_bf16,
+    float* __restrict__ out_f32,
+    int total
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+    out_f32[tid] = __bfloat162float(in_bf16[tid]);
+}
+"#;
+
+/// Cast a contiguous BF16 device tensor to F32.
+pub fn cast_bf16_to_f32_gpu(
+    runtime: &CudaRuntime,
+    in_bf16: &DeviceTensor,
+) -> Result<DeviceTensor, CudaError> {
+    if in_bf16.dtype != DataType::BFloat16 {
+        return Err(CudaError::RuntimeError {
+            op: "cast_bf16_to_f32_gpu: input must be BFloat16",
+            code: -1,
+        });
+    }
+    let out = DeviceTensor::alloc(in_bf16.shape.clone(), DataType::Float)?;
+    let total = in_bf16.total_elements();
+    if total == 0 {
+        return Ok(out);
+    }
+    let mut in_ptr = in_bf16.buffer.as_mut_ptr();
+    let mut out_ptr = out.buffer.as_mut_ptr();
+    let mut total_arg: i32 = total as i32;
+    let args: [*mut core::ffi::c_void; 3] = [
+        &mut in_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut out_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut total_arg as *mut _ as *mut core::ffi::c_void,
+    ];
+    let block_x: u32 = 256;
+    let grid_x: u32 = (total as u64).div_ceil(block_x as u64) as u32;
+    runtime
+        .with_kernel("cast_bf16_to_f32", |k: &Kernel| {
+            launch_kernel(k, (grid_x.max(1), 1, 1), (block_x, 1, 1), &args, 0)
+        })
+        .ok_or_else(|| CudaError::KernelLoadFailed {
+            name: "cast_bf16_to_f32_gpu: kernel cast_bf16_to_f32 not registered".to_string(),
+            cuda_result: -1,
+        })??;
+    Ok(out)
+}
+
 /// Cast a contiguous F32 [`DeviceTensor`] to BF16, returning a new
 /// tensor with the same shape. Used by `gpu_gqa` to bridge the F32
 /// softmax scores into the BF16 V GEMM.
@@ -990,13 +1043,13 @@ pub fn gpu_gqa_with_cache(
         });
     }
 
-    // Reshape new_k/new_v from [1, num_kv_heads, 1, head_dim] to the
-    // single-token [1, num_kv_heads, head_dim] form GpuKvCache::append
-    // expects (it just checks the byte count — no reshape needed in
-    // memory). We pass the original tensors directly.
+    // append() writes to slot current_position but does NOT commit.
+    // view_pending() returns [..., current_position + 1) so the new
+    // token is visible to self-attention. The executor calls
+    // advance_position() exactly once per forward pass after the last
+    // layer has appended.
     kv_cache.append(layer_idx, new_k, new_v)?;
-    kv_cache.advance_position()?;
-    let view = kv_cache.view(layer_idx)?;
+    let view = kv_cache.view_pending(layer_idx)?;
 
     let k_full = cache_view_to_head_major(runtime, &view, WhichPtr::K)?;
     let v_full = cache_view_to_head_major(runtime, &view, WhichPtr::V)?;

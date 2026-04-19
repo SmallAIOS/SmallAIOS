@@ -807,6 +807,14 @@ impl CudaRuntime {
                 &[],
             )?,
         );
+        registry.insert(
+            "cast_bf16_to_f32",
+            kernels::compile_kernel(
+                "cast_bf16_to_f32",
+                kernels::attention::CAST_BF16_TO_F32_SRC,
+                &[],
+            )?,
+        );
 
         Ok(())
     }

@@ -378,6 +378,17 @@ pub fn execute_graph_gpu_with_weights_and_cache(
         }
     }
 
+    // §6.14 / §7.4: commit the per-layer K/V appends from this forward
+    // pass with a single advance_position call. Skipped if no GQA op
+    // ran (e.g. graph contains no attention nodes).
+    if let Some(ctx) = cache_ctx.as_mut() {
+        if ctx.next_layer_idx > 0 {
+            ctx.cache.advance_position().map_err(|e| {
+                SessionError::ExecutionFailed(format!("kv_cache advance_position: {}", e))
+            })?;
+        }
+    }
+
     // Extract graph outputs in declared order.
     let mut results = Vec::new();
     for output_name in &graph.output_names {
@@ -555,34 +566,84 @@ fn dispatch_gpu_node(
         }
         "RotaryEmbedding" => {
             let x = take_input(inputs, 0, "RotaryEmbedding", "X")?;
-            // The microsoft op takes [X, position_ids, cos_cache, sin_cache];
-            // GPU dispatch reads `position` from position_ids[0] (decode
-            // step) or treats position_ids as sequential prefill (the
-            // kernel adds qi internally).
-            let position_ids = take_input(inputs, 1, "RotaryEmbedding", "position_ids")?;
-            let cos_cache = take_input(inputs, 2, "RotaryEmbedding", "cos_cache")?;
-            let sin_cache = take_input(inputs, 3, "RotaryEmbedding", "sin_cache")?;
+            // Two input forms accepted:
+            //   - microsoft: [X, position_ids, cos_cache, sin_cache]
+            //   - gemma-style: [X, cos_cache, sin_cache]
+            // Disambiguate by the *count* of supplied inputs.
+            let (cos_cache, sin_cache, explicit_positions) = if inputs.len() >= 4 {
+                let pos = take_input(inputs, 1, "RotaryEmbedding", "position_ids")?;
+                let cos = take_input(inputs, 2, "RotaryEmbedding", "cos_cache")?;
+                let sin = take_input(inputs, 3, "RotaryEmbedding", "sin_cache")?;
+                (cos, sin, Some(pos))
+            } else {
+                let cos = take_input(inputs, 1, "RotaryEmbedding", "cos_cache")?;
+                let sin = take_input(inputs, 2, "RotaryEmbedding", "sin_cache")?;
+                (cos, sin, None)
+            };
             let mut interleaved = false;
             for a in attrs {
                 if a.name == "interleaved" {
                     interleaved = a.i != 0;
                 }
             }
-            // Read the first position from the device (one i64).
-            let pos_host = position_ids
-                .to_host()
-                .map_err(|e| OpError::InternalError(format!("RotaryEmbedding pos D2H: {}", e)))?;
-            let position: i32 = if pos_host.raw_data.len() >= 8 {
-                let bytes: [u8; 8] = pos_host.raw_data[..8].try_into().unwrap_or([0; 8]);
-                i64::from_le_bytes(bytes) as i32
+            // Pick the starting position. With explicit position_ids,
+            // read the first i64. Otherwise use the cache's current
+            // committed position (for cache-aware safetensors decode
+            // steps), defaulting to 0 for cacheless / first-token runs.
+            let position: i32 = if let Some(pos) = explicit_positions {
+                let pos_host = pos.to_host().map_err(|e| {
+                    OpError::InternalError(format!("RotaryEmbedding pos D2H: {}", e))
+                })?;
+                if pos_host.raw_data.len() >= 8 {
+                    let bytes: [u8; 8] = pos_host.raw_data[..8].try_into().unwrap_or([0; 8]);
+                    i64::from_le_bytes(bytes) as i32
+                } else {
+                    0
+                }
             } else {
-                0
+                kv_cache_ctx
+                    .as_ref()
+                    .map(|c| c.cache.current_position() as i32)
+                    .unwrap_or(0)
+            };
+            // The rotary kernels read F32 cos/sin tables; the gemma
+            // builder emits BF16 tables (matches the surrounding
+            // weight dtype). Cast on the fly when needed — the tables
+            // are tiny relative to model weights so the per-call cast
+            // is negligible.
+            let cos_f32_owned;
+            let sin_f32_owned;
+            let cos_ref = if cos_cache.dtype == DataType::BFloat16 {
+                cos_f32_owned =
+                    crate::cuda::kernels::attention::cast_bf16_to_f32_gpu(runtime, cos_cache)
+                        .map_err(|e| {
+                            OpError::InternalError(format!(
+                                "RotaryEmbedding cos cast bf16->f32: {}",
+                                e
+                            ))
+                        })?;
+                &cos_f32_owned
+            } else {
+                cos_cache
+            };
+            let sin_ref = if sin_cache.dtype == DataType::BFloat16 {
+                sin_f32_owned =
+                    crate::cuda::kernels::attention::cast_bf16_to_f32_gpu(runtime, sin_cache)
+                        .map_err(|e| {
+                            OpError::InternalError(format!(
+                                "RotaryEmbedding sin cast bf16->f32: {}",
+                                e
+                            ))
+                        })?;
+                &sin_f32_owned
+            } else {
+                sin_cache
             };
             let out = crate::cuda::kernels::rotary::rotary_gpu(
                 runtime,
                 x,
-                cos_cache,
-                sin_cache,
+                cos_ref,
+                sin_ref,
                 position,
                 interleaved,
             )

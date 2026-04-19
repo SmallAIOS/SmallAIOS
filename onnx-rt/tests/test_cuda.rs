@@ -1384,19 +1384,22 @@ fn test_kv_cache_reset() {
     eprintln!("test_kv_cache_reset: OK");
 }
 
-// ── Section 9.6: Session::from_safetensors end-to-end ──────────────────
+// ── Section 9.6 + transformer-gpu-kernels-v1 §8: Gemma e2e plumbing ────
 //
 // Builds a synthetic 2-layer Gemma-like safetensors directory in a temp
-// dir, loads it via Session::from_safetensors, runs a single forward pass,
-// and checks the logits shape. The underlying Gemma graph uses several
-// operators (Gather, Add, Mul, RMSNormalization, RotaryEmbedding,
-// GroupQueryAttention, Silu) that do NOT yet have GPU implementations in
-// the Section 5 dispatcher (which only supports MatMul/Gemm/
-// MatMulInteger/Conv). As a result this test currently exercises the
-// session construction + dispatch plumbing and expects the forward pass
-// to bottom out in an "no GPU implementation for {op}" error. When the
-// GPU dispatch table is expanded (future sections), this assertion
-// should be upgraded to a successful shape+NaN check on the logits.
+// dir, loads it via Session::from_safetensors, runs a single forward
+// pass, and checks the dispatcher reaches the new GPU operators wired
+// up by transformer-gpu-kernels-v1 §7.
+//
+// The synthetic graph uses HuggingFace `[out, in]` weight layout with
+// `MatMul` nodes (no implicit transpose), so the forward pass currently
+// bottoms out at a MatMul shape mismatch — the gemma builder needs a
+// follow-up to emit `Gemm(trans_b=true)` for HF-format weights. This
+// test asserts on the *symptom* of §7 working: the error message is no
+// longer "no GPU implementation" (every op now has a GPU arm), but a
+// deeper-pipeline shape error. When the gemma builder is upgraded the
+// assertion can flip to the full Ok-path validation (logits shape,
+// no NaN/Inf, KV cache populated).
 #[cfg(feature = "safetensors")]
 #[test]
 #[ignore]
@@ -1583,16 +1586,16 @@ fn test_session_from_safetensors_synthetic_gemma() {
 
     // ── Run forward pass ──────────────────────────────────────────────
     //
-    // The current GPU dispatcher only implements MatMul/Gemm/
-    // MatMulInteger/Conv. The Gemma graph starts with a Gather (for
-    // embedding lookup), so we expect an ExecutionFailed error whose
-    // message contains "no GPU implementation for Gather". When the GPU
-    // dispatcher is extended in a follow-up change, this assertion
-    // should flip to an Ok() check on the output shape/dtype.
+    // §7 wired Gather/Add/Mul/Silu/RMSNorm/Rotary/GQA into the GPU
+    // dispatcher, so the previous "no GPU implementation for Gather"
+    // sentinel no longer fires. The dispatcher reaches deep into the
+    // graph and surfaces the gemma builder's HF-weight shape bug at
+    // the first Q/K/V projection MatMul. When the gemma builder is
+    // taught to emit `Gemm(trans_b=true)` (a separate change), this
+    // assertion should flip to the Ok-path validation.
     let result = session.run(&inputs);
     match result {
         Ok(outputs) => {
-            // If a future change makes this path succeed, verify shape.
             assert_eq!(outputs.len(), 1);
             let logits = &outputs[0];
             assert_eq!(
@@ -1605,13 +1608,24 @@ fn test_session_from_safetensors_synthetic_gemma() {
         }
         Err(e) => {
             let msg = format!("{e}");
+            // Acceptable failure modes: shape/dim mismatch from the
+            // gemma builder's HF-weight layout. NOT acceptable: a
+            // plain "no GPU implementation" — that would mean §7
+            // wiring regressed.
             assert!(
-                msg.contains("no GPU implementation"),
+                !msg.contains("no GPU implementation"),
+                "regression: dispatcher missing op (§7 wiring should be in place): {msg}"
+            );
+            assert!(
+                msg.contains("MatMul")
+                    || msg.contains("k mismatch")
+                    || msg.contains("shape")
+                    || msg.contains("dim"),
                 "unexpected error from session.run: {msg}"
             );
             eprintln!(
                 "test_session_from_safetensors_synthetic_gemma: \
-                 expected unsupported-op error ({msg})"
+                 dispatcher reached deeper graph as expected ({msg})"
             );
         }
     }
@@ -3391,6 +3405,11 @@ fn test_gpu_gqa_with_cache_first_token() {
     )
     .expect("gpu_gqa_with_cache first token");
     cuda::kernels::synchronize().expect("sync");
+
+    // gpu_gqa_with_cache appends but does NOT advance — the executor
+    // advances once per forward pass (after the last layer). For this
+    // unit test we advance manually to mirror the executor's contract.
+    cache.advance_position().expect("advance_position");
 
     assert_eq!(cache.current_position(), 1, "cache should hold one token");
     assert_eq!(out.shape, vec![1, 1, (h * hd) as i64]);

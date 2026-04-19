@@ -357,6 +357,56 @@ impl GpuKvCache {
         })
     }
 
+    /// View that includes the most recently appended (but not yet
+    /// advance-committed) token at slot `current_position`.
+    ///
+    /// The standard [`view`] returns `[start, current_position)` which
+    /// excludes the token just written by [`append`]. Self-attention
+    /// needs to attend to the new token's own K/V, so this method
+    /// returns a view widened by one slot:
+    /// - **global** → `[0, current_position + 1)`
+    /// - **sliding-window w** → `[max(0, current_position + 1 - w), current_position + 1)`
+    ///
+    /// Use this between `append()` and `advance_position()`. After the
+    /// executor calls `advance_position` at end-of-token, [`view`]
+    /// itself reflects the same window — `view_pending` is only needed
+    /// during the in-flight append.
+    pub fn view_pending(&self, layer_idx: usize) -> Result<KvView, CudaError> {
+        if layer_idx >= self.layers.len() {
+            return Err(CudaError::RuntimeError {
+                op: "kv_cache_view_pending:layer_idx",
+                code: -1,
+            });
+        }
+        let layer = &self.layers[layer_idx];
+        let stride = self.token_stride_bytes();
+        let pending_position = self.current_position + 1;
+
+        let (start, count) = match layer.sliding_window {
+            None => (0, pending_position),
+            Some(w) => {
+                let count = core::cmp::min(w, pending_position);
+                let start = pending_position - count;
+                (start, count)
+            }
+        };
+
+        let k_base = layer.k.as_ptr() as *const u8;
+        let v_base = layer.v.as_ptr() as *const u8;
+        let k_ptr = unsafe { k_base.add(start * stride) } as *const core::ffi::c_void;
+        let v_ptr = unsafe { v_base.add(start * stride) } as *const core::ffi::c_void;
+
+        Ok(KvView {
+            k_ptr,
+            v_ptr,
+            token_count: count,
+            stride_bytes: stride,
+            num_kv_heads: self.num_kv_heads,
+            head_dim: self.head_dim,
+            dtype: self.dtype,
+        })
+    }
+
     /// Reset the cache for a new generation session.
     ///
     /// Sets the committed position back to zero. Does NOT free or reallocate
