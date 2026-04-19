@@ -604,6 +604,14 @@ pub struct CudaRuntime {
     /// [`CudaRuntime::with_kernel`]. Interior mutability via `Mutex` lets
     /// `&CudaRuntime` mutate the map while keeping the runtime `Sync`.
     pub kernel_registry: std::sync::Mutex<BTreeMap<&'static str, kernels::Kernel>>,
+    /// Hard cap on the per-call attention-scratch buffer size in bytes.
+    ///
+    /// `gpu_gqa` checks the size of the `[H, seq_q, seq_kv]` F32 score
+    /// matrix against this cap and returns `RuntimeError` rather than
+    /// allocate beyond it. Defaults to 256 MiB; safetensors sessions
+    /// can override via [`CudaRuntime::set_attention_scratch_cap`] once
+    /// they know the layer-specific window / max sequence length.
+    pub attention_scratch_cap_bytes: std::sync::atomic::AtomicUsize,
 }
 
 impl CudaRuntime {
@@ -643,7 +651,25 @@ impl CudaRuntime {
             weight_store: DeviceWeightStore::new(),
             precision,
             kernel_registry: std::sync::Mutex::new(BTreeMap::new()),
+            attention_scratch_cap_bytes: std::sync::atomic::AtomicUsize::new(256 * 1024 * 1024),
         })
+    }
+
+    /// Override the per-call attention-scratch cap (in bytes).
+    ///
+    /// Sessions that know their `max_seq_len` / sliding window can size
+    /// the cap precisely, e.g. `num_heads * window^2 * 4` for a local
+    /// layer. The cap is checked by `gpu_gqa` before allocating the
+    /// `[H, seq_q, seq_kv]` F32 score matrix.
+    pub fn set_attention_scratch_cap(&self, bytes: usize) {
+        self.attention_scratch_cap_bytes
+            .store(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Read the current attention-scratch cap.
+    pub fn attention_scratch_cap(&self) -> usize {
+        self.attention_scratch_cap_bytes
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Eagerly compile and register all built-in NVRTC kernels.
@@ -738,6 +764,46 @@ impl CudaRuntime {
             kernels::compile_kernel(
                 "gqa_kv_expand_bf16",
                 kernels::attention::GQA_KV_EXPAND_BF16_SRC,
+                &[],
+            )?,
+        );
+        registry.insert(
+            "gqa_merge_heads_f32",
+            kernels::compile_kernel(
+                "gqa_merge_heads_f32",
+                kernels::attention::GQA_MERGE_HEADS_F32_SRC,
+                &[],
+            )?,
+        );
+        registry.insert(
+            "gqa_merge_heads_bf16",
+            kernels::compile_kernel(
+                "gqa_merge_heads_bf16",
+                kernels::attention::GQA_MERGE_HEADS_BF16_SRC,
+                &[],
+            )?,
+        );
+        registry.insert(
+            "softmax_cast_f32_to_bf16",
+            kernels::compile_kernel(
+                "softmax_cast_f32_to_bf16",
+                kernels::attention::SOFTMAX_CAST_F32_TO_BF16_SRC,
+                &[],
+            )?,
+        );
+        registry.insert(
+            "kv_cache_view_to_head_major_f32",
+            kernels::compile_kernel(
+                "kv_cache_view_to_head_major_f32",
+                kernels::attention::KV_CACHE_VIEW_TO_HEAD_MAJOR_F32_SRC,
+                &[],
+            )?,
+        );
+        registry.insert(
+            "kv_cache_view_to_head_major_bf16",
+            kernels::compile_kernel(
+                "kv_cache_view_to_head_major_bf16",
+                kernels::attention::KV_CACHE_VIEW_TO_HEAD_MAJOR_BF16_SRC,
                 &[],
             )?,
         );

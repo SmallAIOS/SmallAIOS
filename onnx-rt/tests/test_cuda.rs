@@ -3124,3 +3124,322 @@ fn test_gpu_masked_softmax_sliding_window() {
         }
     }
 }
+
+// ── Section 6.12-6.19: gpu_gqa end-to-end ──────────────────────────
+
+/// Build a [B=1, Sq, hidden] f32 vector from an interleaved
+/// [B, H, Sq, head_dim] source — the layout `op_group_query_attention`
+/// consumes via its rank-3 input path.
+fn pack_bsd_from_bhsd(src: &[f32], heads: usize, sq: usize, head_dim: usize) -> Vec<f32> {
+    let mut out = vec![0f32; sq * heads * head_dim];
+    for h in 0..heads {
+        for qi in 0..sq {
+            for d in 0..head_dim {
+                let s = (h * sq + qi) * head_dim + d;
+                let dst = (qi * heads + h) * head_dim + d;
+                out[dst] = src[s];
+            }
+        }
+    }
+    out
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gqa_f32_vs_cpu_mha() {
+    use smallaios_onnx_rt::ops::microsoft::op_group_query_attention;
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Standard MHA: num_q_heads == num_kv_heads. Sq == Sk so the CPU
+    // op handles the whole thing as a single forward pass with no past.
+    let h = 4usize;
+    let kv = 4usize;
+    let sq = 4usize;
+    let hd = 8usize;
+    let n_q = h * sq * hd;
+    let n_k = kv * sq * hd;
+
+    let q_data: Vec<f32> = (0..n_q).map(|i| ((i as f32) * 0.013).sin() * 0.5).collect();
+    let k_data: Vec<f32> = (0..n_k).map(|i| ((i as f32) * 0.017).cos() * 0.5).collect();
+    let v_data: Vec<f32> = (0..n_k).map(|i| ((i as f32) * 0.011).sin() * 0.5).collect();
+
+    let q = make_f32_device_tensor(&[1, h as i64, sq as i64, hd as i64], &q_data);
+    let k = make_f32_device_tensor(&[1, kv as i64, sq as i64, hd as i64], &k_data);
+    let v = make_f32_device_tensor(&[1, kv as i64, sq as i64, hd as i64], &v_data);
+
+    let out = cuda::kernels::attention::gpu_gqa(&rt, &q, &k, &v, None, None).expect("gpu_gqa f32");
+    cuda::kernels::synchronize().expect("sync");
+    assert_eq!(out.shape, vec![1, sq as i64, (h * hd) as i64]);
+    assert_eq!(out.dtype, DataType::Float);
+
+    let q_3d = pack_bsd_from_bhsd(&q_data, h, sq, hd);
+    let k_3d = pack_bsd_from_bhsd(&k_data, kv, sq, hd);
+    let v_3d = pack_bsd_from_bhsd(&v_data, kv, sq, hd);
+    let q_t = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![1, sq as i64, (h * hd) as i64]),
+        name: String::new(),
+        raw_data: q_3d.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let k_t = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![1, sq as i64, (kv * hd) as i64]),
+        name: String::new(),
+        raw_data: k_3d.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let v_t = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![1, sq as i64, (kv * hd) as i64]),
+        name: String::new(),
+        raw_data: v_3d.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let inputs: [Option<&Tensor>; 9] = [
+        Some(&q_t),
+        Some(&k_t),
+        Some(&v_t),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ];
+    let (cpu_out, _, _) =
+        op_group_query_attention(&inputs, h as i64, kv as i64, None, -1, false, false)
+            .expect("op_group_query_attention");
+    let cpu_3d: Vec<f32> = cpu_out
+        .raw_data
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+
+    let out_host = read_f32_device_tensor(&out);
+    let mut max_abs_err = 0.0f32;
+    for (i, (got, want)) in out_host.iter().zip(cpu_3d.iter()).enumerate() {
+        let err = (got - want).abs();
+        if err > max_abs_err {
+            max_abs_err = err;
+        }
+        assert!(err < 5e-3, "idx {i}: got {got} expected {want} err {err}");
+    }
+    eprintln!("gpu_gqa f32 [1,4,4,8] vs CPU max_abs_err = {max_abs_err}");
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gqa_bf16_ratio_2to1() {
+    use smallaios_onnx_rt::ops::microsoft::op_group_query_attention;
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // GQA ratio 2:1 (4 q heads / 2 KV heads), BF16. Sq=Sk for direct
+    // CPU comparison.
+    let h = 4usize;
+    let kv = 2usize;
+    let sq = 4usize;
+    let hd = 16usize;
+    let n_q = h * sq * hd;
+    let n_k = kv * sq * hd;
+
+    let q_data: Vec<f32> = (0..n_q).map(|i| ((i as f32) * 0.005).sin() * 0.4).collect();
+    let k_data: Vec<f32> = (0..n_k).map(|i| ((i as f32) * 0.007).cos() * 0.4).collect();
+    let v_data: Vec<f32> = (0..n_k).map(|i| ((i as f32) * 0.009).sin() * 0.4).collect();
+
+    let q = make_bf16_device_tensor(&[1, h as i64, sq as i64, hd as i64], &q_data);
+    let k = make_bf16_device_tensor(&[1, kv as i64, sq as i64, hd as i64], &k_data);
+    let v = make_bf16_device_tensor(&[1, kv as i64, sq as i64, hd as i64], &v_data);
+
+    let out = cuda::kernels::attention::gpu_gqa(&rt, &q, &k, &v, None, None).expect("gpu_gqa bf16");
+    cuda::kernels::synchronize().expect("sync");
+    assert_eq!(out.shape, vec![1, sq as i64, (h * hd) as i64]);
+    assert_eq!(out.dtype, DataType::BFloat16);
+
+    let q_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&q_data));
+    let k_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&k_data));
+    let v_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&v_data));
+
+    let q_3d = pack_bsd_from_bhsd(&q_round, h, sq, hd);
+    let k_3d = pack_bsd_from_bhsd(&k_round, kv, sq, hd);
+    let v_3d = pack_bsd_from_bhsd(&v_round, kv, sq, hd);
+    let q_t = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![1, sq as i64, (h * hd) as i64]),
+        name: String::new(),
+        raw_data: q_3d.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let k_t = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![1, sq as i64, (kv * hd) as i64]),
+        name: String::new(),
+        raw_data: k_3d.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let v_t = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![1, sq as i64, (kv * hd) as i64]),
+        name: String::new(),
+        raw_data: v_3d.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let inputs: [Option<&Tensor>; 9] = [
+        Some(&q_t),
+        Some(&k_t),
+        Some(&v_t),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ];
+    let (cpu_out, _, _) =
+        op_group_query_attention(&inputs, h as i64, kv as i64, None, -1, false, false)
+            .expect("op_group_query_attention");
+    let cpu_3d: Vec<f32> = cpu_out
+        .raw_data
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+
+    let out_host = read_bf16_device_tensor(&out);
+    let mut max_abs_err = 0.0f32;
+    for (i, (got, want)) in out_host.iter().zip(cpu_3d.iter()).enumerate() {
+        let err = (got - want).abs();
+        if err > max_abs_err {
+            max_abs_err = err;
+        }
+        assert!(err < 5e-2, "idx {i}: got {got} expected {want} err {err}");
+    }
+    eprintln!("gpu_gqa bf16 [1,4,4,16] (GQA 2:1) vs CPU max_abs_err = {max_abs_err}");
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gqa_first_token_no_history() {
+    // The "first token, position == 0" case: Sq = Sk = 1, so the
+    // attention output for each head is just V[head, 0] (a single
+    // softmax weight of 1.0 on a single key).
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let h = 2usize;
+    let hd = 8usize;
+    let q_data: Vec<f32> = (0..h * hd).map(|i| (i as f32) * 0.1).collect();
+    let v_data: Vec<f32> = (0..h * hd).map(|i| (i as f32) * 0.05 + 1.0).collect();
+    let k_data: Vec<f32> = vec![0.0f32; h * hd];
+
+    let q = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &q_data);
+    let k = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &k_data);
+    let v = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &v_data);
+
+    let out = cuda::kernels::attention::gpu_gqa(&rt, &q, &k, &v, None, None)
+        .expect("gpu_gqa first token");
+    cuda::kernels::synchronize().expect("sync");
+    assert_eq!(out.shape, vec![1, 1, (h * hd) as i64]);
+
+    let host = read_f32_device_tensor(&out);
+    for h_i in 0..h {
+        for d in 0..hd {
+            let want = v_data[h_i * hd + d];
+            let got = host[h_i * hd + d];
+            assert!(
+                (got - want).abs() < 1e-5,
+                "h={h_i} d={d}: got {got} want {want}"
+            );
+            assert!(got.is_finite(), "output must be finite");
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gqa_with_cache_first_token() {
+    // §6.19: first token, position == 0, empty KV cache. After
+    // gpu_gqa_with_cache: cache.current_position() == 1 and the output
+    // matches the no-cache `gpu_gqa` invocation on the same K/V.
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let h = 2usize;
+    let hd = 8usize;
+    let max_seq = 8usize;
+
+    let q_data: Vec<f32> = (0..h * hd).map(|i| (i as f32) * 0.1).collect();
+    let k_data: Vec<f32> = (0..h * hd).map(|i| ((i as f32) * 0.03).sin()).collect();
+    let v_data: Vec<f32> = (0..h * hd).map(|i| (i as f32) * 0.05 + 1.0).collect();
+
+    let q = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &q_data);
+    let new_k = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &k_data);
+    let new_v = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &v_data);
+
+    let mut cache = cuda::GpuKvCache::allocate(
+        &rt,
+        1,
+        h,
+        hd,
+        max_seq,
+        DataType::Float,
+        &[cuda::LayerKind::Global],
+    )
+    .expect("alloc cache");
+    assert_eq!(cache.current_position(), 0);
+
+    let out = cuda::kernels::attention::gpu_gqa_with_cache(
+        &rt, &q, &new_k, &new_v, &mut cache, 0, None, None,
+    )
+    .expect("gpu_gqa_with_cache first token");
+    cuda::kernels::synchronize().expect("sync");
+
+    assert_eq!(cache.current_position(), 1, "cache should hold one token");
+    assert_eq!(out.shape, vec![1, 1, (h * hd) as i64]);
+
+    // Reference: re-run gpu_gqa without the cache on the same K/V.
+    let k_ref = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &k_data);
+    let v_ref = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &v_data);
+    let q_ref = make_f32_device_tensor(&[1, h as i64, 1, hd as i64], &q_data);
+    let ref_out = cuda::kernels::attention::gpu_gqa(&rt, &q_ref, &k_ref, &v_ref, None, None)
+        .expect("gpu_gqa ref");
+    cuda::kernels::synchronize().expect("sync");
+
+    let cache_host = read_f32_device_tensor(&out);
+    let ref_host = read_f32_device_tensor(&ref_out);
+    for (i, (a, b)) in cache_host.iter().zip(ref_host.iter()).enumerate() {
+        assert!((a - b).abs() < 1e-5, "idx {i}: cache_path {a} vs ref {b}");
+        assert!(a.is_finite(), "cache_path output must be finite");
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gqa_attention_scratch_cap() {
+    // §6.13: gpu_gqa fails fast when the [H, Sq, Sk] F32 scratch
+    // exceeds the runtime's attention_scratch_cap_bytes setting.
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // 4 heads × 4 × 4 F32 scratch = 256 bytes. Set cap to 100.
+    rt.set_attention_scratch_cap(100);
+
+    let h = 4usize;
+    let sq = 4usize;
+    let hd = 8usize;
+    let q_data: Vec<f32> = vec![0f32; h * sq * hd];
+    let kv_data: Vec<f32> = vec![0f32; h * sq * hd];
+    let q = make_f32_device_tensor(&[1, h as i64, sq as i64, hd as i64], &q_data);
+    let k = make_f32_device_tensor(&[1, h as i64, sq as i64, hd as i64], &kv_data);
+    let v = make_f32_device_tensor(&[1, h as i64, sq as i64, hd as i64], &kv_data);
+
+    let result = cuda::kernels::attention::gpu_gqa(&rt, &q, &k, &v, None, None);
+    assert!(result.is_err(), "should reject scratch over cap");
+    match result {
+        Err(cuda::CudaError::RuntimeError { op, .. }) => {
+            assert!(op.contains("scratch"), "op msg: {op}");
+        }
+        Err(other) => panic!("expected RuntimeError, got: {other:?}"),
+        Ok(_) => unreachable!(),
+    }
+    // Restore default so subsequent tests aren't affected.
+    rt.set_attention_scratch_cap(256 * 1024 * 1024);
+}

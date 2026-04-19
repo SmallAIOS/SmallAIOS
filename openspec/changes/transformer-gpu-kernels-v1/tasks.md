@@ -70,14 +70,14 @@
 - [x] 6.10 Add `gqa_kv_expand` kernel source that replicates each KV head `num_heads / num_kv_heads` times along the head axis
 - [x] 6.11 Unit test (GB10): `kv_expand` with Gemma 4 ratio (32 heads / 16 KV heads) produces correct expanded layout
 
-- [ ] 6.12 Implement top-level `gpu_gqa(exec, q, k, v, kv_cache, layer_idx, layer_kind, position, window) -> Result<DeviceTensor, CudaError>` composing KV expand → QK^T → masked softmax → softmax·V → merge heads
-- [ ] 6.13 `gpu_gqa` acquires the attention scratch `DeviceBuffer` from `CudaRuntime`, failing fast if the request exceeds the configured cap
-- [ ] 6.14 `gpu_gqa` calls `GpuKvCache::append` before `GpuKvCache::view`, using the returned `KvView` as the K/V operands
-- [ ] 6.15 Add `gqa_merge_heads` kernel source for the final transpose + reshape to `[batch, seq_len_q, hidden_size]`
-- [ ] 6.16 Register all four attention kernels in `init_kernels()`
-- [ ] 6.17 Unit test (GB10): `gpu_gqa` against `ops/microsoft.rs::group_query_attention` CPU reference on a `[1, 4, 2, 16]` input for both BF16 and F32
-- [ ] 6.18 Unit test (GB10): `gpu_gqa` with GQA ratio 2:1 against CPU reference
-- [ ] 6.19 Unit test (GB10): `gpu_gqa` on the first token (`position == 0`) with an empty KV cache
+- [x] 6.12 Implement top-level `gpu_gqa(exec, q, k, v, kv_cache, layer_idx, layer_kind, position, window) -> Result<DeviceTensor, CudaError>` composing KV expand → QK^T → masked softmax → softmax·V → merge heads
+- [x] 6.13 `gpu_gqa` acquires the attention scratch `DeviceBuffer` from `CudaRuntime`, failing fast if the request exceeds the configured cap
+- [x] 6.14 `gpu_gqa` calls `GpuKvCache::append` before `GpuKvCache::view`, using the returned `KvView` as the K/V operands
+- [x] 6.15 Add `gqa_merge_heads` kernel source for the final transpose + reshape to `[batch, seq_len_q, hidden_size]`
+- [x] 6.16 Register all four attention kernels in `init_kernels()`
+- [x] 6.17 Unit test (GB10): `gpu_gqa` against `ops/microsoft.rs::group_query_attention` CPU reference on a `[1, 4, 2, 16]` input for both BF16 and F32
+- [x] 6.18 Unit test (GB10): `gpu_gqa` with GQA ratio 2:1 against CPU reference
+- [x] 6.19 Unit test (GB10): `gpu_gqa` on the first token (`position == 0`) with an empty KV cache
 
 ## 7. Executor Dispatcher Extension
 

@@ -417,3 +417,589 @@ pub fn kv_expand_gpu(
 
     Ok(out)
 }
+
+// ── Section 6.15: gqa_merge_heads kernel ───────────────────────────
+
+/// `gqa_merge_heads_f32`: transpose `[H, Sq, head_dim]` (head-major)
+/// into `[B=1, Sq, H * head_dim]` (sequence-major). One thread per
+/// output element.
+pub const GQA_MERGE_HEADS_F32_SRC: &str = r#"
+extern "C" __global__ void gqa_merge_heads_f32(
+    const float* __restrict__ in_hsd,
+    float* __restrict__ out_bsd,
+    int heads,
+    int seq,
+    int head_dim
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = heads * seq * head_dim;
+    if (tid >= total) return;
+
+    int hd = head_dim;
+    int sd = seq * hd;
+
+    int h    = tid / sd;
+    int rem  = tid - h * sd;
+    int s    = rem / hd;
+    int d    = rem - s * hd;
+
+    int dst_idx = (s * heads + h) * hd + d;
+    out_bsd[dst_idx] = in_hsd[tid];
+}
+"#;
+
+/// `gqa_merge_heads_bf16`: BF16 variant of the merge transpose.
+pub const GQA_MERGE_HEADS_BF16_SRC: &str = r#"
+#include <cuda_bf16.h>
+extern "C" __global__ void gqa_merge_heads_bf16(
+    const __nv_bfloat16* __restrict__ in_hsd,
+    __nv_bfloat16* __restrict__ out_bsd,
+    int heads,
+    int seq,
+    int head_dim
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    int total = heads * seq * head_dim;
+    if (tid >= total) return;
+
+    int hd = head_dim;
+    int sd = seq * hd;
+
+    int h    = tid / sd;
+    int rem  = tid - h * sd;
+    int s    = rem / hd;
+    int d    = rem - s * hd;
+
+    int dst_idx = (s * heads + h) * hd + d;
+    out_bsd[dst_idx] = in_hsd[tid];
+}
+"#;
+
+/// Transpose `[H, Sq, head_dim]` → `[1, Sq, H * head_dim]`.
+///
+/// Final reshape after the softmax·V GEMM to produce the canonical
+/// attention output layout.
+pub fn merge_heads_gpu(
+    runtime: &CudaRuntime,
+    in_hsd: &DeviceTensor,
+) -> Result<DeviceTensor, CudaError> {
+    let kernel_name = match in_hsd.dtype {
+        DataType::Float => "gqa_merge_heads_f32",
+        DataType::BFloat16 => "gqa_merge_heads_bf16",
+        _ => {
+            return Err(CudaError::RuntimeError {
+                op: "merge_heads_gpu: unsupported dtype",
+                code: -1,
+            });
+        }
+    };
+    if in_hsd.shape.len() != 3 {
+        return Err(CudaError::RuntimeError {
+            op: "merge_heads_gpu: input must be rank-3 [H, Sq, head_dim]",
+            code: -1,
+        });
+    }
+    let heads_i64 = in_hsd.shape[0];
+    let seq_i64 = in_hsd.shape[1];
+    let hd_i64 = in_hsd.shape[2];
+
+    let out_shape = alloc::vec![1i64, seq_i64, heads_i64 * hd_i64];
+    let out = DeviceTensor::alloc(out_shape, in_hsd.dtype)?;
+
+    let total: i64 = heads_i64 * seq_i64 * hd_i64;
+    if total <= 0 {
+        return Ok(out);
+    }
+
+    let mut in_ptr = in_hsd.buffer.as_mut_ptr();
+    let mut out_ptr = out.buffer.as_mut_ptr();
+    let mut heads_arg: i32 = heads_i64 as i32;
+    let mut seq_arg: i32 = seq_i64 as i32;
+    let mut hd_arg: i32 = hd_i64 as i32;
+
+    let args: [*mut core::ffi::c_void; 5] = [
+        &mut in_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut out_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut heads_arg as *mut _ as *mut core::ffi::c_void,
+        &mut seq_arg as *mut _ as *mut core::ffi::c_void,
+        &mut hd_arg as *mut _ as *mut core::ffi::c_void,
+    ];
+
+    let block_x: u32 = 256;
+    let grid_x: u32 = (total as u64).div_ceil(block_x as u64) as u32;
+    let grid = (grid_x.max(1), 1, 1);
+    let block = (block_x, 1, 1);
+
+    runtime
+        .with_kernel(kernel_name, |k: &Kernel| {
+            launch_kernel(k, grid, block, &args, 0)
+        })
+        .ok_or_else(|| CudaError::KernelLoadFailed {
+            name: ("merge_heads_gpu: kernel ".to_string() + kernel_name + " not registered"),
+            cuda_result: -1,
+        })??;
+
+    Ok(out)
+}
+
+// ── Helper: cast F32 scratch to BF16 in place into a fresh tensor ──
+
+/// `softmax_cast_f32_to_bf16`: cast every element of an F32 buffer to
+/// BF16 in a fresh output buffer. Used to bridge the F32 softmax output
+/// into the BF16 V GEMM where `gpu_gemm_strided_batched_ex` requires
+/// matching A/B dtypes.
+pub const SOFTMAX_CAST_F32_TO_BF16_SRC: &str = r#"
+#include <cuda_bf16.h>
+extern "C" __global__ void softmax_cast_f32_to_bf16(
+    const float* __restrict__ in_f32,
+    __nv_bfloat16* __restrict__ out_bf16,
+    int total
+) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+    out_bf16[tid] = __float2bfloat16(in_f32[tid]);
+}
+"#;
+
+/// Cast a contiguous F32 [`DeviceTensor`] to BF16, returning a new
+/// tensor with the same shape. Used by `gpu_gqa` to bridge the F32
+/// softmax scores into the BF16 V GEMM.
+pub fn cast_f32_to_bf16_gpu(
+    runtime: &CudaRuntime,
+    in_f32: &DeviceTensor,
+) -> Result<DeviceTensor, CudaError> {
+    if in_f32.dtype != DataType::Float {
+        return Err(CudaError::RuntimeError {
+            op: "cast_f32_to_bf16_gpu: input must be Float",
+            code: -1,
+        });
+    }
+    let out = DeviceTensor::alloc(in_f32.shape.clone(), DataType::BFloat16)?;
+    let total: usize = in_f32.total_elements();
+    if total == 0 {
+        return Ok(out);
+    }
+
+    let mut in_ptr = in_f32.buffer.as_mut_ptr();
+    let mut out_ptr = out.buffer.as_mut_ptr();
+    let mut total_arg: i32 = total as i32;
+    let args: [*mut core::ffi::c_void; 3] = [
+        &mut in_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut out_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut total_arg as *mut _ as *mut core::ffi::c_void,
+    ];
+
+    let block_x: u32 = 256;
+    let grid_x: u32 = (total as u64).div_ceil(block_x as u64) as u32;
+    let grid = (grid_x.max(1), 1, 1);
+    let block = (block_x, 1, 1);
+
+    runtime
+        .with_kernel("softmax_cast_f32_to_bf16", |k: &Kernel| {
+            launch_kernel(k, grid, block, &args, 0)
+        })
+        .ok_or_else(|| CudaError::KernelLoadFailed {
+            name: "cast_f32_to_bf16_gpu: kernel softmax_cast_f32_to_bf16 not registered"
+                .to_string(),
+            cuda_result: -1,
+        })??;
+
+    Ok(out)
+}
+
+// ── Section 6.12: top-level gpu_gqa ────────────────────────────────
+
+/// Group-query attention on the GPU.
+///
+/// Composes the cuBLAS strided batched GEMMs and the custom kernels
+/// (`gqa_kv_expand`, `gqa_softmax_mask_f32`, `softmax_cast_f32_to_bf16`,
+/// `gqa_merge_heads`) into a single forward pass. Inputs:
+///
+/// - `q`: `[B=1, num_q_heads, Sq, head_dim]`
+/// - `k`, `v`: `[B=1, num_kv_heads, Sk, head_dim]`
+///
+/// Returns `[B=1, Sq, num_q_heads * head_dim]` (the canonical
+/// attention output layout). All inputs must share the same dtype
+/// (`Float` or `BFloat16`); the output matches.
+///
+/// `window`:
+/// - `None` (default for global layers) — full causal mask.
+/// - `Some(w)` — sliding-window mask over the last `w` keys.
+///
+/// `scale` defaults to `1 / sqrt(head_dim)` when `None`.
+///
+/// **No cache wiring.** This entry point treats `k` / `v` as the full
+/// cached history. The cache append + view + transpose-to-head-major
+/// flow lives in a follow-up wrapper (§6.14) — that wrapper will call
+/// this function after materializing the merged K/V tensors.
+///
+/// # Errors
+/// - `q.dtype != k.dtype` or `q.dtype != v.dtype` — `RuntimeError`
+/// - dtype not in `{Float, BFloat16}` — `RuntimeError`
+/// - rank mismatches or B != 1 — `RuntimeError`
+/// - `num_q_heads % num_kv_heads != 0` — `RuntimeError`
+/// - `head_dim`s differ — `RuntimeError`
+/// - any intermediate kernel / cuBLAS error
+#[allow(clippy::too_many_arguments)]
+pub fn gpu_gqa(
+    runtime: &CudaRuntime,
+    q: &DeviceTensor,
+    k: &DeviceTensor,
+    v: &DeviceTensor,
+    window: Option<i32>,
+    scale: Option<f32>,
+) -> Result<DeviceTensor, CudaError> {
+    if q.dtype != k.dtype || q.dtype != v.dtype {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: q/k/v dtypes must match",
+            code: -1,
+        });
+    }
+    let dt = q.dtype;
+    if dt != DataType::Float && dt != DataType::BFloat16 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: dtype must be Float or BFloat16",
+            code: -1,
+        });
+    }
+    if q.shape.len() != 4 || k.shape.len() != 4 || v.shape.len() != 4 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: q/k/v must each be rank-4 [B, H, S, head_dim]",
+            code: -1,
+        });
+    }
+    if q.shape[0] != 1 || k.shape[0] != 1 || v.shape[0] != 1 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: only batch=1 is supported in v1",
+            code: -1,
+        });
+    }
+    let num_q_heads_i64 = q.shape[1];
+    let seq_q_i64 = q.shape[2];
+    let head_dim_i64 = q.shape[3];
+    let num_kv_heads_i64 = k.shape[1];
+    let seq_kv_i64 = k.shape[2];
+
+    if k.shape != v.shape {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: k and v must share shape",
+            code: -1,
+        });
+    }
+    if v.shape[3] != head_dim_i64 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: head_dim mismatch",
+            code: -1,
+        });
+    }
+    if num_q_heads_i64 <= 0 || num_kv_heads_i64 <= 0 || num_q_heads_i64 % num_kv_heads_i64 != 0 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: num_q_heads must be a positive multiple of num_kv_heads",
+            code: -1,
+        });
+    }
+    let expand_factor = (num_q_heads_i64 / num_kv_heads_i64) as i32;
+    let seq_q = seq_q_i64 as i32;
+    let seq_kv = seq_kv_i64 as i32;
+    let head_dim = head_dim_i64 as i32;
+
+    // §6.13: enforce the attention-scratch cap up front so a
+    // pathological seq_kv doesn't try to allocate hundreds of GiB.
+    let scratch_bytes: usize = (num_q_heads_i64 as usize)
+        .saturating_mul(seq_q_i64 as usize)
+        .saturating_mul(seq_kv_i64 as usize)
+        .saturating_mul(4);
+    let cap = runtime.attention_scratch_cap();
+    if scratch_bytes > cap {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: attention scratch exceeds runtime cap (set_attention_scratch_cap)",
+            code: -1,
+        });
+    }
+
+    // 1) Expand KV heads to per-attention-head replicas.
+    let k_full = kv_expand_gpu(runtime, k, expand_factor)?;
+    let v_full = kv_expand_gpu(runtime, v, expand_factor)?;
+
+    // 2) QK^T via batched GEMM. Treat the leading B=1 as a no-op: pass
+    //    [num_q_heads, Sq, head_dim] and [num_q_heads, Sk, head_dim]
+    //    with trans_b=true → output [num_q_heads, Sq, Sk] in F32.
+    let q_3d = view_as_3d(q, num_q_heads_i64, seq_q_i64, head_dim_i64)?;
+    let k_full_3d = view_as_3d(&k_full, num_q_heads_i64, seq_kv_i64, head_dim_i64)?;
+    let v_full_3d = view_as_3d(&v_full, num_q_heads_i64, seq_kv_i64, head_dim_i64)?;
+
+    let scores_f32 = crate::cuda::dispatch::gpu_gemm_strided_batched_ex(
+        runtime,
+        &q_3d,
+        &k_full_3d,
+        false,
+        true,
+        DataType::Float,
+    )?;
+
+    // 3) Masked softmax in place.
+    let scale_value: f32 = scale.unwrap_or_else(|| 1.0f32 / (head_dim as f32).sqrt());
+    masked_softmax_gpu(runtime, &scores_f32, seq_q, seq_kv, window, scale_value)?;
+
+    // 4) Softmax · V via batched GEMM. Output dtype matches V.
+    //    For BF16 V we cast the F32 scratch to BF16 first because
+    //    gpu_gemm_strided_batched_ex requires matching A/B dtypes.
+    let context_3d = if dt == DataType::BFloat16 {
+        let scores_bf16 = cast_f32_to_bf16_gpu(runtime, &scores_f32)?;
+        crate::cuda::dispatch::gpu_gemm_strided_batched_ex(
+            runtime,
+            &scores_bf16,
+            &v_full_3d,
+            false,
+            false,
+            DataType::BFloat16,
+        )?
+    } else {
+        crate::cuda::dispatch::gpu_gemm_strided_batched_ex(
+            runtime,
+            &scores_f32,
+            &v_full_3d,
+            false,
+            false,
+            DataType::Float,
+        )?
+    };
+    // context_3d has shape [num_q_heads, seq_q, head_dim].
+
+    // 5) Merge heads into [1, seq_q, num_q_heads * head_dim].
+    merge_heads_gpu(runtime, &context_3d)
+}
+
+/// Reinterpret a `[1, H, S, D]` device tensor as `[H, S, D]`.
+///
+/// Wraps the input buffer in a new [`DeviceTensor`] header without
+/// copying — needed because [`crate::cuda::dispatch::gpu_gemm_strided_batched_ex`]
+/// takes rank-3 inputs and we want to keep the leading B=1 implicit.
+fn view_as_3d(src: &DeviceTensor, h: i64, s: i64, d: i64) -> Result<DeviceTensor, CudaError> {
+    if src.shape != alloc::vec![1i64, h, s, d] {
+        return Err(CudaError::RuntimeError {
+            op: "view_as_3d: shape mismatch",
+            code: -1,
+        });
+    }
+    // We need a DeviceTensor that *aliases* src.buffer. Since DeviceBuffer
+    // doesn't provide a borrowing constructor, we copy via D2D — fine for
+    // the v1 perf budget (the alternative is to refactor DeviceBuffer to
+    // expose an alias-borrow API, which is out of scope here).
+    let dst = DeviceTensor::alloc(alloc::vec![h, s, d], src.dtype)?;
+    let bytes = src.byte_size();
+    if bytes > 0 {
+        let err = unsafe {
+            crate::cuda::ffi::cudaMemcpy(
+                dst.buffer.as_mut_ptr(),
+                src.buffer.as_ptr(),
+                bytes,
+                crate::cuda::ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,
+            )
+        };
+        if err != crate::cuda::ffi::CUDA_SUCCESS {
+            return Err(CudaError::CopyFailed {
+                msg: "view_as_3d: D2D",
+                code: err,
+            });
+        }
+    }
+    Ok(dst)
+}
+
+// ── Section 6.14: cache view → head-major transpose + gpu_gqa wrapper ──
+
+/// `kv_cache_view_to_head_major_*`: transpose
+/// `[token_count, num_kv_heads, head_dim]` (the [`crate::cuda::KvView`]
+/// memory layout) into `[1, num_kv_heads, token_count, head_dim]` so it
+/// can be fed straight into [`gpu_gqa`].
+///
+/// One thread per output element; each thread maps
+/// `out[b=0, h, t, d]` ← `in[t, h, d]`.
+pub const KV_CACHE_VIEW_TO_HEAD_MAJOR_F32_SRC: &str = r#"
+extern "C" __global__ void kv_cache_view_to_head_major_f32(
+    const float* __restrict__ in_thd,
+    float* __restrict__ out_bhsd,
+    int token_count,
+    int num_kv_heads,
+    int head_dim
+) {
+    int total = token_count * num_kv_heads * head_dim;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+
+    int hd  = head_dim;
+    int sd  = token_count * hd;
+
+    int h    = tid / sd;
+    int rem  = tid - h * sd;
+    int t    = rem / hd;
+    int d    = rem - t * hd;
+
+    int src  = (t * num_kv_heads + h) * hd + d;
+    out_bhsd[tid] = in_thd[src];
+}
+"#;
+
+pub const KV_CACHE_VIEW_TO_HEAD_MAJOR_BF16_SRC: &str = r#"
+#include <cuda_bf16.h>
+extern "C" __global__ void kv_cache_view_to_head_major_bf16(
+    const __nv_bfloat16* __restrict__ in_thd,
+    __nv_bfloat16* __restrict__ out_bhsd,
+    int token_count,
+    int num_kv_heads,
+    int head_dim
+) {
+    int total = token_count * num_kv_heads * head_dim;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+
+    int hd  = head_dim;
+    int sd  = token_count * hd;
+
+    int h    = tid / sd;
+    int rem  = tid - h * sd;
+    int t    = rem / hd;
+    int d    = rem - t * hd;
+
+    int src  = (t * num_kv_heads + h) * hd + d;
+    out_bhsd[tid] = in_thd[src];
+}
+"#;
+
+/// Materialize a [`crate::cuda::KvView`] as a head-major
+/// `[1, num_kv_heads, token_count, head_dim]` device tensor.
+///
+/// The cache stores K/V in token-major layout (one token's
+/// `[num_kv_heads, head_dim]` block at a time). The attention kernels
+/// want head-major batches — this kernel is the transpose bridge.
+fn cache_view_to_head_major(
+    runtime: &CudaRuntime,
+    view: &crate::cuda::KvView,
+    target_ptr_field: WhichPtr,
+) -> Result<DeviceTensor, CudaError> {
+    let token_count = view.token_count;
+    let num_kv_heads = view.num_kv_heads;
+    let head_dim = view.head_dim;
+    let dtype = view.dtype;
+
+    let out = DeviceTensor::alloc(
+        alloc::vec![
+            1i64,
+            num_kv_heads as i64,
+            token_count as i64,
+            head_dim as i64
+        ],
+        dtype,
+    )?;
+
+    if token_count == 0 || num_kv_heads == 0 || head_dim == 0 {
+        return Ok(out);
+    }
+
+    let kernel_name = match dtype {
+        DataType::Float => "kv_cache_view_to_head_major_f32",
+        DataType::BFloat16 => "kv_cache_view_to_head_major_bf16",
+        _ => {
+            return Err(CudaError::RuntimeError {
+                op: "cache_view_to_head_major: unsupported dtype",
+                code: -1,
+            });
+        }
+    };
+
+    let mut in_ptr: *mut core::ffi::c_void = match target_ptr_field {
+        WhichPtr::K => view.k_ptr as *mut core::ffi::c_void,
+        WhichPtr::V => view.v_ptr as *mut core::ffi::c_void,
+    };
+    let mut out_ptr = out.buffer.as_mut_ptr();
+    let mut tc_arg: i32 = token_count as i32;
+    let mut nh_arg: i32 = num_kv_heads as i32;
+    let mut hd_arg: i32 = head_dim as i32;
+
+    let args: [*mut core::ffi::c_void; 5] = [
+        &mut in_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut out_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut tc_arg as *mut _ as *mut core::ffi::c_void,
+        &mut nh_arg as *mut _ as *mut core::ffi::c_void,
+        &mut hd_arg as *mut _ as *mut core::ffi::c_void,
+    ];
+
+    let total: usize = token_count * num_kv_heads * head_dim;
+    let block_x: u32 = 256;
+    let grid_x: u32 = (total as u64).div_ceil(block_x as u64) as u32;
+    let grid = (grid_x.max(1), 1, 1);
+    let block = (block_x, 1, 1);
+
+    runtime
+        .with_kernel(kernel_name, |k: &Kernel| {
+            launch_kernel(k, grid, block, &args, 0)
+        })
+        .ok_or_else(|| CudaError::KernelLoadFailed {
+            name: ("cache_view_to_head_major: kernel ".to_string()
+                + kernel_name
+                + " not registered"),
+            cuda_result: -1,
+        })??;
+
+    Ok(out)
+}
+
+/// Discriminator selecting K vs V inside [`cache_view_to_head_major`].
+#[derive(Clone, Copy)]
+enum WhichPtr {
+    K,
+    V,
+}
+
+/// Cache-aware GQA: append the new K/V to `kv_cache[layer_idx]`, view
+/// the full per-layer history, transpose to head-major, then call
+/// [`gpu_gqa`].
+///
+/// `new_k` and `new_v` must each have shape
+/// `[1, num_kv_heads, 1, head_dim]` (single-token append). After the
+/// call, `kv_cache.current_position()` for this layer has been
+/// incremented by one — callers wiring multi-layer stacks must call
+/// [`crate::cuda::GpuKvCache::advance_position`] exactly once after
+/// every layer of a forward pass has appended its K/V (the existing
+/// cache contract).
+///
+/// `window` is `Some(w)` for sliding-window layers, `None` for global
+/// layers.
+#[allow(clippy::too_many_arguments)]
+pub fn gpu_gqa_with_cache(
+    runtime: &CudaRuntime,
+    q: &DeviceTensor,
+    new_k: &DeviceTensor,
+    new_v: &DeviceTensor,
+    kv_cache: &mut crate::cuda::GpuKvCache,
+    layer_idx: usize,
+    window: Option<i32>,
+    scale: Option<f32>,
+) -> Result<DeviceTensor, CudaError> {
+    if new_k.shape.len() != 4 || new_v.shape.len() != 4 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa_with_cache: new_k/new_v must be rank-4",
+            code: -1,
+        });
+    }
+    if new_k.shape[2] != 1 || new_v.shape[2] != 1 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa_with_cache: only Sq=1 (decode) appends are supported in v1",
+            code: -1,
+        });
+    }
+
+    // Reshape new_k/new_v from [1, num_kv_heads, 1, head_dim] to the
+    // single-token [1, num_kv_heads, head_dim] form GpuKvCache::append
+    // expects (it just checks the byte count — no reshape needed in
+    // memory). We pass the original tensors directly.
+    kv_cache.append(layer_idx, new_k, new_v)?;
+    kv_cache.advance_position()?;
+    let view = kv_cache.view(layer_idx)?;
+
+    let k_full = cache_view_to_head_major(runtime, &view, WhichPtr::K)?;
+    let v_full = cache_view_to_head_major(runtime, &view, WhichPtr::V)?;
+
+    gpu_gqa(runtime, q, &k_full, &v_full, window, scale)
+}
