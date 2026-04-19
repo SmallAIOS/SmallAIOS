@@ -228,6 +228,32 @@ extern "C" {
         compute_type: cublasComputeType_t,
         algo: i32, // cublasGemmAlgo_t, -1 = default
     ) -> cublasStatus_t;
+    #[allow(clippy::too_many_arguments)]
+    pub fn cublasGemmStridedBatchedEx(
+        handle: cublasHandle_t,
+        transa: cublasOperation_t,
+        transb: cublasOperation_t,
+        m: i32,
+        n: i32,
+        k: i32,
+        alpha: *const core::ffi::c_void,
+        a: *const core::ffi::c_void,
+        a_type: cudaDataType_t,
+        lda: i32,
+        stride_a: i64,
+        b: *const core::ffi::c_void,
+        b_type: cudaDataType_t,
+        ldb: i32,
+        stride_b: i64,
+        beta: *const core::ffi::c_void,
+        c: *mut core::ffi::c_void,
+        c_type: cudaDataType_t,
+        ldc: i32,
+        stride_c: i64,
+        batch_count: i32,
+        compute_type: cublasComputeType_t,
+        algo: i32, // cublasGemmAlgo_t, -1 = default
+    ) -> cublasStatus_t;
 }
 
 // ── cuBLASLt FFI ────────────────────────────────────────────────────

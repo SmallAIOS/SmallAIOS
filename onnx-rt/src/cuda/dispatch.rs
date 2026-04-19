@@ -454,3 +454,182 @@ pub fn gpu_gemm_fp8(
         raw_data: result_bytes,
     }))
 }
+
+// ── Strided batched GEMM (transformer-gpu-kernels-v1 §6.1) ──────────
+
+/// Strided batched mixed-precision GEMM operating on `DeviceTensor`s.
+///
+/// For every batch slice `i in 0..batch_count`, computes
+///
+/// ```text
+/// C[i] = op(A[i]) * op(B[i])
+/// ```
+///
+/// where `op` applies optional transposition. All three operands are
+/// laid out as contiguous row-major 3-D tensors:
+///
+/// - `a`: `[batch, M, K]` if `trans_a == false`, else `[batch, K, M]`
+/// - `b`: `[batch, K, N]` if `trans_b == false`, else `[batch, N, K]`
+/// - output: `[batch, M, N]` row-major in the chosen `out_dtype`
+///
+/// The per-batch element strides are derived from the tensor shapes
+/// (no padding). Compute is always F32 — for BF16 inputs this means
+/// `CUBLAS_COMPUTE_32F` with BF16 tensor cores; for F32 inputs it
+/// uses the runtime's configured precision (F32 or TF32).
+///
+/// # Errors
+/// - `a.dtype != b.dtype` — `RuntimeError`
+/// - dtype not in `{Float, BFloat16}` — `RuntimeError`
+/// - `out_dtype` not in `{Float, BFloat16}` — `RuntimeError`
+/// - rank != 3 on either input — `RuntimeError`
+/// - mismatched batch dim or `K` — `RuntimeError`
+/// - cuBLAS error — `BlasError`
+///
+/// The call synchronizes on the default stream before returning so
+/// callers can chain it with non-cuBLAS kernels safely.
+#[allow(clippy::too_many_arguments)]
+pub fn gpu_gemm_strided_batched_ex(
+    runtime: &CudaRuntime,
+    a: &super::gpu_executor::DeviceTensor,
+    b: &super::gpu_executor::DeviceTensor,
+    trans_a: bool,
+    trans_b: bool,
+    out_dtype: DataType,
+) -> Result<super::gpu_executor::DeviceTensor, CudaError> {
+    if a.dtype != b.dtype {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gemm_strided_batched_ex: a/b dtypes must match",
+            code: -1,
+        });
+    }
+    let (a_cuda, _a_elem_size) = match a.dtype {
+        DataType::BFloat16 => (ffi::cudaDataType_t::CUDA_R_16BF, 2usize),
+        DataType::Float => (ffi::cudaDataType_t::CUDA_R_32F, 4usize),
+        _ => {
+            return Err(CudaError::RuntimeError {
+                op: "gpu_gemm_strided_batched_ex: a/b must be Float or BFloat16",
+                code: -1,
+            });
+        }
+    };
+    let (c_cuda, c_elem_size) = match out_dtype {
+        DataType::BFloat16 => (ffi::cudaDataType_t::CUDA_R_16BF, 2usize),
+        DataType::Float => (ffi::cudaDataType_t::CUDA_R_32F, 4usize),
+        _ => {
+            return Err(CudaError::RuntimeError {
+                op: "gpu_gemm_strided_batched_ex: out_dtype must be Float or BFloat16",
+                code: -1,
+            });
+        }
+    };
+    if a.shape.len() != 3 || b.shape.len() != 3 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gemm_strided_batched_ex: both inputs must be rank-3",
+            code: -1,
+        });
+    }
+    let batch_i64 = a.shape[0];
+    if b.shape[0] != batch_i64 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gemm_strided_batched_ex: batch dimensions differ",
+            code: -1,
+        });
+    }
+    let (m_i64, k_a_i64) = if trans_a {
+        (a.shape[2], a.shape[1])
+    } else {
+        (a.shape[1], a.shape[2])
+    };
+    let (k_b_i64, n_i64) = if trans_b {
+        (b.shape[2], b.shape[1])
+    } else {
+        (b.shape[1], b.shape[2])
+    };
+    if k_a_i64 != k_b_i64 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gemm_strided_batched_ex: K dimensions differ",
+            code: -1,
+        });
+    }
+    if batch_i64 < 0 || m_i64 < 0 || n_i64 < 0 || k_a_i64 < 0 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gemm_strided_batched_ex: negative dimension",
+            code: -1,
+        });
+    }
+
+    let batch = batch_i64 as i32;
+    let m = m_i64 as i32;
+    let n = n_i64 as i32;
+    let k = k_a_i64 as i32;
+
+    let out_shape = vec![batch_i64, m_i64, n_i64];
+    let out = super::gpu_executor::DeviceTensor::alloc(out_shape, out_dtype)?;
+
+    if batch == 0 || m == 0 || n == 0 || k == 0 {
+        return Ok(out);
+    }
+
+    // cuBLAS column-major mapping. Same swap trick as `gpu_gemm`: pass
+    // (B, A) instead of (A, B), and reverse the transpose flags relative
+    // to the row-major view. Per-batch element strides are M*K, K*N,
+    // M*N (row-major contiguous).
+    let stride_a = a.shape[1] * a.shape[2];
+    let stride_b = b.shape[1] * b.shape[2];
+    let stride_c = m_i64 * n_i64;
+
+    let transa = if trans_b {
+        ffi::cublasOperation_t::CUBLAS_OP_T
+    } else {
+        ffi::cublasOperation_t::CUBLAS_OP_N
+    };
+    let transb = if trans_a {
+        ffi::cublasOperation_t::CUBLAS_OP_T
+    } else {
+        ffi::cublasOperation_t::CUBLAS_OP_N
+    };
+
+    let lda = if trans_b { k } else { n };
+    let ldb = if trans_a { m } else { k };
+    let ldc = n;
+
+    // Compute type. BF16 inputs always use 32F_FAST_16BF (BF16 tensor
+    // cores, F32 accumulation). F32 inputs honor the runtime precision
+    // mode (F32 vs TF32) — same convention as `gpu_gemm`.
+    let compute_type = if a.dtype == DataType::BFloat16 {
+        ffi::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_16BF
+    } else {
+        runtime.precision.to_cublas_compute_type()
+    };
+
+    let alpha: f32 = 1.0;
+    let beta: f32 = 0.0;
+
+    runtime.cublas.gemm_strided_batched_ex(
+        transa,
+        transb,
+        n,
+        m,
+        k,
+        &alpha as *const f32 as *const core::ffi::c_void,
+        &b.buffer,
+        a_cuda,
+        lda,
+        stride_b,
+        &a.buffer,
+        a_cuda,
+        ldb,
+        stride_a,
+        &beta as *const f32 as *const core::ffi::c_void,
+        &out.buffer,
+        c_cuda,
+        ldc,
+        stride_c,
+        batch,
+        compute_type,
+    )?;
+
+    super::synchronize()?;
+    let _ = c_elem_size; // computed for future host-side debug logging
+    Ok(out)
+}

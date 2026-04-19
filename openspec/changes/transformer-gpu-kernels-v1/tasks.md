@@ -56,10 +56,10 @@
 
 ## 6. GroupQueryAttention — Decomposed via cuBLAS
 
-- [ ] 6.1 Extend `cuda/dispatch.rs` with a `gpu_gemm_strided_batched_ex` wrapper around `cublasGemmStridedBatchedEx` supporting BF16 and F32 with F32 accumulation
-- [ ] 6.2 Unit test (GB10): `gpu_gemm_strided_batched_ex` produces correct `[num_heads, M, N]` output vs a CPU loop reference
-- [ ] 6.3 Unit test (GB10): strided batched GEMM with BF16 inputs and F32 compute type
-- [ ] 6.4 Unit test (GB10): strided batched GEMM with F32 inputs and TF32 compute type
+- [x] 6.1 Extend `cuda/dispatch.rs` with a `gpu_gemm_strided_batched_ex` wrapper around `cublasGemmStridedBatchedEx` supporting BF16 and F32 with F32 accumulation
+- [x] 6.2 Unit test (GB10): `gpu_gemm_strided_batched_ex` produces correct `[num_heads, M, N]` output vs a CPU loop reference
+- [x] 6.3 Unit test (GB10): strided batched GEMM with BF16 inputs and F32 compute type
+- [x] 6.4 Unit test (GB10): strided batched GEMM with F32 inputs and TF32 compute type
 
 - [ ] 6.5 Create `onnx-rt/src/cuda/kernels/attention.rs` with a `gqa_softmax_mask` kernel source that applies scale, causal mask, optional sliding-window mask, row-max subtract, `expf`, row-sum divide
 - [ ] 6.6 Kernel uses warp-level reductions for row max and row sum

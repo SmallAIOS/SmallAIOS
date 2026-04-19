@@ -2743,3 +2743,199 @@ fn test_gpu_rotary_rejects_odd_head_dim() {
         Ok(_) => unreachable!(),
     }
 }
+
+// ── Section 6.1-6.4: Strided batched GEMM ──────────────────────────
+
+/// CPU reference for `[batch, M, K] @ [batch, K, N] -> [batch, M, N]`
+/// in F32. Used to validate `gpu_gemm_strided_batched_ex` outputs.
+fn cpu_strided_batched_gemm(
+    a: &[f32],
+    b: &[f32],
+    batch: usize,
+    m: usize,
+    k: usize,
+    n: usize,
+) -> Vec<f32> {
+    let mut c = vec![0f32; batch * m * n];
+    for bi in 0..batch {
+        for mi in 0..m {
+            for ni in 0..n {
+                let mut acc = 0f32;
+                for ki in 0..k {
+                    let a_v = a[bi * m * k + mi * k + ki];
+                    let b_v = b[bi * k * n + ki * n + ni];
+                    acc += a_v * b_v;
+                }
+                c[bi * m * n + mi * n + ni] = acc;
+            }
+        }
+    }
+    c
+}
+
+#[test]
+#[ignore]
+fn test_gpu_strided_batched_gemm_f32_vs_cpu() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+
+    // [batch=4, M=8, K=16] @ [batch=4, K=16, N=8] -> [batch, 8, 8]
+    let batch = 4usize;
+    let m = 8usize;
+    let k = 16usize;
+    let n = 8usize;
+
+    let a_data: Vec<f32> = (0..batch * m * k)
+        .map(|i| ((i as f32) * 0.013).sin())
+        .collect();
+    let b_data: Vec<f32> = (0..batch * k * n)
+        .map(|i| ((i as f32) * 0.017).cos())
+        .collect();
+
+    let a = make_f32_device_tensor(&[batch as i64, m as i64, k as i64], &a_data);
+    let b = make_f32_device_tensor(&[batch as i64, k as i64, n as i64], &b_data);
+
+    let c = cuda::dispatch::gpu_gemm_strided_batched_ex(&rt, &a, &b, false, false, DataType::Float)
+        .expect("strided batched gemm f32");
+
+    assert_eq!(c.shape, vec![batch as i64, m as i64, n as i64]);
+    assert_eq!(c.dtype, DataType::Float);
+
+    let c_host = read_f32_device_tensor(&c);
+    let cpu = cpu_strided_batched_gemm(&a_data, &b_data, batch, m, k, n);
+    for (i, (got, want)) in c_host.iter().zip(cpu.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-3,
+            "idx {i}: got {got} expected {want}"
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_strided_batched_gemm_bf16_compute32f() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+
+    // GQA-shaped: [batch=num_heads=8, M=seq_q=4, K=head_dim=32]
+    //          @  [batch=8, K=32, N=seq_kv=4] -> [8, 4, 4]
+    let batch = 8usize;
+    let m = 4usize;
+    let k = 32usize;
+    let n = 4usize;
+
+    let a_data: Vec<f32> = (0..batch * m * k)
+        .map(|i| ((i as f32) * 0.005).sin() * 0.5)
+        .collect();
+    let b_data: Vec<f32> = (0..batch * k * n)
+        .map(|i| ((i as f32) * 0.007).cos() * 0.5)
+        .collect();
+
+    let a = make_bf16_device_tensor(&[batch as i64, m as i64, k as i64], &a_data);
+    let b = make_bf16_device_tensor(&[batch as i64, k as i64, n as i64], &b_data);
+
+    // BF16 inputs, F32 output (the QK^T case).
+    let c = cuda::dispatch::gpu_gemm_strided_batched_ex(&rt, &a, &b, false, false, DataType::Float)
+        .expect("strided batched gemm bf16->f32");
+
+    assert_eq!(c.shape, vec![batch as i64, m as i64, n as i64]);
+    assert_eq!(c.dtype, DataType::Float);
+
+    // BF16 round-trip the inputs for the CPU reference so we compare
+    // against what the GPU actually saw.
+    let a_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&a_data));
+    let b_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&b_data));
+
+    let c_host = read_f32_device_tensor(&c);
+    let cpu = cpu_strided_batched_gemm(&a_round, &b_round, batch, m, k, n);
+    for (i, (got, want)) in c_host.iter().zip(cpu.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-2,
+            "idx {i}: got {got} expected {want}"
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_strided_batched_gemm_f32_tf32_path() {
+    // Exercises the runtime's TF32 compute mode (the default for F32
+    // inputs). Wider tolerance since TF32 truncates 13 mantissa bits.
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+
+    let batch = 2usize;
+    let m = 16usize;
+    let k = 64usize;
+    let n = 16usize;
+
+    let a_data: Vec<f32> = (0..batch * m * k)
+        .map(|i| ((i as f32) * 0.003).sin() * 0.3)
+        .collect();
+    let b_data: Vec<f32> = (0..batch * k * n)
+        .map(|i| ((i as f32) * 0.011).cos() * 0.3)
+        .collect();
+
+    let a = make_f32_device_tensor(&[batch as i64, m as i64, k as i64], &a_data);
+    let b = make_f32_device_tensor(&[batch as i64, k as i64, n as i64], &b_data);
+
+    let c = cuda::dispatch::gpu_gemm_strided_batched_ex(&rt, &a, &b, false, false, DataType::Float)
+        .expect("strided batched gemm f32 tf32");
+
+    let c_host = read_f32_device_tensor(&c);
+    let cpu = cpu_strided_batched_gemm(&a_data, &b_data, batch, m, k, n);
+    for (i, (got, want)) in c_host.iter().zip(cpu.iter()).enumerate() {
+        // TF32 tolerance: well above the 1e-3 F32 band the design uses.
+        assert!(
+            (got - want).abs() < 5e-3,
+            "idx {i}: got {got} expected {want}"
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_strided_batched_gemm_qk_transpose() {
+    // Exercises trans_b (the K^T path used inside QK^T).
+    // A: [H, Sq, head_dim] = [4, 3, 8]
+    // B: [H, Sk, head_dim] = [4, 5, 8]   (will be transposed to [4, 8, 5])
+    // C: [4, 3, 5]
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+
+    let h = 4usize;
+    let sq = 3usize;
+    let hd = 8usize;
+    let sk = 5usize;
+
+    let a_data: Vec<f32> = (0..h * sq * hd).map(|i| (i as f32) * 0.01).collect();
+    let b_data: Vec<f32> = (0..h * sk * hd)
+        .map(|i| ((i as f32) * 0.02).sin())
+        .collect();
+
+    let a = make_f32_device_tensor(&[h as i64, sq as i64, hd as i64], &a_data);
+    let b = make_f32_device_tensor(&[h as i64, sk as i64, hd as i64], &b_data);
+
+    let c = cuda::dispatch::gpu_gemm_strided_batched_ex(&rt, &a, &b, false, true, DataType::Float)
+        .expect("strided batched gemm trans_b");
+    assert_eq!(c.shape, vec![h as i64, sq as i64, sk as i64]);
+
+    // CPU reference with the K^T baked in.
+    let mut cpu = vec![0f32; h * sq * sk];
+    for hi in 0..h {
+        for qi in 0..sq {
+            for ki in 0..sk {
+                let mut acc = 0f32;
+                for d in 0..hd {
+                    acc += a_data[(hi * sq + qi) * hd + d] * b_data[(hi * sk + ki) * hd + d];
+                }
+                cpu[(hi * sq + qi) * sk + ki] = acc;
+            }
+        }
+    }
+    let c_host = read_f32_device_tensor(&c);
+    for (i, (got, want)) in c_host.iter().zip(cpu.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 5e-3,
+            "idx {i}: got {got} expected {want}"
+        );
+    }
+}

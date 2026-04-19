@@ -376,6 +376,73 @@ impl CublasHandle {
         Ok(())
     }
 
+    /// Strided batched mixed-precision GEMM via `cublasGemmStridedBatchedEx`.
+    ///
+    /// Each of `batch_count` independent `m×n×k` GEMMs is laid out
+    /// contiguously in memory with the given per-batch element strides.
+    /// Used by `gpu_gemm_strided_batched_ex` to drive the per-head
+    /// QK^T and softmax·V matmuls inside `gpu_gqa`.
+    #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
+    pub fn gemm_strided_batched_ex(
+        &self,
+        transa: ffi::cublasOperation_t,
+        transb: ffi::cublasOperation_t,
+        m: i32,
+        n: i32,
+        k: i32,
+        alpha: *const core::ffi::c_void,
+        a: &DeviceBuffer,
+        a_type: ffi::cudaDataType_t,
+        lda: i32,
+        stride_a: i64,
+        b: &DeviceBuffer,
+        b_type: ffi::cudaDataType_t,
+        ldb: i32,
+        stride_b: i64,
+        beta: *const core::ffi::c_void,
+        c: &DeviceBuffer,
+        c_type: ffi::cudaDataType_t,
+        ldc: i32,
+        stride_c: i64,
+        batch_count: i32,
+        compute_type: ffi::cublasComputeType_t,
+    ) -> Result<(), CudaError> {
+        let err = unsafe {
+            ffi::cublasGemmStridedBatchedEx(
+                self.handle,
+                transa,
+                transb,
+                m,
+                n,
+                k,
+                alpha,
+                a.as_ptr(),
+                a_type,
+                lda,
+                stride_a,
+                b.as_ptr(),
+                b_type,
+                ldb,
+                stride_b,
+                beta,
+                c.as_mut_ptr(),
+                c_type,
+                ldc,
+                stride_c,
+                batch_count,
+                compute_type,
+                -1, // CUBLAS_GEMM_DEFAULT
+            )
+        };
+        if err != ffi::CUBLAS_STATUS_SUCCESS {
+            return Err(CudaError::BlasError {
+                op: "cublasGemmStridedBatchedEx",
+                code: err,
+            });
+        }
+        Ok(())
+    }
+
     /// Raw cuBLAS handle (for advanced use).
     pub fn raw(&self) -> ffi::cublasHandle_t {
         self.handle
