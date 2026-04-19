@@ -81,11 +81,11 @@
 
 ## 7. Executor Dispatcher Extension
 
-- [ ] 7.1 Extend `dispatch_gpu_node` in `onnx-rt/src/cuda/gpu_executor.rs` with match arms for `Gather`, `Add`, `Mul`, `Silu`, `RMSNormalization`, `RotaryEmbedding`, `GroupQueryAttention`, each calling the wrapper from `cuda/kernels/<op>.rs`
-- [ ] 7.2 Change `dispatch_gpu_node` signature to take `kv_cache: Option<&mut GpuKvCache>` and pass it to the `GroupQueryAttention` arm
-- [ ] 7.3 Change `execute_graph_gpu` and `execute_graph_gpu_with_weights` to take the same `Option<&mut GpuKvCache>` parameter and thread it through every `dispatch_gpu_node` call site
-- [ ] 7.4 Update `Session::run_safetensors` in `onnx-rt/src/session.rs` to lock its `Arc<Mutex<GpuKvCache>>` and pass `Some(&mut *guard)` into the executor (resolves the TODO from `safetensors-model-loader-v1` §9)
-- [ ] 7.5 Update all existing call sites of `execute_graph_gpu` / `execute_graph_gpu_with_weights` in tests and benchmarks to pass `None` for the cache parameter where appropriate
+- [x] 7.1 Extend `dispatch_gpu_node` in `onnx-rt/src/cuda/gpu_executor.rs` with match arms for `Gather`, `Add`, `Mul`, `Silu`, `RMSNormalization`, `RotaryEmbedding`, `GroupQueryAttention`, each calling the wrapper from `cuda/kernels/<op>.rs`
+- [x] 7.2 Change `dispatch_gpu_node` signature to take `kv_cache: Option<&mut GpuKvCache>` and pass it to the `GroupQueryAttention` arm
+- [x] 7.3 Change `execute_graph_gpu` and `execute_graph_gpu_with_weights` to take the same `Option<&mut GpuKvCache>` parameter and thread it through every `dispatch_gpu_node` call site
+- [x] 7.4 Update `Session::run_safetensors` in `onnx-rt/src/session.rs` to lock its `Arc<Mutex<GpuKvCache>>` and pass `Some(&mut *guard)` into the executor (resolves the TODO from `safetensors-model-loader-v1` §9)
+- [x] 7.5 Update all existing call sites of `execute_graph_gpu` / `execute_graph_gpu_with_weights` in tests and benchmarks to pass `None` for the cache parameter where appropriate
 
 ## 8. End-to-End Gemma Forward Pass Validation
 

@@ -235,7 +235,14 @@ pub fn execute_graph_gpu(
     initializers: &[TensorProto],
     runtime: &CudaRuntime,
 ) -> Result<Vec<DeviceTensor>, SessionError> {
-    execute_graph_gpu_with_weights(graph, input_device_tensors, initializers, None, runtime)
+    execute_graph_gpu_with_weights_and_cache(
+        graph,
+        input_device_tensors,
+        initializers,
+        None,
+        None,
+        runtime,
+    )
 }
 
 /// Extended entry point accepting an optional pre-loaded GPU weight map.
@@ -249,6 +256,43 @@ pub fn execute_graph_gpu_with_weights(
     input_device_tensors: &[(String, DeviceTensor)],
     initializers: &[TensorProto],
     pre_loaded_weights: Option<&BTreeMap<String, DeviceTensor>>,
+    runtime: &CudaRuntime,
+) -> Result<Vec<DeviceTensor>, SessionError> {
+    execute_graph_gpu_with_weights_and_cache(
+        graph,
+        input_device_tensors,
+        initializers,
+        pre_loaded_weights,
+        None,
+        runtime,
+    )
+}
+
+/// State threaded through the executor for KV-cache-aware dispatch.
+///
+/// `next_layer_idx` is incremented each time a `GroupQueryAttention`
+/// node is dispatched, mapping graph order to per-layer cache slots
+/// (every transformer layer emits exactly one `GroupQueryAttention`
+/// node — see `model_loader::gemma::build_layer`).
+pub struct KvCacheDispatchCtx<'a> {
+    pub cache: &'a mut crate::cuda::GpuKvCache,
+    pub next_layer_idx: usize,
+}
+
+/// Final entry point combining pre-loaded weights and a KV cache.
+///
+/// `kv_cache` is `Some` for autoregressive safetensors sessions; the
+/// dispatcher routes each `GroupQueryAttention` node to its
+/// corresponding layer slot via a per-call layer counter and calls
+/// `gpu_gqa_with_cache`. After the forward pass the executor calls
+/// `cache.advance_position()` once per token (handled by the caller —
+/// the executor does not advance the position itself, only appends).
+pub fn execute_graph_gpu_with_weights_and_cache(
+    graph: &ExecutionGraph,
+    input_device_tensors: &[(String, DeviceTensor)],
+    initializers: &[TensorProto],
+    pre_loaded_weights: Option<&BTreeMap<String, DeviceTensor>>,
+    kv_cache: Option<&mut crate::cuda::GpuKvCache>,
     runtime: &CudaRuntime,
 ) -> Result<Vec<DeviceTensor>, SessionError> {
     let mut value_map: BTreeMap<String, DeviceTensor> = BTreeMap::new();
@@ -289,6 +333,13 @@ pub fn execute_graph_gpu_with_weights(
         }
     }
 
+    // Wrap the cache (if any) in the dispatch context that carries the
+    // running layer index across nodes.
+    let mut cache_ctx = kv_cache.map(|c| KvCacheDispatchCtx {
+        cache: c,
+        next_layer_idx: 0,
+    });
+
     // Walk the graph in topological order.
     for node_idx in graph.execution_order() {
         let node = &graph.nodes[node_idx.index()];
@@ -306,8 +357,14 @@ pub fn execute_graph_gpu_with_weights(
             })
             .collect();
 
-        let outputs = dispatch_gpu_node(runtime, &node.op_type, &input_refs, &node.attributes)
-            .map_err(|e| SessionError::ExecutionFailed(format!("{}: {}", node.name, e)))?;
+        let outputs = dispatch_gpu_node(
+            runtime,
+            &node.op_type,
+            &input_refs,
+            &node.attributes,
+            cache_ctx.as_mut(),
+        )
+        .map_err(|e| SessionError::ExecutionFailed(format!("{}: {}", node.name, e)))?;
 
         // Store outputs under their declared names. All Section 5 ops
         // are single-output; pair by index and let any trailing declared
@@ -367,14 +424,18 @@ fn clone_device_tensor(src: &DeviceTensor) -> Result<DeviceTensor, CudaError> {
 
 /// Dispatch a single graph node to its GPU-only implementation.
 ///
-/// Returns `OpError::InternalError` for any unsupported op type — Section
-/// 5 intentionally covers only the four operators with existing GPU
-/// kernels (MatMul, Gemm, MatMulInteger, Conv).
+/// `kv_cache_ctx` is `Some` when the caller wants `GroupQueryAttention`
+/// nodes to read/write a [`crate::cuda::GpuKvCache`]. Each successful
+/// GQA dispatch increments `next_layer_idx`, mapping graph order to
+/// per-layer cache slots.
+///
+/// Returns `OpError::InternalError` for any unsupported op type.
 fn dispatch_gpu_node(
     runtime: &CudaRuntime,
     op_type: &str,
     inputs: &[Option<&DeviceTensor>],
     attrs: &[AttributeProto],
+    kv_cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>,
 ) -> Result<Vec<DeviceTensor>, OpError> {
     match op_type {
         "MatMul" => {
@@ -443,6 +504,127 @@ fn dispatch_gpu_node(
             }
             let out = gpu_conv2d_device(runtime, x, w, bias, &pads, &strides, &dilations)
                 .map_err(|e| OpError::InternalError(format!("CUDA Conv: {}", e)))?;
+            Ok(vec![out])
+        }
+        // ── transformer-gpu-kernels-v1 §7 ─────────────────────────────
+        "Add" => {
+            let a = take_input(inputs, 0, "Add", "A")?;
+            let b = take_input(inputs, 1, "Add", "B")?;
+            let out = crate::cuda::kernels::elementwise::add_gpu(runtime, a, b)
+                .map_err(|e| OpError::InternalError(format!("CUDA Add: {}", e)))?;
+            Ok(vec![out])
+        }
+        "Mul" => {
+            let a = take_input(inputs, 0, "Mul", "A")?;
+            let b = take_input(inputs, 1, "Mul", "B")?;
+            let out = crate::cuda::kernels::elementwise::mul_gpu(runtime, a, b)
+                .map_err(|e| OpError::InternalError(format!("CUDA Mul: {}", e)))?;
+            Ok(vec![out])
+        }
+        "Silu" => {
+            let x = take_input(inputs, 0, "Silu", "X")?;
+            let out = crate::cuda::kernels::elementwise::silu_gpu(runtime, x)
+                .map_err(|e| OpError::InternalError(format!("CUDA Silu: {}", e)))?;
+            Ok(vec![out])
+        }
+        "Gather" => {
+            let data = take_input(inputs, 0, "Gather", "data")?;
+            let indices = take_input(inputs, 1, "Gather", "indices")?;
+            let mut axis: i64 = 0;
+            for a in attrs {
+                if a.name == "axis" {
+                    axis = a.i;
+                }
+            }
+            let out = crate::cuda::kernels::gather::gather_gpu(runtime, data, indices, axis)
+                .map_err(|e| OpError::InternalError(format!("CUDA Gather: {}", e)))?;
+            Ok(vec![out])
+        }
+        "RMSNormalization" => {
+            let x = take_input(inputs, 0, "RMSNormalization", "X")?;
+            let weight = take_input(inputs, 1, "RMSNormalization", "weight")?;
+            let mut eps = 1e-6f32;
+            for a in attrs {
+                if a.name == "epsilon" {
+                    eps = a.f;
+                }
+            }
+            let out = crate::cuda::kernels::rms_norm::rms_norm_gpu(runtime, x, weight, eps)
+                .map_err(|e| OpError::InternalError(format!("CUDA RMSNormalization: {}", e)))?;
+            Ok(vec![out])
+        }
+        "RotaryEmbedding" => {
+            let x = take_input(inputs, 0, "RotaryEmbedding", "X")?;
+            // The microsoft op takes [X, position_ids, cos_cache, sin_cache];
+            // GPU dispatch reads `position` from position_ids[0] (decode
+            // step) or treats position_ids as sequential prefill (the
+            // kernel adds qi internally).
+            let position_ids = take_input(inputs, 1, "RotaryEmbedding", "position_ids")?;
+            let cos_cache = take_input(inputs, 2, "RotaryEmbedding", "cos_cache")?;
+            let sin_cache = take_input(inputs, 3, "RotaryEmbedding", "sin_cache")?;
+            let mut interleaved = false;
+            for a in attrs {
+                if a.name == "interleaved" {
+                    interleaved = a.i != 0;
+                }
+            }
+            // Read the first position from the device (one i64).
+            let pos_host = position_ids
+                .to_host()
+                .map_err(|e| OpError::InternalError(format!("RotaryEmbedding pos D2H: {}", e)))?;
+            let position: i32 = if pos_host.raw_data.len() >= 8 {
+                let bytes: [u8; 8] = pos_host.raw_data[..8].try_into().unwrap_or([0; 8]);
+                i64::from_le_bytes(bytes) as i32
+            } else {
+                0
+            };
+            let out = crate::cuda::kernels::rotary::rotary_gpu(
+                runtime,
+                x,
+                cos_cache,
+                sin_cache,
+                position,
+                interleaved,
+            )
+            .map_err(|e| OpError::InternalError(format!("CUDA RotaryEmbedding: {}", e)))?;
+            Ok(vec![out])
+        }
+        "GroupQueryAttention" => {
+            let q = take_input(inputs, 0, "GroupQueryAttention", "Q")?;
+            let new_k = take_input(inputs, 1, "GroupQueryAttention", "K")?;
+            let new_v = take_input(inputs, 2, "GroupQueryAttention", "V")?;
+            let mut local_window: i64 = -1;
+            for a in attrs {
+                if a.name == "local_window_size" {
+                    local_window = a.i;
+                }
+            }
+            let window: Option<i32> = if local_window > 0 {
+                Some(local_window as i32)
+            } else {
+                None
+            };
+            // Cache-aware path uses gpu_gqa_with_cache; otherwise fall
+            // back to the no-cache gpu_gqa (used when callers thread KV
+            // state externally via the input tensors themselves).
+            let out = if let Some(ctx) = kv_cache_ctx {
+                let layer_idx = ctx.next_layer_idx;
+                ctx.next_layer_idx += 1;
+                crate::cuda::kernels::attention::gpu_gqa_with_cache(
+                    runtime, q, new_k, new_v, ctx.cache, layer_idx, window, None,
+                )
+                .map_err(|e| {
+                    OpError::InternalError(format!("CUDA GroupQueryAttention (cache): {}", e))
+                })?
+            } else {
+                crate::cuda::kernels::attention::gpu_gqa(runtime, q, new_k, new_v, window, None)
+                    .map_err(|e| {
+                        OpError::InternalError(format!("CUDA GroupQueryAttention: {}", e))
+                    })?
+            };
+            // The microsoft GQA op declares 3 outputs (attn_out, present_k,
+            // present_v). v1 dispatcher only emits attn_out — present K/V
+            // live inside the persistent GpuKvCache, not in the value map.
             Ok(vec![out])
         }
         other => Err(OpError::InternalError(format!(

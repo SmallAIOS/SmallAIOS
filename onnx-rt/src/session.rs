@@ -640,10 +640,12 @@ impl Session {
             input_pairs.push((inp.name.clone(), dev));
         }
 
-        // Lock the KV cache for the duration of the forward pass so its
-        // lifetime is coupled with the run. Currently just proves the
-        // field is live; see TODO(kv-cache) above.
-        let _kv_guard = if let Some(cache) = &self.kv_cache {
+        // Lock the KV cache for the duration of the forward pass.
+        // §7.4: pass the locked guard into the executor so the dispatcher
+        // routes each GroupQueryAttention node to its layer slot via
+        // gpu_gqa_with_cache. Resolves the TODO from
+        // safetensors-model-loader-v1 §9.
+        let mut kv_guard = if let Some(cache) = &self.kv_cache {
             Some(cache.lock().map_err(|_| {
                 SessionError::ExecutionFailed(String::from("kv_cache mutex poisoned"))
             })?)
@@ -652,12 +654,14 @@ impl Session {
         };
 
         let weights_ref = self.gpu_weights.as_deref();
+        let cache_ref: Option<&mut crate::cuda::GpuKvCache> = kv_guard.as_deref_mut();
 
-        let device_outputs = crate::cuda::execute_graph_gpu_with_weights(
+        let device_outputs = crate::cuda::gpu_executor::execute_graph_gpu_with_weights_and_cache(
             graph,
             &input_pairs,
             &self.initializers,
             weights_ref,
+            cache_ref,
             runtime,
         )?;
 
