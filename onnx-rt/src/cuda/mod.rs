@@ -642,6 +642,14 @@ impl CudaRuntime {
             "rms_norm_bf16",
             kernels::compile_kernel("rms_norm_bf16", kernels::rms_norm::RMS_NORM_BF16_SRC, &[])?,
         );
+        registry.insert(
+            "rotary_f32",
+            kernels::compile_kernel("rotary_f32", kernels::rotary::ROTARY_F32_SRC, &[])?,
+        );
+        registry.insert(
+            "rotary_bf16",
+            kernels::compile_kernel("rotary_bf16", kernels::rotary::ROTARY_BF16_SRC, &[])?,
+        );
 
         Ok(())
     }

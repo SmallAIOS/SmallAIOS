@@ -29,6 +29,7 @@ use super::CudaError;
 pub mod elementwise;
 pub mod gather;
 pub mod rms_norm;
+pub mod rotary;
 
 /// Default NVRTC compilation options used when a caller passes an empty
 /// options slice. Targets Blackwell GB10 (sm_121).

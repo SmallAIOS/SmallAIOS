@@ -46,13 +46,13 @@
 
 ## 5. RotaryEmbedding Kernel
 
-- [ ] 5.1 Create `onnx-rt/src/cuda/kernels/rotary.rs` with inline kernel sources for `rotary_bf16` and `rotary_f32`
-- [ ] 5.2 Kernel: one thread per rotation pair, reads `(cos, sin)` from precomputed tables, applies standard RoPE formula
-- [ ] 5.3 Implement `rotary_gpu(exec, input, cos_table, sin_table, position) -> Result<DeviceTensor, CudaError>`
-- [ ] 5.4 Validate `head_dim` is even; fail fast otherwise
-- [ ] 5.5 Register kernels in `init_kernels()`
-- [ ] 5.6 Unit test (GB10): `rotary_f32` against a scalar Rust reference on small Q tensor
-- [ ] 5.7 Unit test (GB10): `rotary_bf16` against `ops/microsoft.rs::rotary_embedding` CPU reference within 1e-2 tolerance
+- [x] 5.1 Create `onnx-rt/src/cuda/kernels/rotary.rs` with inline kernel sources for `rotary_bf16` and `rotary_f32`
+- [x] 5.2 Kernel: one thread per rotation pair, reads `(cos, sin)` from precomputed tables, applies standard RoPE formula
+- [x] 5.3 Implement `rotary_gpu(exec, input, cos_table, sin_table, position) -> Result<DeviceTensor, CudaError>`
+- [x] 5.4 Validate `head_dim` is even; fail fast otherwise
+- [x] 5.5 Register kernels in `init_kernels()`
+- [x] 5.6 Unit test (GB10): `rotary_f32` against a scalar Rust reference on small Q tensor
+- [x] 5.7 Unit test (GB10): `rotary_bf16` against `ops/microsoft.rs::rotary_embedding` CPU reference within 1e-2 tolerance
 
 ## 6. GroupQueryAttention — Decomposed via cuBLAS
 

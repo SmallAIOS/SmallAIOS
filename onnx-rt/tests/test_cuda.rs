@@ -2474,3 +2474,272 @@ fn test_gpu_rms_norm_bf16_gemma_shape() {
     }
     eprintln!("rms_norm_bf16 [1,32,4096] max_abs_err = {max_abs_err}");
 }
+
+// ── Section 5: RotaryEmbedding ─────────────────────────────────────
+
+/// Build cos/sin tables on the host: `cos[r, p] = cos(theta_p * r)`,
+/// `sin[r, p] = sin(theta_p * r)` where `theta_p = base^(-2p / head_dim)`.
+/// Mirrors the Gemma load-time table generation but stays self-contained
+/// for the test.
+fn build_rope_tables(max_seq: usize, head_dim: usize, base: f32) -> (Vec<f32>, Vec<f32>) {
+    assert!(head_dim.is_multiple_of(2));
+    let half = head_dim / 2;
+    let mut cos = vec![0f32; max_seq * half];
+    let mut sin = vec![0f32; max_seq * half];
+    for r in 0..max_seq {
+        for p in 0..half {
+            let exponent = -((2 * p) as f32) / head_dim as f32;
+            let theta = base.powf(exponent);
+            let angle = (r as f32) * theta;
+            cos[r * half + p] = angle.cos();
+            sin[r * half + p] = angle.sin();
+        }
+    }
+    (cos, sin)
+}
+
+/// Apply RoPE on the host, matching the GPU kernel exactly. Returns the
+/// rotated tensor flattened in `[B, H, Sq, head_dim]` row-major order.
+#[allow(clippy::too_many_arguments)]
+fn host_rope_reference(
+    x: &[f32],
+    batch: usize,
+    heads: usize,
+    seq_len: usize,
+    head_dim: usize,
+    cos: &[f32],
+    sin: &[f32],
+    position: usize,
+    interleaved: bool,
+) -> Vec<f32> {
+    let half = head_dim / 2;
+    let mut y = x.to_vec();
+    for b in 0..batch {
+        for h in 0..heads {
+            for qi in 0..seq_len {
+                let pos = position + qi;
+                let row_base = ((b * heads + h) * seq_len + qi) * head_dim;
+                for pair in 0..half {
+                    let c = cos[pos * half + pair];
+                    let s = sin[pos * half + pair];
+                    let (i0, i1) = if interleaved {
+                        (row_base + 2 * pair, row_base + 2 * pair + 1)
+                    } else {
+                        (row_base + pair, row_base + pair + half)
+                    };
+                    let x0 = x[i0];
+                    let x1 = x[i1];
+                    y[i0] = c * x0 - s * x1;
+                    y[i1] = s * x0 + c * x1;
+                }
+            }
+        }
+    }
+    y
+}
+
+#[test]
+#[ignore]
+fn test_gpu_rotary_f32_small_split_half() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Q tensor: [B=1, H=2, Sq=4, head_dim=8]. Split-half layout (Gemma).
+    let batch = 1usize;
+    let heads = 2usize;
+    let sq = 4usize;
+    let head_dim = 8usize;
+    let max_seq = 16usize;
+
+    let n = batch * heads * sq * head_dim;
+    let x_data: Vec<f32> = (0..n).map(|i| (i as f32) * 0.0125 - 0.25).collect();
+    let (cos_data, sin_data) = build_rope_tables(max_seq, head_dim, 10000.0);
+
+    let x = make_f32_device_tensor(
+        &[batch as i64, heads as i64, sq as i64, head_dim as i64],
+        &x_data,
+    );
+    let cos = make_f32_device_tensor(&[max_seq as i64, (head_dim / 2) as i64], &cos_data);
+    let sin = make_f32_device_tensor(&[max_seq as i64, (head_dim / 2) as i64], &sin_data);
+
+    let position = 0i32;
+    let y = cuda::kernels::rotary::rotary_gpu(&rt, &x, &cos, &sin, position, false)
+        .expect("rotary_gpu f32");
+    cuda::kernels::synchronize().expect("sync");
+
+    assert_eq!(
+        y.shape,
+        vec![batch as i64, heads as i64, sq as i64, head_dim as i64]
+    );
+    assert_eq!(y.dtype, DataType::Float);
+
+    let y_host = read_f32_device_tensor(&y);
+    let expected = host_rope_reference(
+        &x_data, batch, heads, sq, head_dim, &cos_data, &sin_data, 0, false,
+    );
+    for (i, (got, want)) in y_host.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-5,
+            "idx {i}: got {got}, expected {want}"
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_rotary_f32_decode_step_interleaved() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Decode step: Sq=1, position=37. Interleaved (textbook) layout.
+    let batch = 2usize;
+    let heads = 4usize;
+    let sq = 1usize;
+    let head_dim = 16usize;
+    let max_seq = 64usize;
+    let position: usize = 37;
+
+    let n = batch * heads * sq * head_dim;
+    let x_data: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.07).sin()).collect();
+    let (cos_data, sin_data) = build_rope_tables(max_seq, head_dim, 10000.0);
+
+    let x = make_f32_device_tensor(
+        &[batch as i64, heads as i64, sq as i64, head_dim as i64],
+        &x_data,
+    );
+    let cos = make_f32_device_tensor(&[max_seq as i64, (head_dim / 2) as i64], &cos_data);
+    let sin = make_f32_device_tensor(&[max_seq as i64, (head_dim / 2) as i64], &sin_data);
+
+    let y = cuda::kernels::rotary::rotary_gpu(&rt, &x, &cos, &sin, position as i32, true)
+        .expect("rotary_gpu f32 interleaved");
+    cuda::kernels::synchronize().expect("sync");
+
+    let y_host = read_f32_device_tensor(&y);
+    let expected = host_rope_reference(
+        &x_data, batch, heads, sq, head_dim, &cos_data, &sin_data, position, true,
+    );
+    for (i, (got, want)) in y_host.iter().zip(expected.iter()).enumerate() {
+        assert!(
+            (got - want).abs() < 1e-5,
+            "idx {i}: got {got}, expected {want}"
+        );
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_rotary_bf16_gemma_shape() {
+    use smallaios_onnx_rt::ops::microsoft::op_rotary_embedding;
+
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Gemma-ish per-layer Q shape: [B=1, H=8, Sq=8, head_dim=128]. The
+    // CPU `op_rotary_embedding` accepts F32 only, so we build the
+    // reference in F32 and compare BF16 GPU output against it within
+    // a 1e-2 tolerance band (matches the design's BF16 tolerance).
+    let batch = 1usize;
+    let heads = 8usize;
+    let sq = 8usize;
+    let head_dim = 128usize;
+    let max_seq = 32usize;
+    let position: usize = 0;
+
+    let n = batch * heads * sq * head_dim;
+    let x_data: Vec<f32> = (0..n).map(|i| ((i as f32) * 0.001).cos() * 0.5).collect();
+    let (cos_data, sin_data) = build_rope_tables(max_seq, head_dim, 10000.0);
+
+    // BF16 round-trip the input so the GPU sees the same values as the
+    // F32 reference.
+    let x_bf16_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&x_data));
+
+    let x = make_bf16_device_tensor(
+        &[batch as i64, heads as i64, sq as i64, head_dim as i64],
+        &x_data,
+    );
+    let cos = make_f32_device_tensor(&[max_seq as i64, (head_dim / 2) as i64], &cos_data);
+    let sin = make_f32_device_tensor(&[max_seq as i64, (head_dim / 2) as i64], &sin_data);
+
+    let y = cuda::kernels::rotary::rotary_gpu(&rt, &x, &cos, &sin, position as i32, false)
+        .expect("rotary_gpu bf16");
+    cuda::kernels::synchronize().expect("sync");
+
+    let y_host = read_bf16_device_tensor(&y);
+
+    // CPU reference via the rank-4 path: shape is (B, H, Sq, head_dim)
+    // and the buffer is contiguous in that exact order — same memory
+    // layout the GPU kernel sees, so no reshape needed.
+    let x_tensor = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![batch as i64, heads as i64, sq as i64, head_dim as i64]),
+        name: String::new(),
+        raw_data: x_bf16_round.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let pos_tensor = Tensor {
+        data_type: DataType::Int64,
+        shape: TensorShape::new(vec![sq as i64]),
+        name: String::new(),
+        raw_data: (0..sq as i64)
+            .map(|p| position as i64 + p)
+            .flat_map(|v| v.to_le_bytes())
+            .collect(),
+    };
+    let cos_tensor = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![max_seq as i64, (head_dim / 2) as i64]),
+        name: String::new(),
+        raw_data: cos_data.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let sin_tensor = Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(vec![max_seq as i64, (head_dim / 2) as i64]),
+        name: String::new(),
+        raw_data: sin_data.iter().flat_map(|f| f.to_le_bytes()).collect(),
+    };
+    let inputs: [Option<&Tensor>; 4] = [
+        Some(&x_tensor),
+        Some(&pos_tensor),
+        Some(&cos_tensor),
+        Some(&sin_tensor),
+    ];
+    let cpu_out = op_rotary_embedding(&inputs, false, head_dim as i64, heads as i64)
+        .expect("op_rotary_embedding");
+    let cpu_4d: Vec<f32> = cpu_out
+        .raw_data
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+
+    let mut max_abs_err = 0.0f32;
+    for (i, (got, want)) in y_host.iter().zip(cpu_4d.iter()).enumerate() {
+        let err = (got - want).abs();
+        if err > max_abs_err {
+            max_abs_err = err;
+        }
+        assert!(err < 1e-2, "idx {i}: got {got}, expected {want}, err {err}");
+    }
+    eprintln!("rotary_bf16 [1,8,8,128] vs op_rotary_embedding max_abs_err = {max_abs_err}");
+}
+
+#[test]
+#[ignore]
+fn test_gpu_rotary_rejects_odd_head_dim() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // head_dim=7 is odd → must be rejected before launch.
+    let x = make_f32_device_tensor(&[1, 1, 1, 7], &[0f32; 7]);
+    let cos = make_f32_device_tensor(&[1, 3], &[0f32; 3]);
+    let sin = make_f32_device_tensor(&[1, 3], &[0f32; 3]);
+
+    let result = cuda::kernels::rotary::rotary_gpu(&rt, &x, &cos, &sin, 0, false);
+    assert!(result.is_err(), "odd head_dim should be rejected");
+    match result {
+        Err(cuda::CudaError::RuntimeError { op, .. }) => {
+            assert!(op.contains("head_dim"), "op msg: {op}");
+        }
+        Err(other) => panic!("expected RuntimeError, got: {other:?}"),
+        Ok(_) => unreachable!(),
+    }
+}
