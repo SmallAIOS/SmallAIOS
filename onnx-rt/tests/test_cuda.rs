@@ -2940,6 +2940,80 @@ fn test_gpu_strided_batched_gemm_qk_transpose() {
     }
 }
 
+// ── Section 6.10-6.11: KV head expansion ───────────────────────────
+
+#[test]
+#[ignore]
+fn test_gpu_kv_expand_gemma_ratio() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // Gemma 4 ratio: 32 attention heads / 16 KV heads = expand 2.
+    // Use head_dim=8 and seq=4 to keep the validation loop tractable.
+    let batch = 1usize;
+    let num_kv = 16usize;
+    let expand = 2i32;
+    let seq = 4usize;
+    let head_dim = 8usize;
+    let num_q = num_kv * expand as usize;
+
+    let kv_data: Vec<f32> = (0..batch * num_kv * seq * head_dim)
+        .map(|i| (i as f32) * 0.001)
+        .collect();
+    let kv = make_bf16_device_tensor(
+        &[batch as i64, num_kv as i64, seq as i64, head_dim as i64],
+        &kv_data,
+    );
+
+    let out =
+        cuda::kernels::attention::kv_expand_gpu(&rt, &kv, expand).expect("kv_expand_gpu bf16");
+    cuda::kernels::synchronize().expect("sync");
+
+    assert_eq!(
+        out.shape,
+        vec![batch as i64, num_q as i64, seq as i64, head_dim as i64]
+    );
+    assert_eq!(out.dtype, DataType::BFloat16);
+
+    let kv_round =
+        smallaios_onnx_rt::tensor::bf16_to_f32(&smallaios_onnx_rt::tensor::f32_to_bf16(&kv_data));
+    let out_host = read_bf16_device_tensor(&out);
+    for b in 0..batch {
+        for hq in 0..num_q {
+            let hk = hq / expand as usize;
+            for s in 0..seq {
+                for d in 0..head_dim {
+                    let want = kv_round[((b * num_kv + hk) * seq + s) * head_dim + d];
+                    let got = out_host[((b * num_q + hq) * seq + s) * head_dim + d];
+                    assert!(
+                        (got - want).abs() < 1e-6,
+                        "b={b} hq={hq} (hk={hk}) s={s} d={d}: got {got} want {want}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_kv_expand_one_is_identity() {
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    // expand=1 (standard MHA) takes the D2D fast path; output bytes
+    // should equal input bytes.
+    let kv_data: Vec<f32> = (0..32).map(|i| i as f32).collect();
+    let kv = make_f32_device_tensor(&[1, 4, 2, 4], &kv_data);
+    let out = cuda::kernels::attention::kv_expand_gpu(&rt, &kv, 1).expect("kv_expand_gpu identity");
+    cuda::kernels::synchronize().expect("sync");
+    assert_eq!(out.shape, kv.shape);
+    let out_host = read_f32_device_tensor(&out);
+    for (i, (a, b)) in kv_data.iter().zip(out_host.iter()).enumerate() {
+        assert!((a - b).abs() < 1e-6, "idx {i}: {a} != {b}");
+    }
+}
+
 // ── Section 6.5-6.9: Masked softmax ────────────────────────────────
 
 #[test]

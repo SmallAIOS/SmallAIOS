@@ -725,6 +725,22 @@ impl CudaRuntime {
                 &[],
             )?,
         );
+        registry.insert(
+            "gqa_kv_expand_f32",
+            kernels::compile_kernel(
+                "gqa_kv_expand_f32",
+                kernels::attention::GQA_KV_EXPAND_F32_SRC,
+                &[],
+            )?,
+        );
+        registry.insert(
+            "gqa_kv_expand_bf16",
+            kernels::compile_kernel(
+                "gqa_kv_expand_bf16",
+                kernels::attention::GQA_KV_EXPAND_BF16_SRC,
+                &[],
+            )?,
+        );
 
         Ok(())
     }

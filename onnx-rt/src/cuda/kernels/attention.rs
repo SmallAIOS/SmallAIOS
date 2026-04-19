@@ -228,3 +228,192 @@ pub fn masked_softmax_gpu(
 
     Ok(())
 }
+
+// ── Section 6.10-6.11: KV head expansion ───────────────────────────
+
+/// `gqa_kv_expand_f32`: replicate each KV head `expand` times along the
+/// head axis. Input `[B, num_kv_heads, S, head_dim]` → output
+/// `[B, num_kv_heads * expand, S, head_dim]`. One thread per output
+/// element; each thread copies `out[b, h_q, s, d]` from
+/// `in[b, h_q / expand, s, d]`.
+pub const GQA_KV_EXPAND_F32_SRC: &str = r#"
+extern "C" __global__ void gqa_kv_expand_f32(
+    const float* __restrict__ in_kv,
+    float* __restrict__ out_q,
+    int batch,
+    int num_kv_heads,
+    int expand,
+    int seq,
+    int head_dim
+) {
+    int total = batch * (num_kv_heads * expand) * seq * head_dim;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+
+    int hd  = head_dim;
+    int sd  = seq * hd;
+    int hqd = (num_kv_heads * expand) * sd;
+
+    int b   = tid / hqd;
+    int rem = tid - b * hqd;
+    int hq  = rem / sd;
+    int rem2 = rem - hq * sd;
+    int s   = rem2 / hd;
+    int d   = rem2 - s * hd;
+
+    int hk  = hq / expand;
+    int src_idx = ((b * num_kv_heads + hk) * seq + s) * hd + d;
+    out_q[tid] = in_kv[src_idx];
+}
+"#;
+
+/// `gqa_kv_expand_bf16`: BF16 variant of the same kernel. The copy is a
+/// pure load/store so we read the BF16 bits directly without converting
+/// to/from F32 — half the kernel of the F32 path.
+pub const GQA_KV_EXPAND_BF16_SRC: &str = r#"
+#include <cuda_bf16.h>
+extern "C" __global__ void gqa_kv_expand_bf16(
+    const __nv_bfloat16* __restrict__ in_kv,
+    __nv_bfloat16* __restrict__ out_q,
+    int batch,
+    int num_kv_heads,
+    int expand,
+    int seq,
+    int head_dim
+) {
+    int total = batch * (num_kv_heads * expand) * seq * head_dim;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+
+    int hd  = head_dim;
+    int sd  = seq * hd;
+    int hqd = (num_kv_heads * expand) * sd;
+
+    int b   = tid / hqd;
+    int rem = tid - b * hqd;
+    int hq  = rem / sd;
+    int rem2 = rem - hq * sd;
+    int s   = rem2 / hd;
+    int d   = rem2 - s * hd;
+
+    int hk  = hq / expand;
+    int src_idx = ((b * num_kv_heads + hk) * seq + s) * hd + d;
+    out_q[tid] = in_kv[src_idx];
+}
+"#;
+
+/// Replicate each KV head `expand` times along the head axis.
+///
+/// Input `kv` has shape `[B, num_kv_heads, S, head_dim]`; output has
+/// shape `[B, num_kv_heads * expand, S, head_dim]` with each KV head
+/// `h_kv` mapped to attention heads
+/// `[h_kv * expand, .., h_kv * expand + expand - 1]`.
+///
+/// `expand == 1` is a no-op fast path: a fresh device tensor is
+/// allocated and the input bytes are D2D-copied directly.
+///
+/// # Errors
+/// - dtype not in `{Float, BFloat16}` — `RuntimeError`
+/// - `kv.shape.len() != 4` — `RuntimeError`
+/// - `expand <= 0` — `RuntimeError`
+/// - kernel not registered — `KernelLoadFailed`
+/// - kernel launch failed — `KernelLaunchFailed`
+pub fn kv_expand_gpu(
+    runtime: &CudaRuntime,
+    kv: &DeviceTensor,
+    expand: i32,
+) -> Result<DeviceTensor, CudaError> {
+    let _ = runtime;
+    let kernel_name = match kv.dtype {
+        DataType::Float => "gqa_kv_expand_f32",
+        DataType::BFloat16 => "gqa_kv_expand_bf16",
+        _ => {
+            return Err(CudaError::RuntimeError {
+                op: "kv_expand_gpu: unsupported dtype",
+                code: -1,
+            });
+        }
+    };
+    if kv.shape.len() != 4 {
+        return Err(CudaError::RuntimeError {
+            op: "kv_expand_gpu: kv must be rank-4 [B, num_kv_heads, S, head_dim]",
+            code: -1,
+        });
+    }
+    if expand <= 0 {
+        return Err(CudaError::RuntimeError {
+            op: "kv_expand_gpu: expand must be > 0",
+            code: -1,
+        });
+    }
+
+    let batch_i64 = kv.shape[0];
+    let num_kv_i64 = kv.shape[1];
+    let seq_i64 = kv.shape[2];
+    let hd_i64 = kv.shape[3];
+
+    let out_shape = alloc::vec![batch_i64, num_kv_i64 * expand as i64, seq_i64, hd_i64];
+    let out = DeviceTensor::alloc(out_shape, kv.dtype)?;
+
+    let total: i64 = batch_i64 * num_kv_i64 * expand as i64 * seq_i64 * hd_i64;
+    if total <= 0 {
+        return Ok(out);
+    }
+
+    // Fast path: expand == 1 is a straight D2D copy (no need to launch
+    // the kernel for the standard MHA case).
+    if expand == 1 {
+        let bytes = out.byte_size();
+        if bytes > 0 {
+            let err = unsafe {
+                crate::cuda::ffi::cudaMemcpy(
+                    out.buffer.as_mut_ptr(),
+                    kv.buffer.as_ptr(),
+                    bytes,
+                    crate::cuda::ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,
+                )
+            };
+            if err != crate::cuda::ffi::CUDA_SUCCESS {
+                return Err(CudaError::CopyFailed {
+                    msg: "kv_expand_gpu: device-to-device fast path",
+                    code: err,
+                });
+            }
+        }
+        return Ok(out);
+    }
+
+    let mut in_ptr = kv.buffer.as_mut_ptr();
+    let mut out_ptr = out.buffer.as_mut_ptr();
+    let mut batch_arg: i32 = batch_i64 as i32;
+    let mut num_kv_arg: i32 = num_kv_i64 as i32;
+    let mut expand_arg: i32 = expand;
+    let mut seq_arg: i32 = seq_i64 as i32;
+    let mut hd_arg: i32 = hd_i64 as i32;
+
+    let args: [*mut core::ffi::c_void; 7] = [
+        &mut in_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut out_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut batch_arg as *mut _ as *mut core::ffi::c_void,
+        &mut num_kv_arg as *mut _ as *mut core::ffi::c_void,
+        &mut expand_arg as *mut _ as *mut core::ffi::c_void,
+        &mut seq_arg as *mut _ as *mut core::ffi::c_void,
+        &mut hd_arg as *mut _ as *mut core::ffi::c_void,
+    ];
+
+    let block_x: u32 = 256;
+    let grid_x: u32 = (total as u64).div_ceil(block_x as u64) as u32;
+    let grid = (grid_x.max(1), 1, 1);
+    let block = (block_x, 1, 1);
+
+    runtime
+        .with_kernel(kernel_name, |k: &Kernel| {
+            launch_kernel(k, grid, block, &args, 0)
+        })
+        .ok_or_else(|| CudaError::KernelLoadFailed {
+            name: ("kv_expand_gpu: kernel ".to_string() + kernel_name + " not registered"),
+            cuda_result: -1,
+        })??;
+
+    Ok(out)
+}

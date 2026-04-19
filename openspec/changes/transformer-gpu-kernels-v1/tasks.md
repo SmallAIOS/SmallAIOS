@@ -67,8 +67,8 @@
 - [x] 6.8 Unit test (GB10): masked softmax with causal mask produces row-sums of 1.0 within 1e-5
 - [x] 6.9 Unit test (GB10): masked softmax with sliding window only attends within `[i - window, i]`
 
-- [ ] 6.10 Add `gqa_kv_expand` kernel source that replicates each KV head `num_heads / num_kv_heads` times along the head axis
-- [ ] 6.11 Unit test (GB10): `kv_expand` with Gemma 4 ratio (32 heads / 16 KV heads) produces correct expanded layout
+- [x] 6.10 Add `gqa_kv_expand` kernel source that replicates each KV head `num_heads / num_kv_heads` times along the head axis
+- [x] 6.11 Unit test (GB10): `kv_expand` with Gemma 4 ratio (32 heads / 16 KV heads) produces correct expanded layout
 
 - [ ] 6.12 Implement top-level `gpu_gqa(exec, q, k, v, kv_cache, layer_idx, layer_kind, position, window) -> Result<DeviceTensor, CudaError>` composing KV expand → QK^T → masked softmax → softmax·V → merge heads
 - [ ] 6.13 `gpu_gqa` acquires the attention scratch `DeviceBuffer` from `CudaRuntime`, failing fast if the request exceeds the configured cap
