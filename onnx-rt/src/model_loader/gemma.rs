@@ -173,7 +173,10 @@ pub fn build_gemma_graph(
         };
         b.add_initializer(lm_head_name.to_string(), proto)?;
     }
-    let logits = b.matmul(&final_norm, lm_head_name);
+    // lm_head: HF stores the weight as `[vocab, hidden]` (or tied to
+    // embed_tokens which has the same shape). Gemm with `trans_b`
+    // yields `[B, Sq, vocab]` logits.
+    let logits = b.gemm(&final_norm, lm_head_name, None, 1.0, 0.0, false, true);
     b.output(&logits)?;
 
     b.build()
@@ -222,10 +225,12 @@ fn build_gemma_layer(
     // Pre-attention norm.
     let norm1 = b.rms_norm(input_name, &input_ln, config.rms_norm_eps);
 
-    // Q/K/V projections.
-    let q = b.matmul(&norm1, &q_proj);
-    let k = b.matmul(&norm1, &k_proj);
-    let v = b.matmul(&norm1, &v_proj);
+    // Q/K/V projections. HuggingFace stores weights as `[out, in]`,
+    // so we use Gemm with `trans_b=true` to compute `Y = X @ W^T` with
+    // the weights in their native layout.
+    let q = b.gemm(&norm1, &q_proj, None, 1.0, 0.0, false, true);
+    let k = b.gemm(&norm1, &k_proj, None, 1.0, 0.0, false, true);
+    let v = b.gemm(&norm1, &v_proj, None, 1.0, 0.0, false, true);
 
     // RoPE on Q and K. Stamp p_rope attribute onto each node after
     // insertion (advisory — the current operator ignores it).
@@ -253,17 +258,18 @@ fn build_gemma_layer(
         .ok_or_else(|| LoaderError::InvalidConfig("GQA returned no outputs".to_string()))?;
 
     // Output projection + first residual.
-    let attn_proj = b.matmul(&attn, &o_proj);
+    let attn_proj = b.gemm(&attn, &o_proj, None, 1.0, 0.0, false, true);
     let resid1 = b.add(input_name, &attn_proj);
 
     // Post-attention norm.
     let norm2 = b.rms_norm(&resid1, &post_ln, config.rms_norm_eps);
 
-    // SwiGLU MLP: gate/up project, SiLU*Mul, then down project.
-    let gate = b.matmul(&norm2, &gate_proj);
-    let up = b.matmul(&norm2, &up_proj);
+    // SwiGLU MLP: gate/up project, SiLU*Mul, then down project. Same
+    // `[out, in]` HF convention → Gemm with `trans_b`.
+    let gate = b.gemm(&norm2, &gate_proj, None, 1.0, 0.0, false, true);
+    let up = b.gemm(&norm2, &up_proj, None, 1.0, 0.0, false, true);
     let mlp_intermediate = b.swiglu(&gate, &up);
-    let down = b.matmul(&mlp_intermediate, &down_proj);
+    let down = b.gemm(&mlp_intermediate, &down_proj, None, 1.0, 0.0, false, true);
 
     // Final residual.
     Ok(b.add(&resid1, &down))
@@ -689,17 +695,19 @@ mod tests {
         // Structural expectations:
         // - First node is Gather (embedding lookup).
         assert_eq!(built.graph.nodes[0].op_type, "Gather");
-        // - Last node is MatMul (lm_head).
+        // - Last node is Gemm (lm_head). HuggingFace stores weights as
+        //   `[out, in]`, so every projection now uses Gemm with
+        //   `trans_b=true`.
         let last = built.graph.nodes.last().unwrap();
-        assert_eq!(last.op_type, "MatMul");
+        assert_eq!(last.op_type, "Gemm");
         assert_eq!(last.inputs[1], "lm_head.weight");
 
-        // - Per layer: RMSNorm, 3x MatMul (Q/K/V), 2x RotaryEmbedding,
-        //   GroupQueryAttention, MatMul (o_proj), Add (residual),
-        //   RMSNorm, 2x MatMul (gate/up), Silu, Mul (swiglu),
-        //   MatMul (down_proj), Add (residual2) = 16 nodes/layer.
+        // - Per layer: RMSNorm, 3x Gemm (Q/K/V), 2x RotaryEmbedding,
+        //   GroupQueryAttention, Gemm (o_proj), Add (residual),
+        //   RMSNorm, 2x Gemm (gate/up), Silu, Mul (swiglu),
+        //   Gemm (down_proj), Add (residual2) = 16 nodes/layer.
         // - Plus head/tail: Gather + Mul(scale) + final RMSNorm +
-        //   MatMul(lm_head) = 4.
+        //   Gemm(lm_head) = 4.
         let expected = 4 /* head + tail */ + 16 * cfg.num_hidden_layers;
         assert_eq!(
             built.graph.nodes.len(),

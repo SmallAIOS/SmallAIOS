@@ -60,10 +60,11 @@ extern "C" __global__ void rotary_f32(
     int seq_len,
     int head_dim,
     int position,
-    int interleaved
+    int interleaved,
+    int h_per_seq   /* rows-per-qi: 1 for [B,H,Sq,D], num_heads for [B,Sq,H,D] */
 ) {
     int row = blockIdx.x;
-    int qi  = row % seq_len;
+    int qi  = (row / h_per_seq) % seq_len;
     int pos = position + qi;
     int half = head_dim >> 1;
 
@@ -104,10 +105,11 @@ extern "C" __global__ void rotary_bf16(
     int seq_len,
     int head_dim,
     int position,
-    int interleaved
+    int interleaved,
+    int h_per_seq
 ) {
     int row = blockIdx.x;
-    int qi  = row % seq_len;
+    int qi  = (row / h_per_seq) % seq_len;
     int pos = position + qi;
     int half = head_dim >> 1;
 
@@ -175,6 +177,7 @@ pub fn rotary_gpu(
     sin_table: &DeviceTensor,
     position: i32,
     interleaved: bool,
+    num_heads_for_rank3: Option<i64>,
 ) -> Result<DeviceTensor, CudaError> {
     let kernel_name = match x.dtype {
         DataType::Float => "rotary_f32",
@@ -192,16 +195,47 @@ pub fn rotary_gpu(
             code: -1,
         });
     }
-    if x.shape.len() != 4 {
-        return Err(CudaError::RuntimeError {
-            op: "rotary_gpu: x must be rank-4 [B, H, Sq, head_dim]",
-            code: -1,
-        });
-    }
-    let batch_i64 = x.shape[0];
-    let heads_i64 = x.shape[1];
-    let seq_len_i64 = x.shape[2];
-    let head_dim_i64 = x.shape[3];
+    // Two accepted input layouts:
+    //   - rank-4 [B, H, Sq, head_dim] (qi stride = 1 row, `h_per_seq = 1`)
+    //   - rank-3 [B, Sq, H*head_dim]   (qi stride = H rows, `h_per_seq = H`)
+    let (batch_i64, heads_i64, seq_len_i64, head_dim_i64, h_per_seq_i64) = match x.shape.len() {
+        4 => {
+            let b = x.shape[0];
+            let h = x.shape[1];
+            let sq = x.shape[2];
+            let d = x.shape[3];
+            (b, h, sq, d, 1i64)
+        }
+        3 => {
+            let n = num_heads_for_rank3.ok_or(CudaError::RuntimeError {
+                op: "rotary_gpu: rank-3 input requires num_heads_for_rank3",
+                code: -1,
+            })?;
+            if n <= 0 {
+                return Err(CudaError::RuntimeError {
+                    op: "rotary_gpu: num_heads must be > 0 for rank-3 input",
+                    code: -1,
+                });
+            }
+            let b = x.shape[0];
+            let sq = x.shape[1];
+            let hidden = x.shape[2];
+            if hidden % n != 0 {
+                return Err(CudaError::RuntimeError {
+                    op: "rotary_gpu: hidden not divisible by num_heads (rank-3)",
+                    code: -1,
+                });
+            }
+            let d = hidden / n;
+            (b, n, sq, d, n)
+        }
+        _ => {
+            return Err(CudaError::RuntimeError {
+                op: "rotary_gpu: x must be rank-3 or rank-4",
+                code: -1,
+            });
+        }
+    };
 
     if head_dim_i64 <= 0 || head_dim_i64 % 2 != 0 {
         return Err(CudaError::RuntimeError {
@@ -254,8 +288,9 @@ pub fn rotary_gpu(
     let mut head_dim_arg: i32 = head_dim_i64 as i32;
     let mut position_arg: i32 = position;
     let mut interleaved_arg: i32 = i32::from(interleaved);
+    let mut h_per_seq_arg: i32 = h_per_seq_i64 as i32;
 
-    let args: [*mut core::ffi::c_void; 8] = [
+    let args: [*mut core::ffi::c_void; 9] = [
         &mut x_ptr as *mut _ as *mut core::ffi::c_void,
         &mut cos_ptr as *mut _ as *mut core::ffi::c_void,
         &mut sin_ptr as *mut _ as *mut core::ffi::c_void,
@@ -264,6 +299,7 @@ pub fn rotary_gpu(
         &mut head_dim_arg as *mut _ as *mut core::ffi::c_void,
         &mut position_arg as *mut _ as *mut core::ffi::c_void,
         &mut interleaved_arg as *mut _ as *mut core::ffi::c_void,
+        &mut h_per_seq_arg as *mut _ as *mut core::ffi::c_void,
     ];
 
     let half_u32 = (half_i64 as u32).max(1);

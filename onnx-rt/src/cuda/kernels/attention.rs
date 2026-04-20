@@ -702,6 +702,39 @@ pub fn gpu_gqa(
     window: Option<i32>,
     scale: Option<f32>,
 ) -> Result<DeviceTensor, CudaError> {
+    // Rank-3 fallback: the gemma builder emits Q/K/V directly from its
+    // projection Gemms in `[1, Sq, H*head_dim]` layout. Transpose to
+    // the canonical rank-4 head-major form before proceeding. The
+    // `num_heads` for K/V is derived from the two shapes' ratio.
+    if q.shape.len() == 3 && k.shape.len() == 3 && v.shape.len() == 3 {
+        let q_hidden = q.shape[2];
+        let kv_hidden = k.shape[2];
+        if q_hidden == 0 || kv_hidden == 0 || q_hidden % kv_hidden != 0 {
+            // Allow equal-hidden for MHA; for GQA require that q_hidden
+            // is a multiple of kv_hidden so head_dim matches.
+            let kv_divides = kv_hidden != 0 && q_hidden % kv_hidden == 0;
+            let mha = q_hidden == kv_hidden;
+            if !kv_divides && !mha {
+                return Err(CudaError::RuntimeError {
+                    op: "gpu_gqa: rank-3 q/kv hidden ratio is not integer",
+                    code: -1,
+                });
+            }
+        }
+        // Infer head_dim from (q_hidden / num_q_heads) via the
+        // attention-head ratio. For rank-3 we need num_heads to be
+        // supplied by the caller — the dispatcher reads it from the
+        // GQA node attributes. Here we fall back to the simplest case
+        // where num_q_heads can be inferred from shape alone:
+        // kv_hidden must equal num_kv_heads * head_dim and q_hidden
+        // must equal num_q_heads * head_dim, with the same head_dim.
+        // Without the attribute this is ambiguous, so defer to the
+        // `gpu_gqa_rank3` entry point which takes explicit counts.
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: rank-3 input requires head-count attributes — use gpu_gqa_rank3",
+            code: -1,
+        });
+    }
     if q.dtype != k.dtype || q.dtype != v.dtype {
         return Err(CudaError::RuntimeError {
             op: "gpu_gqa: q/k/v dtypes must match",
@@ -860,6 +893,35 @@ fn view_as_3d(src: &DeviceTensor, h: i64, s: i64, d: i64) -> Result<DeviceTensor
     Ok(dst)
 }
 
+// ── Rank-3 adapter (transformer-gpu-kernels-v1 §7 gemma integration) ──
+
+/// Rank-3 front-door to [`gpu_gqa`].
+///
+/// The gemma builder emits Q/K/V directly from its Gemm projection
+/// layer in `[1, Sq, H*head_dim]` layout. Callers that already have
+/// rank-4 `[B, H, Sq, head_dim]` tensors should use [`gpu_gqa`]
+/// directly; this adapter transposes each operand to head-major
+/// layout then delegates.
+///
+/// `num_q_heads` / `num_kv_heads` are read from the `GroupQueryAttention`
+/// node attributes; the head_dim is derived as `q_hidden / num_q_heads`.
+#[allow(clippy::too_many_arguments)]
+pub fn gpu_gqa_rank3(
+    runtime: &CudaRuntime,
+    q: &DeviceTensor,
+    k: &DeviceTensor,
+    v: &DeviceTensor,
+    num_q_heads: i64,
+    num_kv_heads: i64,
+    window: Option<i32>,
+    scale: Option<f32>,
+) -> Result<DeviceTensor, CudaError> {
+    let q_bhs = bsh_to_bhs_gpu(runtime, q, num_q_heads)?;
+    let k_bhs = bsh_to_bhs_gpu(runtime, k, num_kv_heads)?;
+    let v_bhs = bsh_to_bhs_gpu(runtime, v, num_kv_heads)?;
+    gpu_gqa(runtime, &q_bhs, &k_bhs, &v_bhs, window, scale)
+}
+
 // ── Section 6.14: cache view → head-major transpose + gpu_gqa wrapper ──
 
 /// `kv_cache_view_to_head_major_*`: transpose
@@ -869,6 +931,134 @@ fn view_as_3d(src: &DeviceTensor, h: i64, s: i64, d: i64) -> Result<DeviceTensor
 ///
 /// One thread per output element; each thread maps
 /// `out[b=0, h, t, d]` ← `in[t, h, d]`.
+/// `bsh_to_bhs_*`: transpose a `[B=1, Sq, H, head_dim]` tensor into
+/// `[B=1, H, Sq, head_dim]` head-major layout. Identical memory reads
+/// to [`KV_CACHE_VIEW_TO_HEAD_MAJOR_F32_SRC`] but accepts an explicit
+/// batch axis so it can be used on the rank-3 Q/K/V tensors emitted by
+/// the gemma builder's Gemm projection layer.
+pub const BSH_TO_BHS_F32_SRC: &str = r#"
+extern "C" __global__ void bsh_to_bhs_f32(
+    const float* __restrict__ in_bshd,
+    float* __restrict__ out_bhsd,
+    int seq_len,
+    int num_heads,
+    int head_dim
+) {
+    int total = seq_len * num_heads * head_dim;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+
+    int hd = head_dim;
+    int sd = seq_len * hd;
+
+    int h    = tid / sd;
+    int rem  = tid - h * sd;
+    int s    = rem / hd;
+    int d    = rem - s * hd;
+
+    int src = (s * num_heads + h) * hd + d;
+    out_bhsd[tid] = in_bshd[src];
+}
+"#;
+
+pub const BSH_TO_BHS_BF16_SRC: &str = r#"
+#include <cuda_bf16.h>
+extern "C" __global__ void bsh_to_bhs_bf16(
+    const __nv_bfloat16* __restrict__ in_bshd,
+    __nv_bfloat16* __restrict__ out_bhsd,
+    int seq_len,
+    int num_heads,
+    int head_dim
+) {
+    int total = seq_len * num_heads * head_dim;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= total) return;
+
+    int hd = head_dim;
+    int sd = seq_len * hd;
+
+    int h    = tid / sd;
+    int rem  = tid - h * sd;
+    int s    = rem / hd;
+    int d    = rem - s * hd;
+
+    int src = (s * num_heads + h) * hd + d;
+    out_bhsd[tid] = in_bshd[src];
+}
+"#;
+
+/// Transpose a rank-3 `[1, Sq, num_heads * head_dim]` tensor into the
+/// rank-4 head-major layout `[1, num_heads, Sq, head_dim]` expected by
+/// [`gpu_gqa`]. The input buffer must be contiguous
+/// `[B=1, Sq, H, head_dim]`.
+pub fn bsh_to_bhs_gpu(
+    runtime: &CudaRuntime,
+    x: &DeviceTensor,
+    num_heads: i64,
+) -> Result<DeviceTensor, CudaError> {
+    if x.shape.len() != 3 {
+        return Err(CudaError::RuntimeError {
+            op: "bsh_to_bhs_gpu: input must be rank-3 [B, Sq, H*head_dim]",
+            code: -1,
+        });
+    }
+    if x.shape[0] != 1 {
+        return Err(CudaError::RuntimeError {
+            op: "bsh_to_bhs_gpu: only batch=1 is supported",
+            code: -1,
+        });
+    }
+    let kernel_name = match x.dtype {
+        DataType::Float => "bsh_to_bhs_f32",
+        DataType::BFloat16 => "bsh_to_bhs_bf16",
+        _ => {
+            return Err(CudaError::RuntimeError {
+                op: "bsh_to_bhs_gpu: unsupported dtype",
+                code: -1,
+            });
+        }
+    };
+    let seq_len = x.shape[1];
+    let hidden = x.shape[2];
+    if num_heads <= 0 || hidden % num_heads != 0 {
+        return Err(CudaError::RuntimeError {
+            op: "bsh_to_bhs_gpu: hidden not divisible by num_heads",
+            code: -1,
+        });
+    }
+    let head_dim = hidden / num_heads;
+    let out = DeviceTensor::alloc(alloc::vec![1i64, num_heads, seq_len, head_dim], x.dtype)?;
+
+    let total: i64 = seq_len * num_heads * head_dim;
+    if total <= 0 {
+        return Ok(out);
+    }
+
+    let mut in_ptr = x.buffer.as_mut_ptr();
+    let mut out_ptr = out.buffer.as_mut_ptr();
+    let mut seq_arg: i32 = seq_len as i32;
+    let mut heads_arg: i32 = num_heads as i32;
+    let mut hd_arg: i32 = head_dim as i32;
+    let args: [*mut core::ffi::c_void; 5] = [
+        &mut in_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut out_ptr as *mut _ as *mut core::ffi::c_void,
+        &mut seq_arg as *mut _ as *mut core::ffi::c_void,
+        &mut heads_arg as *mut _ as *mut core::ffi::c_void,
+        &mut hd_arg as *mut _ as *mut core::ffi::c_void,
+    ];
+    let block_x: u32 = 256;
+    let grid_x: u32 = (total as u64).div_ceil(block_x as u64) as u32;
+    runtime
+        .with_kernel(kernel_name, |k: &Kernel| {
+            launch_kernel(k, (grid_x.max(1), 1, 1), (block_x, 1, 1), &args, 0)
+        })
+        .ok_or_else(|| CudaError::KernelLoadFailed {
+            name: ("bsh_to_bhs_gpu: kernel ".to_string() + kernel_name + " not registered"),
+            cuda_result: -1,
+        })??;
+    Ok(out)
+}
+
 pub const KV_CACHE_VIEW_TO_HEAD_MAJOR_F32_SRC: &str = r#"
 extern "C" __global__ void kv_cache_view_to_head_major_f32(
     const float* __restrict__ in_thd,

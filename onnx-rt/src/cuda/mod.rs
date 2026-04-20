@@ -815,6 +815,22 @@ impl CudaRuntime {
                 &[],
             )?,
         );
+        registry.insert(
+            "bsh_to_bhs_f32",
+            kernels::compile_kernel(
+                "bsh_to_bhs_f32",
+                kernels::attention::BSH_TO_BHS_F32_SRC,
+                &[],
+            )?,
+        );
+        registry.insert(
+            "bsh_to_bhs_bf16",
+            kernels::compile_kernel(
+                "bsh_to_bhs_bf16",
+                kernels::attention::BSH_TO_BHS_BF16_SRC,
+                &[],
+            )?,
+        );
 
         Ok(())
     }
