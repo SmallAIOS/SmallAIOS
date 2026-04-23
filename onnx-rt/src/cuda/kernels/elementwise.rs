@@ -353,10 +353,10 @@ fn elementwise_binary_gpu(
             cuda_result: -1,
         })??;
 
-    // Keep the aux buffers alive until after the launch returns. The
-    // launch is asynchronous, but the driver has copied the argument
-    // slots; the device buffers just need to outlive the launch call,
-    // which they do because the `?` above returned before we drop.
+    // The launch is asynchronous and the kernel dereferences the device
+    // shape/stride buffers in its loop. Synchronize before dropping them
+    // so `cudaFree` can't race the still-running kernel (use-after-free).
+    super::synchronize()?;
     drop(shape_dev);
     drop(stride_a_dev);
     drop(stride_b_dev);

@@ -86,16 +86,17 @@ impl Drop for Kernel {
 // ── Context bootstrap ───────────────────────────────────────────────
 
 static CTX_INIT: Once = Once::new();
-static mut CTX_INIT_RESULT: Result<(), CudaError> = Ok(());
+static mut CTX_RETAIN_RESULT: Result<ffi::CUcontext, CudaError> = Ok(core::ptr::null_mut());
 
-/// Ensure the CUDA driver-API primary context on device 0 is retained and
-/// set as current on the calling thread. Runs at most once per process.
+/// Retain the CUDA driver-API primary context on device 0 once per process
+/// and bind it as the current context on the calling thread.
 ///
-/// This is required because NVRTC and the driver API cannot use a context
-/// that was implicitly created by the runtime API (`cudart`) on a different
-/// thread — safer to own a driver-API primary context explicitly.
+/// Driver-API current-context state is thread-local: every thread that calls
+/// `compile_kernel`, `launch_kernel`, or `synchronize` must independently
+/// rebind the retained context via `cuCtxSetCurrent`. The `Once` gate only
+/// retains the primary context; rebinding happens on every call.
 pub(crate) fn lazy_context_init() -> Result<(), CudaError> {
-    fn do_init() -> Result<(), CudaError> {
+    fn do_retain() -> Result<ffi::CUcontext, CudaError> {
         // Safety: FFI calls; we check every return code.
         unsafe {
             let rc = ffi::cuInit(0);
@@ -121,31 +122,37 @@ pub(crate) fn lazy_context_init() -> Result<(), CudaError> {
                     code: rc,
                 });
             }
-            let rc = ffi::cuCtxSetCurrent(ctx);
-            if rc != ffi::CU_SUCCESS {
-                return Err(CudaError::RuntimeError {
-                    op: "cuCtxSetCurrent",
-                    code: rc,
-                });
-            }
+            Ok(ctx)
         }
-        Ok(())
     }
 
     CTX_INIT.call_once(|| {
-        let result = do_init();
-        // Safety: CTX_INIT_RESULT is written exactly once inside call_once.
+        let result = do_retain();
+        // Safety: CTX_RETAIN_RESULT is written exactly once inside call_once.
         unsafe {
-            CTX_INIT_RESULT = result;
+            CTX_RETAIN_RESULT = result;
         }
     });
     // Safety: after call_once completes, the value is fully published.
-    unsafe {
-        match &*core::ptr::addr_of!(CTX_INIT_RESULT) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(clone_cuda_error(e)),
+    let ctx = unsafe {
+        match &*core::ptr::addr_of!(CTX_RETAIN_RESULT) {
+            Ok(ctx) => *ctx,
+            Err(e) => return Err(clone_cuda_error(e)),
         }
+    };
+
+    // cuCtxSetCurrent is thread-safe for the same ctx; each thread must bind
+    // the retained primary context to its own thread-local slot before any
+    // driver-API launch or sync.
+    // Safety: ctx is a valid retained primary context pointer.
+    let rc = unsafe { ffi::cuCtxSetCurrent(ctx) };
+    if rc != ffi::CU_SUCCESS {
+        return Err(CudaError::RuntimeError {
+            op: "cuCtxSetCurrent",
+            code: rc,
+        });
     }
+    Ok(())
 }
 
 fn clone_cuda_error(e: &CudaError) -> CudaError {
@@ -375,6 +382,7 @@ pub fn launch_kernel(
     args: &[*mut core::ffi::c_void],
     shared_bytes: u32,
 ) -> Result<(), CudaError> {
+    lazy_context_init()?;
     let rc = unsafe {
         ffi::cuLaunchKernel(
             kernel.function,
@@ -402,6 +410,7 @@ pub fn launch_kernel(
 /// Block the calling thread until all previously launched kernels on the
 /// current driver-API context have completed. Uses `cuCtxSynchronize`.
 pub fn synchronize() -> Result<(), CudaError> {
+    lazy_context_init()?;
     let rc = unsafe { ffi::cuCtxSynchronize() };
     if rc != ffi::CU_SUCCESS {
         return Err(CudaError::RuntimeError {

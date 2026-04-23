@@ -845,6 +845,19 @@ impl CudaRuntime {
 
     /// Check whether a given ONNX operator can be dispatched to GPU.
     pub fn supports_op(op_type: &str) -> bool {
-        matches!(op_type, "MatMul" | "Gemm" | "MatMulInteger" | "Conv")
+        matches!(
+            op_type,
+            "MatMul"
+                | "Gemm"
+                | "MatMulInteger"
+                | "Conv"
+                | "Add"
+                | "Mul"
+                | "Silu"
+                | "Gather"
+                | "RMSNormalization"
+                | "RotaryEmbedding"
+                | "GroupQueryAttention"
+        )
     }
 }

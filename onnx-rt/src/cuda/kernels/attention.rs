@@ -64,7 +64,10 @@ extern "C" __global__ void gqa_softmax_mask_f32(
     float* row = scores + ((size_t)head * (size_t)seq_q + (size_t)qi) * (size_t)seq_kv;
     int q_pos = causal_offset + qi;
 
-    unsigned mask = 0xFFFFFFFFu;
+    // All threads in the block reach this point with no divergent control
+    // flow above, so __activemask() returns the actual set of active lanes
+    // in each warp. Using a literal 0xFFFFFFFFu would be UB on partial
+    // warps (e.g. blockDim.x < 32 or blockDim.x not a multiple of 32).
     int lane    = threadIdx.x & 31;
     int warp_id = threadIdx.x >> 5;
     int num_warps = (blockDim.x + 31) >> 5;
@@ -77,6 +80,7 @@ extern "C" __global__ void gqa_softmax_mask_f32(
         float v = allowed ? (row[k] * scale) : __int_as_float(0xff800000);
         if (v > local_max) local_max = v;
     }
+    unsigned mask = __activemask();
     for (int off = 16; off > 0; off /= 2) {
         float other = __shfl_down_sync(mask, local_max, off);
         if (other > local_max) local_max = other;
@@ -86,8 +90,9 @@ extern "C" __global__ void gqa_softmax_mask_f32(
     __syncthreads();
     if (warp_id == 0) {
         float partial = (lane < num_warps) ? warp_max[lane] : __int_as_float(0xff800000);
+        unsigned mask2 = __activemask();
         for (int off = 16; off > 0; off /= 2) {
-            float other = __shfl_down_sync(mask, partial, off);
+            float other = __shfl_down_sync(mask2, partial, off);
             if (other > partial) partial = other;
         }
         if (lane == 0) warp_max[0] = partial;
@@ -113,16 +118,18 @@ extern "C" __global__ void gqa_softmax_mask_f32(
         row[k] = v;
         local_sum += v;
     }
+    unsigned mask_sum = __activemask();
     for (int off = 16; off > 0; off /= 2) {
-        local_sum += __shfl_down_sync(mask, local_sum, off);
+        local_sum += __shfl_down_sync(mask_sum, local_sum, off);
     }
     __shared__ float warp_sum[32];
     if (lane == 0) warp_sum[warp_id] = local_sum;
     __syncthreads();
     if (warp_id == 0) {
         float partial = (lane < num_warps) ? warp_sum[lane] : 0.0f;
+        unsigned mask_sum2 = __activemask();
         for (int off = 16; off > 0; off /= 2) {
-            partial += __shfl_down_sync(mask, partial, off);
+            partial += __shfl_down_sync(mask_sum2, partial, off);
         }
         if (lane == 0) warp_sum[0] = partial;
     }
@@ -192,6 +199,14 @@ pub fn masked_softmax_gpu(
     }
     if heads_i64 <= 0 || seq_q <= 0 || seq_kv <= 0 {
         return Ok(());
+    }
+    // seq_q > seq_kv would push `causal_offset` negative and silently mask
+    // the leading query rows to all-zero probabilities. Reject up front.
+    if seq_q > seq_kv {
+        return Err(CudaError::RuntimeError {
+            op: "masked_softmax_gpu: seq_q must be <= seq_kv",
+            code: -1,
+        });
     }
 
     let causal_offset: i32 = seq_kv - seq_q;

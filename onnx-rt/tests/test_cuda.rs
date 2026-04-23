@@ -145,6 +145,13 @@ fn test_cuda_runtime_init() {
     assert!(cuda::CudaRuntime::supports_op("MatMul"));
     assert!(cuda::CudaRuntime::supports_op("Gemm"));
     assert!(cuda::CudaRuntime::supports_op("Conv"));
+    assert!(cuda::CudaRuntime::supports_op("Add"));
+    assert!(cuda::CudaRuntime::supports_op("Mul"));
+    assert!(cuda::CudaRuntime::supports_op("Silu"));
+    assert!(cuda::CudaRuntime::supports_op("Gather"));
+    assert!(cuda::CudaRuntime::supports_op("RMSNormalization"));
+    assert!(cuda::CudaRuntime::supports_op("RotaryEmbedding"));
+    assert!(cuda::CudaRuntime::supports_op("GroupQueryAttention"));
     assert!(!cuda::CudaRuntime::supports_op("Relu"));
 }
 
@@ -1940,6 +1947,62 @@ fn test_nvrtc_compile_reports_syntax_error() {
     }
 }
 
+#[test]
+#[ignore]
+fn test_nvrtc_compile_launch_on_spawned_thread() {
+    // Regression: driver-API current-context state is thread-local. If
+    // lazy_context_init only called cuCtxSetCurrent on the first thread
+    // (inside Once::call_once), any later thread would launch kernels with
+    // no current context. Bind the context on the main thread first, then
+    // compile + launch + synchronize entirely from a spawned thread and
+    // expect success.
+    let _rt = cuda::CudaRuntime::init().expect("CudaRuntime init failed");
+    // Warm up: bind context on the main thread so Once::call_once fires here.
+    let warm = cuda::kernels::compile_kernel("noop", "extern \"C\" __global__ void noop() {}", &[])
+        .expect("main-thread compile_kernel failed");
+    drop(warm);
+
+    let handle = std::thread::spawn(|| {
+        let source = r#"
+extern "C" __global__ void add_one_thr(int *data, int n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) data[i] += 1;
+}
+"#;
+        let kernel = cuda::kernels::compile_kernel("add_one_thr", source, &[])
+            .expect("spawned-thread compile_kernel failed (ctx not rebound?)");
+
+        let host_init: Vec<i32> = (0..16).collect();
+        let bytes = core::mem::size_of::<i32>() * host_init.len();
+        let device_buf = cuda::DeviceBuffer::alloc(bytes).expect("alloc failed");
+        let init_bytes: &[u8] =
+            unsafe { core::slice::from_raw_parts(host_init.as_ptr() as *const u8, bytes) };
+        device_buf
+            .copy_from_host(init_bytes)
+            .expect("H2D copy failed");
+
+        let mut dev_ptr = device_buf.as_mut_ptr();
+        let mut n_arg: i32 = 16;
+        let args: [*mut core::ffi::c_void; 2] = [
+            &mut dev_ptr as *mut _ as *mut core::ffi::c_void,
+            &mut n_arg as *mut _ as *mut core::ffi::c_void,
+        ];
+
+        cuda::kernels::launch_kernel(&kernel, (1, 1, 1), (16, 1, 1), &args, 0)
+            .expect("spawned-thread launch_kernel failed (ctx not rebound?)");
+        cuda::kernels::synchronize().expect("spawned-thread synchronize failed (ctx not rebound?)");
+
+        let mut host_out = vec![0i32; 16];
+        let out_bytes: &mut [u8] =
+            unsafe { core::slice::from_raw_parts_mut(host_out.as_mut_ptr() as *mut u8, bytes) };
+        device_buf.copy_to_host(out_bytes).expect("D2H copy failed");
+        for (i, &v) in host_out.iter().enumerate() {
+            assert_eq!(v, i as i32 + 1);
+        }
+    });
+    handle.join().expect("spawned thread panicked");
+}
+
 // ── Section 2: Element-wise ops (Add, Mul, Silu) ────────────────────
 
 fn make_f32_device_tensor(shape: &[i64], data: &[f32]) -> cuda::DeviceTensor {
@@ -2337,6 +2400,32 @@ fn test_gpu_gather_rejects_i32_indices() {
     match result {
         Err(cuda::CudaError::RuntimeError { op, .. }) => {
             assert!(op.contains("Int64"), "op msg: {op}");
+        }
+        Err(other) => panic!("expected RuntimeError, got: {other:?}"),
+        Ok(_) => unreachable!(),
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_gather_rejects_empty_vocab() {
+    // Regression: empty vocab + non-empty indices would clamp every index to
+    // 0 and read from a zero-byte buffer (OOB device read). Must be rejected
+    // up front as a clean error.
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let data = make_f32_device_tensor(&[0, 8], &[]);
+    let indices = make_i64_device_tensor(&[2], &[0i64, 1]);
+
+    let result = cuda::kernels::gather::gather_gpu(&rt, &data, &indices, 0);
+    assert!(
+        result.is_err(),
+        "empty vocab with non-empty indices should be rejected"
+    );
+    match result {
+        Err(cuda::CudaError::RuntimeError { op, .. }) => {
+            assert!(op.contains("vocab"), "op msg: {op}");
         }
         Err(other) => panic!("expected RuntimeError, got: {other:?}"),
         Ok(_) => unreachable!(),
@@ -3113,6 +3202,30 @@ fn test_gpu_masked_softmax_sliding_window() {
                 "h={h} q={qi}: row_sum {row_sum} != 1.0"
             );
         }
+    }
+}
+
+#[test]
+#[ignore]
+fn test_gpu_masked_softmax_rejects_seq_q_gt_seq_kv() {
+    // Regression: seq_q > seq_kv would push causal_offset negative and
+    // silently mask the leading query rows to all-zero probabilities.
+    let rt = cuda::CudaRuntime::init().expect("CUDA init");
+    rt.init_kernels().expect("init_kernels");
+
+    let seq_q = 8i32;
+    let seq_kv = 4i32;
+    let scores: Vec<f32> = vec![0.1f32; seq_q as usize * seq_kv as usize];
+    let dev = make_f32_device_tensor(&[1, seq_q as i64, seq_kv as i64], &scores);
+
+    let result = cuda::kernels::attention::masked_softmax_gpu(&rt, &dev, seq_q, seq_kv, None, 1.0);
+    assert!(result.is_err(), "seq_q > seq_kv should be rejected");
+    match result {
+        Err(cuda::CudaError::RuntimeError { op, .. }) => {
+            assert!(op.contains("seq_q"), "op msg: {op}");
+        }
+        Err(other) => panic!("expected RuntimeError, got: {other:?}"),
+        Ok(_) => unreachable!(),
     }
 }
 

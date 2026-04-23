@@ -157,10 +157,30 @@ pub fn gather_gpu(
     // Dimensions. `hidden_size` is the product of all non-leading dims
     // of `data` — so `[vocab, hidden]` yields `hidden`, and higher-rank
     // tables degrade sensibly to "row byte count / element_size".
-    let vocab_size: i32 = data.shape[0] as i32;
+    let vocab_size_i64: i64 = data.shape[0];
     let hidden_size_i64: i64 = data.shape[1..].iter().copied().product::<i64>().max(0);
-    let hidden_size: i32 = hidden_size_i64 as i32;
     let num_rows_i64: i64 = indices.shape.iter().copied().product::<i64>().max(0);
+    // An empty vocab with non-empty indices would clamp every index to 0 and
+    // read from a zero-byte buffer (OOB device read). Reject up front.
+    if vocab_size_i64 == 0 && num_rows_i64 > 0 {
+        return Err(CudaError::RuntimeError {
+            op: "gather_gpu: data axis 0 (vocab) must be non-empty",
+            code: -1,
+        });
+    }
+    // Launch geometry and kernel args are i32. Reject tensors that would
+    // silently truncate.
+    if vocab_size_i64 > i32::MAX as i64
+        || hidden_size_i64 > i32::MAX as i64
+        || num_rows_i64 > i32::MAX as i64
+    {
+        return Err(CudaError::RuntimeError {
+            op: "gather_gpu: tensor too large for i32 kernel launch parameters",
+            code: -1,
+        });
+    }
+    let vocab_size: i32 = vocab_size_i64 as i32;
+    let hidden_size: i32 = hidden_size_i64 as i32;
     let num_rows: i32 = num_rows_i64 as i32;
 
     // Output shape: indices.shape ++ data.shape[1..].

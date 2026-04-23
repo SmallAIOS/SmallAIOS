@@ -7,9 +7,15 @@
 - [x] 1.5 Implement `compile_kernel(name: &str, source: &str, options: &[&str]) -> Result<Kernel, CudaError>` that calls NVRTC, retrieves PTX, and loads via `cuModuleLoadData`
 - [x] 1.6 Implement `launch_kernel(kernel: &Kernel, grid: (u32, u32, u32), block: (u32, u32, u32), args: &[*mut c_void], shared_bytes: u32) -> Result<(), CudaError>` wrapping `cuLaunchKernel`
 - [x] 1.7 Add `CudaError::KernelCompileFailed { name, log }`, `CudaError::KernelLoadFailed { name, cuda_result }`, `CudaError::KernelLaunchFailed { name, cuda_result }` variants
-- [x] 1.8 Extend `CudaRuntime` with a `kernel_registry: HashMap<&'static str, Kernel>` field and an `init_kernels()` method that compiles all registered kernels eagerly at runtime construction
+- [x] 1.8 Extend `CudaRuntime` with a `kernel_registry: Mutex<BTreeMap<&'static str, Kernel>>` field and an opt-in `init_kernels()` method that compiles all registered kernels; callers invoke it once per runtime before dispatching GPU-backed ops (kept opt-in rather than wired into `CudaRuntime::init*()` so tests that never touch JIT kernels avoid the NVRTC cost)
 - [x] 1.9 Unit test (GB10): compile and launch a trivial "add one" kernel to verify the NVRTC + driver API path end-to-end
 - [x] 1.10 Unit test: a deliberately broken kernel source surfaces `CudaError::KernelCompileFailed` with a non-empty log
+- [x] 1.11 Driver-API current-context state is thread-local: `lazy_context_init` retains the primary context once via `Once` but rebinds it on every call, and `compile_kernel` / `launch_kernel` / `synchronize` all invoke `lazy_context_init` so every calling thread sets `cuCtxSetCurrent` on its own TLS slot
+- [x] 1.12 Unit test (GB10): `test_nvrtc_compile_launch_on_spawned_thread` — compile + launch + synchronize a kernel entirely from a spawned thread after the main thread has already won the `Once` race
+- [x] 1.13 `CudaRuntime::supports_op` advertises every op kind for which a kernel is registered by `init_kernels`: `Add`, `Mul`, `Silu`, `Gather`, `RMSNormalization`, `RotaryEmbedding`, `GroupQueryAttention` (in addition to the pre-existing `MatMul` / `Gemm` / `MatMulInteger` / `Conv`)
+- [x] 1.14 Element-wise broadcast launcher (`elementwise_binary_gpu`) synchronizes the default stream before dropping the device-side shape/stride scratch buffers so `cudaFree` cannot race the still-running kernel (use-after-free fix)
+- [x] 1.15 `gqa_softmax_mask_f32` uses `__activemask()` for its warp-shuffle reductions; a literal `0xFFFFFFFFu` mask is UB when `blockDim.x < 32` or is not a multiple of 32
+- [x] 1.16 Validation guards on kernel-launch parameters: `gather_gpu` rejects empty vocab with non-empty indices and i64→i32 truncation; `masked_softmax_gpu` rejects `seq_q > seq_kv`
 
 ## 2. Element-Wise Ops (Add, Mul, Silu)
 

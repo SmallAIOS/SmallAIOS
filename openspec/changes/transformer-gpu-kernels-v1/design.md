@@ -100,6 +100,8 @@ pub(crate) fn launch_kernel(k: &Kernel, grid: (u32, u32, u32), block: (u32, u32,
 
 `Kernel` owns the `CUmodule` and caches the `CUfunction`. Dropping a `Kernel` unloads the module.
 
+**Thread-local context:** CUDA driver-API current-context state is thread-local — each host thread must bind the retained primary context on its own TLS slot via `cuCtxSetCurrent` before calling `cuLaunchKernel` or `cuCtxSynchronize`. `lazy_context_init` retains the primary context exactly once via `std::sync::Once` but rebinds it on every call, and `compile_kernel` / `launch_kernel` / `synchronize` all invoke it so any thread can safely drive the driver API.
+
 **Rationale:** The driver API is the only way to launch JIT-compiled PTX; the runtime API (`<<<>>>`) only works for kernels known at C++ compile time. NVRTC is CUDA's in-process JIT compiler and is explicitly supported across every CUDA version SmallAIOS targets.
 
 ### 3. Per-operator file organization under `onnx-rt/src/cuda/kernels/`
