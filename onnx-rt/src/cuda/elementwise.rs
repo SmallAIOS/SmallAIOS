@@ -3,23 +3,11 @@
 
 //! GPU element-wise operators (currently: Add) via `cudnnOpTensor`.
 
-use super::descriptors::{OpTensorDesc, TensorDesc};
+use super::descriptors::{dnn_dtype, OpTensorDesc, TensorDesc};
 use super::ffi;
 use super::gpu_executor::DeviceTensor;
 use super::memory::DeviceBuffer;
 use super::{CudaError, CudaRuntime};
-use crate::tensor::DataType;
-
-fn dnn_dtype(dt: DataType) -> Result<ffi::cudnnDataType_t, CudaError> {
-    match dt {
-        DataType::Float => Ok(ffi::cudnnDataType_t::CUDNN_DATA_FLOAT),
-        DataType::BFloat16 => Ok(ffi::cudnnDataType_t::CUDNN_DATA_BFLOAT16),
-        _ => Err(CudaError::RuntimeError {
-            op: "elementwise: unsupported dtype",
-            code: -1,
-        }),
-    }
-}
 
 /// Element-wise `Add` for tensors of identical shape (no broadcasting
 /// beyond what cuDNN's `OpTensor` natively handles). Caller must verify

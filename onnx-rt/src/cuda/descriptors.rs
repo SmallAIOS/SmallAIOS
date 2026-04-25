@@ -7,6 +7,21 @@
 
 use super::ffi;
 use super::CudaError;
+use crate::tensor::DataType;
+
+/// Map a tensor [`DataType`] to the corresponding cuDNN tensor data
+/// type. Shared across the device-op modules so they don't each
+/// hand-roll the same conversion.
+pub(crate) fn dnn_dtype(dt: DataType) -> Result<ffi::cudnnDataType_t, CudaError> {
+    match dt {
+        DataType::Float => Ok(ffi::cudnnDataType_t::CUDNN_DATA_FLOAT),
+        DataType::BFloat16 => Ok(ffi::cudnnDataType_t::CUDNN_DATA_BFLOAT16),
+        _ => Err(CudaError::RuntimeError {
+            op: "cuda op: unsupported dtype",
+            code: -1,
+        }),
+    }
+}
 
 pub(crate) struct TensorDesc {
     pub desc: ffi::cudnnTensorDescriptor_t,

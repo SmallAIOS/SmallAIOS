@@ -3,23 +3,11 @@
 
 //! GPU activation functions (Relu, Clip, LeakyRelu) via cuDNN.
 
-use super::descriptors::{ActivationDesc, TensorDesc};
+use super::descriptors::{dnn_dtype, ActivationDesc, TensorDesc};
 use super::ffi;
 use super::gpu_executor::DeviceTensor;
 use super::memory::DeviceBuffer;
 use super::{CudaError, CudaRuntime};
-use crate::tensor::DataType;
-
-fn dnn_dtype(dt: DataType) -> Result<ffi::cudnnDataType_t, CudaError> {
-    match dt {
-        DataType::Float => Ok(ffi::cudnnDataType_t::CUDNN_DATA_FLOAT),
-        DataType::BFloat16 => Ok(ffi::cudnnDataType_t::CUDNN_DATA_BFLOAT16),
-        _ => Err(CudaError::RuntimeError {
-            op: "activation: unsupported dtype",
-            code: -1,
-        }),
-    }
-}
 
 /// Apply an arbitrary cuDNN activation mode element-wise.
 fn run_activation(

@@ -3,24 +3,13 @@
 
 //! GPU 2-D pooling (MaxPool, AveragePool, GlobalAveragePool) via cuDNN.
 
-use super::descriptors::{PoolDesc, TensorDesc};
+use super::descriptors::{dnn_dtype, PoolDesc, TensorDesc};
 use super::ffi;
 use super::gpu_executor::DeviceTensor;
 use super::memory::DeviceBuffer;
 use super::{CudaError, CudaRuntime};
 use crate::operators::PoolAttrs;
 use crate::tensor::DataType;
-
-fn dnn_dtype(dt: DataType) -> Result<ffi::cudnnDataType_t, CudaError> {
-    match dt {
-        DataType::Float => Ok(ffi::cudnnDataType_t::CUDNN_DATA_FLOAT),
-        DataType::BFloat16 => Ok(ffi::cudnnDataType_t::CUDNN_DATA_BFLOAT16),
-        _ => Err(CudaError::RuntimeError {
-            op: "pool: unsupported dtype",
-            code: -1,
-        }),
-    }
-}
 
 #[allow(clippy::too_many_arguments)]
 fn run_pool(
