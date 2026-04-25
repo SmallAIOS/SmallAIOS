@@ -20,13 +20,23 @@
 extern crate alloc;
 extern crate std;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
+
+/// Maximum number of events kept in the ring before oldest entries are
+/// evicted. Long-running benchmarks can easily exceed a few thousand
+/// events; the cap stops a process leaking memory if `dump_to_stderr`
+/// is never called.
+const RING_CAPACITY: usize = 16_384;
+
+/// Counter of events dropped because the ring was full. Surfaced in the
+/// dump so we can tell when the cap is biting.
+static DROPPED: AtomicU64 = AtomicU64::new(0);
 
 /// One profile event: an op name + duration in microseconds + bytes
 /// transferred (for memcpy events) or 0 (for compute events).
@@ -47,10 +57,20 @@ pub enum EventKind {
 
 static ENABLED: AtomicBool = AtomicBool::new(true);
 
-fn ring() -> &'static Mutex<Vec<Event>> {
+fn ring() -> &'static Mutex<VecDeque<Event>> {
     use std::sync::OnceLock;
-    static RING: OnceLock<Mutex<Vec<Event>>> = OnceLock::new();
-    RING.get_or_init(|| Mutex::new(Vec::with_capacity(4096)))
+    static RING: OnceLock<Mutex<VecDeque<Event>>> = OnceLock::new();
+    RING.get_or_init(|| Mutex::new(VecDeque::with_capacity(RING_CAPACITY)))
+}
+
+/// Push an event into the bounded ring, evicting the oldest entry if
+/// the cap is reached. The eviction count is reported on dump.
+fn push_event(r: &mut VecDeque<Event>, e: Event) {
+    if r.len() >= RING_CAPACITY {
+        r.pop_front();
+        DROPPED.fetch_add(1, Ordering::Relaxed);
+    }
+    r.push_back(e);
 }
 
 /// Record a compute event. `start` is the `Instant` captured before
@@ -61,12 +81,15 @@ pub fn record_op(label: &str, start: Instant) {
     }
     let micros = start.elapsed().as_micros() as u64;
     if let Ok(mut r) = ring().lock() {
-        r.push(Event {
-            label: String::from(label),
-            kind: EventKind::Op,
-            micros,
-            bytes: 0,
-        });
+        push_event(
+            &mut r,
+            Event {
+                label: String::from(label),
+                kind: EventKind::Op,
+                micros,
+                bytes: 0,
+            },
+        );
     }
 }
 
@@ -77,12 +100,15 @@ pub fn record_memcpy(kind: EventKind, bytes: u64, start: Instant) {
     }
     let micros = start.elapsed().as_micros() as u64;
     if let Ok(mut r) = ring().lock() {
-        r.push(Event {
-            label: String::new(),
-            kind,
-            micros,
-            bytes,
-        });
+        push_event(
+            &mut r,
+            Event {
+                label: String::new(),
+                kind,
+                micros,
+                bytes,
+            },
+        );
     }
 }
 
@@ -126,7 +152,14 @@ pub fn dump_to_stderr() {
         }
     }
 
+    let dropped = DROPPED.swap(0, Ordering::Relaxed);
     eprintln!("=== gpu-profile (cumulative) ===");
+    if dropped > 0 {
+        eprintln!(
+            "warning: ring buffer evicted {} oldest events (cap={})",
+            dropped, RING_CAPACITY
+        );
+    }
     eprintln!("host->device: {} bytes in {} us", h2d_bytes, h2d_us);
     eprintln!("device->host: {} bytes in {} us", d2h_bytes, d2h_us);
     eprintln!("op timings (us, count):");

@@ -438,7 +438,7 @@ fn run_cpu_vs_gpu_full(
                     eprintln!("  (speedup N/A — CPU path failed)");
                 }
             }
-            Err(e) => eprintln!("  GPU path FAILED: {}", e),
+            Err(e) => panic!("{} GPU path FAILED: {}", model_label, e),
         }
     }
 

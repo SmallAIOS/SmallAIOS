@@ -394,7 +394,13 @@ pub fn execute_graph_hybrid(
                     crate::cuda::profile::record_op(&node.op_type, _op_start);
                 }
                 match dispatched {
-                    Some(out_dt) => {
+                    // GPU dispatchers currently produce a single output
+                    // tensor. ONNX permits multi-output ops (e.g.
+                    // `MaxPool` with an indices output); for those we
+                    // fall through to the CPU executor which can
+                    // populate every output name. Single-output ops
+                    // take the device-resident fast path.
+                    Some(out_dt) if node.outputs.len() <= 1 => {
                         if let Some(name) = node.outputs.first() {
                             if !name.is_empty() {
                                 value_map
@@ -402,6 +408,11 @@ pub fn execute_graph_hybrid(
                             }
                         }
                         handled_on_gpu = true;
+                    }
+                    Some(_) => {
+                        // Multi-output op: discard the partial GPU result
+                        // and fall through to the CPU dispatch path so
+                        // every named output gets populated.
                     }
                     None => {
                         // Fall through to CPU dispatch.

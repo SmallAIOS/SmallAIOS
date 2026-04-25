@@ -341,9 +341,19 @@ impl Tensor {
 
     /// Returns the expected size in bytes for this tensor's shape and data type.
     ///
-    /// This is `shape.total_elements() * data_type.element_size()`.
+    /// For byte-sized and larger types this is
+    /// `shape.total_elements() * data_type.element_size()`. For
+    /// sub-byte packed types (`Int4`, `Uint4`, `Float4E2M1`) the
+    /// payload stores 2 elements per byte, so the size is
+    /// `(total_elements + 1) / 2`. `String` returns 0 because layout
+    /// is not size-uniform.
     pub fn byte_size(&self) -> usize {
-        self.shape.total_elements() * self.data_type.element_size()
+        let n = self.shape.total_elements();
+        match self.data_type {
+            DataType::Int4 | DataType::Uint4 | DataType::Float4E2M1 => n.div_ceil(2),
+            DataType::String => 0,
+            _ => n * self.data_type.element_size(),
+        }
     }
 
     /// Returns `true` if the tensor contains no data.
