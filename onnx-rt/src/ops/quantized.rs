@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use crate::byte_io::{allocate_tensor_data, read_f32, write_f32};
 #[cfg(test)]
 use crate::operators::op_matmul;
-use crate::operators::{op_conv, OpError};
+use crate::operators::{op_conv, ConvAttrs, OpError};
 use crate::tensor::{DataType, Tensor};
 
 /// Round-half-away-from-zero without depending on `f32::round` (unavailable
@@ -402,7 +402,7 @@ pub fn op_qlinear_conv(
             )))
         }
     };
-    let y_f32 = op_conv(&x_f32, &w_f32, bias_f32.as_ref())?;
+    let y_f32 = op_conv(&x_f32, &w_f32, bias_f32.as_ref(), &ConvAttrs::default())?;
     op_quantize_linear(&y_f32, y_scale, Some(y_zp))
 }
 

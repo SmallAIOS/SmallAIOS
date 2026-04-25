@@ -108,6 +108,34 @@ impl GpuConfig {
 // Session configuration
 // ---------------------------------------------------------------------------
 
+/// Type alias for the device-resident initializer cache slot
+/// (per-Session, lazy-populated by the hybrid executor).
+#[cfg(feature = "cuda")]
+pub type DeviceInitCacheSlot = Option<
+    alloc::sync::Arc<
+        alloc::collections::BTreeMap<
+            String,
+            alloc::sync::Arc<crate::cuda::gpu_executor::DeviceTensor>,
+        >,
+    >,
+>;
+
+/// Selects how the runtime routes operators to GPU vs CPU when a CUDA
+/// runtime is attached.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum GpuResidency {
+    /// Existing per-op dispatch with host-resident intermediates.
+    /// Each GPU-eligible op copies its inputs to device, runs, copies
+    /// the output back to host, and the next op starts from host
+    /// memory. Default for backward compatibility.
+    #[default]
+    OpByOp,
+    /// Track tensor location; keep activations device-resident across
+    /// adjacent GPU-supported ops, only copying back when crossing
+    /// into a CPU-only op or producing a graph output.
+    Hybrid,
+}
+
 /// Configuration parameters for an inference session.
 ///
 /// Controls optimization, profiling, batching, and threading behavior.
@@ -124,6 +152,9 @@ pub struct SessionConfig {
     pub parallel: ParallelConfig,
     /// Optional GPU configuration for accelerated dispatch.
     pub gpu_config: Option<GpuConfig>,
+    /// GPU residency mode controlling whether intermediate activations
+    /// stay device-resident across adjacent GPU-supported ops.
+    pub gpu_residency: GpuResidency,
 }
 
 impl Default for SessionConfig {
@@ -135,6 +166,7 @@ impl Default for SessionConfig {
             thread_count: 1,
             parallel: ParallelConfig::default(),
             gpu_config: None,
+            gpu_residency: GpuResidency::default(),
         }
     }
 }
@@ -255,6 +287,14 @@ pub struct Session {
             alloc::collections::BTreeMap<String, crate::cuda::gpu_executor::DeviceTensor>,
         >,
     >,
+    /// Cache of model initializers preloaded to device memory for the
+    /// hybrid executor (`GpuResidency::Hybrid`). Populated lazily on
+    /// the first `Session::run` call after the session is configured
+    /// for hybrid mode and a CUDA runtime is attached. Stored as
+    /// `Arc<DeviceTensor>` so the hybrid value map can share buffers
+    /// across inferences without device→device memcpy.
+    #[cfg(feature = "cuda")]
+    pub device_initializer_cache: core::cell::RefCell<DeviceInitCacheSlot>,
     /// Discriminator for the session's origin / dispatch path.
     pub kind: SessionKind,
 }
@@ -467,6 +507,8 @@ impl Session {
             kv_cache: None,
             #[cfg(feature = "cuda")]
             gpu_weights: None,
+            #[cfg(feature = "cuda")]
+            device_initializer_cache: core::cell::RefCell::new(None),
             kind: SessionKind::Onnx,
         }
     }
@@ -565,6 +607,56 @@ impl Session {
 
                 // Get initializers from the model (stored during initialize)
                 let initializers = &self.initializers;
+
+                // Route to the hybrid executor when the user opts in via
+                // `SessionConfig::gpu_residency = GpuResidency::Hybrid`
+                // and a CUDA runtime is attached.
+                #[cfg(feature = "cuda")]
+                if matches!(self.config.gpu_residency, GpuResidency::Hybrid) {
+                    use alloc::collections::BTreeMap;
+                    use alloc::sync::Arc;
+                    if let Some(rt) = self.cuda_runtime.as_deref() {
+                        // Lazy-populate the device-resident initializer
+                        // cache on first hybrid run. Skips re-decoding
+                        // every TensorProto and re-uploading every
+                        // initializer to device on each inference.
+                        let cache = {
+                            let mut slot = self.device_initializer_cache.borrow_mut();
+                            if slot.is_none() {
+                                let mut map: BTreeMap<
+                                    String,
+                                    Arc<crate::cuda::gpu_executor::DeviceTensor>,
+                                > = BTreeMap::new();
+                                for init in initializers {
+                                    if let Some(host) = crate::executor::tensor_from_proto(init) {
+                                        let dev =
+                                            crate::cuda::gpu_executor::DeviceTensor::from_host(
+                                                &host,
+                                            )
+                                            .map_err(
+                                                |e| {
+                                                    SessionError::ExecutionFailed(alloc::format!(
+                                                        "device cache init: {}",
+                                                        e
+                                                    ))
+                                                },
+                                            )?;
+                                        map.insert(init.name.clone(), Arc::new(dev));
+                                    }
+                                }
+                                *slot = Some(Arc::new(map));
+                            }
+                            slot.as_ref().unwrap().clone()
+                        };
+                        return crate::executor_hybrid::execute_graph_hybrid(
+                            graph,
+                            &input_pairs,
+                            initializers,
+                            rt,
+                            Some(&cache),
+                        );
+                    }
+                }
 
                 #[cfg(all(feature = "metal", target_os = "macos"))]
                 let mut metal_guard = self.metal_dispatcher.borrow_mut();
@@ -879,6 +971,7 @@ impl Session {
                     .into_iter()
                     .collect::<BTreeMap<String, crate::cuda::gpu_executor::DeviceTensor>>(),
             )),
+            device_initializer_cache: core::cell::RefCell::new(None),
             kind: SessionKind::Safetensors,
         })
     }
@@ -1003,6 +1096,7 @@ mod tests {
             thread_count: 4,
             parallel: crate::parallel::ParallelConfig::default_for_cores(4),
             gpu_config: None,
+            gpu_residency: GpuResidency::default(),
         };
         assert_eq!(config.optimization_level, OptimizationLevel::Extended);
         assert!(config.enable_profiling);

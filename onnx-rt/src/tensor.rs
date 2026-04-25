@@ -45,6 +45,31 @@ pub enum DataType {
     Uint64 = 13,
     /// 16-bit brain floating point.
     BFloat16 = 16,
+    /// 8-bit floating point, E4M3 format (4-bit exponent, 3-bit mantissa, finite-only).
+    ///
+    /// Matches the ONNX `FLOAT8E4M3FN` TensorProto type.
+    Float8E4M3 = 17,
+    /// 8-bit floating point, E5M2 format (5-bit exponent, 2-bit mantissa).
+    ///
+    /// Matches the ONNX `FLOAT8E5M2` TensorProto type.
+    Float8E5M2 = 19,
+    /// Unsigned 4-bit integer (packed 2 values per byte).
+    ///
+    /// Matches the ONNX `UINT4` TensorProto type. `element_size` returns 0
+    /// because 4-bit data cannot be expressed as an integer byte width;
+    /// callers handling packed 4-bit buffers must compute `(n + 1) / 2`
+    /// bytes explicitly.
+    Uint4 = 21,
+    /// Signed 4-bit integer (packed 2 values per byte).
+    ///
+    /// Matches the ONNX `INT4` TensorProto type. See `Uint4` for the
+    /// `element_size` note.
+    Int4 = 22,
+    /// 4-bit floating point, E2M1 format (Blackwell NVFP4).
+    ///
+    /// Matches the ONNX `FLOAT4E2M1` TensorProto type. Packed 2 values
+    /// per byte; see `Uint4` for the `element_size` note.
+    Float4E2M1 = 23,
 }
 
 impl DataType {
@@ -67,20 +92,31 @@ impl DataType {
             12 => Some(DataType::Uint32),
             13 => Some(DataType::Uint64),
             16 => Some(DataType::BFloat16),
+            17 => Some(DataType::Float8E4M3),
+            19 => Some(DataType::Float8E5M2),
+            21 => Some(DataType::Uint4),
+            22 => Some(DataType::Int4),
+            23 => Some(DataType::Float4E2M1),
             _ => None,
         }
     }
 
     /// Returns the size in bytes of a single element of this data type.
     ///
-    /// Returns 0 for `String` since strings are variable-length.
+    /// Returns 0 for `String` (variable-length) and for the sub-byte types
+    /// `Int4`, `Uint4`, `Float4E2M1` (stored packed 2 per byte — callers
+    /// must compute `(n + 1) / 2` bytes explicitly).
     pub fn element_size(&self) -> usize {
         match self {
-            DataType::Bool | DataType::Int8 | DataType::Uint8 => 1,
+            DataType::Bool
+            | DataType::Int8
+            | DataType::Uint8
+            | DataType::Float8E4M3
+            | DataType::Float8E5M2 => 1,
             DataType::Float16 | DataType::BFloat16 | DataType::Int16 | DataType::Uint16 => 2,
             DataType::Float | DataType::Int32 | DataType::Uint32 => 4,
             DataType::Double | DataType::Int64 | DataType::Uint64 => 8,
-            DataType::String => 0,
+            DataType::String | DataType::Int4 | DataType::Uint4 | DataType::Float4E2M1 => 0,
         }
     }
 
@@ -101,6 +137,11 @@ impl DataType {
             DataType::Uint32 => "uint32",
             DataType::Uint64 => "uint64",
             DataType::BFloat16 => "bfloat16",
+            DataType::Float8E4M3 => "float8e4m3",
+            DataType::Float8E5M2 => "float8e5m2",
+            DataType::Uint4 => "uint4",
+            DataType::Int4 => "int4",
+            DataType::Float4E2M1 => "float4e2m1",
         }
     }
 
@@ -116,6 +157,8 @@ impl DataType {
                 | DataType::Int64
                 | DataType::Uint32
                 | DataType::Uint64
+                | DataType::Int4
+                | DataType::Uint4
         )
     }
 
@@ -123,7 +166,13 @@ impl DataType {
     pub fn is_float(&self) -> bool {
         matches!(
             self,
-            DataType::Float | DataType::Float16 | DataType::Double | DataType::BFloat16
+            DataType::Float
+                | DataType::Float16
+                | DataType::Double
+                | DataType::BFloat16
+                | DataType::Float8E4M3
+                | DataType::Float8E5M2
+                | DataType::Float4E2M1
         )
     }
 }
@@ -322,6 +371,11 @@ mod tests {
         assert_eq!(DataType::from_i32(10), Some(DataType::Float16));
         assert_eq!(DataType::from_i32(11), Some(DataType::Double));
         assert_eq!(DataType::from_i32(16), Some(DataType::BFloat16));
+        assert_eq!(DataType::from_i32(17), Some(DataType::Float8E4M3));
+        assert_eq!(DataType::from_i32(19), Some(DataType::Float8E5M2));
+        assert_eq!(DataType::from_i32(21), Some(DataType::Uint4));
+        assert_eq!(DataType::from_i32(22), Some(DataType::Int4));
+        assert_eq!(DataType::from_i32(23), Some(DataType::Float4E2M1));
     }
 
     #[test]
@@ -329,7 +383,9 @@ mod tests {
         assert_eq!(DataType::from_i32(0), None);
         assert_eq!(DataType::from_i32(14), None);
         assert_eq!(DataType::from_i32(15), None);
-        assert_eq!(DataType::from_i32(17), None);
+        assert_eq!(DataType::from_i32(18), None);
+        assert_eq!(DataType::from_i32(20), None);
+        assert_eq!(DataType::from_i32(24), None);
         assert_eq!(DataType::from_i32(-1), None);
         assert_eq!(DataType::from_i32(100), None);
     }
@@ -339,6 +395,8 @@ mod tests {
         assert_eq!(DataType::Bool.element_size(), 1);
         assert_eq!(DataType::Int8.element_size(), 1);
         assert_eq!(DataType::Uint8.element_size(), 1);
+        assert_eq!(DataType::Float8E4M3.element_size(), 1);
+        assert_eq!(DataType::Float8E5M2.element_size(), 1);
         assert_eq!(DataType::Float16.element_size(), 2);
         assert_eq!(DataType::BFloat16.element_size(), 2);
         assert_eq!(DataType::Int16.element_size(), 2);
@@ -349,6 +407,10 @@ mod tests {
         assert_eq!(DataType::Int64.element_size(), 8);
         assert_eq!(DataType::Uint64.element_size(), 8);
         assert_eq!(DataType::String.element_size(), 0);
+        // Sub-byte types return 0 — see docstring.
+        assert_eq!(DataType::Int4.element_size(), 0);
+        assert_eq!(DataType::Uint4.element_size(), 0);
+        assert_eq!(DataType::Float4E2M1.element_size(), 0);
     }
 
     #[test]
@@ -357,6 +419,11 @@ mod tests {
         assert_eq!(DataType::Double.name(), "float64");
         assert_eq!(DataType::Int32.name(), "int32");
         assert_eq!(DataType::BFloat16.name(), "bfloat16");
+        assert_eq!(DataType::Float8E4M3.name(), "float8e4m3");
+        assert_eq!(DataType::Float8E5M2.name(), "float8e5m2");
+        assert_eq!(DataType::Int4.name(), "int4");
+        assert_eq!(DataType::Uint4.name(), "uint4");
+        assert_eq!(DataType::Float4E2M1.name(), "float4e2m1");
         assert_eq!(DataType::Bool.name(), "bool");
         assert_eq!(DataType::String.name(), "string");
     }
@@ -371,10 +438,13 @@ mod tests {
         assert!(DataType::Int64.is_integer());
         assert!(DataType::Uint32.is_integer());
         assert!(DataType::Uint64.is_integer());
+        assert!(DataType::Int4.is_integer());
+        assert!(DataType::Uint4.is_integer());
         assert!(!DataType::Float.is_integer());
         assert!(!DataType::Double.is_integer());
         assert!(!DataType::Bool.is_integer());
         assert!(!DataType::String.is_integer());
+        assert!(!DataType::Float4E2M1.is_integer());
     }
 
     #[test]
@@ -383,6 +453,11 @@ mod tests {
         assert!(DataType::Float16.is_float());
         assert!(DataType::Double.is_float());
         assert!(DataType::BFloat16.is_float());
+        assert!(DataType::Float8E4M3.is_float());
+        assert!(DataType::Float8E5M2.is_float());
+        assert!(DataType::Float4E2M1.is_float());
+        assert!(!DataType::Int4.is_float());
+        assert!(!DataType::Uint4.is_float());
         assert!(!DataType::Int32.is_float());
         assert!(!DataType::Bool.is_float());
         assert!(!DataType::String.is_float());

@@ -259,7 +259,7 @@ See `docs/can-inference.md` for the CAN bus inference bridge and
 
 - `kernel`: `verbose-boot`, `no-global-alloc`, `large-memory` (64 GiB page tracking; default 1 GiB), `verified-boot` (boot integrity verification + measurement log)
 - `security`: `pqc-hybrid` (default), `pqc-only`, `classical-only`, `formal-gate`, `verified-boot` (boot signature verification APIs)
-- `onnx-rt`: `cpu` (default), `cuda`, `formal-gate`, `verified-boot` (model signature verification at load time)
+- `onnx-rt`: `cpu` (default), `cuda`, `formal-gate`, `verified-boot` (model signature verification at load time), `gpu-profile` (per-op timing + memcpy byte counters for the hybrid GPU executor; dumps a summary to stderr at `CudaRuntime::drop`; off by default — production builds pay zero overhead)
 - `net`: `ipv4`, `ipv6` (both default)
 - `container`: `nvidia_gpu`, `formal-gate`, `bus-zenoh`, `bus-dds` (pub/sub dataflow runner placeholders — see `docs/inference-bus.md`)
 - `ipc`: `formal-gate`, `onnx` (opt-in ONNX runtime integration for the dataflow runner)

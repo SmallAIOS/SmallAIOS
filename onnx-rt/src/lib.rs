@@ -22,6 +22,8 @@ pub mod byte_io;
 #[cfg(feature = "cuda")]
 pub mod cuda;
 pub mod executor;
+#[cfg(feature = "cuda")]
+pub mod executor_hybrid;
 pub mod gemm;
 pub mod graph;
 pub mod kv_compression;

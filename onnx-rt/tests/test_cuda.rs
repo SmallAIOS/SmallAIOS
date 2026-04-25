@@ -457,7 +457,7 @@ fn test_gpu_conv2d_1x1() {
     );
     let w = make_f32_tensor(&[1, 1, 1, 1], &[2.0]);
 
-    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[1, 1], &[1, 1])
+    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[1, 1], &[1, 1], 1)
         .expect("gpu_conv2d failed");
     assert!(result.is_some());
     let y = result.unwrap();
@@ -487,7 +487,7 @@ fn test_gpu_conv2d_3x3_with_padding() {
     let x = make_f32_tensor(&[1, 1, 4, 4], &x_data);
     let w = make_f32_tensor(&[1, 1, 3, 3], &[1.0; 9]);
 
-    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[1, 1, 1, 1], &[1, 1], &[1, 1])
+    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[1, 1, 1, 1], &[1, 1], &[1, 1], 1)
         .expect("gpu_conv2d failed");
     assert!(result.is_some());
     let y = result.unwrap();
@@ -516,7 +516,7 @@ fn test_gpu_conv2d_with_bias() {
     let w = make_f32_tensor(&[2, 1, 1, 1], &[1.0, -1.0]); // chan 0: identity, chan 1: negate
     let bias = make_f32_tensor(&[2], &[10.0, 20.0]);
 
-    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, Some(&bias), &[0, 0], &[1, 1], &[1, 1])
+    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, Some(&bias), &[0, 0], &[1, 1], &[1, 1], 1)
         .expect("gpu_conv2d failed");
     assert!(result.is_some());
     let y = result.unwrap();
@@ -548,7 +548,7 @@ fn test_gpu_conv2d_strided() {
     let x = make_f32_tensor(&[1, 1, 4, 4], &x_data);
     let w = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
 
-    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[2, 2], &[1, 1])
+    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[2, 2], &[1, 1], 1)
         .expect("gpu_conv2d failed");
     assert!(result.is_some());
     let y = result.unwrap();
@@ -580,7 +580,7 @@ fn test_gpu_conv2d_dilated() {
     let x = make_f32_tensor(&[1, 1, 5, 5], &x_data);
     let w = make_f32_tensor(&[1, 1, 3, 3], &[1.0; 9]);
 
-    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[1, 1], &[2, 2])
+    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[1, 1], &[2, 2], 1)
         .expect("gpu_conv2d dilated failed");
     assert!(result.is_some());
     let y = result.unwrap();
@@ -607,7 +607,7 @@ fn test_gpu_conv2d_tf32_precision() {
     let x = make_f32_tensor(&[1, 1, 4, 4], &x_data);
     let w = make_f32_tensor(&[1, 1, 3, 3], &[1.0; 9]);
 
-    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[1, 1, 1, 1], &[1, 1], &[1, 1])
+    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[1, 1, 1, 1], &[1, 1], &[1, 1], 1)
         .expect("gpu_conv2d TF32 failed");
     assert!(result.is_some());
     let y = result.unwrap();
@@ -633,7 +633,7 @@ fn test_gpu_conv2d_non4d_falls_back() {
     let x = make_f32_tensor(&[1, 3, 5], &[1.0; 15]);
     let w = make_f32_tensor(&[1, 3, 3], &[1.0; 9]);
 
-    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[1, 1], &[1, 1])
+    let result = cuda::conv::gpu_conv2d(&rt, &x, &w, None, &[0, 0], &[1, 1], &[1, 1], 1)
         .expect("should not error");
     assert!(result.is_none(), "3D conv should fall back to CPU");
     eprintln!("gpu_conv2d 3D: correctly falls back to CPU");
@@ -670,13 +670,13 @@ fn test_gpu_gemm_fp8_e4m3() {
     let b_data = vec![one_fp8; n * n];
 
     let a = Tensor {
-        data_type: DataType::Float, // FP8 not yet in DataType enum, use Float as placeholder
+        data_type: DataType::Float8E4M3,
         shape: TensorShape::new(vec![n as i64, n as i64]),
         name: String::new(),
         raw_data: a_data,
     };
     let b = Tensor {
-        data_type: DataType::Float,
+        data_type: DataType::Float8E4M3,
         shape: TensorShape::new(vec![n as i64, n as i64]),
         name: String::new(),
         raw_data: b_data,
@@ -859,8 +859,9 @@ fn test_gpu_conv2d_bf16_3x3() {
     assert_eq!(x_bf.raw_data.len(), 1 * 2 * 4 * 4 * 2);
     assert_eq!(w_bf.raw_data.len(), 3 * 2 * 3 * 3 * 2);
 
-    let result = cuda::conv::gpu_conv2d(&rt, &x_bf, &w_bf, None, &[1, 1, 1, 1], &[1, 1], &[1, 1])
-        .expect("gpu_conv2d BF16 failed");
+    let result =
+        cuda::conv::gpu_conv2d(&rt, &x_bf, &w_bf, None, &[1, 1, 1, 1], &[1, 1], &[1, 1], 1)
+            .expect("gpu_conv2d BF16 failed");
     let y_bf = result.expect("BF16 conv returned None");
     assert_eq!(y_bf.data_type, DataType::BFloat16);
     assert_eq!(y_bf.shape.dims, vec![1, 3, 4, 4]);
@@ -883,6 +884,7 @@ fn test_gpu_conv2d_bf16_3x3() {
         &[1, 1, 1, 1],
         &[1, 1],
         &[1, 1],
+        1,
     )
     .expect("gpu_conv2d f32 ref failed")
     .expect("f32 conv returned None");
@@ -1870,4 +1872,331 @@ fn test_session_api_contract_for_llm_generation() {
     }
 
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ── Conv attribute coverage: group / depthwise / strided / padded / dilated ──
+
+/// Helper: run op_conv on CPU and gpu_conv2d on CUDA with the same
+/// ConvAttrs, assert output shapes match, and return element-wise
+/// max-abs diff (f32).
+fn conv_gpu_vs_cpu_max_abs(
+    input: &Tensor,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+    pads: &[i32],
+    strides: &[i32],
+    dilations: &[i32],
+    group: i32,
+) -> (Vec<i64>, f32) {
+    use smallaios_onnx_rt::operators::{op_conv, ConvAttrs};
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32)
+        .expect("CUDA init (F32 precision)");
+    let gpu_out = cuda::conv::gpu_conv2d(&rt, input, weight, bias, pads, strides, dilations, group)
+        .expect("gpu_conv2d returned error")
+        .expect("gpu_conv2d returned None");
+    let attrs = ConvAttrs {
+        pads: [pads[0], pads[1], pads[2], pads[3]],
+        strides: [strides[0], strides[1]],
+        dilations: [dilations[0], dilations[1]],
+        group,
+    };
+    let cpu_out = op_conv(input, weight, bias, &attrs).expect("op_conv CPU");
+    assert_eq!(
+        gpu_out.shape.dims, cpu_out.shape.dims,
+        "CPU and GPU output shapes must match"
+    );
+    let gpu_vals = read_f32(&gpu_out);
+    let cpu_vals = read_f32(&cpu_out);
+    let mut max_abs = 0.0f32;
+    for (g, c) in gpu_vals.iter().zip(cpu_vals.iter()) {
+        max_abs = max_abs.max((g - c).abs());
+    }
+    (gpu_out.shape.dims.clone(), max_abs)
+}
+
+#[test]
+#[ignore]
+fn test_gpu_conv_group2_matches_cpu() {
+    // Group-of-2 conv on a [1, 4, 8, 8] input; weight [4, 2, 3, 3] + pad=1.
+    let input_vals: Vec<f32> = (0..(4 * 8 * 8)).map(|i| (i as f32) * 0.01).collect();
+    let weight_vals: Vec<f32> = (0..(4 * 2 * 9))
+        .map(|i| ((i as f32) * 0.013).sin())
+        .collect();
+    let input = make_f32_tensor(&[1, 4, 8, 8], &input_vals);
+    let weight = make_f32_tensor(&[4, 2, 3, 3], &weight_vals);
+    let (dims, max_abs) =
+        conv_gpu_vs_cpu_max_abs(&input, &weight, None, &[1, 1, 1, 1], &[1, 1], &[1, 1], 2);
+    assert_eq!(dims, vec![1, 4, 8, 8]);
+    assert!(max_abs < 1e-3, "group-2 CPU vs GPU max_abs = {}", max_abs);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_conv_depthwise_matches_cpu() {
+    // Depthwise 32-channel 3x3 conv with pad=1, mimicking MobileNetV2 block.
+    let c = 32;
+    let h = 14;
+    let w = 14;
+    let input_vals: Vec<f32> = (0..(c * h * w))
+        .map(|i| ((i as f32) * 0.007).cos() * 0.5)
+        .collect();
+    let weight_vals: Vec<f32> = (0..(c * 9))
+        .map(|i| ((i as f32) * 0.017).sin() * 0.1)
+        .collect();
+    let input = make_f32_tensor(&[1, c as i64, h as i64, w as i64], &input_vals);
+    let weight = make_f32_tensor(&[c as i64, 1, 3, 3], &weight_vals);
+    let (dims, max_abs) = conv_gpu_vs_cpu_max_abs(
+        &input,
+        &weight,
+        None,
+        &[1, 1, 1, 1],
+        &[1, 1],
+        &[1, 1],
+        c as i32,
+    );
+    assert_eq!(dims, vec![1, c as i64, h as i64, w as i64]);
+    assert!(max_abs < 1e-3, "depthwise CPU vs GPU max_abs = {}", max_abs);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_conv_stride2_matches_cpu() {
+    // Strided 2 conv — ResNet-50 stem style: 3x7x7 -> 64 channels, stride 2.
+    let input_vals: Vec<f32> = (0..(3 * 16 * 16))
+        .map(|i| ((i as f32) * 0.01).sin())
+        .collect();
+    let weight_vals: Vec<f32> = (0..(8 * 3 * 7 * 7))
+        .map(|i| ((i as f32) * 0.003).cos() * 0.05)
+        .collect();
+    let input = make_f32_tensor(&[1, 3, 16, 16], &input_vals);
+    let weight = make_f32_tensor(&[8, 3, 7, 7], &weight_vals);
+    let (dims, max_abs) =
+        conv_gpu_vs_cpu_max_abs(&input, &weight, None, &[3, 3, 3, 3], &[2, 2], &[1, 1], 1);
+    // (16 + 3 + 3 - 6 - 1) / 2 + 1 = 8 for each spatial dim.
+    assert_eq!(dims, vec![1, 8, 8, 8]);
+    assert!(max_abs < 1e-3, "stride-2 CPU vs GPU max_abs = {}", max_abs);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_conv_pad1_matches_cpu() {
+    // Same-padding style 3x3 conv keeps spatial dims.
+    let input_vals: Vec<f32> = (0..(2 * 5 * 5)).map(|i| (i as f32) * 0.1).collect();
+    let weight_vals: Vec<f32> = (0..(4 * 2 * 9))
+        .map(|i| ((i as f32) * 0.03).sin())
+        .collect();
+    let input = make_f32_tensor(&[1, 2, 5, 5], &input_vals);
+    let weight = make_f32_tensor(&[4, 2, 3, 3], &weight_vals);
+    let (dims, max_abs) =
+        conv_gpu_vs_cpu_max_abs(&input, &weight, None, &[1, 1, 1, 1], &[1, 1], &[1, 1], 1);
+    assert_eq!(dims, vec![1, 4, 5, 5]);
+    assert!(max_abs < 1e-3, "pad-1 CPU vs GPU max_abs = {}", max_abs);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_conv_dilation2_matches_cpu() {
+    // Dilation 2 on 2x2 kernel expands effective receptive field.
+    let input_vals: Vec<f32> = (0..(2 * 5 * 5)).map(|i| (i as f32) * 0.1).collect();
+    let weight_vals: Vec<f32> = (0..(3 * 2 * 4))
+        .map(|i| ((i as f32) * 0.04).cos())
+        .collect();
+    let input = make_f32_tensor(&[1, 2, 5, 5], &input_vals);
+    let weight = make_f32_tensor(&[3, 2, 2, 2], &weight_vals);
+    let (dims, max_abs) =
+        conv_gpu_vs_cpu_max_abs(&input, &weight, None, &[0, 0, 0, 0], &[1, 1], &[2, 2], 1);
+    // (5 + 0 + 0 - 2 - 1) / 1 + 1 = 3 per spatial dim.
+    assert_eq!(dims, vec![1, 3, 3, 3]);
+    assert!(
+        max_abs < 1e-3,
+        "dilation-2 CPU vs GPU max_abs = {}",
+        max_abs
+    );
+}
+
+// ── Hybrid-mode device-op tests: BN / Activation / Pool / Add ──
+
+use smallaios_onnx_rt::cuda::activation::{gpu_clip, gpu_relu};
+use smallaios_onnx_rt::cuda::batchnorm::gpu_batchnorm;
+use smallaios_onnx_rt::cuda::elementwise::gpu_add as cuda_gpu_add;
+use smallaios_onnx_rt::cuda::gpu_executor::DeviceTensor;
+use smallaios_onnx_rt::cuda::pool::{gpu_averagepool, gpu_globalaveragepool, gpu_maxpool};
+use smallaios_onnx_rt::operators::{
+    op_averagepool, op_batch_normalization, op_global_average_pool, op_maxpool, op_relu, PoolAttrs,
+};
+
+fn host_to_device(t: &Tensor, rt: &cuda::CudaRuntime) -> DeviceTensor {
+    cuda::gpu_executor::tensor_to_device(t, rt).expect("h2d")
+}
+
+fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
+    a.iter()
+        .zip(b.iter())
+        .fold(0f32, |m, (x, y)| m.max((x - y).abs()))
+}
+
+#[test]
+#[ignore]
+fn test_gpu_batchnorm_matches_cpu() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
+    let n = 1usize;
+    let c = 32usize;
+    let h = 14usize;
+    let w = 14usize;
+    let x_vals: Vec<f32> = (0..n * c * h * w)
+        .map(|i| ((i as f32) * 0.013).sin() * 0.5)
+        .collect();
+    let scale: Vec<f32> = (0..c).map(|i| 0.5 + (i as f32) * 0.01).collect();
+    let bias: Vec<f32> = (0..c).map(|i| (i as f32) * 0.005).collect();
+    let mean: Vec<f32> = (0..c).map(|i| (i as f32) * 0.002).collect();
+    let var: Vec<f32> = (0..c).map(|i| 0.5 + (i as f32) * 0.001).collect();
+
+    let x = make_f32_tensor(&[n as i64, c as i64, h as i64, w as i64], &x_vals);
+    let s = make_f32_tensor(&[c as i64], &scale);
+    let b = make_f32_tensor(&[c as i64], &bias);
+    let m = make_f32_tensor(&[c as i64], &mean);
+    let v = make_f32_tensor(&[c as i64], &var);
+
+    let cpu_out = op_batch_normalization(&x, &s, &b, &m, &v, 1e-5).expect("cpu bn");
+    let xd = host_to_device(&x, &rt);
+    let sd = host_to_device(&s, &rt);
+    let bd = host_to_device(&b, &rt);
+    let md = host_to_device(&m, &rt);
+    let vd = host_to_device(&v, &rt);
+    let gpu_out = gpu_batchnorm(&rt, &xd, &sd, &bd, &md, &vd, 1e-5)
+        .expect("gpu bn")
+        .to_host()
+        .expect("d2h");
+    let diff = max_abs_diff(&read_f32(&cpu_out), &read_f32(&gpu_out));
+    assert!(diff < 1e-3, "BN max_abs_diff = {}", diff);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_relu_matches_cpu() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
+    let vals: Vec<f32> = (0..(1 * 64 * 28 * 28))
+        .map(|i| (i as f32) * 0.001 - 1.0)
+        .collect();
+    let x = make_f32_tensor(&[1, 64, 28, 28], &vals);
+    let cpu_out = op_relu(&x).expect("cpu relu");
+    let xd = host_to_device(&x, &rt);
+    let gpu_out = gpu_relu(&rt, &xd)
+        .expect("gpu relu")
+        .to_host()
+        .expect("d2h");
+    let diff = max_abs_diff(&read_f32(&cpu_out), &read_f32(&gpu_out));
+    assert!(diff < 1e-3, "Relu max_abs_diff = {}", diff);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_clip_matches_cpu() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
+    let vals: Vec<f32> = (0..256).map(|i| (i as f32) * 0.05 - 5.0).collect();
+    let x = make_f32_tensor(&[1, 1, 16, 16], &vals);
+    let xd = host_to_device(&x, &rt);
+    let gpu_out = gpu_clip(&rt, &xd, 0.0, 6.0)
+        .expect("gpu clip")
+        .to_host()
+        .expect("d2h");
+    let cpu_vals: Vec<f32> = read_f32(&x).iter().map(|&v| v.clamp(0.0, 6.0)).collect();
+    let diff = max_abs_diff(&cpu_vals, &read_f32(&gpu_out));
+    assert!(diff < 1e-3, "Clip6 max_abs_diff = {}", diff);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_maxpool_3x3_stride2_matches_cpu() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
+    let vals: Vec<f32> = (0..(1 * 4 * 16 * 16))
+        .map(|i| ((i as f32) * 0.03).sin())
+        .collect();
+    let x = make_f32_tensor(&[1, 4, 16, 16], &vals);
+    let cpu_out = op_maxpool(&x, &[3, 3], Some(&[2, 2]), Some(&[1, 1, 1, 1])).expect("cpu maxpool");
+    let attrs = PoolAttrs {
+        kernel_shape: [3, 3],
+        pads: [1, 1, 1, 1],
+        strides: [2, 2],
+        ceil_mode: false,
+        count_include_pad: false,
+    };
+    let xd = host_to_device(&x, &rt);
+    let gpu_out = gpu_maxpool(&rt, &xd, &attrs)
+        .expect("gpu maxpool")
+        .to_host()
+        .expect("d2h");
+    assert_eq!(cpu_out.shape.dims, gpu_out.shape.dims);
+    let diff = max_abs_diff(&read_f32(&cpu_out), &read_f32(&gpu_out));
+    assert!(diff < 1e-3, "MaxPool max_abs_diff = {}", diff);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_averagepool_matches_cpu() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
+    let vals: Vec<f32> = (0..(1 * 8 * 8 * 8)).map(|i| (i as f32) * 0.05).collect();
+    let x = make_f32_tensor(&[1, 8, 8, 8], &vals);
+    let cpu_out =
+        op_averagepool(&x, &[2, 2], Some(&[2, 2]), Some(&[0, 0, 0, 0])).expect("cpu avgpool");
+    let attrs = PoolAttrs {
+        kernel_shape: [2, 2],
+        pads: [0, 0, 0, 0],
+        strides: [2, 2],
+        ceil_mode: false,
+        count_include_pad: false,
+    };
+    let xd = host_to_device(&x, &rt);
+    let gpu_out = gpu_averagepool(&rt, &xd, &attrs)
+        .expect("gpu avgpool")
+        .to_host()
+        .expect("d2h");
+    let diff = max_abs_diff(&read_f32(&cpu_out), &read_f32(&gpu_out));
+    assert!(diff < 1e-3, "AvgPool max_abs_diff = {}", diff);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_globalaveragepool_matches_cpu() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
+    let vals: Vec<f32> = (0..(1 * 256 * 7 * 7))
+        .map(|i| ((i as f32) * 0.0011).sin() * 0.3)
+        .collect();
+    let x = make_f32_tensor(&[1, 256, 7, 7], &vals);
+    let cpu_out = op_global_average_pool(&x).expect("cpu gap");
+    let xd = host_to_device(&x, &rt);
+    let gpu_out = gpu_globalaveragepool(&rt, &xd)
+        .expect("gpu gap")
+        .to_host()
+        .expect("d2h");
+    assert_eq!(gpu_out.shape.dims, vec![1, 256, 1, 1]);
+    let diff = max_abs_diff(&read_f32(&cpu_out), &read_f32(&gpu_out));
+    assert!(diff < 1e-3, "GAP max_abs_diff = {}", diff);
+}
+
+#[test]
+#[ignore]
+fn test_gpu_add_same_shape_matches_cpu() {
+    let rt = cuda::CudaRuntime::init_with_precision(cuda::GpuPrecision::F32).expect("CUDA init");
+    let vals_a: Vec<f32> = (0..(1 * 128 * 14 * 14))
+        .map(|i| (i as f32) * 0.01)
+        .collect();
+    let vals_b: Vec<f32> = (0..(1 * 128 * 14 * 14))
+        .map(|i| ((i as f32) * 0.013).cos())
+        .collect();
+    let a = make_f32_tensor(&[1, 128, 14, 14], &vals_a);
+    let b = make_f32_tensor(&[1, 128, 14, 14], &vals_b);
+    let cpu_vals: Vec<f32> = read_f32(&a)
+        .iter()
+        .zip(read_f32(&b).iter())
+        .map(|(x, y)| x + y)
+        .collect();
+    let ad = host_to_device(&a, &rt);
+    let bd = host_to_device(&b, &rt);
+    let gpu_out = cuda_gpu_add(&rt, &ad, &bd)
+        .expect("gpu add")
+        .to_host()
+        .expect("d2h");
+    let diff = max_abs_diff(&cpu_vals, &read_f32(&gpu_out));
+    assert!(diff < 1e-3, "Add max_abs_diff = {}", diff);
 }

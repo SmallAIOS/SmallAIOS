@@ -18,12 +18,19 @@
 extern crate alloc;
 use alloc::string::String;
 
+pub mod activation;
+pub mod batchnorm;
 pub mod conv;
+pub mod descriptors;
 pub mod dispatch;
+pub mod elementwise;
 pub mod ffi;
 pub mod gpu_executor;
 pub mod kv_cache;
 pub mod memory;
+pub mod pool;
+#[cfg(feature = "gpu-profile")]
+pub mod profile;
 
 pub use gpu_executor::{
     execute_graph_gpu, execute_graph_gpu_with_weights, gpu_conv2d_device, gpu_gemm_device,
@@ -552,5 +559,12 @@ impl CudaRuntime {
     /// Check whether a given ONNX operator can be dispatched to GPU.
     pub fn supports_op(op_type: &str) -> bool {
         matches!(op_type, "MatMul" | "Gemm" | "MatMulInteger" | "Conv")
+    }
+}
+
+#[cfg(feature = "gpu-profile")]
+impl Drop for CudaRuntime {
+    fn drop(&mut self) {
+        crate::cuda::profile::dump_to_stderr();
     }
 }
