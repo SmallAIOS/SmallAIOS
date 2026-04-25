@@ -270,7 +270,7 @@ pub fn execute_graph(
 }
 
 /// Converts a TensorProto (model initializer) to a runtime Tensor.
-fn tensor_from_proto(proto: &TensorProto) -> Option<Tensor> {
+pub(crate) fn tensor_from_proto(proto: &TensorProto) -> Option<Tensor> {
     let data_type = DataType::from_i32(proto.data_type)?;
     let shape = TensorShape::new(proto.dims.clone());
 
@@ -375,6 +375,24 @@ fn read_first_f32(tensor: Option<&Tensor>) -> Option<f32> {
 /// category-specific dispatcher (`dispatch_arithmetic`,
 /// `dispatch_activation`, etc.) to reduce cognitive complexity. Returns
 /// a vector of output tensors (most operators produce exactly one).
+/// Maps a pair of input data types to the `cudaDataType_t` for FP8 GEMM.
+///
+/// Returns `Some(_)` only when both operands are the same FP8 format.
+/// Mixed-format FP8 GEMM is supported by cuBLASLt but not currently exposed
+/// by `gpu_gemm_fp8`, so we fall through to CPU in that case.
+#[cfg(feature = "cuda")]
+fn matched_fp8_type(a: DataType, b: DataType) -> Option<cuda::ffi::cudaDataType_t> {
+    match (a, b) {
+        (DataType::Float8E4M3, DataType::Float8E4M3) => {
+            Some(cuda::ffi::cudaDataType_t::CUDA_R_8F_E4M3)
+        }
+        (DataType::Float8E5M2, DataType::Float8E5M2) => {
+            Some(cuda::ffi::cudaDataType_t::CUDA_R_8F_E5M2)
+        }
+        _ => None,
+    }
+}
+
 /// Try to dispatch an operator to CUDA GPU. Returns `Some(result)` if
 /// handled, `None` to fall through to CPU.
 #[cfg(feature = "cuda")]
@@ -388,6 +406,16 @@ fn try_cuda_dispatch(
         "MatMul" => {
             let a = inputs.first().and_then(|o| *o)?;
             let b = inputs.get(1).and_then(|o| *o)?;
+            if let Some(fp8_type) = matched_fp8_type(a.data_type, b.data_type) {
+                return match cuda::dispatch::gpu_gemm_fp8(rt, a, b, fp8_type) {
+                    Ok(Some(t)) => Some(Ok(alloc::vec![t])),
+                    Ok(None) => None, // unsupported shape, fall back to CPU
+                    Err(e) => Some(Err(OpError::InternalError(alloc::format!(
+                        "CUDA MatMul FP8: {}",
+                        e
+                    )))),
+                };
+            }
             let both_f32 = a.data_type == DataType::Float && b.data_type == DataType::Float;
             let both_bf16 = a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16;
             if !both_f32 && !both_bf16 {
@@ -460,19 +488,30 @@ fn try_cuda_dispatch(
             if w.data_type != x.data_type {
                 return None;
             }
-            // Parse Conv attributes.
-            let mut pads = alloc::vec![0i32; 4];
-            let mut strides = alloc::vec![1i32, 1];
-            let mut dilations = alloc::vec![1i32, 1];
-            for attr in attrs {
-                match attr.name.as_str() {
-                    "pads" => pads = attr.ints.iter().map(|&v| v as i32).collect(),
-                    "strides" => strides = attr.ints.iter().map(|&v| v as i32).collect(),
-                    "dilations" => dilations = attr.ints.iter().map(|&v| v as i32).collect(),
-                    _ => {}
-                }
-            }
-            match cuda::conv::gpu_conv2d(rt, x, w, bias, &pads, &strides, &dilations) {
+            // Parse attrs once via the shared parser so CPU and GPU
+            // paths agree on semantics. Parse errors propagate.
+            let conv_attrs = match operators::ConvAttrs::from_attributes(attrs) {
+                Ok(a) => a,
+                Err(e) => return Some(Err(e)),
+            };
+            let pads = [
+                conv_attrs.pads[0],
+                conv_attrs.pads[1],
+                conv_attrs.pads[2],
+                conv_attrs.pads[3],
+            ];
+            let strides = conv_attrs.strides;
+            let dilations = conv_attrs.dilations;
+            match cuda::conv::gpu_conv2d(
+                rt,
+                x,
+                w,
+                bias,
+                &pads,
+                &strides,
+                &dilations,
+                conv_attrs.group,
+            ) {
                 Ok(Some(t)) => Some(Ok(alloc::vec![t])),
                 Ok(None) => None, // not a 4D conv, fall back to CPU
                 Err(_) => None,   // cuDNN failed for this shape, fall back to CPU
@@ -1643,14 +1682,15 @@ fn dispatch_activation(
 fn dispatch_convolution(
     kind: OpKind,
     inputs: &[Option<&Tensor>],
-    _attrs: &[AttributeProto],
+    attrs: &[AttributeProto],
 ) -> Result<Tensor, OpError> {
     match kind {
         OpKind::Conv => {
             let input = require_input(inputs, 0, "Conv")?;
             let weight = require_input(inputs, 1, "Conv")?;
             let bias = optional_input(inputs, 2);
-            operators::op_conv(input, weight, bias)
+            let conv_attrs = operators::ConvAttrs::from_attributes(attrs)?;
+            operators::op_conv(input, weight, bias, &conv_attrs)
         }
         _ => Err(OpError::UnsupportedOp(String::from("convolution"))),
     }
@@ -1669,8 +1709,8 @@ fn dispatch_normalization(
             let bias = require_input(inputs, 2, "BatchNormalization")?;
             let mean = require_input(inputs, 3, "BatchNormalization")?;
             let var = require_input(inputs, 4, "BatchNormalization")?;
-            let epsilon = get_attr_float(attrs, "epsilon", 1e-5);
-            operators::op_batch_normalization(x, scale, bias, mean, var, epsilon)
+            let bn_attrs = operators::BatchNormAttrs::from_attributes(attrs)?;
+            operators::op_batch_normalization(x, scale, bias, mean, var, bn_attrs.epsilon)
         }
         OpKind::LayerNormalization => {
             let x = require_input(inputs, 0, "LayerNormalization")?;
@@ -1693,24 +1733,34 @@ fn dispatch_pooling(
     match kind {
         OpKind::MaxPool => {
             let x = require_input(inputs, 0, "MaxPool")?;
-            let kernel_shape = get_attr_ints(attrs, "kernel_shape").ok_or_else(|| {
-                OpError::InvalidAttribute(String::from("MaxPool requires kernel_shape"))
-            })?;
-            let strides = get_attr_ints(attrs, "strides");
-            let pads = get_attr_ints(attrs, "pads");
-            operators::op_maxpool(x, kernel_shape, strides, pads)
+            let p = operators::PoolAttrs::from_attributes(attrs, true)?;
+            let k = [p.kernel_shape[0] as i64, p.kernel_shape[1] as i64];
+            let s = [p.strides[0] as i64, p.strides[1] as i64];
+            let pads = [
+                p.pads[0] as i64,
+                p.pads[1] as i64,
+                p.pads[2] as i64,
+                p.pads[3] as i64,
+            ];
+            operators::op_maxpool(x, &k, Some(&s), Some(&pads))
         }
         OpKind::AveragePool => {
             let x = require_input(inputs, 0, "AveragePool")?;
-            let kernel_shape = get_attr_ints(attrs, "kernel_shape").ok_or_else(|| {
-                OpError::InvalidAttribute(String::from("AveragePool requires kernel_shape"))
-            })?;
-            let strides = get_attr_ints(attrs, "strides");
-            let pads = get_attr_ints(attrs, "pads");
-            operators::op_averagepool(x, kernel_shape, strides, pads)
+            let p = operators::PoolAttrs::from_attributes(attrs, true)?;
+            let k = [p.kernel_shape[0] as i64, p.kernel_shape[1] as i64];
+            let s = [p.strides[0] as i64, p.strides[1] as i64];
+            let pads = [
+                p.pads[0] as i64,
+                p.pads[1] as i64,
+                p.pads[2] as i64,
+                p.pads[3] as i64,
+            ];
+            operators::op_averagepool(x, &k, Some(&s), Some(&pads))
         }
         OpKind::GlobalAveragePool => {
             let x = require_input(inputs, 0, "GlobalAveragePool")?;
+            // Parser call kept for side-effect of rejecting unsupported attrs.
+            let _ = operators::PoolAttrs::from_attributes(attrs, false)?;
             operators::op_global_average_pool(x)
         }
         _ => Err(OpError::UnsupportedOp(String::from("pooling"))),
@@ -1955,16 +2005,29 @@ fn dispatch_shape(
         }
         OpKind::Squeeze => {
             let t = require_input(inputs, 0, "Squeeze")?;
+            // Opset 13+ passes axes as an input tensor; opset 11 and
+            // earlier use an `axes` attribute. Accept either form.
             let axes = match optional_input(inputs, 1) {
                 Some(at) => Some(read_i64_tensor(at)?),
-                None => None,
+                None => get_attr_ints(attrs, "axes").map(|s| s.to_vec()),
             };
             operators::op_squeeze(t, axes.as_deref())
         }
         OpKind::Unsqueeze => {
             let t = require_input(inputs, 0, "Unsqueeze")?;
-            let axes_tensor = require_input(inputs, 1, "Unsqueeze")?;
-            let axes = read_i64_tensor(axes_tensor)?;
+            // Opset 13+ passes axes as input #1; opset 11 uses `axes`
+            // attribute. Accept either.
+            let axes = match optional_input(inputs, 1) {
+                Some(at) => read_i64_tensor(at)?,
+                None => match get_attr_ints(attrs, "axes") {
+                    Some(s) => s.to_vec(),
+                    None => {
+                        return Err(OpError::ShapeMismatch(String::from(
+                            "Unsqueeze requires `axes` as either input #1 or attribute",
+                        )));
+                    }
+                },
+            };
             operators::op_unsqueeze(t, &axes)
         }
         OpKind::Concat => {
@@ -3399,5 +3462,43 @@ mod tests {
         for i in 0..6 {
             assert!((byte_io::read_f32(&out.raw_data, i) - 7.0).abs() < f32::EPSILON);
         }
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_matched_fp8_type_pairs() {
+        use crate::cuda::ffi::cudaDataType_t;
+        assert_eq!(
+            matched_fp8_type(DataType::Float8E4M3, DataType::Float8E4M3),
+            Some(cudaDataType_t::CUDA_R_8F_E4M3)
+        );
+        assert_eq!(
+            matched_fp8_type(DataType::Float8E5M2, DataType::Float8E5M2),
+            Some(cudaDataType_t::CUDA_R_8F_E5M2)
+        );
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn test_matched_fp8_type_rejects_mixed_and_non_fp8() {
+        // Mixed FP8 formats fall through to CPU (gpu_gemm_fp8 is single-type).
+        assert_eq!(
+            matched_fp8_type(DataType::Float8E4M3, DataType::Float8E5M2),
+            None
+        );
+        assert_eq!(
+            matched_fp8_type(DataType::Float8E5M2, DataType::Float8E4M3),
+            None
+        );
+        // Non-FP8 types never match.
+        assert_eq!(matched_fp8_type(DataType::Float, DataType::Float), None);
+        assert_eq!(
+            matched_fp8_type(DataType::BFloat16, DataType::BFloat16),
+            None
+        );
+        assert_eq!(
+            matched_fp8_type(DataType::Float, DataType::Float8E4M3),
+            None
+        );
     }
 }

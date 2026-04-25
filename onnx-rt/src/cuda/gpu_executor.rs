@@ -430,18 +430,23 @@ fn dispatch_gpu_node(
             let mut pads: Vec<i32> = vec![0, 0, 0, 0];
             let mut strides: Vec<i32> = vec![1, 1];
             let mut dilations: Vec<i32> = vec![1, 1];
+            let mut group: i32 = 1;
             for attr in attrs {
-                if attr.attr_type != AttributeType::Ints {
-                    continue;
-                }
-                match attr.name.as_str() {
-                    "pads" => pads = attr.ints.iter().map(|&v| v as i32).collect(),
-                    "strides" => strides = attr.ints.iter().map(|&v| v as i32).collect(),
-                    "dilations" => dilations = attr.ints.iter().map(|&v| v as i32).collect(),
+                match (attr.name.as_str(), attr.attr_type) {
+                    ("pads", AttributeType::Ints) => {
+                        pads = attr.ints.iter().map(|&v| v as i32).collect()
+                    }
+                    ("strides", AttributeType::Ints) => {
+                        strides = attr.ints.iter().map(|&v| v as i32).collect()
+                    }
+                    ("dilations", AttributeType::Ints) => {
+                        dilations = attr.ints.iter().map(|&v| v as i32).collect()
+                    }
+                    ("group", AttributeType::Int) => group = attr.i as i32,
                     _ => {}
                 }
             }
-            let out = gpu_conv2d_device(runtime, x, w, bias, &pads, &strides, &dilations)
+            let out = gpu_conv2d_device(runtime, x, w, bias, &pads, &strides, &dilations, group)
                 .map_err(|e| OpError::InternalError(format!("CUDA Conv: {}", e)))?;
             Ok(vec![out])
         }
@@ -719,9 +724,16 @@ pub fn gpu_gemm_int8_device(
 }
 
 /// Device-tensor Conv2d. Mirrors [`crate::cuda::conv::gpu_conv2d`] but
-/// takes device inputs. Bias is currently ignored (matches the rest of
-/// the Section 5 scope — Conv w/ bias is not exercised). A future commit
-/// should add a device-side bias add kernel.
+/// takes device inputs and supports `group`. Bias is not yet supported
+/// (would need a device-side bias-add kernel); the caller falls back
+/// to CPU dispatch if a bias is present.
+///
+/// Algo selection: tries a small list of robust algos in priority
+/// order, querying workspace size and allocating if needed. Stops at
+/// the first algo that succeeds. cuDNN's preference is
+/// `IMPLICIT_PRECOMP_GEMM` for typical shapes, but it returns
+/// `BAD_PARAM` on some Conv shapes when workspace=0; widening the
+/// search restores robustness.
 #[allow(clippy::too_many_arguments)]
 pub fn gpu_conv2d_device(
     runtime: &CudaRuntime,
@@ -731,11 +743,18 @@ pub fn gpu_conv2d_device(
     pads: &[i32],
     strides: &[i32],
     dilations: &[i32],
+    group: i32,
 ) -> Result<DeviceTensor, CudaError> {
     if x.shape.len() != 4 || w.shape.len() != 4 {
         return Err(CudaError::RuntimeError {
             op: "gpu_conv2d_device: need 4D inputs",
             code: -1,
+        });
+    }
+    if group < 1 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_conv2d_device: group must be >= 1",
+            code: -5,
         });
     }
 
@@ -764,8 +783,16 @@ pub fn gpu_conv2d_device(
     let h_in = x.shape[2] as i32;
     let w_in = x.shape[3] as i32;
     let k = w.shape[0] as i32;
+    let c_w = w.shape[1] as i32; // c_in / group — filter in-channel count
     let kh = w.shape[2] as i32;
     let kw = w.shape[3] as i32;
+
+    if c_in != c_w * group || k % group != 0 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_conv2d_device: input/weight channels do not satisfy c_in == c_w * group, c_out % group == 0",
+            code: -6,
+        });
+    }
 
     let (pad_h, pad_w) = if pads.len() >= 2 {
         (pads[0], pads[1])
@@ -786,52 +813,119 @@ pub fn gpu_conv2d_device(
         });
     }
 
-    // Descriptors — same shape as cuda::conv but inlined to avoid
-    // exposing its private TensorDesc/FilterDesc/ConvDesc types.
+    // Descriptors. Filter uses `c_w = c_in / group`, matching ONNX's
+    // weight layout `[K, C/group, KH, KW]`.
     let x_desc = create_tensor_4d(n, c_in, h_in, w_in, dnn_dtype)?;
-    let w_desc = create_filter_4d(k, c_in, kh, kw, dnn_dtype)?;
-    let conv_desc = create_conv_2d(pad_h, pad_w, stride_h, stride_w, dil_h, dil_w)?;
+    let w_desc = create_filter_4d(k, c_w, kh, kw, dnn_dtype)?;
+    let conv_desc = create_conv_2d(pad_h, pad_w, stride_h, stride_w, dil_h, dil_w, group)?;
     let y_desc = create_tensor_4d(n, k, h_out, w_out, dnn_dtype)?;
 
     let y_bytes = (n * k * h_out * w_out) as usize * elem_size;
     let y_buf = DeviceBuffer::alloc(y_bytes)?;
-    y_buf.copy_from_host(&vec![0u8; y_bytes])?;
 
     let alpha: f32 = 1.0;
     let beta: f32 = 0.0;
-    let err = unsafe {
-        ffi::cudnnConvolutionForward(
-            runtime.cudnn.raw(),
-            &alpha as *const f32 as *const core::ffi::c_void,
-            x_desc.desc,
-            x.buffer.as_ptr(),
-            w_desc.desc,
-            w.buffer.as_ptr(),
-            conv_desc.desc,
-            ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM,
-            core::ptr::null_mut(),
-            0,
-            &beta as *const f32 as *const core::ffi::c_void,
-            y_desc.desc,
-            y_buf.as_mut_ptr(),
-        )
-    };
-    if err != ffi::CUDNN_STATUS_SUCCESS {
+    // Algo fallback list: most cuDNN 9.x shapes accept one of these
+    // with an explicitly-allocated workspace. We try in priority
+    // order and stop on first success.
+    let candidates = [
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM,
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_GEMM,
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM,
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_DIRECT,
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD,
+    ];
+
+    let mut last_err = ffi::CUDNN_STATUS_SUCCESS;
+    let mut succeeded = false;
+    for algo in candidates {
+        // Query workspace size for this algo. If query fails we still
+        // try with workspace=0 — the forward call may succeed if it
+        // doesn't actually need a workspace.
+        let mut ws_size: usize = 0;
+        let _ = unsafe {
+            ffi::cudnnGetConvolutionForwardWorkspaceSize(
+                runtime.cudnn.raw(),
+                x_desc.desc,
+                w_desc.desc,
+                conv_desc.desc,
+                y_desc.desc,
+                algo,
+                &mut ws_size as *mut usize,
+            )
+        };
+
+        let workspace = if ws_size > 0 {
+            Some(DeviceBuffer::alloc(ws_size)?)
+        } else {
+            None
+        };
+        let ws_ptr = workspace
+            .as_ref()
+            .map(|b| b.as_mut_ptr())
+            .unwrap_or(core::ptr::null_mut());
+
+        let err = unsafe {
+            ffi::cudnnConvolutionForward(
+                runtime.cudnn.raw(),
+                &alpha as *const f32 as *const core::ffi::c_void,
+                x_desc.desc,
+                x.buffer.as_ptr(),
+                w_desc.desc,
+                w.buffer.as_ptr(),
+                conv_desc.desc,
+                algo,
+                ws_ptr,
+                ws_size,
+                &beta as *const f32 as *const core::ffi::c_void,
+                y_desc.desc,
+                y_buf.as_mut_ptr(),
+            )
+        };
+        if err == ffi::CUDNN_STATUS_SUCCESS {
+            succeeded = true;
+            break;
+        }
+        last_err = err;
+        // Workspace buffer drops here automatically; try next algo.
+    }
+    if !succeeded {
         return Err(CudaError::DnnError {
-            op: "cudnnConvolutionForward (device)",
-            code: err,
+            op: "cudnnConvolutionForward (device, all algos failed)",
+            code: last_err,
         });
+    }
+
+    // Per-channel bias add via cudnnAddTensor: `bias[1, K, 1, 1] + y[N, K, H, W]`.
+    if let Some(b) = bias {
+        if b.dtype != x.dtype {
+            return Err(CudaError::RuntimeError {
+                op: "gpu_conv2d_device: bias dtype must match input dtype",
+                code: -7,
+            });
+        }
+        let bias_desc = create_tensor_4d(1, k, 1, 1, dnn_dtype)?;
+        let alpha_b: f32 = 1.0;
+        let beta_y: f32 = 1.0;
+        let err = unsafe {
+            ffi::cudnnAddTensor(
+                runtime.cudnn.raw(),
+                &alpha_b as *const f32 as *const core::ffi::c_void,
+                bias_desc.desc,
+                b.buffer.as_ptr(),
+                &beta_y as *const f32 as *const core::ffi::c_void,
+                y_desc.desc,
+                y_buf.as_mut_ptr(),
+            )
+        };
+        if err != ffi::CUDNN_STATUS_SUCCESS {
+            return Err(CudaError::DnnError {
+                op: "cudnnAddTensor (Conv bias)",
+                code: err,
+            });
+        }
     }
     super::synchronize()?;
-
-    if bias.is_some() {
-        // TODO: device-side bias add. For now return an error so the
-        // caller knows Conv+bias is not wired up in the GPU executor.
-        return Err(CudaError::RuntimeError {
-            op: "gpu_conv2d_device: bias not yet supported",
-            code: -4,
-        });
-    }
 
     Ok(DeviceTensor {
         buffer: y_buf,
@@ -949,6 +1043,7 @@ impl Drop for LocalConvDesc {
         }
     }
 }
+#[allow(clippy::too_many_arguments)]
 fn create_conv_2d(
     pad_h: i32,
     pad_w: i32,
@@ -956,6 +1051,7 @@ fn create_conv_2d(
     stride_w: i32,
     dil_h: i32,
     dil_w: i32,
+    group: i32,
 ) -> Result<LocalConvDesc, CudaError> {
     let mut desc: ffi::cudnnConvolutionDescriptor_t = core::ptr::null_mut();
     let err = unsafe { ffi::cudnnCreateConvolutionDescriptor(&mut desc) };
@@ -986,6 +1082,18 @@ fn create_conv_2d(
             op: "setConv2dDesc",
             code: err,
         });
+    }
+    if group > 1 {
+        let err = unsafe { ffi::cudnnSetConvolutionGroupCount(desc, group) };
+        if err != ffi::CUDNN_STATUS_SUCCESS {
+            unsafe {
+                ffi::cudnnDestroyConvolutionDescriptor(desc);
+            }
+            return Err(CudaError::DnnError {
+                op: "setConvGroupCount",
+                code: err,
+            });
+        }
     }
     Ok(LocalConvDesc { desc })
 }

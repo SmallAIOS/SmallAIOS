@@ -39,6 +39,7 @@ fn session_custom_config() {
         thread_count: 4,
         parallel: smallaios_onnx_rt::parallel::ParallelConfig::default(),
         gpu_config: None,
+        gpu_residency: smallaios_onnx_rt::session::GpuResidency::default(),
     };
     let session = Session::new(config);
     assert!(!session.is_initialized());
@@ -67,6 +68,7 @@ fn session_no_optimization_config() {
         thread_count: 1,
         parallel: smallaios_onnx_rt::parallel::ParallelConfig::default(),
         gpu_config: None,
+        gpu_residency: smallaios_onnx_rt::session::GpuResidency::default(),
     };
     let session = Session::new(config);
     assert!(!session.is_initialized());

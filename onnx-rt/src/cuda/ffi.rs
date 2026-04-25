@@ -97,8 +97,17 @@ pub enum cudaDataType_t {
     CUDA_R_8U = 8,
     CUDA_R_32I = 10,
     CUDA_R_16BF = 14,
+    /// Signed 4-bit int. Note: cuBLASLt in CUDA 13.0 does not accept this
+    /// as a standalone matmul input — Blackwell NVFP4 MXFP4 paths require
+    /// block-scaled layout metadata.
+    CUDA_R_4I = 16,
+    /// Unsigned 4-bit int. Same cuBLASLt limitation as `CUDA_R_4I`.
+    CUDA_R_4U = 18,
     CUDA_R_8F_E4M3 = 28,
     CUDA_R_8F_E5M2 = 29,
+    /// FP4 E2M1 (Blackwell). Requires block-scale matmul descriptors
+    /// (`CUBLASLT_MATRIX_LAYOUT_BLOCK_SCALE_*`) for cuBLASLt usage.
+    CUDA_R_4F_E2M1 = 33,
 }
 
 // ── cuBLASLt types ──────────────────────────────────────────────────
@@ -317,6 +326,11 @@ extern "C" {
         compute_type: cudnnDataType_t,
     ) -> cudnnStatus_t;
 
+    pub fn cudnnSetConvolutionGroupCount(
+        desc: cudnnConvolutionDescriptor_t,
+        group_count: i32,
+    ) -> cudnnStatus_t;
+
     pub fn cudnnConvolutionForward(
         handle: cudnnHandle_t,
         alpha: *const core::ffi::c_void,
@@ -332,4 +346,169 @@ extern "C" {
         y_desc: cudnnTensorDescriptor_t,
         y: *mut core::ffi::c_void,
     ) -> cudnnStatus_t;
+
+    /// In-place add of a small tensor `a` to a larger tensor `c`,
+    /// broadcasting per the cuDNN tensor descriptor rules. Used here
+    /// for per-channel bias addition: `a` is `[1, C, 1, 1]`, `c` is
+    /// `[N, C, H, W]`.
+    pub fn cudnnAddTensor(
+        handle: cudnnHandle_t,
+        alpha: *const core::ffi::c_void,
+        a_desc: cudnnTensorDescriptor_t,
+        a: *const core::ffi::c_void,
+        beta: *const core::ffi::c_void,
+        c_desc: cudnnTensorDescriptor_t,
+        c: *mut core::ffi::c_void,
+    ) -> cudnnStatus_t;
+
+    /// Query the workspace size needed for a given algo.
+    pub fn cudnnGetConvolutionForwardWorkspaceSize(
+        handle: cudnnHandle_t,
+        x_desc: cudnnTensorDescriptor_t,
+        w_desc: cudnnFilterDescriptor_t,
+        conv_desc: cudnnConvolutionDescriptor_t,
+        y_desc: cudnnTensorDescriptor_t,
+        algo: cudnnConvolutionFwdAlgo_t,
+        size_in_bytes: *mut usize,
+    ) -> cudnnStatus_t;
+
+    // ── BatchNormalization ──────────────────────────────────────────
+    pub fn cudnnBatchNormalizationForwardInference(
+        handle: cudnnHandle_t,
+        mode: cudnnBatchNormMode_t,
+        alpha: *const core::ffi::c_void,
+        beta: *const core::ffi::c_void,
+        x_desc: cudnnTensorDescriptor_t,
+        x: *const core::ffi::c_void,
+        y_desc: cudnnTensorDescriptor_t,
+        y: *mut core::ffi::c_void,
+        bn_scale_bias_mean_var_desc: cudnnTensorDescriptor_t,
+        bn_scale: *const core::ffi::c_void,
+        bn_bias: *const core::ffi::c_void,
+        estimated_mean: *const core::ffi::c_void,
+        estimated_variance: *const core::ffi::c_void,
+        epsilon: f64,
+    ) -> cudnnStatus_t;
+
+    // ── Pooling ─────────────────────────────────────────────────────
+    pub fn cudnnCreatePoolingDescriptor(desc: *mut cudnnPoolingDescriptor_t) -> cudnnStatus_t;
+    pub fn cudnnDestroyPoolingDescriptor(desc: cudnnPoolingDescriptor_t) -> cudnnStatus_t;
+    pub fn cudnnSetPooling2dDescriptor(
+        desc: cudnnPoolingDescriptor_t,
+        mode: cudnnPoolingMode_t,
+        nan_propagation: cudnnNanPropagation_t,
+        window_h: i32,
+        window_w: i32,
+        pad_h: i32,
+        pad_w: i32,
+        stride_h: i32,
+        stride_w: i32,
+    ) -> cudnnStatus_t;
+    pub fn cudnnPoolingForward(
+        handle: cudnnHandle_t,
+        pooling_desc: cudnnPoolingDescriptor_t,
+        alpha: *const core::ffi::c_void,
+        x_desc: cudnnTensorDescriptor_t,
+        x: *const core::ffi::c_void,
+        beta: *const core::ffi::c_void,
+        y_desc: cudnnTensorDescriptor_t,
+        y: *mut core::ffi::c_void,
+    ) -> cudnnStatus_t;
+
+    // ── Activation ──────────────────────────────────────────────────
+    pub fn cudnnCreateActivationDescriptor(desc: *mut cudnnActivationDescriptor_t)
+        -> cudnnStatus_t;
+    pub fn cudnnDestroyActivationDescriptor(desc: cudnnActivationDescriptor_t) -> cudnnStatus_t;
+    pub fn cudnnSetActivationDescriptor(
+        desc: cudnnActivationDescriptor_t,
+        mode: cudnnActivationMode_t,
+        nan_propagation: cudnnNanPropagation_t,
+        coef: f64,
+    ) -> cudnnStatus_t;
+    pub fn cudnnActivationForward(
+        handle: cudnnHandle_t,
+        activation_desc: cudnnActivationDescriptor_t,
+        alpha: *const core::ffi::c_void,
+        x_desc: cudnnTensorDescriptor_t,
+        x: *const core::ffi::c_void,
+        beta: *const core::ffi::c_void,
+        y_desc: cudnnTensorDescriptor_t,
+        y: *mut core::ffi::c_void,
+    ) -> cudnnStatus_t;
+
+    // ── OpTensor (element-wise Add/Mul/etc.) ────────────────────────
+    pub fn cudnnCreateOpTensorDescriptor(desc: *mut cudnnOpTensorDescriptor_t) -> cudnnStatus_t;
+    pub fn cudnnDestroyOpTensorDescriptor(desc: cudnnOpTensorDescriptor_t) -> cudnnStatus_t;
+    pub fn cudnnSetOpTensorDescriptor(
+        desc: cudnnOpTensorDescriptor_t,
+        op: cudnnOpTensorOp_t,
+        op_tensor_comp_type: cudnnDataType_t,
+        op_tensor_nan_opt: cudnnNanPropagation_t,
+    ) -> cudnnStatus_t;
+    pub fn cudnnOpTensor(
+        handle: cudnnHandle_t,
+        op_tensor_desc: cudnnOpTensorDescriptor_t,
+        alpha1: *const core::ffi::c_void,
+        a_desc: cudnnTensorDescriptor_t,
+        a: *const core::ffi::c_void,
+        alpha2: *const core::ffi::c_void,
+        b_desc: cudnnTensorDescriptor_t,
+        b: *const core::ffi::c_void,
+        beta: *const core::ffi::c_void,
+        c_desc: cudnnTensorDescriptor_t,
+        c: *mut core::ffi::c_void,
+    ) -> cudnnStatus_t;
+}
+
+// ── Additional cuDNN opaque handles (Pool/Activation/OpTensor) ──
+pub type cudnnPoolingDescriptor_t = *mut core::ffi::c_void;
+pub type cudnnActivationDescriptor_t = *mut core::ffi::c_void;
+pub type cudnnOpTensorDescriptor_t = *mut core::ffi::c_void;
+
+// ── Additional cuDNN enums (BN/Pool/Activation/OpTensor/NaN) ────
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum cudnnBatchNormMode_t {
+    CUDNN_BATCHNORM_PER_ACTIVATION = 0,
+    CUDNN_BATCHNORM_SPATIAL = 1,
+    CUDNN_BATCHNORM_SPATIAL_PERSISTENT = 2,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum cudnnPoolingMode_t {
+    CUDNN_POOLING_MAX = 0,
+    CUDNN_POOLING_AVERAGE_COUNT_INCLUDE_PADDING = 1,
+    CUDNN_POOLING_AVERAGE_COUNT_EXCLUDE_PADDING = 2,
+    CUDNN_POOLING_MAX_DETERMINISTIC = 3,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum cudnnActivationMode_t {
+    CUDNN_ACTIVATION_SIGMOID = 0,
+    CUDNN_ACTIVATION_RELU = 1,
+    CUDNN_ACTIVATION_TANH = 2,
+    CUDNN_ACTIVATION_CLIPPED_RELU = 3,
+    CUDNN_ACTIVATION_ELU = 4,
+    CUDNN_ACTIVATION_IDENTITY = 5,
+    CUDNN_ACTIVATION_SWISH = 6,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum cudnnOpTensorOp_t {
+    CUDNN_OP_TENSOR_ADD = 0,
+    CUDNN_OP_TENSOR_MUL = 1,
+    CUDNN_OP_TENSOR_MIN = 2,
+    CUDNN_OP_TENSOR_MAX = 3,
+    CUDNN_OP_TENSOR_SQRT = 4,
+    CUDNN_OP_TENSOR_NOT = 5,
+}
+
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum cudnnNanPropagation_t {
+    CUDNN_NOT_PROPAGATE_NAN = 0,
+    CUDNN_PROPAGATE_NAN = 1,
 }

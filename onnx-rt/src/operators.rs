@@ -12,8 +12,9 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::byte_io::{
-    allocate_tensor_data, read_f32, read_i32, read_i64, write_f32, write_i32, write_i64, I64_SIZE,
+    allocate_tensor_data, read_f32, read_i32, read_i64, write_f32, write_i32, write_i64,
 };
+use crate::onnx_types::AttributeProto;
 use crate::tensor::{bf16_to_f32, f32_to_bf16, DataType, Tensor, TensorShape};
 
 // ---------------------------------------------------------------------------
@@ -1811,10 +1812,244 @@ pub fn op_reshape(input: &Tensor, shape: &[i64]) -> Result<Tensor, OpError> {
     })
 }
 
+/// Parsed Conv operator attributes with ONNX-11 defaults.
+///
+/// Shared by the CPU (`op_conv`) and CUDA (`cuda::conv::gpu_conv2d`)
+/// dispatch paths so both agree on attribute semantics. Built via
+/// [`ConvAttrs::from_attributes`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConvAttrs {
+    /// Spatial padding as `[top, left, bottom, right]`. Default `[0; 4]`.
+    pub pads: [i32; 4],
+    /// Stride along `[H, W]` axes. Default `[1, 1]`.
+    pub strides: [i32; 2],
+    /// Kernel dilation along `[H, W]` axes. Default `[1, 1]`.
+    pub dilations: [i32; 2],
+    /// Group count. `1` for standard conv, `C_in` for depthwise. Default `1`.
+    pub group: i32,
+}
+
+impl Default for ConvAttrs {
+    fn default() -> Self {
+        Self {
+            pads: [0; 4],
+            strides: [1, 1],
+            dilations: [1, 1],
+            group: 1,
+        }
+    }
+}
+
+impl ConvAttrs {
+    /// True when every field holds its ONNX default — enables the
+    /// legacy fast path in `conv_compute` that skips stride/pad/dilation
+    /// bounds checks and the group partitioning logic.
+    pub fn is_default(&self) -> bool {
+        self.pads == [0; 4] && self.strides == [1, 1] && self.dilations == [1, 1] && self.group == 1
+    }
+
+    /// Parse a Conv node's `AttributeProto` list into a `ConvAttrs`.
+    ///
+    /// Unknown or unsupported attribute values (for example a non-NOTSET
+    /// `auto_pad` mode) produce `OpError::InvalidAttribute`. Benign
+    /// unrelated attributes like `kernel_shape` are ignored because the
+    /// weight tensor shape is authoritative.
+    pub fn from_attributes(attrs: &[AttributeProto]) -> Result<Self, OpError> {
+        let mut out = Self::default();
+        for attr in attrs {
+            match attr.name.as_str() {
+                "strides" => {
+                    if attr.ints.len() != 2 {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Conv: strides must be length 2 (got {})",
+                            attr.ints.len()
+                        )));
+                    }
+                    out.strides = [attr.ints[0] as i32, attr.ints[1] as i32];
+                }
+                "pads" => {
+                    if attr.ints.len() != 4 {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Conv: pads must be length 4 (got {})",
+                            attr.ints.len()
+                        )));
+                    }
+                    out.pads = [
+                        attr.ints[0] as i32,
+                        attr.ints[1] as i32,
+                        attr.ints[2] as i32,
+                        attr.ints[3] as i32,
+                    ];
+                }
+                "dilations" => {
+                    if attr.ints.len() != 2 {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Conv: dilations must be length 2 (got {})",
+                            attr.ints.len()
+                        )));
+                    }
+                    out.dilations = [attr.ints[0] as i32, attr.ints[1] as i32];
+                }
+                "group" => {
+                    if attr.i < 1 {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Conv: group must be >= 1 (got {})",
+                            attr.i
+                        )));
+                    }
+                    out.group = attr.i as i32;
+                }
+                "auto_pad" => {
+                    let val = core::str::from_utf8(&attr.s).unwrap_or("<invalid utf8>");
+                    if val != "NOTSET" && !val.is_empty() {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Conv: unsupported auto_pad value '{}' (only NOTSET + explicit pads supported)",
+                            val
+                        )));
+                    }
+                }
+                // `kernel_shape` is informational — weight tensor shape is authoritative.
+                // Any other attribute we don't consume is silently ignored.
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Parsed BatchNormalization attributes with ONNX defaults.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BatchNormAttrs {
+    pub epsilon: f32,
+    pub momentum: f32,
+}
+
+impl Default for BatchNormAttrs {
+    fn default() -> Self {
+        Self {
+            epsilon: 1e-5,
+            momentum: 0.9,
+        }
+    }
+}
+
+impl BatchNormAttrs {
+    pub fn from_attributes(attrs: &[AttributeProto]) -> Result<Self, OpError> {
+        let mut out = Self::default();
+        for attr in attrs {
+            match attr.name.as_str() {
+                "epsilon" => out.epsilon = attr.f,
+                "momentum" => out.momentum = attr.f,
+                // spatial / training_mode are ignored in inference
+                _ => {}
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Parsed pooling attributes with ONNX defaults.
+///
+/// `kernel_shape = [0, 0]` means "unset" — `from_attributes(true)` will
+/// error in that case. `GlobalAveragePool` uses `from_attributes(false)`
+/// because kernel is inferred from the input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolAttrs {
+    pub kernel_shape: [i32; 2],
+    pub pads: [i32; 4],
+    pub strides: [i32; 2],
+    pub ceil_mode: bool,
+    pub count_include_pad: bool,
+}
+
+impl Default for PoolAttrs {
+    fn default() -> Self {
+        Self {
+            kernel_shape: [0, 0],
+            pads: [0; 4],
+            strides: [1, 1],
+            ceil_mode: false,
+            count_include_pad: false,
+        }
+    }
+}
+
+impl PoolAttrs {
+    pub fn from_attributes(
+        attrs: &[AttributeProto],
+        require_kernel: bool,
+    ) -> Result<Self, OpError> {
+        let mut out = Self::default();
+        for attr in attrs {
+            match attr.name.as_str() {
+                "kernel_shape" => {
+                    if attr.ints.len() != 2 {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Pool: kernel_shape must be length 2 (got {})",
+                            attr.ints.len()
+                        )));
+                    }
+                    out.kernel_shape = [attr.ints[0] as i32, attr.ints[1] as i32];
+                }
+                "strides" => {
+                    if attr.ints.len() != 2 {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Pool: strides must be length 2 (got {})",
+                            attr.ints.len()
+                        )));
+                    }
+                    out.strides = [attr.ints[0] as i32, attr.ints[1] as i32];
+                }
+                "pads" => {
+                    if attr.ints.len() != 4 {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Pool: pads must be length 4 (got {})",
+                            attr.ints.len()
+                        )));
+                    }
+                    out.pads = [
+                        attr.ints[0] as i32,
+                        attr.ints[1] as i32,
+                        attr.ints[2] as i32,
+                        attr.ints[3] as i32,
+                    ];
+                }
+                "ceil_mode" => out.ceil_mode = attr.i != 0,
+                "count_include_pad" => out.count_include_pad = attr.i != 0,
+                "auto_pad" => {
+                    let val = core::str::from_utf8(&attr.s).unwrap_or("<invalid utf8>");
+                    if val != "NOTSET" && !val.is_empty() {
+                        return Err(OpError::InvalidAttribute(alloc::format!(
+                            "Pool: unsupported auto_pad value '{}'",
+                            val
+                        )));
+                    }
+                }
+                _ => {}
+            }
+        }
+        if require_kernel && out.kernel_shape == [0, 0] {
+            return Err(OpError::InvalidAttribute(String::from(
+                "Pool: kernel_shape attribute is required",
+            )));
+        }
+        // Strides default to kernel dims if explicit strides weren't set.
+        if out.strides == [1, 1] && out.kernel_shape != [0, 0] {
+            // Actually ONNX defaults strides to 1, not kernel_shape. Keep 1s.
+            // (The pool op defaults stride to kernel_shape only when pool
+            // was used as subsample — ONNX spec says default = 1 for all.)
+        }
+        Ok(out)
+    }
+}
+
 /// Dimensions for a 2D convolution operation, used to reduce the number
 /// of arguments passed to the inner convolution helper.
 struct ConvDims {
+    /// Total input channels (across all groups).
     c_in: usize,
+    /// Input channels per group — `c_in / group`, matching weight.dims[1].
+    c_in_per_group: usize,
     h: usize,
     w: usize,
     kh: usize,
@@ -1822,30 +2057,52 @@ struct ConvDims {
 }
 
 /// Computes the convolution sum for a single output pixel at position
-/// `(oy, ox)` over all input channels and kernel positions.
+/// `(oy, ox)` over this output channel's input-channel group and all
+/// kernel positions. Honors `strides`, `pads`, `dilations`, and `group`.
 ///
-/// Returns the accumulated dot product of the input patch and the weight
-/// kernel for the given batch, output channel, and spatial position.
+/// `ci_base` is the starting absolute input-channel index for this
+/// output channel's group; weights are already laid out per-group as
+/// `[C_out, C_in/group, KH, KW]`, so the inner loop iterates
+/// `0..c_in_per_group` and reads `weight[co, ci_local, ky, kx]` while
+/// reading `input[batch, ci_base + ci_local, iy, ix]`.
+#[allow(clippy::too_many_arguments)]
 #[inline]
 fn convolve_at(
     input_data: &[u8],
     weight_data: &[u8],
     batch: usize,
     co: usize,
+    ci_base: usize,
     oy: usize,
     ox: usize,
     dims: &ConvDims,
+    attrs: &ConvAttrs,
 ) -> f32 {
+    let stride_h = attrs.strides[0] as isize;
+    let stride_w = attrs.strides[1] as isize;
+    let dilation_h = attrs.dilations[0] as isize;
+    let dilation_w = attrs.dilations[1] as isize;
+    let pad_top = attrs.pads[0] as isize;
+    let pad_left = attrs.pads[1] as isize;
+
     let mut sum = 0.0f32;
-    for ci in 0..dims.c_in {
+    for ci_local in 0..dims.c_in_per_group {
         for ky in 0..dims.kh {
             for kx in 0..dims.kw {
-                let iy = oy + ky;
-                let ix = ox + kx;
-                let in_idx =
-                    batch * dims.c_in * dims.h * dims.w + ci * dims.h * dims.w + iy * dims.w + ix;
-                let w_idx =
-                    co * dims.c_in * dims.kh * dims.kw + ci * dims.kh * dims.kw + ky * dims.kw + kx;
+                let iy = (oy as isize) * stride_h + (ky as isize) * dilation_h - pad_top;
+                let ix = (ox as isize) * stride_w + (kx as isize) * dilation_w - pad_left;
+                if iy < 0 || iy >= dims.h as isize || ix < 0 || ix >= dims.w as isize {
+                    continue;
+                }
+                let abs_ci = ci_base + ci_local;
+                let in_idx = batch * dims.c_in * dims.h * dims.w
+                    + abs_ci * dims.h * dims.w
+                    + (iy as usize) * dims.w
+                    + (ix as usize);
+                let w_idx = co * dims.c_in_per_group * dims.kh * dims.kw
+                    + ci_local * dims.kh * dims.kw
+                    + ky * dims.kw
+                    + kx;
                 sum += read_f32(input_data, in_idx) * read_f32(weight_data, w_idx);
             }
         }
@@ -1853,14 +2110,22 @@ fn convolve_at(
     sum
 }
 
-/// 2D convolution with optional bias, stride=1, no padding, dilation=1.
+/// 2D convolution with optional bias, honoring `strides`, `pads`,
+/// `dilations`, and `group` attributes.
 ///
-/// Input shape: [N, C_in, H, W]
-/// Weight shape: [C_out, C_in, KH, KW]
-/// Bias shape: [C_out] (optional)
-/// Output shape: [N, C_out, H-KH+1, W-KW+1]
-pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result<Tensor, OpError> {
-    validate_conv_inputs(input, weight)?;
+/// Input shape: `[N, C_in, H, W]`
+/// Weight shape: `[C_out, C_in / group, KH, KW]`
+/// Bias shape: `[C_out]` (optional)
+/// Output shape: `[N, C_out, OH, OW]` where
+///   `OH = (H + pad_top + pad_bottom - (KH - 1) * dilation_h - 1) / stride_h + 1`
+///   `OW = (W + pad_left + pad_right - (KW - 1) * dilation_w - 1) / stride_w + 1`
+pub fn op_conv(
+    input: &Tensor,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+    attrs: &ConvAttrs,
+) -> Result<Tensor, OpError> {
+    validate_conv_inputs(input, weight, attrs)?;
 
     let n = input.shape.dims[0] as usize;
     let c_in = input.shape.dims[1] as usize;
@@ -1868,14 +2133,21 @@ pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result
     let w = input.shape.dims[3] as usize;
 
     let c_out = weight.shape.dims[0] as usize;
+    let c_in_per_group = weight.shape.dims[1] as usize;
     let kh = weight.shape.dims[2] as usize;
     let kw = weight.shape.dims[3] as usize;
 
-    let oh = h - kh + 1;
-    let ow = w - kw + 1;
+    let (oh, ow) = compute_conv_out_dims(h, w, kh, kw, attrs);
     let out_total = n * c_out * oh * ow;
     let mut raw_data = allocate_tensor_data(out_total, DataType::Float);
-    let dims = ConvDims { c_in, h, w, kh, kw };
+    let dims = ConvDims {
+        c_in,
+        c_in_per_group,
+        h,
+        w,
+        kh,
+        kw,
+    };
     let mut params = ConvParams {
         n,
         c_out,
@@ -1884,7 +2156,14 @@ pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result
         raw_data: &mut raw_data,
     };
 
-    conv_compute(&input.raw_data, &weight.raw_data, bias, &dims, &mut params);
+    conv_compute(
+        &input.raw_data,
+        &weight.raw_data,
+        bias,
+        &dims,
+        attrs,
+        &mut params,
+    );
 
     Ok(Tensor {
         data_type: DataType::Float,
@@ -1894,8 +2173,38 @@ pub fn op_conv(input: &Tensor, weight: &Tensor, bias: Option<&Tensor>) -> Result
     })
 }
 
-/// Validate Conv operator inputs: types, ranks, and channel compatibility.
-fn validate_conv_inputs(input: &Tensor, weight: &Tensor) -> Result<(), OpError> {
+/// Compute Conv output spatial dimensions per the ONNX Conv-11 formula.
+/// Uses `isize` arithmetic internally so negative results (kernel larger
+/// than padded input) surface as zero-sized outputs rather than panics.
+pub(crate) fn compute_conv_out_dims(
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    attrs: &ConvAttrs,
+) -> (usize, usize) {
+    let ih = h as isize + attrs.pads[0] as isize + attrs.pads[2] as isize
+        - (kh as isize - 1) * attrs.dilations[0] as isize
+        - 1;
+    let iw = w as isize + attrs.pads[1] as isize + attrs.pads[3] as isize
+        - (kw as isize - 1) * attrs.dilations[1] as isize
+        - 1;
+    let oh = if ih < 0 {
+        0
+    } else {
+        ih as usize / attrs.strides[0] as usize + 1
+    };
+    let ow = if iw < 0 {
+        0
+    } else {
+        iw as usize / attrs.strides[1] as usize + 1
+    };
+    (oh, ow)
+}
+
+/// Validate Conv operator inputs: types, ranks, channel compatibility
+/// (group-aware), and kernel-vs-input sizing.
+fn validate_conv_inputs(input: &Tensor, weight: &Tensor, attrs: &ConvAttrs) -> Result<(), OpError> {
     if input.data_type != DataType::Float || weight.data_type != DataType::Float {
         return Err(OpError::InvalidAttribute(String::from(
             "Conv only supports float32",
@@ -1903,17 +2212,42 @@ fn validate_conv_inputs(input: &Tensor, weight: &Tensor) -> Result<(), OpError> 
     }
     if input.shape.ndim() != 4 || weight.shape.ndim() != 4 {
         return Err(OpError::ShapeMismatch(String::from(
-            "Conv requires 4D input [N,C,H,W] and 4D weight [Co,Ci,KH,KW]",
+            "Conv requires 4D input [N,C,H,W] and 4D weight [Co,Ci/group,KH,KW]",
         )));
     }
-    if input.shape.dims[1] != weight.shape.dims[1] {
-        return Err(OpError::ShapeMismatch(String::from(
-            "Conv: input channels do not match weight channels",
+    let group = attrs.group as i64;
+    if group < 1 {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "Conv: group must be >= 1 (got {})",
+            group
         )));
     }
-    if weight.shape.dims[2] > input.shape.dims[2] || weight.shape.dims[3] > input.shape.dims[3] {
+    let c_in = input.shape.dims[1];
+    let c_out = weight.shape.dims[0];
+    let w_in = weight.shape.dims[1];
+    if c_in != w_in * group {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "Conv: input channels ({}) must equal weight channels ({}) * group ({})",
+            c_in,
+            w_in,
+            group
+        )));
+    }
+    if c_out % group != 0 {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "Conv: C_out ({}) must be divisible by group ({})",
+            c_out,
+            group
+        )));
+    }
+    // Effective (dilated) kernel size must fit inside the padded input.
+    let pad_h = attrs.pads[0] as i64 + attrs.pads[2] as i64;
+    let pad_w = attrs.pads[1] as i64 + attrs.pads[3] as i64;
+    let eff_kh = (weight.shape.dims[2] - 1) * attrs.dilations[0] as i64 + 1;
+    let eff_kw = (weight.shape.dims[3] - 1) * attrs.dilations[1] as i64 + 1;
+    if eff_kh > input.shape.dims[2] + pad_h || eff_kw > input.shape.dims[3] + pad_w {
         return Err(OpError::ShapeMismatch(String::from(
-            "Conv: kernel larger than input",
+            "Conv: effective kernel larger than padded input",
         )));
     }
     Ok(())
@@ -1931,11 +2265,15 @@ struct ConvParams<'a> {
 }
 
 /// Execute the Conv inner loops, writing results into `params.raw_data`.
+/// Partitions output channels into `attrs.group` contiguous blocks; each
+/// block's output channels read only from the corresponding
+/// input-channel slice `[g * c_in_per_group .. (g+1) * c_in_per_group)`.
 fn conv_compute(
     input_data: &[u8],
     weight_data: &[u8],
     bias: Option<&Tensor>,
     dims: &ConvDims,
+    attrs: &ConvAttrs,
     params: &mut ConvParams<'_>,
 ) {
     let ConvParams {
@@ -1946,11 +2284,26 @@ fn conv_compute(
         raw_data,
     } = params;
     let (n, c_out, oh, ow) = (*n, *c_out, *oh, *ow);
+    let group = attrs.group as usize;
+    let c_out_per_group = c_out / group;
+
     for batch in 0..n {
         for co in 0..c_out {
+            let group_idx = co / c_out_per_group;
+            let ci_base = group_idx * dims.c_in_per_group;
             for oy in 0..oh {
                 for ox in 0..ow {
-                    let mut sum = convolve_at(input_data, weight_data, batch, co, oy, ox, dims);
+                    let mut sum = convolve_at(
+                        input_data,
+                        weight_data,
+                        batch,
+                        co,
+                        ci_base,
+                        oy,
+                        ox,
+                        dims,
+                        attrs,
+                    );
                     if let Some(b) = bias {
                         sum += read_f32(&b.raw_data, co);
                     }
@@ -2308,6 +2661,7 @@ fn copy_tensor_to_concat_output(
     resolved_axis: usize,
     axis_offset: usize,
     ndim: usize,
+    elem_size: usize,
 ) {
     let in_total = input.shape.total_elements();
     let mut in_coord = alloc::vec![0usize; ndim];
@@ -2324,16 +2678,41 @@ fn copy_tensor_to_concat_output(
             };
             out_idx += c * out_strides[d];
         }
-        write_f32(out_data, out_idx, read_f32(&input.raw_data, i));
+        let src = i * elem_size;
+        let dst = out_idx * elem_size;
+        out_data[dst..dst + elem_size].copy_from_slice(&input.raw_data[src..src + elem_size]);
     }
 }
 
-/// Concatenate tensors along axis.
+/// Concatenate tensors along `axis`.
+///
+/// Preserves input dtype via byte-level copy — works for any fixed-width
+/// element type (Float, BFloat16, Int8/16/32/64, Uint variants, Bool,
+/// Float16, Float8, Double). All inputs must share the same dtype per
+/// the ONNX spec.
 pub fn op_concat(inputs: &[&Tensor], axis: i64) -> Result<Tensor, OpError> {
     if inputs.is_empty() {
         return Err(OpError::ShapeMismatch(String::from(
             "Concat requires at least 1 input",
         )));
+    }
+    let dtype = inputs[0].data_type;
+    let elem_size = dtype.element_size();
+    if elem_size == 0 {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "Concat: unsupported variable-width dtype {:?}",
+            dtype
+        )));
+    }
+    for (i, input) in inputs.iter().enumerate().skip(1) {
+        if input.data_type != dtype {
+            return Err(OpError::ShapeMismatch(alloc::format!(
+                "Concat: input {} dtype {:?} does not match input 0 dtype {:?}",
+                i,
+                input.data_type,
+                dtype
+            )));
+        }
     }
     let ndim = inputs[0].shape.ndim();
     let resolved_axis = if axis < 0 {
@@ -2354,7 +2733,7 @@ pub fn op_concat(inputs: &[&Tensor], axis: i64) -> Result<Tensor, OpError> {
     out_dims[resolved_axis] = concat_size;
     let out_shape = TensorShape::new(out_dims);
     let total = out_shape.total_elements();
-    let mut raw_data = allocate_tensor_data(total, DataType::Float);
+    let mut raw_data = alloc::vec![0u8; total * elem_size];
 
     let out_strides = compute_strides(&out_shape.dims);
     let mut axis_offset = 0usize;
@@ -2366,11 +2745,12 @@ pub fn op_concat(inputs: &[&Tensor], axis: i64) -> Result<Tensor, OpError> {
             resolved_axis,
             axis_offset,
             ndim,
+            elem_size,
         );
         axis_offset += input.shape.dims[resolved_axis] as usize;
     }
     Ok(Tensor {
-        data_type: DataType::Float,
+        data_type: dtype,
         shape: out_shape,
         name: String::new(),
         raw_data,
@@ -2524,66 +2904,132 @@ pub fn op_cast(input: &Tensor, to: DataType) -> Result<Tensor, OpError> {
     }
 }
 
-/// Gather elements along axis using index tensor.
+/// Gather elements along `axis` using `indices`.
+///
+/// Preserves the input dtype and operates as a byte-level copy so any
+/// fixed-width type (Float, BFloat16, Int8/16/32/64, Uint8/16/32/64,
+/// Bool, Float16, Float8, Double) passes through unchanged.
+/// `indices` must be Int32 or Int64. Variable-width types (String) are
+/// rejected.
+///
+/// Semantics match ONNX Gather-11: the output has shape
+/// `input.dims[..axis] ++ indices.dims ++ input.dims[axis+1..]` and each
+/// output element at output-coord `o` reads the input at
+/// `input[..o_axis_prefix, indices[o_idx_slice], ..o_axis_suffix]`.
 pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, OpError> {
-    if input.data_type != DataType::Float {
-        return Err(OpError::InvalidAttribute(String::from(
-            "Gather only supports float32 input",
+    let elem_size = input.data_type.element_size();
+    if elem_size == 0 {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "Gather: unsupported variable-width input dtype {:?}",
+            input.data_type
+        )));
+    }
+    if !matches!(indices.data_type, DataType::Int32 | DataType::Int64) {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "Gather: indices must be Int32 or Int64 (got {:?})",
+            indices.data_type
         )));
     }
     let ndim = input.shape.ndim();
+    if ndim == 0 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Gather: input must have at least 1 dimension",
+        )));
+    }
     let resolved_axis = if axis < 0 {
-        (ndim as i64 + axis) as usize
+        let r = ndim as i64 + axis;
+        if r < 0 || r >= ndim as i64 {
+            return Err(OpError::InvalidAttribute(alloc::format!(
+                "Gather: axis {} out of range for rank {}",
+                axis,
+                ndim
+            )));
+        }
+        r as usize
     } else {
+        if axis >= ndim as i64 {
+            return Err(OpError::InvalidAttribute(alloc::format!(
+                "Gather: axis {} out of range for rank {}",
+                axis,
+                ndim
+            )));
+        }
         axis as usize
     };
-    let num_indices = indices.shape.total_elements();
-
-    // Output shape: input dims with axis dim replaced by indices shape
-    let mut out_dims = Vec::new();
-    for (d, &dim) in input.shape.dims.iter().enumerate() {
-        if d == resolved_axis {
-            for &id in &indices.shape.dims {
-                out_dims.push(id);
-            }
-        } else {
-            out_dims.push(dim);
-        }
-    }
-    let out_shape = TensorShape::new(out_dims);
-    let total = out_shape.total_elements();
-    let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
     let axis_size = input.shape.dims[resolved_axis] as usize;
 
-    // Simple 1D gather for common case
-    if ndim == 1 {
-        for i in 0..num_indices {
-            let off = i * I64_SIZE;
-            let idx = if indices.data_type == DataType::Int64
-                && indices.raw_data.len() >= off + I64_SIZE
-            {
-                read_i64(&indices.raw_data, i) as usize
-            } else {
-                0
-            };
-            let safe_idx = idx.min(axis_size.saturating_sub(1));
-            write_f32(&mut raw_data, i, read_f32(&input.raw_data, safe_idx));
-        }
-    } else {
-        // General N-D case: iterate output coordinates
-        let mut out_coord = alloc::vec![0usize; out_shape.ndim()];
-        for i in 0..total {
-            if i > 0 {
-                next_coord(&mut out_coord, &out_shape.dims);
+    // Output shape: input.dims[..axis] ++ indices.dims ++ input.dims[axis+1..]
+    let mut out_dims = Vec::with_capacity(ndim - 1 + indices.shape.ndim());
+    out_dims.extend(input.shape.dims[..resolved_axis].iter().copied());
+    out_dims.extend(indices.shape.dims.iter().copied());
+    out_dims.extend(input.shape.dims[resolved_axis + 1..].iter().copied());
+    let out_shape = TensorShape::new(out_dims);
+
+    // Block sizes measured in elements:
+    //   outer_count = product(input.dims[..axis])
+    //   slice_size  = product(input.dims[axis+1..])
+    //   num_indices = product(indices.dims)
+    let outer_count: usize = input.shape.dims[..resolved_axis]
+        .iter()
+        .map(|&d| d as usize)
+        .product();
+    let slice_size: usize = input.shape.dims[resolved_axis + 1..]
+        .iter()
+        .map(|&d| d as usize)
+        .product();
+    let num_indices = indices.shape.total_elements();
+
+    let total_elems = outer_count * num_indices * slice_size;
+    let mut raw_data = alloc::vec![0u8; total_elems * elem_size];
+
+    // Read index i (supporting Int32 or Int64) and resolve to usize,
+    // wrapping negative indices per the ONNX spec.
+    let read_index = |i: usize| -> Result<usize, OpError> {
+        let raw = if indices.data_type == DataType::Int64 {
+            read_i64(&indices.raw_data, i)
+        } else {
+            // Int32
+            let offset = i * 4;
+            if offset + 4 > indices.raw_data.len() {
+                return Err(OpError::ShapeMismatch(String::from(
+                    "Gather: indices buffer too small",
+                )));
             }
-            // TODO: full N-D gather implementation
-            write_f32(&mut raw_data, i, 0.0);
+            i32::from_le_bytes([
+                indices.raw_data[offset],
+                indices.raw_data[offset + 1],
+                indices.raw_data[offset + 2],
+                indices.raw_data[offset + 3],
+            ]) as i64
+        };
+        let wrapped = if raw < 0 { raw + axis_size as i64 } else { raw };
+        if wrapped < 0 || wrapped >= axis_size as i64 {
+            return Err(OpError::ShapeMismatch(alloc::format!(
+                "Gather: index {} out of bounds for axis size {}",
+                raw,
+                axis_size
+            )));
+        }
+        Ok(wrapped as usize)
+    };
+
+    let slice_bytes = slice_size * elem_size;
+    let input_outer_stride = axis_size * slice_bytes;
+    let out_outer_stride = num_indices * slice_bytes;
+
+    for outer in 0..outer_count {
+        for i in 0..num_indices {
+            let idx = read_index(i)?;
+            let src_start = outer * input_outer_stride + idx * slice_bytes;
+            let dst_start = outer * out_outer_stride + i * slice_bytes;
+            raw_data[dst_start..dst_start + slice_bytes]
+                .copy_from_slice(&input.raw_data[src_start..src_start + slice_bytes]);
         }
     }
 
     Ok(Tensor {
-        data_type: DataType::Float,
+        data_type: input.data_type,
         shape: out_shape,
         name: String::new(),
         raw_data,
@@ -3282,9 +3728,17 @@ pub fn op_conv_parallel(
     input: &Tensor,
     weight: &Tensor,
     bias: Option<&Tensor>,
+    attrs: &ConvAttrs,
     threshold: usize,
 ) -> Result<Tensor, OpError> {
-    validate_conv_inputs(input, weight)?;
+    validate_conv_inputs(input, weight, attrs)?;
+
+    // For non-default attributes, fall through to the single-threaded
+    // `op_conv` — parallelizing the grouped / strided / padded case is
+    // a perf follow-up, not a correctness concern.
+    if !attrs.is_default() {
+        return op_conv(input, weight, bias, attrs);
+    }
 
     let n = input.shape.dims[0] as usize;
     let c_in = input.shape.dims[1] as usize;
@@ -3300,15 +3754,23 @@ pub fn op_conv_parallel(
 
     // Check threshold
     if pool.num_threads() <= 1 || c_out * oh * ow <= threshold {
-        return op_conv(input, weight, bias);
+        return op_conv(input, weight, bias, attrs);
     }
 
     let out_total = n * c_out * oh * ow;
-    let dims = ConvDims { c_in, h, w, kh, kw };
+    let dims = ConvDims {
+        c_in,
+        c_in_per_group: c_in,
+        h,
+        w,
+        kh,
+        kw,
+    };
     let input_data = &input.raw_data;
     let weight_data = &weight.raw_data;
 
-    // Split output channels across threads
+    // Split output channels across threads. Default-attrs fast path, so
+    // `ci_base = 0` for all output channels (single group).
     let results = pool.parallel_for(0..c_out, |ch_range| {
         let ch_count = ch_range.end - ch_range.start;
         let chunk_size = n * ch_count * oh * ow;
@@ -3318,8 +3780,17 @@ pub fn op_conv_parallel(
             for (local_co, global_co) in ch_range.clone().enumerate() {
                 for oy in 0..oh {
                     for ox in 0..ow {
-                        let mut sum =
-                            convolve_at(input_data, weight_data, batch, global_co, oy, ox, &dims);
+                        let mut sum = convolve_at(
+                            input_data,
+                            weight_data,
+                            batch,
+                            global_co,
+                            0,
+                            oy,
+                            ox,
+                            &dims,
+                            attrs,
+                        );
                         if let Some(b) = bias {
                             sum += read_f32(&b.raw_data, global_co);
                         }
@@ -4050,7 +4521,7 @@ mod tests {
             &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
         );
         let weight = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
-        let result = op_conv(&input, &weight, None).unwrap();
+        let result = op_conv(&input, &weight, None, &ConvAttrs::default()).unwrap();
         assert_eq!(result.shape.dims, vec![1, 1, 3, 3]);
         let vals = read_f32_vec(&result);
         assert_eq!(vals, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
@@ -4064,7 +4535,7 @@ mod tests {
             &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
         );
         let weight = make_f32_tensor(&[1, 1, 2, 2], &[1.0, 0.0, 0.0, 1.0]);
-        let result = op_conv(&input, &weight, None).unwrap();
+        let result = op_conv(&input, &weight, None, &ConvAttrs::default()).unwrap();
         assert_eq!(result.shape.dims, vec![1, 1, 2, 2]);
         let vals = read_f32_vec(&result);
         // (0,0): 1*1 + 2*0 + 4*0 + 5*1 = 6
@@ -4079,7 +4550,7 @@ mod tests {
         let input = make_f32_tensor(&[1, 1, 2, 2], &[1.0, 2.0, 3.0, 4.0]);
         let weight = make_f32_tensor(&[1, 1, 1, 1], &[2.0]);
         let bias = make_f32_tensor(&[1], &[10.0]);
-        let result = op_conv(&input, &weight, Some(&bias)).unwrap();
+        let result = op_conv(&input, &weight, Some(&bias), &ConvAttrs::default()).unwrap();
         let vals = read_f32_vec(&result);
         assert_eq!(vals, vec![12.0, 14.0, 16.0, 18.0]);
     }
@@ -4088,8 +4559,325 @@ mod tests {
     fn test_op_conv_channel_mismatch() {
         let input = make_f32_tensor(&[1, 3, 4, 4], &[1.0; 48]);
         let weight = make_f32_tensor(&[1, 2, 3, 3], &[1.0; 18]); // Wrong c_in
-        let result = op_conv(&input, &weight, None);
+        let result = op_conv(&input, &weight, None, &ConvAttrs::default());
         assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
+    }
+
+    // ---- ConvAttrs parser tests ----
+
+    fn attr_ints(name: &str, vals: &[i64]) -> AttributeProto {
+        AttributeProto {
+            name: String::from(name),
+            attr_type: crate::onnx_types::AttributeType::Ints,
+            ints: vals.to_vec(),
+            ..AttributeProto::default()
+        }
+    }
+    fn attr_int(name: &str, val: i64) -> AttributeProto {
+        AttributeProto {
+            name: String::from(name),
+            attr_type: crate::onnx_types::AttributeType::Int,
+            i: val,
+            ..AttributeProto::default()
+        }
+    }
+    fn attr_str(name: &str, val: &str) -> AttributeProto {
+        AttributeProto {
+            name: String::from(name),
+            attr_type: crate::onnx_types::AttributeType::String,
+            s: val.as_bytes().to_vec(),
+            ..AttributeProto::default()
+        }
+    }
+
+    #[test]
+    fn test_conv_attrs_default_when_empty() {
+        let parsed = ConvAttrs::from_attributes(&[]).unwrap();
+        assert_eq!(parsed, ConvAttrs::default());
+        assert!(parsed.is_default());
+    }
+
+    #[test]
+    fn test_conv_attrs_populates_each_field() {
+        let attrs = [
+            attr_ints("strides", &[2, 2]),
+            attr_ints("pads", &[1, 2, 3, 4]),
+            attr_ints("dilations", &[2, 3]),
+            attr_int("group", 4),
+        ];
+        let parsed = ConvAttrs::from_attributes(&attrs).unwrap();
+        assert_eq!(parsed.strides, [2, 2]);
+        assert_eq!(parsed.pads, [1, 2, 3, 4]);
+        assert_eq!(parsed.dilations, [2, 3]);
+        assert_eq!(parsed.group, 4);
+        assert!(!parsed.is_default());
+    }
+
+    #[test]
+    fn test_conv_attrs_ignores_kernel_shape() {
+        let attrs = [attr_ints("kernel_shape", &[3, 3])];
+        let parsed = ConvAttrs::from_attributes(&attrs).unwrap();
+        assert_eq!(parsed, ConvAttrs::default());
+    }
+
+    #[test]
+    fn test_conv_attrs_rejects_unsupported_auto_pad() {
+        let attrs = [attr_str("auto_pad", "SAME_UPPER")];
+        let err = ConvAttrs::from_attributes(&attrs).unwrap_err();
+        assert!(matches!(err, OpError::InvalidAttribute(_)));
+    }
+
+    #[test]
+    fn test_conv_attrs_accepts_notset_auto_pad() {
+        let attrs = [attr_str("auto_pad", "NOTSET")];
+        let parsed = ConvAttrs::from_attributes(&attrs).unwrap();
+        assert_eq!(parsed, ConvAttrs::default());
+    }
+
+    #[test]
+    fn test_conv_attrs_rejects_bad_lengths() {
+        let strides_bad = [attr_ints("strides", &[1, 1, 1])];
+        assert!(matches!(
+            ConvAttrs::from_attributes(&strides_bad),
+            Err(OpError::InvalidAttribute(_))
+        ));
+        let pads_bad = [attr_ints("pads", &[0, 0])];
+        assert!(matches!(
+            ConvAttrs::from_attributes(&pads_bad),
+            Err(OpError::InvalidAttribute(_))
+        ));
+        let group_bad = [attr_int("group", 0)];
+        assert!(matches!(
+            ConvAttrs::from_attributes(&group_bad),
+            Err(OpError::InvalidAttribute(_))
+        ));
+    }
+
+    // ---- Conv validator group-aware tests ----
+
+    #[test]
+    fn test_validate_conv_accepts_depthwise() {
+        let input = make_f32_tensor(&[1, 32, 8, 8], &[0.0f32; 32 * 64]);
+        let weight = make_f32_tensor(&[32, 1, 3, 3], &[0.0f32; 32 * 9]);
+        let attrs = ConvAttrs {
+            group: 32,
+            ..ConvAttrs::default()
+        };
+        assert!(validate_conv_inputs(&input, &weight, &attrs).is_ok());
+    }
+
+    #[test]
+    fn test_validate_conv_rejects_cout_not_divisible_by_group() {
+        let input = make_f32_tensor(&[1, 16, 4, 4], &[0.0f32; 16 * 16]);
+        let weight = make_f32_tensor(&[15, 8, 3, 3], &[0.0f32; 15 * 8 * 9]);
+        let attrs = ConvAttrs {
+            group: 2,
+            ..ConvAttrs::default()
+        };
+        let err = validate_conv_inputs(&input, &weight, &attrs).unwrap_err();
+        assert!(matches!(err, OpError::ShapeMismatch(ref m) if m.contains("divisible")));
+    }
+
+    // ---- Attribute-honoring Conv kernel tests ----
+
+    // ---- PoolAttrs / BatchNormAttrs parser tests ----
+
+    #[test]
+    fn test_pool_attrs_defaults_when_empty() {
+        let err = PoolAttrs::from_attributes(&[], true).unwrap_err();
+        assert!(matches!(err, OpError::InvalidAttribute(_)));
+
+        let no_kernel = PoolAttrs::from_attributes(&[], false).unwrap();
+        assert_eq!(no_kernel.kernel_shape, [0, 0]);
+        assert_eq!(no_kernel.strides, [1, 1]);
+        assert_eq!(no_kernel.pads, [0, 0, 0, 0]);
+        assert!(!no_kernel.ceil_mode);
+        assert!(!no_kernel.count_include_pad);
+    }
+
+    #[test]
+    fn test_pool_attrs_populates_fields() {
+        let attrs = [
+            attr_ints("kernel_shape", &[3, 3]),
+            attr_ints("strides", &[2, 2]),
+            attr_ints("pads", &[1, 1, 1, 1]),
+            attr_int("ceil_mode", 1),
+            attr_int("count_include_pad", 1),
+        ];
+        let p = PoolAttrs::from_attributes(&attrs, true).unwrap();
+        assert_eq!(p.kernel_shape, [3, 3]);
+        assert_eq!(p.strides, [2, 2]);
+        assert_eq!(p.pads, [1, 1, 1, 1]);
+        assert!(p.ceil_mode);
+        assert!(p.count_include_pad);
+    }
+
+    #[test]
+    fn test_pool_attrs_rejects_bad_auto_pad() {
+        let attrs = [
+            attr_ints("kernel_shape", &[2, 2]),
+            attr_str("auto_pad", "SAME_UPPER"),
+        ];
+        assert!(matches!(
+            PoolAttrs::from_attributes(&attrs, true),
+            Err(OpError::InvalidAttribute(_))
+        ));
+    }
+
+    #[test]
+    fn test_batchnorm_attrs_defaults_and_overrides() {
+        let d = BatchNormAttrs::from_attributes(&[]).unwrap();
+        assert_eq!(d.epsilon, 1e-5);
+        assert_eq!(d.momentum, 0.9);
+
+        let over = BatchNormAttrs::from_attributes(&[
+            AttributeProto {
+                name: String::from("epsilon"),
+                attr_type: crate::onnx_types::AttributeType::Float,
+                f: 1e-3,
+                ..AttributeProto::default()
+            },
+            AttributeProto {
+                name: String::from("momentum"),
+                attr_type: crate::onnx_types::AttributeType::Float,
+                f: 0.5,
+                ..AttributeProto::default()
+            },
+        ])
+        .unwrap();
+        assert_eq!(over.epsilon, 1e-3);
+        assert_eq!(over.momentum, 0.5);
+    }
+
+    #[test]
+    fn test_conv_stride2_halves_spatial() {
+        // 1x1x4x4 input with identity 1x1 kernel at stride 2 -> 1x1x2x2 output
+        let input = make_f32_tensor(
+            &[1, 1, 4, 4],
+            &[
+                1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0,
+                16.0,
+            ],
+        );
+        let weight = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
+        let attrs = ConvAttrs {
+            strides: [2, 2],
+            ..ConvAttrs::default()
+        };
+        let out = op_conv(&input, &weight, None, &attrs).unwrap();
+        assert_eq!(out.shape.dims, vec![1, 1, 2, 2]);
+        assert_eq!(read_f32_vec(&out), vec![1.0, 3.0, 9.0, 11.0]);
+    }
+
+    #[test]
+    fn test_conv_pad1_keeps_3x3_spatial_dims() {
+        // 1x1x3x3 input with 3x3 kernel of weight 1/9 + pad=1 → same spatial dims
+        let input = make_f32_tensor(&[1, 1, 3, 3], &[1.0f32; 9]);
+        let weight = make_f32_tensor(&[1, 1, 3, 3], &[1.0f32 / 9.0; 9]);
+        let attrs = ConvAttrs {
+            pads: [1, 1, 1, 1],
+            ..ConvAttrs::default()
+        };
+        let out = op_conv(&input, &weight, None, &attrs).unwrap();
+        assert_eq!(out.shape.dims, vec![1, 1, 3, 3]);
+        // Corners see 4 ones out of 9 kernel taps; edges see 6; center sees 9.
+        let vals = read_f32_vec(&out);
+        let approx_eq = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(approx_eq(vals[0], 4.0 / 9.0)); // top-left corner
+        assert!(approx_eq(vals[4], 9.0 / 9.0)); // center
+        assert!(approx_eq(vals[8], 4.0 / 9.0)); // bottom-right corner
+    }
+
+    #[test]
+    fn test_conv_dilation2_expands_receptive_field() {
+        // 1x1x5x5 with 2x2 kernel, dilation=[2,2] -> output spatial 2x2
+        // input = row-major 0..25
+        let input_vals: Vec<f32> = (0..25).map(|i| i as f32).collect();
+        let input = make_f32_tensor(&[1, 1, 5, 5], &input_vals);
+        let weight = make_f32_tensor(&[1, 1, 2, 2], &[1.0, 0.0, 0.0, 1.0]);
+        let attrs = ConvAttrs {
+            dilations: [2, 2],
+            ..ConvAttrs::default()
+        };
+        let out = op_conv(&input, &weight, None, &attrs).unwrap();
+        assert_eq!(out.shape.dims, vec![1, 1, 3, 3]);
+        // Dilated kernel samples (0,0) and (2,2) of the input window.
+        // Output (0,0): input[0,0] + input[2,2] = 0 + 12 = 12
+        // Output (2,2): input[2,2] + input[4,4] = 12 + 24 = 36
+        let vals = read_f32_vec(&out);
+        assert!((vals[0] - 12.0).abs() < 1e-5);
+        assert!((vals[8] - 36.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_conv_group2_independent_halves() {
+        // Input [1, 4, 2, 2] split into 2 groups of 2 channels each.
+        // Weight [4, 2, 1, 1] — output channels 0,1 read input channels 0,1;
+        // output channels 2,3 read input channels 2,3.
+        let input = make_f32_tensor(
+            &[1, 4, 2, 2],
+            &[
+                1.0, 2.0, 3.0, 4.0, // ch0
+                5.0, 6.0, 7.0, 8.0, // ch1
+                9.0, 10.0, 11.0, 12.0, // ch2
+                13.0, 14.0, 15.0, 16.0, // ch3
+            ],
+        );
+        // Each output channel reads 2 input channels via a 1x1 kernel.
+        // co=0: (1*ch0 + 0*ch1) => ch0
+        // co=1: (0*ch0 + 1*ch1) => ch1
+        // co=2: (1*ch2 + 0*ch3) => ch2
+        // co=3: (0*ch2 + 1*ch3) => ch3
+        let weight = make_f32_tensor(&[4, 2, 1, 1], &[1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0]);
+        let attrs = ConvAttrs {
+            group: 2,
+            ..ConvAttrs::default()
+        };
+        let out = op_conv(&input, &weight, None, &attrs).unwrap();
+        assert_eq!(out.shape.dims, vec![1, 4, 2, 2]);
+        let vals = read_f32_vec(&out);
+        // co=0 should equal ch0 of input.
+        assert_eq!(&vals[0..4], &[1.0, 2.0, 3.0, 4.0]);
+        // co=1 should equal ch1.
+        assert_eq!(&vals[4..8], &[5.0, 6.0, 7.0, 8.0]);
+        // co=2 should equal ch2.
+        assert_eq!(&vals[8..12], &[9.0, 10.0, 11.0, 12.0]);
+        // co=3 should equal ch3.
+        assert_eq!(&vals[12..16], &[13.0, 14.0, 15.0, 16.0]);
+    }
+
+    #[test]
+    fn test_conv_depthwise_matches_reference() {
+        // Depthwise 2-channel 1x1x2x2 input, 2-channel 1x1 kernel with
+        // distinct weights — each output channel reads exactly one input
+        // channel.
+        let input = make_f32_tensor(&[1, 2, 2, 2], &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]);
+        // Weight shape [C, 1, 1, 1] for depthwise conv.
+        let weight = make_f32_tensor(&[2, 1, 1, 1], &[10.0, 100.0]);
+        let attrs = ConvAttrs {
+            group: 2,
+            ..ConvAttrs::default()
+        };
+        let out = op_conv(&input, &weight, None, &attrs).unwrap();
+        assert_eq!(out.shape.dims, vec![1, 2, 2, 2]);
+        let vals = read_f32_vec(&out);
+        assert_eq!(&vals[0..4], &[10.0, 20.0, 30.0, 40.0]);
+        assert_eq!(&vals[4..8], &[500.0, 600.0, 700.0, 800.0]);
+    }
+
+    #[test]
+    fn test_conv_asymmetric_pads_output_shape() {
+        // 1x1x4x4 input, 2x2 kernel, pads = [top=1, left=2, bottom=0, right=0]
+        // OH = (4 + 1 + 0 - 1 - 1) / 1 + 1 = 4
+        // OW = (4 + 2 + 0 - 1 - 1) / 1 + 1 = 5
+        let input = make_f32_tensor(&[1, 1, 4, 4], &[1.0f32; 16]);
+        let weight = make_f32_tensor(&[1, 1, 2, 2], &[1.0f32; 4]);
+        let attrs = ConvAttrs {
+            pads: [1, 2, 0, 0],
+            ..ConvAttrs::default()
+        };
+        let out = op_conv(&input, &weight, None, &attrs).unwrap();
+        assert_eq!(out.shape.dims, vec![1, 1, 4, 5]);
     }
 
     // ---- Shape inference tests ----
@@ -4237,7 +5025,13 @@ mod tests {
         // Conv bias: [2]
         let conv_bias = make_f32_tensor(&[2], &[0.1, 0.2]);
 
-        let conv_out = op_conv(&input, &conv_weight, Some(&conv_bias)).unwrap();
+        let conv_out = op_conv(
+            &input,
+            &conv_weight,
+            Some(&conv_bias),
+            &ConvAttrs::default(),
+        )
+        .unwrap();
         // Output should be [1, 2, 4, 4] (6-3+1 = 4)
         assert_eq!(conv_out.shape.dims, vec![1, 2, 4, 4]);
 
@@ -4330,7 +5124,7 @@ mod tests {
                 -0.1, 0.0, 0.1, -0.2, 0.0, 0.2, -0.1, 0.0, 0.1, // edge
             ],
         );
-        let conv1_out = op_conv(&input, &conv1_w, None).unwrap();
+        let conv1_out = op_conv(&input, &conv1_w, None, &ConvAttrs::default()).unwrap();
         assert_eq!(conv1_out.shape.dims, vec![1, 2, 6, 6]);
 
         let relu1_out = op_relu(&conv1_out).unwrap();
@@ -4340,7 +5134,7 @@ mod tests {
             .map(|i| ((i % 11) as f32 - 5.0) * 0.05)
             .collect();
         let conv2_w = make_f32_tensor(&[4, 2, 3, 3], &conv2_w_data);
-        let conv2_out = op_conv(&relu1_out, &conv2_w, None).unwrap();
+        let conv2_out = op_conv(&relu1_out, &conv2_w, None, &ConvAttrs::default()).unwrap();
         assert_eq!(conv2_out.shape.dims, vec![1, 4, 4, 4]);
 
         let relu2_out = op_relu(&conv2_out).unwrap();
@@ -4382,7 +5176,7 @@ mod tests {
             raw_data: alloc::vec![0u8; 9 * 4],
         };
         let weight = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
-        let result = op_conv(&input, &weight, None);
+        let result = op_conv(&input, &weight, None, &ConvAttrs::default());
         assert!(matches!(result, Err(OpError::InvalidAttribute(_))));
     }
 
@@ -4391,7 +5185,7 @@ mod tests {
         // 3D input (missing batch dim) should be rejected
         let input = make_f32_tensor(&[1, 3, 3], &[1.0; 9]);
         let weight = make_f32_tensor(&[1, 1, 1, 1], &[1.0]);
-        let result = op_conv(&input, &weight, None);
+        let result = op_conv(&input, &weight, None, &ConvAttrs::default());
         assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
     }
 
@@ -4400,7 +5194,7 @@ mod tests {
         // 4x4 kernel on 3x3 input should be rejected
         let input = make_f32_tensor(&[1, 1, 3, 3], &[1.0; 9]);
         let weight = make_f32_tensor(&[1, 1, 4, 4], &[1.0; 16]);
-        let result = op_conv(&input, &weight, None);
+        let result = op_conv(&input, &weight, None, &ConvAttrs::default());
         assert!(matches!(result, Err(OpError::ShapeMismatch(_))));
     }
 
@@ -5156,6 +5950,118 @@ mod tests {
         assert_eq!(vals, vec![20.0, 40.0]);
     }
 
+    #[test]
+    fn test_op_gather_1d_int64_input() {
+        // Classic MobileNetV2 pattern: int64 shape vector, int64 scalar index.
+        let input = make_i64_tensor(&[4], &[1, 3, 224, 224]);
+        let indices = make_i64_tensor(&[], &[0]);
+        let result = op_gather(&input, &indices, 0).unwrap();
+        assert_eq!(result.data_type, DataType::Int64);
+        // Scalar output — rank 0.
+        assert_eq!(result.shape.dims, Vec::<i64>::new());
+        assert_eq!(result.raw_data.len(), 8);
+        assert_eq!(read_i64(&result.raw_data, 0), 1);
+    }
+
+    #[test]
+    fn test_op_gather_1d_int32_indices() {
+        let input = make_f32_tensor(&[5], &[10.0, 20.0, 30.0, 40.0, 50.0]);
+        let indices = make_i32_tensor(&[3], &[4, 0, 2]);
+        let result = op_gather(&input, &indices, 0).unwrap();
+        assert_eq!(result.shape.dims, vec![3]);
+        assert_eq!(read_f32_vec(&result), vec![50.0, 10.0, 30.0]);
+    }
+
+    #[test]
+    fn test_op_gather_2d_along_axis0() {
+        // 2-D float gather — previously silently zeroed.
+        // Input shape [3, 4], axis=0, indices=[2, 0] -> shape [2, 4].
+        let input = make_f32_tensor(
+            &[3, 4],
+            &[
+                1.0, 2.0, 3.0, 4.0, // row 0
+                5.0, 6.0, 7.0, 8.0, // row 1
+                9.0, 10.0, 11.0, 12.0, // row 2
+            ],
+        );
+        let indices = make_i64_tensor(&[2], &[2, 0]);
+        let result = op_gather(&input, &indices, 0).unwrap();
+        assert_eq!(result.shape.dims, vec![2, 4]);
+        assert_eq!(
+            read_f32_vec(&result),
+            vec![9.0, 10.0, 11.0, 12.0, 1.0, 2.0, 3.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn test_op_gather_2d_along_axis1() {
+        // Input shape [3, 4], axis=1, indices=[3, 1] -> shape [3, 2].
+        let input = make_f32_tensor(
+            &[3, 4],
+            &[
+                1.0, 2.0, 3.0, 4.0, // row 0
+                5.0, 6.0, 7.0, 8.0, // row 1
+                9.0, 10.0, 11.0, 12.0, // row 2
+            ],
+        );
+        let indices = make_i64_tensor(&[2], &[3, 1]);
+        let result = op_gather(&input, &indices, 1).unwrap();
+        assert_eq!(result.shape.dims, vec![3, 2]);
+        assert_eq!(read_f32_vec(&result), vec![4.0, 2.0, 8.0, 6.0, 12.0, 10.0]);
+    }
+
+    #[test]
+    fn test_op_gather_scalar_index_removes_axis() {
+        // Scalar index (rank-0 indices) gathers one element along axis
+        // and removes that dimension from the output.
+        let input = make_f32_tensor(&[4], &[10.0, 20.0, 30.0, 40.0]);
+        let indices = make_i64_tensor(&[], &[2]);
+        let result = op_gather(&input, &indices, 0).unwrap();
+        assert_eq!(result.shape.dims, Vec::<i64>::new());
+        assert_eq!(read_f32_vec(&result), vec![30.0]);
+    }
+
+    #[test]
+    fn test_op_gather_negative_index_wraps() {
+        let input = make_f32_tensor(&[4], &[10.0, 20.0, 30.0, 40.0]);
+        let indices = make_i64_tensor(&[2], &[-1, -4]);
+        let result = op_gather(&input, &indices, 0).unwrap();
+        assert_eq!(read_f32_vec(&result), vec![40.0, 10.0]);
+    }
+
+    #[test]
+    fn test_op_gather_out_of_bounds_errors() {
+        let input = make_f32_tensor(&[3], &[1.0, 2.0, 3.0]);
+        let indices = make_i64_tensor(&[1], &[5]);
+        let err = op_gather(&input, &indices, 0).unwrap_err();
+        assert!(matches!(err, OpError::ShapeMismatch(_)));
+    }
+
+    #[test]
+    fn test_op_gather_string_input_rejected() {
+        let input = Tensor {
+            data_type: DataType::String,
+            shape: TensorShape::new(vec![2]),
+            name: String::new(),
+            raw_data: Vec::new(),
+        };
+        let indices = make_i64_tensor(&[1], &[0]);
+        assert!(matches!(
+            op_gather(&input, &indices, 0),
+            Err(OpError::InvalidAttribute(_))
+        ));
+    }
+
+    #[test]
+    fn test_op_gather_float_indices_rejected() {
+        let input = make_f32_tensor(&[3], &[1.0, 2.0, 3.0]);
+        let bad_indices = make_f32_tensor(&[1], &[0.0]);
+        assert!(matches!(
+            op_gather(&input, &bad_indices, 0),
+            Err(OpError::InvalidAttribute(_))
+        ));
+    }
+
     // ---- Parallel operator tests ----
 
     fn make_float_tensor(shape: Vec<i64>, data: Vec<f32>) -> Tensor {
@@ -5297,9 +6203,9 @@ mod tests {
             w_data,
         );
 
-        let seq = op_conv(&input, &weight, None).unwrap();
+        let seq = op_conv(&input, &weight, None, &ConvAttrs::default()).unwrap();
         let pool = CorePool::new(4);
-        let par = op_conv_parallel(&pool, &input, &weight, None, 0).unwrap();
+        let par = op_conv_parallel(&pool, &input, &weight, None, &ConvAttrs::default(), 0).unwrap();
 
         assert_eq!(seq.shape.dims, par.shape.dims);
         let total = seq.shape.total_elements();
@@ -5575,7 +6481,7 @@ mod tests {
         // clear error, not panic.
         let x = make_bf16_tensor(vec![1, 1, 3, 3], &[0.0f32; 9]);
         let w = make_bf16_tensor(vec![1, 1, 2, 2], &[0.0f32; 4]);
-        let res = op_conv(&x, &w, None);
+        let res = op_conv(&x, &w, None, &ConvAttrs::default());
         assert!(res.is_err(), "Conv with BF16 must return an error");
     }
 }

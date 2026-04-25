@@ -127,6 +127,7 @@ struct ConvDesc {
 }
 
 impl ConvDesc {
+    #[allow(clippy::too_many_arguments)]
     fn new_2d(
         pad_h: i32,
         pad_w: i32,
@@ -134,6 +135,7 @@ impl ConvDesc {
         stride_w: i32,
         dilation_h: i32,
         dilation_w: i32,
+        group: i32,
     ) -> Result<Self, CudaError> {
         let mut desc: ffi::cudnnConvolutionDescriptor_t = core::ptr::null_mut();
         let err = unsafe { ffi::cudnnCreateConvolutionDescriptor(&mut desc) };
@@ -165,6 +167,21 @@ impl ConvDesc {
                 code: err,
             });
         }
+        // cuDNN docs require setting group count after 2d-descriptor
+        // setup and before algorithm selection. Skip for group=1 to
+        // preserve byte-identical behavior on the default path.
+        if group > 1 {
+            let err = unsafe { ffi::cudnnSetConvolutionGroupCount(desc, group) };
+            if err != ffi::CUDNN_STATUS_SUCCESS {
+                unsafe {
+                    ffi::cudnnDestroyConvolutionDescriptor(desc);
+                }
+                return Err(CudaError::DnnError {
+                    op: "setConvGroupCount",
+                    code: err,
+                });
+            }
+        }
         Ok(Self { desc })
     }
 }
@@ -183,14 +200,16 @@ impl Drop for ConvDesc {
 /// Weight format: [out_channels, in_channels, kH, kW].
 ///
 /// Returns None if the input shapes don't match a supported 4D conv pattern.
+#[allow(clippy::too_many_arguments)]
 pub fn gpu_conv2d(
     runtime: &CudaRuntime,
     input: &Tensor,        // [N, C, H, W]
-    weight: &Tensor,       // [K, C, kH, kW]
+    weight: &Tensor,       // [K, C/group, kH, kW]
     bias: Option<&Tensor>, // [K]
     pads: &[i32],          // [pad_top, pad_left, pad_bottom, pad_right] or [pad_h, pad_w]
     strides: &[i32],       // [stride_h, stride_w]
     dilations: &[i32],     // [dilation_h, dilation_w]
+    group: i32,
 ) -> Result<Option<Tensor>, CudaError> {
     let x_dims = &input.shape.dims;
     let w_dims = &weight.shape.dims;
@@ -224,9 +243,17 @@ pub fn gpu_conv2d(
     let w_in = x_dims[3] as i32;
 
     let k = w_dims[0] as i32; // output channels
-    let _c_w = w_dims[1] as i32; // should equal c_in (or c_in/group)
+    let c_w = w_dims[1] as i32; // c_in / group — filter in-channel count
     let kh = w_dims[2] as i32;
     let kw = w_dims[3] as i32;
+
+    // Validate group relationship with input and output channels.
+    if group < 1 {
+        return Ok(None);
+    }
+    if c_in != c_w * group || k % group != 0 {
+        return Ok(None);
+    }
 
     // Parse padding (support both 2-element and 4-element forms).
     let (pad_h, pad_w) = if pads.len() >= 2 {
@@ -252,8 +279,9 @@ pub fn gpu_conv2d(
     // f32); the convolution descriptor itself uses f32 accumulation regardless
     // so BF16 inputs get the same accuracy guarantees as BF16 cuBLAS GEMM.
     let x_desc = TensorDesc::new_4d_dtype(n, c_in, h_in, w_in, dnn_dtype)?;
-    let w_desc = FilterDesc::new_4d_dtype(k, c_in, kh, kw, dnn_dtype)?;
-    let conv_desc = ConvDesc::new_2d(pad_h, pad_w, stride_h, stride_w, dil_h, dil_w)?;
+    // Filter descriptor uses per-group input channels (c_w = c_in / group).
+    let w_desc = FilterDesc::new_4d_dtype(k, c_w, kh, kw, dnn_dtype)?;
+    let conv_desc = ConvDesc::new_2d(pad_h, pad_w, stride_h, stride_w, dil_h, dil_w, group)?;
     let y_desc = TensorDesc::new_4d_dtype(n, k, h_out, w_out, dnn_dtype)?;
 
     // Allocate device buffers.
