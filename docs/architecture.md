@@ -227,3 +227,108 @@ security ──[dev-dep]──▶ net ──[normal]──▶ kernel ──[norm
 - **CI check:** `cargo-modules` with the `--acyclic` flag runs in CI and will fail the build if any production cycle is introduced.
 - **Cargo itself:** Cargo forbids cycles in normal dependencies at the workspace level. A PR that introduces a production cycle will fail `cargo check`.
 - **Structural guarantee:** The 4-layer model makes cycles structurally unlikely. A cycle would require a lower-layer crate to depend on a higher-layer crate, which violates the documented dependency rules and would be caught in review.
+
+## GPU Residency: Hybrid Inference Path
+
+The CUDA execution provider supports two operator-routing modes,
+selectable per-session via `SessionConfig::gpu_residency`:
+
+- `GpuResidency::OpByOp` (default) — each GPU-eligible op copies its
+  inputs to device, runs, and copies the output back to host before
+  the next op starts.
+- `GpuResidency::Hybrid` — per-tensor location tracking keeps
+  intermediate activations device-resident across consecutive
+  GPU-supported ops, eliminating the round-trip.
+
+### Value-location tracking
+
+Inside the hybrid executor (`onnx-rt/src/executor_hybrid.rs`), the
+tensor value map binds each named graph value to one of two states:
+
+```rust
+enum ValueLocation {
+    Host(Tensor),
+    Device(Arc<DeviceTensor>),
+}
+```
+
+A name lives on exactly one side at any moment, never both.
+`Arc<DeviceTensor>` lets branching graphs (one tensor feeding
+multiple consumers) share a device buffer without device→device
+memcpy.
+
+### Dispatch decision
+
+For each node:
+
+1. Examine the first input's residency to determine its current dtype.
+2. Consult `gpu_op_supported(op_type, dtype)` — a table covering
+   `Conv`, `Gemm`, `MatMul`, `BatchNormalization`, `Relu`, `Clip`,
+   `MaxPool`, `AveragePool`, `GlobalAveragePool`, and `Add` for
+   `Float` / `BFloat16` inputs.
+3. If supported, ensure all inputs are on device (uploading any
+   host-resident input via `cudaMemcpyHostToDevice`), call the
+   device-side kernel via `try_gpu_dispatch`, and store the output
+   as `ValueLocation::Device`.
+4. Otherwise, ensure all inputs are on host (copying device-resident
+   ones back via `cudaMemcpyDeviceToHost`), run the existing CPU
+   dispatcher, and store the output as `ValueLocation::Host`.
+5. The next op picks up from whichever residency its inputs hold.
+   The hybrid path never collapses to all-CPU after the first CPU op
+   — subsequent GPU-eligible ops still dispatch to GPU.
+
+### Boundary memcpys
+
+Memcpys happen at exactly four moments:
+
+- **Graph input → first GPU op.** A user-provided host tensor is
+  uploaded the first time a GPU op consumes it.
+- **CPU op → next GPU op.** A CPU op's host output is uploaded when
+  the next GPU op needs it.
+- **GPU op → next CPU op.** A device-resident value is downloaded to
+  host before the CPU op runs.
+- **Graph output.** Any device-resident graph output is downloaded to
+  host before being returned to the caller.
+
+Steady-state vision-graph inference (e.g. ResNet-50) does **zero**
+intermediate device→host copies in hybrid mode — only the input and
+the final classifier output cross the boundary.
+
+### Initializer caching
+
+Initializers (model weights, BN parameters, etc.) are uploaded to
+device exactly once per session via
+`Session::device_initializer_cache`, lazy-populated on the first
+hybrid-mode `run()` call. The cache stores
+`Arc<DeviceTensor>` keyed by tensor name; the executor's value map
+populates initializer entries by `Arc::clone`-ing from the cache,
+which is a refcount bump rather than a buffer copy. This avoids
+re-decoding `TensorProto` bytes and re-uploading all weights on every
+inference.
+
+For ResNet-50 v2 (~25 M parameters), this saves ~100 MB of
+host→device transfers per inference and pushed the measured
+end-to-end speedup from ~111× to ~419× (see
+`docs/benchmarks/arm64-gpu-cpu-vs-gpu.md`).
+
+### Opt-in rollout
+
+`GpuResidency::OpByOp` remains the default for backward compatibility.
+Users opt into the hybrid path by setting
+`SessionConfig::gpu_residency = GpuResidency::Hybrid` at session
+creation time. The runtime falls back to `OpByOp` cleanly if no CUDA
+runtime is attached.
+
+### Limitations
+
+- BFloat16 path is wired but less tested than Float32; the bench
+  numbers in the cited doc are FP32/TF32.
+- Operators not in the `gpu_op_supported` table (Reshape, Concat,
+  Gather, Cast, Shape, Unsqueeze, Dropout, etc.) always run on CPU.
+  Their outputs are typically tiny shape-path tensors and the boundary
+  memcpy is cheap.
+- A device-side bias-add kernel is implemented for `Conv`; other ops
+  do not support an in-graph bias (model authors typically lift bias
+  into a separate `Add` node, which itself dispatches to GPU).
+- Async DMA / multi-stream overlap is not yet wired — every cuDNN
+  call is fully synchronous.

@@ -13,6 +13,11 @@ cpu = []
 std = []
 safetensors = ["std", "dep:memmap2"]
 cuda = ["std", "smallaios-arch-nvidia", "gpu"]
+# Per-op timing instrumentation for the hybrid GPU executor.
+# When enabled, records per-op wall-clock time and host↔device byte
+# counts into a ring buffer on `CudaRuntime`, dumped to stderr at
+# session drop. Off by default — production builds pay zero overhead.
+gpu-profile = ["cuda"]
 tegra = ["cuda", "smallaios-arch-nvidia/tegra"]
 rocm = ["gpu"]
 level-zero = ["gpu"]

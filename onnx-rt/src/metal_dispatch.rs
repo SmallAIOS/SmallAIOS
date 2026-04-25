@@ -464,10 +464,12 @@ fn plan_norm(
     let tg = d.min(256);
     let total = (n as usize) * (d as usize);
 
+    // The shader uses one threadgroup per row (tgid = row). dispatch_threads
+    // takes a *total thread count*, so multiply by tg_size to get `n` groups.
     Some(KernelLaunchPlan {
         kernel_name,
         kernel_source_id,
-        grid_size: [n, 1, 1],
+        grid_size: [n * tg, 1, 1],
         threadgroup_size: [tg, 1, 1],
         input_buffer_count,
         output_buffer_count: 1,
@@ -586,14 +588,17 @@ fn plan_sdpa(input_shapes: &[&[i64]]) -> Option<KernelLaunchPlan> {
     let scale = 1.0_f32 / sqrt_approx(d as f32);
     let scale_bits = scale.to_bits();
 
+    // Each threadgroup computes one output row (one (head, query) pair).
+    // tg sizes the inner reduction over Sk and the per-row write over D, so
+    // pick the larger of the two but cap at 256.
     let grid_x = batch_heads * sq;
-    let tg = 256u32.min(grid_x);
+    let tg = sk.max(d).clamp(1, 256);
     let out_elements = (batch_heads as usize) * (sq as usize) * (d as usize);
 
     Some(KernelLaunchPlan {
         kernel_name: "scaled_dot_product_attention",
         kernel_source_id: "SCALED_DOT_PRODUCT_ATTENTION",
-        grid_size: [grid_x, 1, 1],
+        grid_size: [grid_x * tg, 1, 1],
         threadgroup_size: [tg, 1, 1],
         input_buffer_count: 3, // Q + K + V
         output_buffer_count: 1,
@@ -731,14 +736,15 @@ fn plan_batch_norm(input_shapes: &[&[i64]], attrs: &[(&str, &[i64])]) -> Option<
     }
 
     let grid = n_batch * c;
-    let tg = hw.min(256);
+    let tg = hw.clamp(1, 256);
     let total = (n_batch as usize) * (c as usize) * (hw as usize);
     let epsilon_bits = get_float_attr_bits(attrs, "epsilon", 1e-5);
 
+    // One threadgroup per (n, c) pair; dispatch_threads wants total threads.
     Some(KernelLaunchPlan {
         kernel_name: "batch_normalization",
         kernel_source_id: "BATCH_NORMALIZATION",
-        grid_size: [grid, 1, 1],
+        grid_size: [grid * tg, 1, 1],
         threadgroup_size: [tg, 1, 1],
         input_buffer_count: 5, // data + scale + bias + mean + var
         output_buffer_count: 1,
@@ -1306,8 +1312,9 @@ mod tests {
         let plan = plan_kernel_launch("LayerNormalization", &[&[4, 128]], &[]).unwrap();
         assert_eq!(plan.kernel_name, "layer_normalization");
         assert_eq!(plan.kernel_source_id, "LAYER_NORMALIZATION");
-        assert_eq!(plan.grid_size, [4, 1, 1]); // N rows
-        assert_eq!(plan.threadgroup_size, [128, 1, 1]); // min(D, 256)
+        // grid = N * tg (dispatch_threads wants total threads); tg = min(D, 256) = 128
+        assert_eq!(plan.grid_size, [4 * 128, 1, 1]);
+        assert_eq!(plan.threadgroup_size, [128, 1, 1]);
         assert_eq!(plan.input_buffer_count, 3); // data + scale + bias
         assert_eq!(plan.output_buffer_count, 1);
         assert!(plan.needs_dims_buffer);
@@ -1320,7 +1327,7 @@ mod tests {
     fn test_plan_layer_norm_large_d_capped() {
         let plan = plan_kernel_launch("LayerNormalization", &[&[2, 512]], &[]).unwrap();
         assert_eq!(plan.threadgroup_size, [256, 1, 1]); // capped at 256
-        assert_eq!(plan.grid_size, [2, 1, 1]);
+        assert_eq!(plan.grid_size, [2 * 256, 1, 1]);
     }
 
     #[test]
@@ -1338,7 +1345,7 @@ mod tests {
         assert_eq!(plan.kernel_name, "rms_normalization");
         assert_eq!(plan.kernel_source_id, "RMS_NORMALIZATION");
         assert_eq!(plan.input_buffer_count, 2); // data + scale (no bias)
-        assert_eq!(plan.grid_size, [8, 1, 1]);
+        assert_eq!(plan.grid_size, [8 * 64, 1, 1]);
         assert_eq!(plan.threadgroup_size, [64, 1, 1]);
     }
 
@@ -1388,8 +1395,10 @@ mod tests {
         assert_eq!(plan.kernel_name, "scaled_dot_product_attention");
         assert_eq!(plan.input_buffer_count, 3);
         assert_eq!(plan.output_buffer_count, 1);
-        // grid = batch_heads * Sq = 4 * 8 = 32
-        assert_eq!(plan.grid_size, [32, 1, 1]);
+        // num_threadgroups = batch_heads * Sq = 32; tg = max(Sk, D).min(256) = 64
+        // grid (total threads) = 32 * 64 = 2048
+        assert_eq!(plan.grid_size, [32 * 64, 1, 1]);
+        assert_eq!(plan.threadgroup_size, [64, 1, 1]);
         assert_eq!(plan.param_buffers[0], 8); // Sq
         assert_eq!(plan.param_buffers[1], 12); // Sk
         assert_eq!(plan.param_buffers[2], 64); // D
@@ -1484,9 +1493,9 @@ mod tests {
         assert_eq!(plan.kernel_name, "batch_normalization");
         assert_eq!(plan.kernel_source_id, "BATCH_NORMALIZATION");
         assert_eq!(plan.input_buffer_count, 5); // data + scale + bias + mean + var
-                                                // grid = N * C = 2 * 64 = 128
-        assert_eq!(plan.grid_size, [128, 1, 1]);
-        // threadgroup = min(HW, 256) = min(1024, 256) = 256
+                                                // num_threadgroups = N * C = 128; tg = min(HW, 256) = 256
+                                                // grid (total threads) = 128 * 256 = 32768
+        assert_eq!(plan.grid_size, [128 * 256, 1, 1]);
         assert_eq!(plan.threadgroup_size, [256, 1, 1]);
         assert_eq!(plan.output_shape, vec![2, 64, 32, 32]);
         assert_eq!(plan.output_elements, 2 * 64 * 32 * 32);
@@ -1759,6 +1768,290 @@ mod tests {
             // Planning uses first input shape; the mismatch may surface
             // during execution or planning depending on implementation
             assert!(result.is_ok() || result.is_err());
+        }
+
+        // -------------------------------------------------------------------
+        // Tier 2 — transformer ops, GPU vs. CPU reference
+        // -------------------------------------------------------------------
+
+        /// CPU reference: layer norm over last dim with default eps=1e-5.
+        fn cpu_layer_norm(input: &[f32], d: usize, scale: &[f32], bias: &[f32]) -> Vec<f32> {
+            let eps = 1e-5_f32;
+            let mut out = vec![0.0f32; input.len()];
+            for chunk_start in (0..input.len()).step_by(d) {
+                let row = &input[chunk_start..chunk_start + d];
+                let mean: f32 = row.iter().sum::<f32>() / d as f32;
+                let var: f32 = row.iter().map(|x| (x - mean).powi(2)).sum::<f32>() / d as f32;
+                let inv_std = (var + eps).sqrt().recip();
+                for i in 0..d {
+                    out[chunk_start + i] = (row[i] - mean) * inv_std * scale[i] + bias[i];
+                }
+            }
+            out
+        }
+
+        #[test]
+        fn test_layer_norm_gpu_matches_cpu() {
+            let mut disp = MetalDispatcher::new().expect("Metal required");
+            let input = make_tensor(vec![1, 4], &[1.0, 2.0, 3.0, 4.0]);
+            let scale = make_tensor(vec![4], &[1.0, 1.0, 1.0, 1.0]);
+            let bias = make_tensor(vec![4], &[0.0, 0.0, 0.0, 0.0]);
+            let result = disp
+                .try_execute(
+                    "LayerNormalization",
+                    &[Some(&input), Some(&scale), Some(&bias)],
+                    &[],
+                )
+                .unwrap()
+                .unwrap();
+            let out = tensor_f32(&result[0]);
+            let expected = cpu_layer_norm(
+                &[1.0, 2.0, 3.0, 4.0],
+                4,
+                &[1.0, 1.0, 1.0, 1.0],
+                &[0.0, 0.0, 0.0, 0.0],
+            );
+            assert_approx_eq(&out, &expected, 1e-4);
+        }
+
+        /// Multi-row LayerNorm — exercises the per-row threadgroup dispatch.
+        #[test]
+        fn test_layer_norm_gpu_multi_row_matches_cpu() {
+            let mut disp = MetalDispatcher::new().expect("Metal required");
+            // 3 rows × 4 cols. With grid=[3*4,1,1] tg=[4,1,1] this dispatches
+            // 3 threadgroups; pre-fix only 1 group fired and rows 1/2 were
+            // left as garbage from the output buffer.
+            let input_data = vec![
+                1.0f32, 2.0, 3.0, 4.0, // row 0
+                10.0, 20.0, 30.0, 40.0, // row 1
+                -1.0, -2.0, -3.0, -4.0, // row 2
+            ];
+            let scale = vec![1.0f32, 1.0, 1.0, 1.0];
+            let bias = vec![0.0f32, 0.0, 0.0, 0.0];
+            let input = make_tensor(vec![3, 4], &input_data);
+            let scale_t = make_tensor(vec![4], &scale);
+            let bias_t = make_tensor(vec![4], &bias);
+            let result = disp
+                .try_execute(
+                    "LayerNormalization",
+                    &[Some(&input), Some(&scale_t), Some(&bias_t)],
+                    &[],
+                )
+                .unwrap()
+                .unwrap();
+            let out = tensor_f32(&result[0]);
+            let expected = cpu_layer_norm(&input_data, 4, &scale, &bias);
+            assert_approx_eq(&out, &expected, 1e-4);
+        }
+
+        /// CPU reference: RMS norm over last dim with eps=1e-5, no bias.
+        fn cpu_rms_norm(input: &[f32], d: usize, scale: &[f32]) -> Vec<f32> {
+            let eps = 1e-5_f32;
+            let mut out = vec![0.0f32; input.len()];
+            for chunk_start in (0..input.len()).step_by(d) {
+                let row = &input[chunk_start..chunk_start + d];
+                let mean_sq: f32 = row.iter().map(|x| x * x).sum::<f32>() / d as f32;
+                let inv_rms = (mean_sq + eps).sqrt().recip();
+                for i in 0..d {
+                    out[chunk_start + i] = row[i] * inv_rms * scale[i];
+                }
+            }
+            out
+        }
+
+        #[test]
+        fn test_rms_norm_gpu_matches_cpu() {
+            let mut disp = MetalDispatcher::new().expect("Metal required");
+            let input = make_tensor(vec![1, 4], &[1.0, 2.0, 3.0, 4.0]);
+            let scale = make_tensor(vec![4], &[1.0, 1.0, 1.0, 1.0]);
+            let result = disp
+                .try_execute("RMSNormalization", &[Some(&input), Some(&scale)], &[])
+                .unwrap()
+                .unwrap();
+            let out = tensor_f32(&result[0]);
+            let expected = cpu_rms_norm(&[1.0, 2.0, 3.0, 4.0], 4, &[1.0, 1.0, 1.0, 1.0]);
+            assert_approx_eq(&out, &expected, 1e-4);
+        }
+
+        /// CPU reference: non-interleaved RoPE on a single (batch, seq, D) tensor.
+        fn cpu_rope_non_interleaved(
+            input: &[f32],
+            seq_len: usize,
+            d: usize,
+            cos_cache: &[f32],
+            sin_cache: &[f32],
+        ) -> Vec<f32> {
+            let half_d = d / 2;
+            let mut out = vec![0.0f32; input.len()];
+            let batch = input.len() / (seq_len * d);
+            for b in 0..batch {
+                for s in 0..seq_len {
+                    let base = (b * seq_len + s) * d;
+                    for i in 0..half_d {
+                        let c = cos_cache[s * half_d + i];
+                        let sn = sin_cache[s * half_d + i];
+                        let x0 = input[base + i];
+                        let x1 = input[base + i + half_d];
+                        out[base + i] = x0 * c - x1 * sn;
+                        out[base + i + half_d] = x0 * sn + x1 * c;
+                    }
+                }
+            }
+            out
+        }
+
+        #[test]
+        fn test_rotary_embedding_gpu_matches_cpu() {
+            // batch=1, seq=2, D=4 (half_d=2). cos/sin caches are [seq, half_d].
+            let mut disp = MetalDispatcher::new().expect("Metal required");
+            let input_data = vec![1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0];
+            let cos_data = vec![1.0f32, 0.0, 0.5, 0.5];
+            let sin_data = vec![0.0f32, 1.0, 0.5, -0.5];
+            let input = make_tensor(vec![1, 2, 4], &input_data);
+            let cos_t = make_tensor(vec![2, 2], &cos_data);
+            let sin_t = make_tensor(vec![2, 2], &sin_data);
+            let result = disp
+                .try_execute(
+                    "RotaryEmbedding",
+                    &[Some(&input), Some(&cos_t), Some(&sin_t)],
+                    &[],
+                )
+                .unwrap()
+                .unwrap();
+            let out = tensor_f32(&result[0]);
+            let expected = cpu_rope_non_interleaved(&input_data, 2, 4, &cos_data, &sin_data);
+            assert_approx_eq(&out, &expected, 1e-4);
+        }
+
+        /// CPU reference: SDPA with causal mask. Q/K/V each [BH, S*, D].
+        /// Note: causal_limit in shader is `qi + (Sk - Sq) + 1`; with Sk == Sq, all keys
+        /// up to and including qi are visible.
+        fn cpu_sdpa(
+            q: &[f32],
+            k: &[f32],
+            v: &[f32],
+            bh: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
+        ) -> Vec<f32> {
+            let scale = 1.0_f32 / (d as f32).sqrt();
+            let mut out = vec![0.0f32; bh * sq * d];
+            for h in 0..bh {
+                for qi in 0..sq {
+                    let q_base = h * sq * d + qi * d;
+                    let causal_limit = qi + (sk - sq) + 1;
+                    let mut scores = vec![f32::NEG_INFINITY; sk];
+                    for j in 0..sk {
+                        if j >= causal_limit {
+                            continue;
+                        }
+                        let mut dot = 0.0f32;
+                        for dd in 0..d {
+                            dot += q[q_base + dd] * k[h * sk * d + j * d + dd];
+                        }
+                        scores[j] = dot * scale;
+                    }
+                    let max_s = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                    let exps: Vec<f32> = scores.iter().map(|s| (s - max_s).exp()).collect();
+                    let sum_exp: f32 = exps.iter().sum();
+                    for dd in 0..d {
+                        let mut acc = 0.0f32;
+                        for j in 0..sk {
+                            if j >= causal_limit {
+                                continue;
+                            }
+                            let prob = exps[j] / sum_exp;
+                            acc += prob * v[h * sk * d + j * d + dd];
+                        }
+                        out[h * sq * d + qi * d + dd] = acc;
+                    }
+                }
+            }
+            out
+        }
+
+        #[test]
+        fn test_sdpa_gpu_matches_cpu() {
+            // bh=1, Sq=Sk=2, D=2.
+            let mut disp = MetalDispatcher::new().expect("Metal required");
+            let q_data = vec![1.0f32, 0.0, 0.0, 1.0];
+            let k_data = vec![1.0f32, 0.0, 0.0, 1.0];
+            let v_data = vec![2.0f32, 3.0, 4.0, 5.0];
+            let q = make_tensor(vec![1, 2, 2], &q_data);
+            let k = make_tensor(vec![1, 2, 2], &k_data);
+            let v = make_tensor(vec![1, 2, 2], &v_data);
+            let result = disp
+                .try_execute(
+                    "ScaledDotProductAttention",
+                    &[Some(&q), Some(&k), Some(&v)],
+                    &[],
+                )
+                .unwrap()
+                .unwrap();
+            let out = tensor_f32(&result[0]);
+            let expected = cpu_sdpa(&q_data, &k_data, &v_data, 1, 2, 2, 2);
+            assert_approx_eq(&out, &expected, 1e-4);
+        }
+
+        /// CPU reference: BatchNorm in inference mode over [N, C, H, W].
+        #[allow(clippy::too_many_arguments)]
+        fn cpu_batch_norm(
+            input: &[f32],
+            n: usize,
+            c: usize,
+            hw: usize,
+            scale: &[f32],
+            bias: &[f32],
+            mean: &[f32],
+            var: &[f32],
+        ) -> Vec<f32> {
+            let eps = 1e-5_f32;
+            let mut out = vec![0.0f32; input.len()];
+            for ni in 0..n {
+                for ci in 0..c {
+                    let inv_std = (var[ci] + eps).sqrt().recip();
+                    let base = (ni * c + ci) * hw;
+                    for i in 0..hw {
+                        out[base + i] =
+                            (input[base + i] - mean[ci]) * inv_std * scale[ci] + bias[ci];
+                    }
+                }
+            }
+            out
+        }
+
+        #[test]
+        fn test_batch_norm_gpu_matches_cpu() {
+            // N=1, C=1, H=W=2.
+            let mut disp = MetalDispatcher::new().expect("Metal required");
+            let input_data = vec![1.0f32, 2.0, 3.0, 4.0];
+            let scale = vec![1.0f32];
+            let bias = vec![0.0f32];
+            let mean = vec![2.5f32];
+            let var = vec![1.25f32];
+            let input = make_tensor(vec![1, 1, 2, 2], &input_data);
+            let scale_t = make_tensor(vec![1], &scale);
+            let bias_t = make_tensor(vec![1], &bias);
+            let mean_t = make_tensor(vec![1], &mean);
+            let var_t = make_tensor(vec![1], &var);
+            let result = disp
+                .try_execute(
+                    "BatchNormalization",
+                    &[
+                        Some(&input),
+                        Some(&scale_t),
+                        Some(&bias_t),
+                        Some(&mean_t),
+                        Some(&var_t),
+                    ],
+                    &[],
+                )
+                .unwrap()
+                .unwrap();
+            let out = tensor_f32(&result[0]);
+            let expected = cpu_batch_norm(&input_data, 1, 1, 4, &scale, &bias, &mean, &var);
+            assert_approx_eq(&out, &expected, 1e-4);
         }
     }
 }

@@ -566,6 +566,51 @@ If a merge conflict arises, the **earlier-numbered tier wins** the
 merge slot and the later tier rebases. This rule keeps merge order
 deterministic.
 
+## GPU operator coverage (Apple Metal)
+
+The CPU operator inventory above is the canonical "what runs on
+SmallAIOS" list. GPU coverage is a separate axis: it tells you which
+of those CPU ops also have a Metal kernel that the runtime will
+dispatch to when a `Session` is built with `.with_gpu(GpuConfig::metal())`.
+Unsupported ops fall back to the CPU path transparently within the same
+graph.
+
+Owning OpenSpec change: `metal-operator-kernels-v1` (archived). All
+shaders live in `arch/apple/src/shaders.rs`; dispatch plans in
+`onnx-rt/src/metal_dispatch.rs`.
+
+### Tier 1 — elementwise + matmul + softmax + conv (11 ops)
+
+Add, Sub, Mul, Div, Relu, Sigmoid, Tanh, MatMul, Gemm, Softmax, Conv.
+
+Comparison tests vs. CPU live in `onnx-rt/src/metal_dispatch.rs`
+(macOS-gated). MatMul has a tiled shared-memory variant that runs on
+M1/M2 (no `simdgroup_matrix`); the M3+ path uses `simdgroup_matrix` via
+`#if __METAL_VERSION__ >= 310`.
+
+### Tier 2 — transformer ops (8 ops)
+
+LayerNormalization, RMSNormalization, RotaryEmbedding,
+ScaledDotProductAttention, GroupQueryAttention, BatchNormalization,
+GEMM(int8) with `simdgroup_matrix` on M3+ and shared-mem fallback on
+M1/M2, GEMM(f16).
+
+### What's not on the GPU yet
+
+Reductions (ReduceMean, ReduceSum, …), Cast, reshape-family
+(Reshape, Transpose, Flatten, Squeeze, Unsqueeze), Concat, Gather,
+Slice, Pad, GlobalAveragePool, MaxPool, AveragePool, Clip,
+quantize/dequantize, and all P1+ ops fall back to CPU. They will
+land alongside their respective phases as needed by the target
+workloads.
+
+### M1/M2 vs. M3+
+
+Detected at runtime via `MTLDevice` family. M3+ uses
+`simdgroup_matrix` for matmul/gemm; M1/M2 uses shared-memory tiling.
+The dispatch layer is identical — the difference is only inside the
+shader.
+
 ## Review checkpoints
 
 This document must be reviewed:
