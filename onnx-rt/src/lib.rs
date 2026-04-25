@@ -17,6 +17,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
+#[cfg(feature = "cuda")]
+extern crate std;
 
 pub mod byte_io;
 #[cfg(feature = "cuda")]

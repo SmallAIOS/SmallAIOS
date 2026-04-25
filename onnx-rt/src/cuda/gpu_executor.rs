@@ -235,7 +235,14 @@ pub fn execute_graph_gpu(
     initializers: &[TensorProto],
     runtime: &CudaRuntime,
 ) -> Result<Vec<DeviceTensor>, SessionError> {
-    execute_graph_gpu_with_weights(graph, input_device_tensors, initializers, None, runtime)
+    execute_graph_gpu_with_weights_and_cache(
+        graph,
+        input_device_tensors,
+        initializers,
+        None,
+        None,
+        runtime,
+    )
 }
 
 /// Extended entry point accepting an optional pre-loaded GPU weight map.
@@ -249,6 +256,43 @@ pub fn execute_graph_gpu_with_weights(
     input_device_tensors: &[(String, DeviceTensor)],
     initializers: &[TensorProto],
     pre_loaded_weights: Option<&BTreeMap<String, DeviceTensor>>,
+    runtime: &CudaRuntime,
+) -> Result<Vec<DeviceTensor>, SessionError> {
+    execute_graph_gpu_with_weights_and_cache(
+        graph,
+        input_device_tensors,
+        initializers,
+        pre_loaded_weights,
+        None,
+        runtime,
+    )
+}
+
+/// State threaded through the executor for KV-cache-aware dispatch.
+///
+/// `next_layer_idx` is incremented each time a `GroupQueryAttention`
+/// node is dispatched, mapping graph order to per-layer cache slots
+/// (every transformer layer emits exactly one `GroupQueryAttention`
+/// node — see `model_loader::gemma::build_layer`).
+pub struct KvCacheDispatchCtx<'a> {
+    pub cache: &'a mut crate::cuda::GpuKvCache,
+    pub next_layer_idx: usize,
+}
+
+/// Final entry point combining pre-loaded weights and a KV cache.
+///
+/// `kv_cache` is `Some` for autoregressive safetensors sessions; the
+/// dispatcher routes each `GroupQueryAttention` node to its
+/// corresponding layer slot via a per-call layer counter and calls
+/// `gpu_gqa_with_cache`. After the forward pass the executor calls
+/// `cache.advance_position()` once per token (handled by the caller —
+/// the executor does not advance the position itself, only appends).
+pub fn execute_graph_gpu_with_weights_and_cache(
+    graph: &ExecutionGraph,
+    input_device_tensors: &[(String, DeviceTensor)],
+    initializers: &[TensorProto],
+    pre_loaded_weights: Option<&BTreeMap<String, DeviceTensor>>,
+    kv_cache: Option<&mut crate::cuda::GpuKvCache>,
     runtime: &CudaRuntime,
 ) -> Result<Vec<DeviceTensor>, SessionError> {
     let mut value_map: BTreeMap<String, DeviceTensor> = BTreeMap::new();
@@ -289,6 +333,13 @@ pub fn execute_graph_gpu_with_weights(
         }
     }
 
+    // Wrap the cache (if any) in the dispatch context that carries the
+    // running layer index across nodes.
+    let mut cache_ctx = kv_cache.map(|c| KvCacheDispatchCtx {
+        cache: c,
+        next_layer_idx: 0,
+    });
+
     // Walk the graph in topological order.
     for node_idx in graph.execution_order() {
         let node = &graph.nodes[node_idx.index()];
@@ -306,8 +357,14 @@ pub fn execute_graph_gpu_with_weights(
             })
             .collect();
 
-        let outputs = dispatch_gpu_node(runtime, &node.op_type, &input_refs, &node.attributes)
-            .map_err(|e| SessionError::ExecutionFailed(format!("{}: {}", node.name, e)))?;
+        let outputs = dispatch_gpu_node(
+            runtime,
+            &node.op_type,
+            &input_refs,
+            &node.attributes,
+            cache_ctx.as_mut(),
+        )
+        .map_err(|e| SessionError::ExecutionFailed(format!("{}: {}", node.name, e)))?;
 
         // Store outputs under their declared names. All Section 5 ops
         // are single-output; pair by index and let any trailing declared
@@ -318,6 +375,17 @@ pub fn execute_graph_gpu_with_weights(
             }
             dev_t.name = output_name.clone();
             value_map.insert(output_name.clone(), dev_t);
+        }
+    }
+
+    // §6.14 / §7.4: commit the per-layer K/V appends from this forward
+    // pass with a single advance_position call. Skipped if no GQA op
+    // ran (e.g. graph contains no attention nodes).
+    if let Some(ctx) = cache_ctx.as_mut() {
+        if ctx.next_layer_idx > 0 {
+            ctx.cache.advance_position().map_err(|e| {
+                SessionError::ExecutionFailed(format!("kv_cache advance_position: {}", e))
+            })?;
         }
     }
 
@@ -367,14 +435,18 @@ fn clone_device_tensor(src: &DeviceTensor) -> Result<DeviceTensor, CudaError> {
 
 /// Dispatch a single graph node to its GPU-only implementation.
 ///
-/// Returns `OpError::InternalError` for any unsupported op type — Section
-/// 5 intentionally covers only the four operators with existing GPU
-/// kernels (MatMul, Gemm, MatMulInteger, Conv).
+/// `kv_cache_ctx` is `Some` when the caller wants `GroupQueryAttention`
+/// nodes to read/write a [`crate::cuda::GpuKvCache`]. Each successful
+/// GQA dispatch increments `next_layer_idx`, mapping graph order to
+/// per-layer cache slots.
+///
+/// Returns `OpError::InternalError` for any unsupported op type.
 fn dispatch_gpu_node(
     runtime: &CudaRuntime,
     op_type: &str,
     inputs: &[Option<&DeviceTensor>],
     attrs: &[AttributeProto],
+    mut kv_cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>,
 ) -> Result<Vec<DeviceTensor>, OpError> {
     match op_type {
         "MatMul" => {
@@ -448,6 +520,240 @@ fn dispatch_gpu_node(
             }
             let out = gpu_conv2d_device(runtime, x, w, bias, &pads, &strides, &dilations, group)
                 .map_err(|e| OpError::InternalError(format!("CUDA Conv: {}", e)))?;
+            Ok(vec![out])
+        }
+        // ── transformer-gpu-kernels-v1 §7 ─────────────────────────────
+        "Add" => {
+            let a = take_input(inputs, 0, "Add", "A")?;
+            let b = take_input(inputs, 1, "Add", "B")?;
+            let out = crate::cuda::kernels::elementwise::add_gpu(runtime, a, b)
+                .map_err(|e| OpError::InternalError(format!("CUDA Add: {}", e)))?;
+            Ok(vec![out])
+        }
+        "Mul" => {
+            let a = take_input(inputs, 0, "Mul", "A")?;
+            let b = take_input(inputs, 1, "Mul", "B")?;
+            let out = crate::cuda::kernels::elementwise::mul_gpu(runtime, a, b)
+                .map_err(|e| OpError::InternalError(format!("CUDA Mul: {}", e)))?;
+            Ok(vec![out])
+        }
+        "Silu" => {
+            let x = take_input(inputs, 0, "Silu", "X")?;
+            let out = crate::cuda::kernels::elementwise::silu_gpu(runtime, x)
+                .map_err(|e| OpError::InternalError(format!("CUDA Silu: {}", e)))?;
+            Ok(vec![out])
+        }
+        "Gather" => {
+            let data = take_input(inputs, 0, "Gather", "data")?;
+            let indices = take_input(inputs, 1, "Gather", "indices")?;
+            let mut axis: i64 = 0;
+            for a in attrs {
+                if a.name == "axis" {
+                    axis = a.i;
+                }
+            }
+            let out = crate::cuda::kernels::gather::gather_gpu(runtime, data, indices, axis)
+                .map_err(|e| OpError::InternalError(format!("CUDA Gather: {}", e)))?;
+            Ok(vec![out])
+        }
+        "RMSNormalization" => {
+            let x = take_input(inputs, 0, "RMSNormalization", "X")?;
+            let weight = take_input(inputs, 1, "RMSNormalization", "weight")?;
+            let mut eps = 1e-6f32;
+            for a in attrs {
+                if a.name == "epsilon" {
+                    eps = a.f;
+                }
+            }
+            let out = crate::cuda::kernels::rms_norm::rms_norm_gpu(runtime, x, weight, eps)
+                .map_err(|e| OpError::InternalError(format!("CUDA RMSNormalization: {}", e)))?;
+            Ok(vec![out])
+        }
+        "RotaryEmbedding" => {
+            let x = take_input(inputs, 0, "RotaryEmbedding", "X")?;
+            // Two input forms accepted:
+            //   - microsoft: [X, position_ids, cos_cache, sin_cache]
+            //   - gemma-style: [X, cos_cache, sin_cache]
+            // Disambiguate by the *count* of supplied inputs.
+            let (cos_cache, sin_cache, explicit_positions) = if inputs.len() >= 4 {
+                let pos = take_input(inputs, 1, "RotaryEmbedding", "position_ids")?;
+                let cos = take_input(inputs, 2, "RotaryEmbedding", "cos_cache")?;
+                let sin = take_input(inputs, 3, "RotaryEmbedding", "sin_cache")?;
+                (cos, sin, Some(pos))
+            } else {
+                let cos = take_input(inputs, 1, "RotaryEmbedding", "cos_cache")?;
+                let sin = take_input(inputs, 2, "RotaryEmbedding", "sin_cache")?;
+                (cos, sin, None)
+            };
+            let mut interleaved = false;
+            for a in attrs {
+                if a.name == "interleaved" {
+                    interleaved = a.i != 0;
+                }
+            }
+            // Pick the starting position. With explicit position_ids,
+            // read the first i64. Otherwise use the cache's current
+            // committed position (for cache-aware safetensors decode
+            // steps), defaulting to 0 for cacheless / first-token runs.
+            let position: i32 = if let Some(pos) = explicit_positions {
+                let pos_host = pos.to_host().map_err(|e| {
+                    OpError::InternalError(format!("RotaryEmbedding pos D2H: {}", e))
+                })?;
+                if pos_host.raw_data.len() >= 8 {
+                    let bytes: [u8; 8] = pos_host.raw_data[..8].try_into().unwrap_or([0; 8]);
+                    i64::from_le_bytes(bytes) as i32
+                } else {
+                    0
+                }
+            } else {
+                kv_cache_ctx
+                    .as_ref()
+                    .map(|c| c.cache.current_position() as i32)
+                    .unwrap_or(0)
+            };
+            // The rotary kernels read F32 cos/sin tables; the gemma
+            // builder emits BF16 tables (matches the surrounding
+            // weight dtype). Cast on the fly when needed — the tables
+            // are tiny relative to model weights so the per-call cast
+            // is negligible.
+            let cos_f32_owned;
+            let sin_f32_owned;
+            let cos_ref = if cos_cache.dtype == DataType::BFloat16 {
+                cos_f32_owned =
+                    crate::cuda::kernels::attention::cast_bf16_to_f32_gpu(runtime, cos_cache)
+                        .map_err(|e| {
+                            OpError::InternalError(format!(
+                                "RotaryEmbedding cos cast bf16->f32: {}",
+                                e
+                            ))
+                        })?;
+                &cos_f32_owned
+            } else {
+                cos_cache
+            };
+            let sin_ref = if sin_cache.dtype == DataType::BFloat16 {
+                sin_f32_owned =
+                    crate::cuda::kernels::attention::cast_bf16_to_f32_gpu(runtime, sin_cache)
+                        .map_err(|e| {
+                            OpError::InternalError(format!(
+                                "RotaryEmbedding sin cast bf16->f32: {}",
+                                e
+                            ))
+                        })?;
+                &sin_f32_owned
+            } else {
+                sin_cache
+            };
+            // Read num_heads from attrs; required when input is rank-3
+            // (the layout the gemma builder emits directly from its
+            // Q/K/V projection Gemms). The kernel infers head_dim from
+            // `hidden / num_heads` internally.
+            let mut num_heads_attr: Option<i64> = None;
+            for a in attrs {
+                if a.name == "num_heads" {
+                    num_heads_attr = Some(a.i);
+                }
+            }
+            // For rank-3 inputs without an explicit num_heads attribute,
+            // infer it from the cos/sin table's inner dim (head_dim / 2)
+            // and the input tensor's hidden dim.
+            let num_heads_for_rank3: Option<i64> = if x.shape.len() == 3 {
+                match num_heads_attr {
+                    Some(n) => Some(n),
+                    None => {
+                        let head_dim_from_cos = cos_ref.shape.last().copied().unwrap_or(0) * 2;
+                        let hidden = x.shape[2];
+                        if head_dim_from_cos > 0 && hidden % head_dim_from_cos == 0 {
+                            Some(hidden / head_dim_from_cos)
+                        } else {
+                            None
+                        }
+                    }
+                }
+            } else {
+                None
+            };
+            let out = crate::cuda::kernels::rotary::rotary_gpu(
+                runtime,
+                x,
+                cos_ref,
+                sin_ref,
+                position,
+                interleaved,
+                num_heads_for_rank3,
+            )
+            .map_err(|e| OpError::InternalError(format!("CUDA RotaryEmbedding: {}", e)))?;
+            Ok(vec![out])
+        }
+        "GroupQueryAttention" => {
+            let q = take_input(inputs, 0, "GroupQueryAttention", "Q")?;
+            let new_k = take_input(inputs, 1, "GroupQueryAttention", "K")?;
+            let new_v = take_input(inputs, 2, "GroupQueryAttention", "V")?;
+            let mut local_window: i64 = -1;
+            let mut num_heads_attr: i64 = 0;
+            let mut kv_num_heads_attr: i64 = 0;
+            for a in attrs {
+                match a.name.as_str() {
+                    "local_window_size" => local_window = a.i,
+                    "num_heads" => num_heads_attr = a.i,
+                    "kv_num_heads" => kv_num_heads_attr = a.i,
+                    _ => {}
+                }
+            }
+            let window: Option<i32> = if local_window > 0 {
+                Some(local_window as i32)
+            } else {
+                None
+            };
+            // Rank-3 inputs come straight from the gemma Gemm
+            // projections — dispatch through `gpu_gqa_rank3` which
+            // transposes to head-major layout before invoking the
+            // core GQA driver. For cache semantics we currently fall
+            // back to the no-cache path when input is rank-3 (batched
+            // append across Sq>1 tokens is a follow-up).
+            let is_rank3 = q.shape.len() == 3 && new_k.shape.len() == 3 && new_v.shape.len() == 3;
+            let out = if is_rank3 {
+                if num_heads_attr <= 0 || kv_num_heads_attr <= 0 {
+                    return Err(OpError::InternalError(
+                        "GroupQueryAttention rank-3: need num_heads / kv_num_heads attrs".into(),
+                    ));
+                }
+                // Still advance layer counter so subsequent GQA nodes
+                // index the next layer consistently.
+                if let Some(ctx) = kv_cache_ctx.as_mut() {
+                    ctx.next_layer_idx += 1;
+                }
+                crate::cuda::kernels::attention::gpu_gqa_rank3(
+                    runtime,
+                    q,
+                    new_k,
+                    new_v,
+                    num_heads_attr,
+                    kv_num_heads_attr,
+                    window,
+                    None,
+                )
+                .map_err(|e| {
+                    OpError::InternalError(format!("CUDA GroupQueryAttention (rank-3): {}", e))
+                })?
+            } else if let Some(ctx) = kv_cache_ctx {
+                let layer_idx = ctx.next_layer_idx;
+                ctx.next_layer_idx += 1;
+                crate::cuda::kernels::attention::gpu_gqa_with_cache(
+                    runtime, q, new_k, new_v, ctx.cache, layer_idx, window, None,
+                )
+                .map_err(|e| {
+                    OpError::InternalError(format!("CUDA GroupQueryAttention (cache): {}", e))
+                })?
+            } else {
+                crate::cuda::kernels::attention::gpu_gqa(runtime, q, new_k, new_v, window, None)
+                    .map_err(|e| {
+                        OpError::InternalError(format!("CUDA GroupQueryAttention: {}", e))
+                    })?
+            };
+            // The microsoft GQA op declares 3 outputs (attn_out, present_k,
+            // present_v). v1 dispatcher only emits attn_out — present K/V
+            // live inside the persistent GpuKvCache, not in the value map.
             Ok(vec![out])
         }
         other => Err(OpError::InternalError(format!(
@@ -653,9 +959,21 @@ pub fn gpu_gemm_device(
 
     super::synchronize()?;
 
+    // Preserve leading batch dims from `a`. For a rank-3 input
+    // `[B, M, K]` (or `[B, K, M]` when trans_a) we emit rank-3
+    // `[B, M, N]`; rank-2 inputs stay rank-2.
+    let out_shape: Vec<i64> = if a_dims.len() > 2 {
+        let mut s: Vec<i64> = a_dims[..a_dims.len() - 2].to_vec();
+        s.push(m as i64);
+        s.push(n as i64);
+        s
+    } else {
+        vec![m as i64, n as i64]
+    };
+
     Ok(DeviceTensor {
         buffer: c_buf,
-        shape: vec![m as i64, n as i64],
+        shape: out_shape,
         dtype: out_data_type,
         name: String::new(),
     })

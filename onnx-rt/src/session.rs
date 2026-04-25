@@ -732,10 +732,12 @@ impl Session {
             input_pairs.push((inp.name.clone(), dev));
         }
 
-        // Lock the KV cache for the duration of the forward pass so its
-        // lifetime is coupled with the run. Currently just proves the
-        // field is live; see TODO(kv-cache) above.
-        let _kv_guard = if let Some(cache) = &self.kv_cache {
+        // Lock the KV cache for the duration of the forward pass.
+        // §7.4: pass the locked guard into the executor so the dispatcher
+        // routes each GroupQueryAttention node to its layer slot via
+        // gpu_gqa_with_cache. Resolves the TODO from
+        // safetensors-model-loader-v1 §9.
+        let mut kv_guard = if let Some(cache) = &self.kv_cache {
             Some(cache.lock().map_err(|_| {
                 SessionError::ExecutionFailed(String::from("kv_cache mutex poisoned"))
             })?)
@@ -744,12 +746,14 @@ impl Session {
         };
 
         let weights_ref = self.gpu_weights.as_deref();
+        let cache_ref: Option<&mut crate::cuda::GpuKvCache> = kv_guard.as_deref_mut();
 
-        let device_outputs = crate::cuda::execute_graph_gpu_with_weights(
+        let device_outputs = crate::cuda::gpu_executor::execute_graph_gpu_with_weights_and_cache(
             graph,
             &input_pairs,
             &self.initializers,
             weights_ref,
+            cache_ref,
             runtime,
         )?;
 
@@ -787,6 +791,25 @@ impl Session {
                 .reset();
         }
         Ok(())
+    }
+
+    /// Returns the current committed token position of the KV cache, or
+    /// `None` for sessions without a cache (ONNX-backed sessions).
+    ///
+    /// Equivalent to [`crate::cuda::GpuKvCache::current_position`] on
+    /// the locked cache. Used by tests to assert that the dispatcher
+    /// is actually appending tokens during the forward pass.
+    #[cfg(feature = "cuda")]
+    pub fn kv_cache_position(&self) -> Result<Option<usize>, SessionError> {
+        match &self.kv_cache {
+            Some(cache) => {
+                let g = cache.lock().map_err(|_| {
+                    SessionError::ExecutionFailed(String::from("kv_cache mutex poisoned"))
+                })?;
+                Ok(Some(g.current_position()))
+            }
+            None => Ok(None),
+        }
     }
 
     /// Runs inference and returns a per-operator timing profile alongside
@@ -922,6 +945,15 @@ impl Session {
             crate::model_loader::build_gemma_graph(&gemma_config, &file)
                 .map_err(|e| SessionError::InvalidModel(alloc::format!("{}", e)))?
         };
+
+        // 3.5 Compile + register the NVRTC kernels the dispatcher will
+        //     need (Gather/Add/Mul/Silu/RMSNorm/Rotary/GQA support
+        //     kernels). Idempotent on subsequent sessions sharing the
+        //     same runtime — `init_kernels` no-ops on already-registered
+        //     entries by overwriting them.
+        cuda_runtime
+            .init_kernels()
+            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("init_kernels: {}", e)))?;
 
         // 4. Materialize initializers -> GPU weight map.
         let gpu_weights = crate::cuda::initializers_to_gpu(&built.initializers, &cuda_runtime)
