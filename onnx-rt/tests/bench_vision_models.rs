@@ -58,6 +58,7 @@ fn make_input(name: &str, shape: &[i64]) -> Tensor {
     t
 }
 
+#[allow(dead_code)] // used only on the cuda feature path
 fn read_f32_slice(t: &Tensor) -> Vec<f32> {
     t.raw_data
         .chunks_exact(4)
@@ -99,6 +100,7 @@ fn report(label: &str, samples: &[f64]) -> Stats {
 }
 
 /// Comparison result between two output tensors.
+#[allow(dead_code)] // used only on the cuda feature path
 struct Diff {
     len_matches: bool,
     cpu_len: usize,
@@ -111,6 +113,7 @@ struct Diff {
 /// Compare two output tensors element-wise. Reports length mismatch as
 /// a soft finding rather than panicking — real-model CPU-vs-GPU shape
 /// divergence is something the benchmark is designed to surface.
+#[allow(dead_code)] // used only on the cuda feature path
 fn compare_outputs(a: &Tensor, b: &Tensor) -> Diff {
     let va = read_f32_slice(a);
     let vb = read_f32_slice(b);
@@ -347,7 +350,9 @@ fn run_cpu_vs_gpu_full(
     fixture: &str,
     input_name: &str,
     input_shape: &[i64],
-    expected_output_dims: Option<&[i64]>,
+    #[cfg_attr(not(feature = "cuda"), allow(unused_variables))] expected_output_dims: Option<
+        &[i64],
+    >,
     bench_mode: BenchMode,
 ) {
     let Some((cpu_session, in_name, shape)) = load_vision_model(fixture, input_name, input_shape)
