@@ -238,8 +238,41 @@ LIBRARY_PATH=/usr/local/cuda/lib64 LD_LIBRARY_PATH=/usr/local/cuda/lib64 \
   CUDA runtime's default precision (TF32 on Blackwell). A separate
   FP32-mode pass would establish the TF32 contribution to the speedup.
 
+## CUDA Graph capture (cuda-graphs-v1)
+
+A new bench mode, `BenchMode::HybridGraph`, layers CUDA Graph capture
+on top of the hybrid path. Each model has a corresponding bench:
+
+```bash
+cargo test -p smallaios-onnx-rt --release --test bench_vision_models \
+  --no-default-features --features cuda -- --ignored --nocapture \
+  bench_resnet50_cpu_vs_gpu_hybrid_with_graph
+# … and similar for mlp / squeezenet / mobilenet_v2.
+```
+
+The first inference runs the per-op path to seed the cache; subsequent
+inferences in the warm-up loop replay the captured graph as a single
+`cudaGraphLaunch`. Mean latency reported by the bench is post-warm-up
+so it reflects the steady-state replay cost.
+
+**Targets** (vs the corresponding `*_hybrid` baseline above):
+
+| Model         | Hybrid baseline | HybridGraph target | Speedup |
+|---------------|-----------------|--------------------|---------|
+| ResNet-50 v2  | ~33 ms          | ~22 ms             | ≥1.5×   |
+| MobileNetV2   | (TBD)           | (TBD)              | ≥1.2×   |
+| SqueezeNet    | (TBD)           | (TBD)              | ≥1.2×   |
+| MLP           | (TBD)           | (TBD)              | ≥1.2×   |
+
+Numerical correctness: capture-vs-per-op `max_abs_diff` ≤ 1e-4 (same
+compute, different launch mechanism). The bench panics if either path
+fails or shapes diverge.
+
+DGX Spark numbers will be filled in when the benches run on hardware.
+
 ## Related documents
 
 - `openspec/changes/arm64-gpu-container-v1/tasks.md` (tasks 14.1, 14.2)
+- `openspec/changes/cuda-graphs-v1/` — graph capture design + tasks
 - `docs/onnx-coverage-roadmap.md` — operator coverage plan
 - `onnx-rt/tests/bench_vision_models.rs` — benchmark harness source

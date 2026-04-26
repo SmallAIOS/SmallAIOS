@@ -332,3 +332,58 @@ runtime is attached.
   into a separate `Add` node, which itself dispatches to GPU).
 - Async DMA / multi-stream overlap is not yet wired — every cuDNN
   call is fully synchronous.
+
+### CUDA Graph Capture (cuda-graphs-v1)
+
+Layered on top of the hybrid path, `SessionConfig::cuda_graph =
+CudaGraphMode::Capture` enables CUDA Graph capture / replay. The
+hybrid executor's per-op dispatch loop pays ~10–50 µs of host-side
+launch overhead per cuDNN / cuBLAS call. With ~170 ops per ResNet-50
+inference that's ~5 ms of pure overhead per run. Graph capture
+collapses N kernel launches into a single `cudaGraphLaunch` call.
+
+**How it works:**
+
+1. **First inference (cache miss).** Runs the existing per-op path
+   to produce a correct output, then attempts to capture the same op
+   sequence on a dedicated CUDA stream. The capture path:
+   - allocates persistent input `DeviceTensor`s and pre-loads the
+     user inputs (so the first replay reproduces the per-op output)
+   - binds cuDNN + cuBLAS handles to the capture stream via
+     `cudnnSetStream` / `cublasSetStream_v2`
+   - wraps the dispatch loop in `cudaStreamBeginCapture` /
+     `cudaStreamEndCapture`
+   - calls `cudaGraphInstantiate` to build the executable graph
+   - stores the graph + persistent buffers + every intermediate
+     `DeviceTensor` (so the captured pointers stay live for replay)
+     in a per-Session `CudaGraphCache` keyed by input
+     `(shape, dtype)` tuple.
+2. **Subsequent inferences (cache hit).** `try_replay` does
+   `cudaMemcpyAsync` of the new user input into the persistent input
+   buffer, calls `cudaGraphLaunch`, syncs, and `cudaMemcpyAsync`s
+   outputs back to host. One host call replaces ~170.
+3. **Cache invalidation.** A new input shape produces a new
+   `GraphKey`, missing the cache and triggering a re-capture for
+   that shape. Multiple shapes can coexist in the cache (e.g.
+   batch 1, 4, 16, 64 each get their own captured graph).
+4. **Disable on thrash.** After 32 inferences, if rebuilds exceed
+   1% of inferences, the cache disables itself for the remaining
+   Session lifetime — capturing and discarding is slower than just
+   running per-op.
+5. **Graceful fallback.** Capture / instantiation / replay failures
+   never propagate. They log a single warning, evict the bad entry
+   (replay) or mark the cache disabled (capture), and fall through
+   to per-op execution. Only actual op failures (e.g. cuDNN
+   `BAD_PARAM`) surface as `SessionError`.
+
+The cache lives in `Session::cuda_graph_cache: RefCell<Option<...>>`,
+lazily created on the first capture-mode run. `CudaGraphMode::Off`
+(the default) is a complete no-op — byte-for-byte identical to the
+hybrid path before this change.
+
+**Targets:** ≥1.5× ResNet-50 over hybrid alone (~33 ms → ~22 ms),
+≥1.2× on MLP / SqueezeNet / MobileNetV2. Output `max_abs_diff`
+between capture and per-op modes ≤ 1e-4 (same compute, just
+different launch mechanism). See
+`onnx-rt/tests/bench_vision_models.rs` for the
+`*_hybrid_with_graph` benchmark variants.
