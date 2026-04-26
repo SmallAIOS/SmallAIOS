@@ -1,4 +1,4 @@
-## MODIFIED Requirements
+## ADDED Requirements
 
 ### Requirement: GPU-only operator dispatch
 The GPU-resident executor SHALL dispatch every operator in a forward pass to a GPU implementation, with no silent host fallback, and SHALL support the full Gemma / Llama / Qwen transformer operator set.
