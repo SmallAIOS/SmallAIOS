@@ -31,7 +31,11 @@ use crate::cuda::{
     activation::{gpu_clip, gpu_relu},
     batchnorm::gpu_batchnorm,
     elementwise::gpu_add,
+    ffi,
     gpu_executor::{tensor_to_device, DeviceTensor},
+    graph::CudaGraph,
+    graph_cache::{CudaGraphCache, GraphEntry, GraphKey},
+    memory::DeviceBuffer,
     pool::{gpu_averagepool, gpu_globalaveragepool, gpu_maxpool},
     CudaRuntime,
 };
@@ -39,8 +43,8 @@ use crate::executor;
 use crate::graph::ExecutionGraph;
 use crate::onnx_types::{AttributeProto, TensorProto};
 use crate::operators::{BatchNormAttrs, ConvAttrs, OpError, PoolAttrs};
-use crate::session::{InferenceOutput, SessionError};
-use crate::tensor::{DataType, Tensor};
+use crate::session::{CudaGraphMode, InferenceOutput, SessionError};
+use crate::tensor::{DataType, Tensor, TensorShape};
 
 /// Per-named-value residency: a tensor lives on either host or device
 /// at any moment, never both. Branching (multiple consumers) shares the
@@ -323,6 +327,20 @@ pub fn execute_graph_hybrid(
     runtime: &CudaRuntime,
     device_initializer_cache: Option<&BTreeMap<String, Arc<DeviceTensor>>>,
 ) -> Result<Vec<InferenceOutput>, SessionError> {
+    let mut value_map = build_initial_value_map(inputs, initializers, device_initializer_cache);
+    run_op_loop(graph, &mut value_map, runtime)?;
+    extract_host_outputs(&graph.output_names, &mut value_map)
+}
+
+/// Seed a fresh value map with the per-inference inputs and the
+/// (possibly cached) device-resident initializers. Initializers
+/// missing from the cache fall back to a host-side decode of their
+/// `TensorProto`.
+fn build_initial_value_map(
+    inputs: &[(String, Tensor)],
+    initializers: &[TensorProto],
+    device_initializer_cache: Option<&BTreeMap<String, Arc<DeviceTensor>>>,
+) -> BTreeMap<String, ValueLocation> {
     let mut value_map: BTreeMap<String, ValueLocation> = BTreeMap::new();
 
     for (name, tensor) in inputs {
@@ -341,6 +359,19 @@ pub fn execute_graph_hybrid(
         }
     }
 
+    value_map
+}
+
+/// Run the per-op dispatch loop against a pre-seeded `value_map`.
+/// Splits the residency-tracking core out of [`execute_graph_hybrid`]
+/// so the CUDA Graph capture path can wrap exactly the same op
+/// sequence in `cudaStreamBeginCapture` / `cudaStreamEndCapture`
+/// without re-implementing dispatch.
+fn run_op_loop(
+    graph: &ExecutionGraph,
+    value_map: &mut BTreeMap<String, ValueLocation>,
+    runtime: &CudaRuntime,
+) -> Result<(), SessionError> {
     for node_idx in graph.execution_order() {
         let node = &graph.nodes[node_idx.index()];
 
@@ -367,7 +398,7 @@ pub fn execute_graph_hybrid(
                 if name.is_empty() {
                     continue;
                 }
-                if ensure_device(&mut value_map, name, runtime).is_err() {
+                if ensure_device(value_map, name, runtime).is_err() {
                     all_ok = false;
                     break;
                 }
@@ -378,7 +409,7 @@ pub fn execute_graph_hybrid(
                     if name.is_empty() {
                         continue;
                     }
-                    device_inputs.push(require_device(&value_map, name)?);
+                    device_inputs.push(require_device(value_map, name)?);
                 }
                 #[cfg(feature = "gpu-profile")]
                 let _op_start = std::time::Instant::now();
@@ -425,7 +456,7 @@ pub fn execute_graph_hybrid(
             // Bring all device-resident inputs back to host first.
             for name in &node.inputs {
                 if !name.is_empty() {
-                    ensure_host(&mut value_map, name)?;
+                    ensure_host(value_map, name)?;
                 }
             }
             let inputs_host: Vec<Option<&Tensor>> = node
@@ -466,9 +497,21 @@ pub fn execute_graph_hybrid(
         }
     }
 
+    let _ = ConvAttrs::default(); // suppress unused-import warning
+    Ok(())
+}
+
+/// Pull each named graph output back to the host and assemble the
+/// final `Vec<InferenceOutput>`. Removes entries from `value_map` so
+/// the caller (capture path) can reuse the map for liveness anchoring
+/// of intermediates.
+fn extract_host_outputs(
+    output_names: &[String],
+    value_map: &mut BTreeMap<String, ValueLocation>,
+) -> Result<Vec<InferenceOutput>, SessionError> {
     let mut results = Vec::new();
-    for output_name in &graph.output_names {
-        ensure_host(&mut value_map, output_name)?;
+    for output_name in output_names {
+        ensure_host(value_map, output_name)?;
         let tensor = match value_map.remove(output_name) {
             Some(ValueLocation::Host(t)) => t,
             _ => {
@@ -483,7 +526,416 @@ pub fn execute_graph_hybrid(
             tensor,
         });
     }
-
-    let _ = ConvAttrs::default(); // suppress unused-import warning
     Ok(results)
+}
+
+// ───────────────────────────────────────────────────────────────────
+// CUDA Graph capture / replay
+// ───────────────────────────────────────────────────────────────────
+
+/// Hybrid execution with optional CUDA Graph capture / replay.
+///
+/// Behaves identically to [`execute_graph_hybrid`] when `mode` is
+/// `Off`, the runtime's cache is disabled, or the cache lookup
+/// fails. When the cache is hit, replays the captured graph. When
+/// missed and not yet disabled, attempts to capture a new graph for
+/// the next inference and falls through to per-op for *this*
+/// inference — capture during the warm-up has subtle correctness
+/// requirements (see `attempt_capture` for details) so we keep it
+/// out of the hot path.
+///
+/// Errors from capture / replay never propagate: on any failure we
+/// log a single warning, mark the cache disabled, and fall back to
+/// per-op execution. Only actual op failures (e.g. cuDNN returning
+/// `CUDNN_STATUS_BAD_PARAM`) surface as `SessionError`.
+pub fn execute_graph_hybrid_with_capture(
+    graph: &ExecutionGraph,
+    inputs: &[(String, Tensor)],
+    initializers: &[TensorProto],
+    runtime: &CudaRuntime,
+    device_initializer_cache: Option<&BTreeMap<String, Arc<DeviceTensor>>>,
+    cache_slot: &mut Option<CudaGraphCache>,
+    mode: CudaGraphMode,
+) -> Result<Vec<InferenceOutput>, SessionError> {
+    if !matches!(mode, CudaGraphMode::Capture) {
+        return execute_graph_hybrid(
+            graph,
+            inputs,
+            initializers,
+            runtime,
+            device_initializer_cache,
+        );
+    }
+
+    // Lazily create the cache on first capture-mode call.
+    if cache_slot.is_none() {
+        match CudaGraphCache::new() {
+            Ok(c) => *cache_slot = Some(c),
+            Err(e) => {
+                // Stream creation failed — log once, fall through.
+                #[cfg(feature = "std")]
+                eprintln!(
+                    "cuda-graphs: stream creation failed ({}); disabling capture",
+                    e
+                );
+                let _ = e;
+                return execute_graph_hybrid(
+                    graph,
+                    inputs,
+                    initializers,
+                    runtime,
+                    device_initializer_cache,
+                );
+            }
+        }
+    }
+
+    let cache = cache_slot.as_mut().expect("just initialized");
+    cache.note_inference();
+
+    if cache.disabled {
+        return execute_graph_hybrid(
+            graph,
+            inputs,
+            initializers,
+            runtime,
+            device_initializer_cache,
+        );
+    }
+
+    let key = GraphKey::from_inputs(inputs);
+
+    // Cache hit → try replay.
+    if cache.entries.contains_key(&key) {
+        match try_replay(cache, &key, inputs) {
+            Ok(outputs) => return Ok(outputs),
+            Err(e) => {
+                #[cfg(feature = "std")]
+                eprintln!(
+                    "cuda-graphs: replay failed ({:?}); discarding cached entry and falling back",
+                    e
+                );
+                let _ = e;
+                cache.entries.remove(&key);
+                return execute_graph_hybrid(
+                    graph,
+                    inputs,
+                    initializers,
+                    runtime,
+                    device_initializer_cache,
+                );
+            }
+        }
+    }
+
+    // Cache miss → run per-op (always correct), then attempt capture
+    // for the next inference. The first call pays the per-op cost;
+    // subsequent calls of the same shape replay the captured graph.
+    let outputs = execute_graph_hybrid(
+        graph,
+        inputs,
+        initializers,
+        runtime,
+        device_initializer_cache,
+    )?;
+
+    match attempt_capture(
+        graph,
+        inputs,
+        initializers,
+        runtime,
+        device_initializer_cache,
+        cache,
+        &key,
+    ) {
+        Ok(()) => {
+            cache.note_rebuild();
+        }
+        Err(e) => {
+            #[cfg(feature = "std")]
+            eprintln!(
+                "cuda-graphs: capture failed ({:?}); disabling for this Session",
+                e
+            );
+            let _ = e;
+            cache.disabled = true;
+        }
+    }
+
+    Ok(outputs)
+}
+
+/// Replay path: copy host inputs into the cached input buffers, launch
+/// the captured graph, copy outputs back to host.
+fn try_replay(
+    cache: &mut CudaGraphCache,
+    key: &GraphKey,
+    inputs: &[(String, Tensor)],
+) -> Result<Vec<InferenceOutput>, SessionError> {
+    let entry = cache
+        .entries
+        .get(key)
+        .ok_or_else(|| SessionError::ExecutionFailed("cache miss in try_replay".into()))?;
+
+    if inputs.len() != entry.input_tensors.len() {
+        return Err(SessionError::ExecutionFailed(format!(
+            "input count mismatch: cached {}, got {}",
+            entry.input_tensors.len(),
+            inputs.len()
+        )));
+    }
+
+    // H2D async into the persistent input tensors' buffers. The
+    // captured graph hard-codes these device pointers; replay reuses
+    // them by writing fresh bytes in place.
+    for (i, (_, t)) in inputs.iter().enumerate() {
+        let dt = &entry.input_tensors[i];
+        if t.raw_data.len() > dt.buffer.size() {
+            return Err(SessionError::ExecutionFailed(format!(
+                "input #{} byte size {} exceeds cached buffer {}",
+                i,
+                t.raw_data.len(),
+                dt.buffer.size()
+            )));
+        }
+        let err = unsafe {
+            ffi::cudaMemcpyAsync(
+                dt.buffer.as_mut_ptr(),
+                t.raw_data.as_ptr() as *const _,
+                t.raw_data.len(),
+                ffi::cudaMemcpyKind::cudaMemcpyHostToDevice,
+                cache.capture_stream.raw(),
+            )
+        };
+        if err != ffi::CUDA_SUCCESS {
+            return Err(SessionError::ExecutionFailed(format!(
+                "cudaMemcpyAsync H2D input #{}: code {}",
+                i, err
+            )));
+        }
+    }
+
+    // Single host-side launch replaces N cuDNN/cuBLAS calls.
+    #[cfg(feature = "gpu-profile")]
+    let _launch_start = std::time::Instant::now();
+    entry
+        .graph_exec
+        .launch(&cache.capture_stream)
+        .map_err(|e| SessionError::ExecutionFailed(format!("cudaGraphLaunch: {}", e)))?;
+    #[cfg(feature = "gpu-profile")]
+    crate::cuda::profile::record_op("graph_launch", _launch_start);
+
+    // D2H back to fresh host tensors. We must wait for the graph to
+    // finish — `to_host` on a DeviceTensor uses a synchronous memcpy,
+    // which serves as the implicit barrier.
+    cache
+        .capture_stream
+        .synchronize()
+        .map_err(|e| SessionError::ExecutionFailed(format!("cudaStreamSynchronize: {}", e)))?;
+
+    let mut results = Vec::with_capacity(entry.output_tensors.len());
+    for (name, dt) in entry.output_names.iter().zip(entry.output_tensors.iter()) {
+        let tensor = dt
+            .to_host()
+            .map_err(|e| SessionError::ExecutionFailed(format!("output D2H: {}", e)))?;
+        results.push(InferenceOutput {
+            name: name.clone(),
+            tensor: Tensor {
+                data_type: tensor.data_type,
+                shape: tensor.shape,
+                name: name.clone(),
+                raw_data: tensor.raw_data,
+            },
+        });
+    }
+    Ok(results)
+}
+
+/// Capture path: pre-allocate persistent input buffers, bind cuDNN /
+/// cuBLAS handles to the capture stream, run the existing op-loop
+/// inside `cudaStreamBeginCapture` / `cudaStreamEndCapture`,
+/// instantiate the resulting graph, and store everything in the
+/// cache.
+///
+/// Anchors every device tensor produced during capture in the
+/// `GraphEntry` so intermediate buffers don't get freed (the graph
+/// references their pointers).
+fn attempt_capture(
+    graph: &ExecutionGraph,
+    inputs: &[(String, Tensor)],
+    initializers: &[TensorProto],
+    runtime: &CudaRuntime,
+    device_initializer_cache: Option<&BTreeMap<String, Arc<DeviceTensor>>>,
+    cache: &mut CudaGraphCache,
+    key: &GraphKey,
+) -> Result<(), SessionError> {
+    // 1. Allocate persistent input DeviceTensors and pre-load with
+    //    the current input bytes (so the first replay produces the
+    //    same outputs the per-op warm-up just produced). The buffer
+    //    pointers stored here are what the captured graph will
+    //    reference; they must stay alive for the cache lifetime.
+    let mut input_dts: Vec<Arc<DeviceTensor>> = Vec::with_capacity(inputs.len());
+    for (_, t) in inputs {
+        let buf = DeviceBuffer::alloc(t.raw_data.len())
+            .map_err(|e| SessionError::ExecutionFailed(format!("input alloc: {}", e)))?;
+        buf.copy_from_host(&t.raw_data)
+            .map_err(|e| SessionError::ExecutionFailed(format!("input H2D: {}", e)))?;
+        let dt = DeviceTensor {
+            buffer: buf,
+            shape: t.shape.dims.clone(),
+            dtype: t.data_type,
+            name: String::new(),
+        };
+        input_dts.push(Arc::new(dt));
+    }
+
+    // 2. Bind cuDNN / cuBLAS handles to the capture stream so their
+    //    launches enqueue on it.
+    bind_handles_to_stream(runtime, cache.capture_stream.raw())?;
+
+    // RAII guard: always reset handles to the default stream when this
+    // function returns, success or failure.
+    struct ResetOnDrop<'a> {
+        rt: &'a CudaRuntime,
+    }
+    impl Drop for ResetOnDrop<'_> {
+        fn drop(&mut self) {
+            let _ = bind_handles_to_stream(self.rt, core::ptr::null_mut());
+        }
+    }
+    let _reset = ResetOnDrop { rt: runtime };
+
+    // 3. Begin capture.
+    let err = unsafe {
+        ffi::cudaStreamBeginCapture(
+            cache.capture_stream.raw(),
+            ffi::cudaStreamCaptureMode::ThreadLocal,
+        )
+    };
+    if err != ffi::CUDA_SUCCESS {
+        return Err(SessionError::ExecutionFailed(format!(
+            "cudaStreamBeginCapture: code {}",
+            err
+        )));
+    }
+
+    // 4. Seed the value map with the persistent input tensors and
+    //    initializers, then run the op loop.
+    let mut value_map: BTreeMap<String, ValueLocation> =
+        build_initial_value_map(&[], initializers, device_initializer_cache);
+    for ((name, _), dt) in inputs.iter().zip(input_dts.iter()) {
+        value_map.insert(name.clone(), ValueLocation::Device(dt.clone()));
+    }
+
+    let op_loop_result = run_op_loop(graph, &mut value_map, runtime);
+
+    // 5. End capture regardless of op-loop outcome — failing to call
+    //    EndCapture leaves the stream in a stuck state.
+    let mut graph_handle: ffi::cudaGraph_t = core::ptr::null_mut();
+    let end_err =
+        unsafe { ffi::cudaStreamEndCapture(cache.capture_stream.raw(), &mut graph_handle) };
+
+    op_loop_result?;
+    if end_err != ffi::CUDA_SUCCESS {
+        return Err(SessionError::ExecutionFailed(format!(
+            "cudaStreamEndCapture: code {}",
+            end_err
+        )));
+    }
+    let cuda_graph = unsafe { CudaGraph::from_raw(graph_handle) };
+
+    // 6. Instantiate. CUDA 12+ takes (exec, graph, flags).
+    #[cfg(feature = "gpu-profile")]
+    let _capture_start = std::time::Instant::now();
+    let exec = crate::cuda::graph::CudaGraphExec::instantiate(&cuda_graph)
+        .map_err(|e| SessionError::ExecutionFailed(format!("graph instantiate: {}", e)))?;
+    #[cfg(feature = "gpu-profile")]
+    crate::cuda::profile::record_op("graph_capture", _capture_start);
+
+    // 7. Collect outputs and intermediates from the value map. The
+    //    graph references intermediate buffers by pointer; we anchor
+    //    them in `intermediate_keep_alive` to prevent free.
+    let mut output_tensors: Vec<Arc<DeviceTensor>> = Vec::new();
+    for output_name in &graph.output_names {
+        match value_map.remove(output_name) {
+            Some(ValueLocation::Device(dt)) => output_tensors.push(dt),
+            Some(ValueLocation::Host(t)) => {
+                // The output landed on host (CPU fallback for the last
+                // op). Capture is technically valid up to the point
+                // where the host transition happened, but the output
+                // pointer the graph would reference doesn't exist on
+                // device. Convert host → device for replay.
+                let dt = DeviceTensor::from_host(&t).map_err(|e| {
+                    SessionError::ExecutionFailed(format!("host output to device: {}", e))
+                })?;
+                output_tensors.push(Arc::new(dt));
+            }
+            None => {
+                return Err(SessionError::ExecutionFailed(format!(
+                    "captured graph missing output '{}'",
+                    output_name
+                )));
+            }
+        }
+    }
+    let mut intermediate_keep_alive: Vec<Arc<DeviceTensor>> = Vec::new();
+    for (_, v) in value_map.into_iter() {
+        if let ValueLocation::Device(dt) = v {
+            intermediate_keep_alive.push(dt);
+        }
+    }
+
+    // 8. Build and store the entry. The input DeviceTensors stay live
+    //    via `input_tensors`; intermediate DeviceTensors stay live via
+    //    `intermediate_keep_alive`; output DeviceTensors stay live via
+    //    `output_tensors`. The captured graph references all of their
+    //    buffer pointers and they must all outlive the GraphExec.
+    let entry = GraphEntry {
+        graph: cuda_graph,
+        graph_exec: exec,
+        input_tensors: input_dts,
+        input_shapes: key.input_shapes.clone(),
+        input_dtypes: key.input_dtypes.clone(),
+        output_tensors,
+        output_names: graph.output_names.clone(),
+        intermediate_keep_alive,
+    };
+    cache.entries.insert(key.clone(), entry);
+
+    // 9. Synchronize before returning so any captured state is settled.
+    cache
+        .capture_stream
+        .synchronize()
+        .map_err(|e| SessionError::ExecutionFailed(format!("post-capture sync: {}", e)))?;
+
+    Ok(())
+}
+
+/// Bind the runtime's cuDNN and cuBLAS handles to a particular CUDA
+/// stream. Passing `null_mut()` reverts to the default stream.
+fn bind_handles_to_stream(
+    runtime: &CudaRuntime,
+    stream: ffi::cudaStream_t,
+) -> Result<(), SessionError> {
+    let cudnn_err = unsafe { ffi::cudnnSetStream(runtime.cudnn.raw(), stream) };
+    if cudnn_err != ffi::CUDNN_STATUS_SUCCESS {
+        return Err(SessionError::ExecutionFailed(format!(
+            "cudnnSetStream: code {}",
+            cudnn_err
+        )));
+    }
+    let cublas_err = unsafe { ffi::cublasSetStream_v2(runtime.cublas.raw(), stream) };
+    if cublas_err != ffi::CUBLAS_STATUS_SUCCESS {
+        return Err(SessionError::ExecutionFailed(format!(
+            "cublasSetStream_v2: code {}",
+            cublas_err
+        )));
+    }
+    Ok(())
+}
+
+/// Suppress unused-import warning when `feature = "gpu-profile"` is off.
+#[allow(dead_code)]
+fn _suppress_unused_imports() {
+    let _ = TensorShape::new(Vec::new());
 }

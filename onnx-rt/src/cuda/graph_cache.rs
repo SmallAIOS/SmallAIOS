@@ -29,7 +29,6 @@ use alloc::vec::Vec;
 
 use super::gpu_executor::DeviceTensor;
 use super::graph::{CaptureStream, CudaGraph, CudaGraphExec};
-use super::memory::DeviceBuffer;
 use crate::tensor::DataType;
 
 /// Identifies a captured graph by its input signature. Two
@@ -70,10 +69,10 @@ pub struct GraphEntry {
     pub graph: CudaGraph,
     /// Executable form, used for `cudaGraphLaunch`.
     pub graph_exec: CudaGraphExec,
-    /// Persistent host→device input buffers. The captured graph
-    /// references these pointers; replay memcpys new input bytes
-    /// into the same buffers before launching.
-    pub input_buffers: Vec<DeviceBuffer>,
+    /// Persistent input tensors. Each tensor's `buffer.as_mut_ptr()`
+    /// is the device pointer the captured graph reads from for that
+    /// input. Replay overwrites the bytes via `cudaMemcpyAsync`.
+    pub input_tensors: Vec<Arc<DeviceTensor>>,
     /// Per-input shape / dtype, mirrored from [`GraphKey`] so replay
     /// can validate sizes without touching the cache key itself.
     pub input_shapes: Vec<Vec<i64>>,

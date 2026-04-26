@@ -689,12 +689,15 @@ impl Session {
                             }
                             slot.as_ref().unwrap().clone()
                         };
-                        return crate::executor_hybrid::execute_graph_hybrid(
+                        let mut cache_slot = self.cuda_graph_cache.borrow_mut();
+                        return crate::executor_hybrid::execute_graph_hybrid_with_capture(
                             graph,
                             &input_pairs,
                             initializers,
                             rt,
                             Some(&cache),
+                            &mut cache_slot,
+                            self.config.cuda_graph,
                         );
                     }
                 }
