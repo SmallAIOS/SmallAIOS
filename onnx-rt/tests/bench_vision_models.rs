@@ -296,6 +296,13 @@ enum BenchMode {
     OpByOp,
     #[cfg(feature = "cuda")]
     Hybrid,
+    /// Hybrid execution + CUDA Graph capture/replay. First inference
+    /// captures the kernel sequence into a `cudaGraphExec_t`,
+    /// subsequent inferences of the same input shape replay it as a
+    /// single `cudaGraphLaunch`. Targets ≥1.5× ResNet-50 speedup
+    /// over `Hybrid`.
+    #[cfg(feature = "cuda")]
+    HybridGraph,
 }
 
 #[cfg(feature = "cuda")]
@@ -303,6 +310,16 @@ fn bench_mode_to_residency(mode: BenchMode) -> GpuResidency {
     match mode {
         BenchMode::OpByOp => GpuResidency::OpByOp,
         BenchMode::Hybrid => GpuResidency::Hybrid,
+        BenchMode::HybridGraph => GpuResidency::Hybrid,
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn bench_mode_to_cuda_graph(mode: BenchMode) -> smallaios_onnx_rt::session::CudaGraphMode {
+    use smallaios_onnx_rt::session::CudaGraphMode;
+    match mode {
+        BenchMode::OpByOp | BenchMode::Hybrid => CudaGraphMode::Off,
+        BenchMode::HybridGraph => CudaGraphMode::Capture,
     }
 }
 
@@ -342,6 +359,24 @@ fn run_cpu_vs_gpu_hybrid(
         input_shape,
         expected_output_dims,
         BenchMode::Hybrid,
+    );
+}
+
+#[cfg(feature = "cuda")]
+fn run_cpu_vs_gpu_hybrid_graph(
+    model_label: &str,
+    fixture: &str,
+    input_name: &str,
+    input_shape: &[i64],
+    expected_output_dims: Option<&[i64]>,
+) {
+    run_cpu_vs_gpu_full(
+        model_label,
+        fixture,
+        input_name,
+        input_shape,
+        expected_output_dims,
+        BenchMode::HybridGraph,
     );
 }
 
@@ -385,6 +420,7 @@ fn run_cpu_vs_gpu_full(
     {
         let gpu_config = SessionConfig {
             gpu_residency: bench_mode_to_residency(bench_mode),
+            cuda_graph: bench_mode_to_cuda_graph(bench_mode),
             ..SessionConfig::default()
         };
         let (gpu_session, _, _) =
@@ -656,6 +692,63 @@ fn bench_resnet50_cpu_vs_gpu_hybrid() {
 fn bench_mlp_cpu_vs_gpu_hybrid() {
     run_cpu_vs_gpu_hybrid(
         "MLP 784-256-128-10 (hybrid)",
+        "mlp_784_256_128_10.onnx",
+        "x",
+        &[1, 784],
+        None,
+    );
+}
+
+// ── HybridGraph (cuda-graphs-v1): hybrid + CUDA Graph capture ─────────
+// Each captures the kernel sequence on the first inference and replays
+// on subsequent runs. Targets ≥1.5× speedup on ResNet-50 and ≥1.2× on
+// the others vs the corresponding `*_hybrid` baseline above.
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore]
+fn bench_squeezenet_cpu_vs_gpu_hybrid_with_graph() {
+    run_cpu_vs_gpu_hybrid_graph(
+        "SqueezeNet 1.1 (hybrid+graph)",
+        "squeezenet.onnx",
+        "data",
+        &[1, 3, 224, 224],
+        None,
+    );
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore]
+fn bench_mobilenet_v2_cpu_vs_gpu_hybrid_with_graph() {
+    run_cpu_vs_gpu_hybrid_graph(
+        "MobileNetV2-12 (hybrid+graph)",
+        "mobilenet_v2.onnx",
+        "input",
+        &[1, 3, 224, 224],
+        Some(&[1, 1000]),
+    );
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore]
+fn bench_resnet50_cpu_vs_gpu_hybrid_with_graph() {
+    run_cpu_vs_gpu_hybrid_graph(
+        "ResNet-50 v2 (hybrid+graph)",
+        "resnet50.onnx",
+        "data",
+        &[1, 3, 224, 224],
+        Some(&[1, 1000]),
+    );
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore]
+fn bench_mlp_cpu_vs_gpu_hybrid_with_graph() {
+    run_cpu_vs_gpu_hybrid_graph(
+        "MLP 784-256-128-10 (hybrid+graph)",
         "mlp_784_256_128_10.onnx",
         "x",
         &[1, 784],

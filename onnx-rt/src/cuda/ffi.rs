@@ -171,6 +171,29 @@ pub enum cudnnConvolutionFwdAlgo_t {
     CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD = 6,
 }
 
+// ── CUDA Stream + Graph types ───────────────────────────────────────
+
+/// Opaque CUDA runtime stream handle. `null_mut()` selects the default stream.
+pub type cudaStream_t = *mut core::ffi::c_void;
+
+/// Opaque CUDA graph handle (immutable structural representation of a
+/// captured/explicit graph).
+pub type cudaGraph_t = *mut core::ffi::c_void;
+
+/// Opaque CUDA executable graph handle (instantiated graph ready for launch).
+pub type cudaGraphExec_t = *mut core::ffi::c_void;
+
+/// `cudaStreamBeginCapture` mode. We use `ThreadLocal` to keep capture state
+/// scoped to the calling thread so concurrent inferences on other threads
+/// can keep dispatching work to the default stream.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum cudaStreamCaptureMode {
+    Global = 0,
+    ThreadLocal = 1,
+    Relaxed = 2,
+}
+
 // ── CUDA Runtime FFI ────────────────────────────────────────────────
 
 #[link(name = "cudart")]
@@ -188,10 +211,39 @@ extern "C" {
         count: usize,
         kind: cudaMemcpyKind,
     ) -> cudaError_t;
+    pub fn cudaMemcpyAsync(
+        dst: *mut core::ffi::c_void,
+        src: *const core::ffi::c_void,
+        count: usize,
+        kind: cudaMemcpyKind,
+        stream: cudaStream_t,
+    ) -> cudaError_t;
     pub fn cudaMemset(devPtr: *mut core::ffi::c_void, value: i32, count: usize) -> cudaError_t;
     pub fn cudaDeviceSynchronize() -> cudaError_t;
     pub fn cudaRuntimeGetVersion(runtimeVersion: *mut i32) -> cudaError_t;
     pub fn cudaGetErrorString(error: cudaError_t) -> *const u8;
+
+    // ── Stream lifecycle ────────────────────────────────────────────
+    pub fn cudaStreamCreate(stream: *mut cudaStream_t) -> cudaError_t;
+    pub fn cudaStreamDestroy(stream: cudaStream_t) -> cudaError_t;
+    pub fn cudaStreamSynchronize(stream: cudaStream_t) -> cudaError_t;
+
+    // ── Stream capture / graph lifecycle ────────────────────────────
+    pub fn cudaStreamBeginCapture(stream: cudaStream_t, mode: cudaStreamCaptureMode)
+        -> cudaError_t;
+    pub fn cudaStreamEndCapture(stream: cudaStream_t, graph: *mut cudaGraph_t) -> cudaError_t;
+    /// CUDA 12+ signature: `cudaGraphInstantiate(pGraphExec, graph, flags)`.
+    /// We pass `flags = 0` (no special instantiation behavior); the older
+    /// 4-arg overload (`pErrorNode`, `pLogBuffer`, `bufferSize`) was removed
+    /// in CUDA 12.
+    pub fn cudaGraphInstantiate(
+        graph_exec: *mut cudaGraphExec_t,
+        graph: cudaGraph_t,
+        flags: u64,
+    ) -> cudaError_t;
+    pub fn cudaGraphLaunch(graph_exec: cudaGraphExec_t, stream: cudaStream_t) -> cudaError_t;
+    pub fn cudaGraphExecDestroy(graph_exec: cudaGraphExec_t) -> cudaError_t;
+    pub fn cudaGraphDestroy(graph: cudaGraph_t) -> cudaError_t;
 }
 
 // ── cuBLAS FFI ──────────────────────────────────────────────────────
@@ -200,6 +252,10 @@ extern "C" {
 extern "C" {
     pub fn cublasCreate_v2(handle: *mut cublasHandle_t) -> cublasStatus_t;
     pub fn cublasDestroy_v2(handle: cublasHandle_t) -> cublasStatus_t;
+    /// Bind a cuBLAS handle to a particular CUDA stream so subsequent
+    /// `cublas*` launches enqueue onto it. Passing `null_mut()` reverts
+    /// to the default stream.
+    pub fn cublasSetStream_v2(handle: cublasHandle_t, stream: cudaStream_t) -> cublasStatus_t;
     pub fn cublasSgemm_v2(
         handle: cublasHandle_t,
         transa: cublasOperation_t,
@@ -311,6 +367,10 @@ extern "C" {
 extern "C" {
     pub fn cudnnCreate(handle: *mut cudnnHandle_t) -> cudnnStatus_t;
     pub fn cudnnDestroy(handle: cudnnHandle_t) -> cudnnStatus_t;
+    /// Bind a cuDNN handle to a particular CUDA stream so subsequent
+    /// `cudnn*` launches enqueue onto it. Passing `null_mut()` reverts
+    /// to the default stream.
+    pub fn cudnnSetStream(handle: cudnnHandle_t, stream: cudaStream_t) -> cudnnStatus_t;
 
     pub fn cudnnCreateTensorDescriptor(desc: *mut cudnnTensorDescriptor_t) -> cudnnStatus_t;
     pub fn cudnnDestroyTensorDescriptor(desc: cudnnTensorDescriptor_t) -> cudnnStatus_t;

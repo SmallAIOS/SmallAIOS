@@ -14,7 +14,7 @@ use core::fmt;
 /// ONNX data types with their protocol buffer enum values.
 ///
 /// Values match the ONNX TensorProto.DataType enum exactly.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(i32)]
 pub enum DataType {
     /// 32-bit IEEE 754 floating point.
