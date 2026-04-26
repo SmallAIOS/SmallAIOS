@@ -39,6 +39,10 @@ pub enum SessionError {
     InvalidOutput(String),
     /// The operation is defined but not yet implemented.
     NotImplemented,
+    /// A `SessionConfig` field is set to an unsupported value (e.g.
+    /// `StreamConfig::Overlap { transfer_streams: 5 }` exceeds the
+    /// runtime cap).
+    InvalidConfig(String),
     /// The model failed security policy validation (formal-gate).
     #[cfg(feature = "formal-gate")]
     PolicyViolation(String),
@@ -67,6 +71,9 @@ impl fmt::Display for SessionError {
             }
             SessionError::NotImplemented => {
                 write!(f, "session operation not implemented")
+            }
+            SessionError::InvalidConfig(msg) => {
+                write!(f, "invalid config: {}", msg)
             }
             #[cfg(feature = "formal-gate")]
             SessionError::PolicyViolation(msg) => {
@@ -136,6 +143,33 @@ pub enum GpuResidency {
     Hybrid,
 }
 
+/// Controls how the GPU executor maps work onto CUDA streams.
+///
+/// `SingleStream` (the default) issues every cuDNN / cuBLAS call,
+/// every H2D copy, and every D2H copy on the default stream — the
+/// behavior since the GPU executor was introduced. `Overlap` allocates
+/// dedicated H2D and D2H streams alongside the compute stream so that
+/// the next inference's input upload can happen while the current
+/// inference's compute runs and its output downloads. Cross-stream
+/// ordering is enforced via CUDA events so the host blocks only once
+/// per inference at the final D2H synchronize.
+///
+/// `transfer_streams` is capped at 2; beyond that, contention on the
+/// PCIe / NVLink fabric dominates and throughput regresses.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum StreamConfig {
+    /// Every operation runs on the default CUDA stream. Default for
+    /// backward compatibility — no behavior change for existing
+    /// callers.
+    #[default]
+    SingleStream,
+    /// Allocate `transfer_streams` H2D + `transfer_streams` D2H
+    /// streams in addition to the compute stream and gate them via
+    /// CUDA events. `transfer_streams` is validated `<= 2` at
+    /// `Session::new`.
+    Overlap { transfer_streams: usize },
+}
+
 /// Controls CUDA Graph capture / replay for the hybrid GPU executor.
 ///
 /// `Off` (the default) preserves the existing per-op dispatch path —
@@ -185,6 +219,12 @@ pub struct SessionConfig {
     /// CUDA Graph capture mode for the hybrid executor. Only takes
     /// effect when `gpu_residency == GpuResidency::Hybrid`.
     pub cuda_graph: CudaGraphMode,
+    /// CUDA stream layout for the GPU executor. Default is
+    /// `SingleStream` (every op on the default stream). `Overlap`
+    /// allocates dedicated H2D + D2H streams alongside the compute
+    /// stream so adjacent inferences can overlap input upload, GPU
+    /// compute, and output download.
+    pub stream_config: StreamConfig,
 }
 
 impl Default for SessionConfig {
@@ -198,6 +238,7 @@ impl Default for SessionConfig {
             gpu_config: None,
             gpu_residency: GpuResidency::default(),
             cuda_graph: CudaGraphMode::default(),
+            stream_config: StreamConfig::default(),
         }
     }
 }
@@ -334,6 +375,14 @@ pub struct Session {
     /// input shape + dtype.
     #[cfg(feature = "cuda")]
     pub cuda_graph_cache: core::cell::RefCell<crate::cuda::graph_cache::CudaGraphCacheSlot>,
+    /// Per-Session CUDA stream pool for multi-stream overlap. `None`
+    /// when `SessionConfig::stream_config = SingleStream` (default)
+    /// or before the first multi-stream inference. Lazily allocated
+    /// by [`Session::ensure_stream_pool`] on the first
+    /// `Overlap`-mode `run` call. Holds one compute stream + N H2D +
+    /// N D2H streams + an event reuse pool.
+    #[cfg(feature = "cuda")]
+    pub stream_pool: core::cell::RefCell<Option<crate::cuda::streams::StreamPool>>,
     /// Discriminator for the session's origin / dispatch path.
     pub kind: SessionKind,
 }
@@ -550,8 +599,37 @@ impl Session {
             device_initializer_cache: core::cell::RefCell::new(None),
             #[cfg(feature = "cuda")]
             cuda_graph_cache: core::cell::RefCell::new(None),
+            #[cfg(feature = "cuda")]
+            stream_pool: core::cell::RefCell::new(None),
             kind: SessionKind::Onnx,
         }
+    }
+
+    /// Lazily allocate the per-Session [`StreamPool`] on the first
+    /// multi-stream inference. Validates `transfer_streams <= 2`
+    /// (returns [`SessionError::InvalidConfig`] if exceeded).
+    /// Returns immediately if the pool is already initialized or if
+    /// `stream_config` is `SingleStream`.
+    #[cfg(feature = "cuda")]
+    pub fn ensure_stream_pool(&self) -> Result<(), SessionError> {
+        let transfer_streams = match self.config.stream_config {
+            StreamConfig::SingleStream => return Ok(()),
+            StreamConfig::Overlap { transfer_streams } => transfer_streams,
+        };
+        if transfer_streams > 2 {
+            return Err(SessionError::InvalidConfig(alloc::format!(
+                "transfer_streams must be <= 2 (got {})",
+                transfer_streams
+            )));
+        }
+        let mut slot = self.stream_pool.borrow_mut();
+        if slot.is_some() {
+            return Ok(());
+        }
+        let pool = crate::cuda::streams::StreamPool::new(transfer_streams)
+            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("StreamPool init: {}", e)))?;
+        *slot = Some(pool);
+        Ok(())
     }
 
     /// Creates a new session with Metal GPU acceleration enabled.
@@ -1049,6 +1127,7 @@ impl Session {
             )),
             device_initializer_cache: core::cell::RefCell::new(None),
             cuda_graph_cache: core::cell::RefCell::new(None),
+            stream_pool: core::cell::RefCell::new(None),
             kind: SessionKind::Safetensors,
         })
     }
@@ -1175,6 +1254,7 @@ mod tests {
             gpu_config: None,
             gpu_residency: GpuResidency::default(),
             cuda_graph: CudaGraphMode::default(),
+            stream_config: StreamConfig::default(),
         };
         assert_eq!(config.optimization_level, OptimizationLevel::Extended);
         assert!(config.enable_profiling);

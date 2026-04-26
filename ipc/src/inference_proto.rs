@@ -534,6 +534,7 @@ pub fn handle_run_inference_with_session(
         SessionError::ModelLoadFailed(_)
         | SessionError::InvalidModel(_)
         | SessionError::UnsupportedOpset(_)
+        | SessionError::InvalidConfig(_)
         | SessionError::NotImplemented => IpcError::InvalidProtocol,
         #[cfg(feature = "formal-gate")]
         SessionError::PolicyViolation(_) => IpcError::InvalidProtocol,
