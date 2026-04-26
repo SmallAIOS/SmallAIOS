@@ -136,6 +136,33 @@ pub enum GpuResidency {
     Hybrid,
 }
 
+/// Controls CUDA Graph capture / replay for the hybrid GPU executor.
+///
+/// `Off` (the default) preserves the existing per-op dispatch path —
+/// every cuDNN / cuBLAS launch is host-issued and pays its own
+/// per-launch overhead. `Capture` records the op sequence on the first
+/// hybrid inference and replays it as a single `cudaGraphLaunch` on
+/// subsequent runs, eliminating the ~10–50 µs / op host overhead.
+///
+/// Only meaningful when paired with [`GpuResidency::Hybrid`]; `OpByOp`
+/// dispatch is incompatible with capture because each op crosses the
+/// CPU boundary. The runtime silently treats `Capture` as `Off` for
+/// `OpByOp` sessions.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum CudaGraphMode {
+    /// Disable graph capture. The hybrid executor runs the per-op
+    /// dispatch loop on every inference. Default for backward
+    /// compatibility — no behavior change for existing callers.
+    #[default]
+    Off,
+    /// Capture the hybrid executor's op sequence on the first
+    /// inference of a given input shape and replay it as a single
+    /// `cudaGraphLaunch` on subsequent inferences with the same
+    /// shape. Falls back to per-op dispatch if capture fails or the
+    /// shape changes more often than ~1% of inferences.
+    Capture,
+}
+
 /// Configuration parameters for an inference session.
 ///
 /// Controls optimization, profiling, batching, and threading behavior.
@@ -155,6 +182,9 @@ pub struct SessionConfig {
     /// GPU residency mode controlling whether intermediate activations
     /// stay device-resident across adjacent GPU-supported ops.
     pub gpu_residency: GpuResidency,
+    /// CUDA Graph capture mode for the hybrid executor. Only takes
+    /// effect when `gpu_residency == GpuResidency::Hybrid`.
+    pub cuda_graph: CudaGraphMode,
 }
 
 impl Default for SessionConfig {
@@ -167,6 +197,7 @@ impl Default for SessionConfig {
             parallel: ParallelConfig::default(),
             gpu_config: None,
             gpu_residency: GpuResidency::default(),
+            cuda_graph: CudaGraphMode::default(),
         }
     }
 }
@@ -1129,6 +1160,7 @@ mod tests {
             parallel: crate::parallel::ParallelConfig::default_for_cores(4),
             gpu_config: None,
             gpu_residency: GpuResidency::default(),
+            cuda_graph: CudaGraphMode::default(),
         };
         assert_eq!(config.optimization_level, OptimizationLevel::Extended);
         assert!(config.enable_profiling);

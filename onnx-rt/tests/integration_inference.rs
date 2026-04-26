@@ -40,6 +40,7 @@ fn session_custom_config() {
         parallel: smallaios_onnx_rt::parallel::ParallelConfig::default(),
         gpu_config: None,
         gpu_residency: smallaios_onnx_rt::session::GpuResidency::default(),
+        cuda_graph: smallaios_onnx_rt::session::CudaGraphMode::default(),
     };
     let session = Session::new(config);
     assert!(!session.is_initialized());
@@ -69,6 +70,7 @@ fn session_no_optimization_config() {
         parallel: smallaios_onnx_rt::parallel::ParallelConfig::default(),
         gpu_config: None,
         gpu_residency: smallaios_onnx_rt::session::GpuResidency::default(),
+        cuda_graph: smallaios_onnx_rt::session::CudaGraphMode::default(),
     };
     let session = Session::new(config);
     assert!(!session.is_initialized());
