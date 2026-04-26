@@ -326,6 +326,14 @@ pub struct Session {
     /// across inferences without device→device memcpy.
     #[cfg(feature = "cuda")]
     pub device_initializer_cache: core::cell::RefCell<DeviceInitCacheSlot>,
+    /// Per-Session CUDA Graph cache for the hybrid + capture path.
+    /// Populated lazily on the first `Session::run` call when the
+    /// session is configured for `GpuResidency::Hybrid` and
+    /// `CudaGraphMode::Capture`. The cache holds a dedicated CUDA
+    /// stream and one or more captured `cudaGraphExec_t` keyed by
+    /// input shape + dtype.
+    #[cfg(feature = "cuda")]
+    pub cuda_graph_cache: core::cell::RefCell<crate::cuda::graph_cache::CudaGraphCacheSlot>,
     /// Discriminator for the session's origin / dispatch path.
     pub kind: SessionKind,
 }
@@ -540,6 +548,8 @@ impl Session {
             gpu_weights: None,
             #[cfg(feature = "cuda")]
             device_initializer_cache: core::cell::RefCell::new(None),
+            #[cfg(feature = "cuda")]
+            cuda_graph_cache: core::cell::RefCell::new(None),
             kind: SessionKind::Onnx,
         }
     }
@@ -1035,6 +1045,7 @@ impl Session {
                     .collect::<BTreeMap<String, crate::cuda::gpu_executor::DeviceTensor>>(),
             )),
             device_initializer_cache: core::cell::RefCell::new(None),
+            cuda_graph_cache: core::cell::RefCell::new(None),
             kind: SessionKind::Safetensors,
         })
     }

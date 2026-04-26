@@ -28,6 +28,7 @@ pub mod elementwise;
 pub mod ffi;
 pub mod gpu_executor;
 pub mod graph;
+pub mod graph_cache;
 pub mod kernels;
 pub mod kv_cache;
 pub mod memory;
