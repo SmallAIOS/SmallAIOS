@@ -37,6 +37,7 @@ use crate::cuda::{
     graph_cache::{CudaGraphCache, GraphEntry, GraphKey},
     memory::DeviceBuffer,
     pool::{gpu_averagepool, gpu_globalaveragepool, gpu_maxpool},
+    streams::StreamPool,
     CudaRuntime,
 };
 use crate::executor;
@@ -548,6 +549,7 @@ fn extract_host_outputs(
 /// log a single warning, mark the cache disabled, and fall back to
 /// per-op execution. Only actual op failures (e.g. cuDNN returning
 /// `CUDNN_STATUS_BAD_PARAM`) surface as `SessionError`.
+#[allow(clippy::too_many_arguments)]
 pub fn execute_graph_hybrid_with_capture(
     graph: &ExecutionGraph,
     inputs: &[(String, Tensor)],
@@ -556,6 +558,11 @@ pub fn execute_graph_hybrid_with_capture(
     device_initializer_cache: Option<&BTreeMap<String, Arc<DeviceTensor>>>,
     cache_slot: &mut Option<CudaGraphCache>,
     mode: CudaGraphMode,
+    // Optional multi-stream pool. When present and the replay path
+    // is taken, H2D + compute + D2H are issued on dedicated streams
+    // gated by CUDA events instead of all going to the cache's
+    // capture stream. No effect on the per-op fallback.
+    stream_pool: Option<&StreamPool>,
 ) -> Result<Vec<InferenceOutput>, SessionError> {
     if !matches!(mode, CudaGraphMode::Capture) {
         return execute_graph_hybrid(
@@ -607,7 +614,7 @@ pub fn execute_graph_hybrid_with_capture(
 
     // Cache hit → try replay.
     if cache.entries.contains_key(&key) {
-        match try_replay(cache, &key, inputs) {
+        match try_replay(cache, &key, inputs, stream_pool) {
             Ok(outputs) => return Ok(outputs),
             Err(e) => {
                 #[cfg(feature = "std")]
@@ -667,10 +674,18 @@ pub fn execute_graph_hybrid_with_capture(
 
 /// Replay path: copy host inputs into the cached input buffers, launch
 /// the captured graph, copy outputs back to host.
+///
+/// `stream_pool` is `Some` when `SessionConfig::stream_config =
+/// Overlap`. With `transfer_streams >= 1` the H2D, compute, and D2H
+/// phases run on three different CUDA streams gated by events, so
+/// the next inference's H2D can begin while this inference's D2H is
+/// still in flight. With `None` (or `transfer_streams == 0`),
+/// everything runs on the cache's single capture stream.
 fn try_replay(
     cache: &mut CudaGraphCache,
     key: &GraphKey,
     inputs: &[(String, Tensor)],
+    stream_pool: Option<&StreamPool>,
 ) -> Result<Vec<InferenceOutput>, SessionError> {
     let entry = cache
         .entries
@@ -684,6 +699,26 @@ fn try_replay(
             inputs.len()
         )));
     }
+
+    // Choose H2D / compute / D2H streams. When the pool has transfer
+    // streams, route the three phases to dedicated streams gated by
+    // CUDA events; otherwise fall back to the single capture stream
+    // (legacy cuda-graphs-v1 behavior).
+    use crate::cuda::streams::Stream;
+    let single_stream_handle: ffi::cudaStream_t = cache.capture_stream.raw();
+    let (h2d_stream_handle, compute_stream_handle, d2h_stream_handle, use_overlap) =
+        match stream_pool {
+            Some(p) if !p.h2d.is_empty() && !p.d2h.is_empty() => {
+                (p.h2d[0].raw(), p.compute.raw(), p.d2h[0].raw(), true)
+            }
+            _ => (
+                single_stream_handle,
+                single_stream_handle,
+                single_stream_handle,
+                false,
+            ),
+        };
+    let _ = Stream::new; // silence unused-import on legacy build paths
 
     // H2D async into the persistent input tensors' buffers. The
     // captured graph hard-codes these device pointers; replay reuses
@@ -704,7 +739,7 @@ fn try_replay(
                 t.raw_data.as_ptr() as *const _,
                 t.raw_data.len(),
                 ffi::cudaMemcpyKind::cudaMemcpyHostToDevice,
-                cache.capture_stream.raw(),
+                h2d_stream_handle,
             )
         };
         if err != ffi::CUDA_SUCCESS {
@@ -715,23 +750,73 @@ fn try_replay(
         }
     }
 
+    // Cross-stream gating: compute waits for H2D done.
+    let h2d_done = if use_overlap {
+        let pool = stream_pool.expect("use_overlap implies pool");
+        let evt = pool
+            .acquire_event()
+            .map_err(|e| SessionError::ExecutionFailed(format!("acquire H2D event: {}", e)))?;
+        evt.record(&pool.h2d[0])
+            .map_err(|e| SessionError::ExecutionFailed(format!("record H2D event: {}", e)))?;
+        evt.wait(&pool.compute)
+            .map_err(|e| SessionError::ExecutionFailed(format!("compute waits H2D: {}", e)))?;
+        Some(evt)
+    } else {
+        None
+    };
+
     // Single host-side launch replaces N cuDNN/cuBLAS calls.
     #[cfg(feature = "gpu-profile")]
     let _launch_start = std::time::Instant::now();
-    entry
-        .graph_exec
-        .launch(&cache.capture_stream)
-        .map_err(|e| SessionError::ExecutionFailed(format!("cudaGraphLaunch: {}", e)))?;
+    let launch_err = unsafe { ffi::cudaGraphLaunch(entry.graph_exec.raw(), compute_stream_handle) };
+    if launch_err != ffi::CUDA_SUCCESS {
+        return Err(SessionError::ExecutionFailed(format!(
+            "cudaGraphLaunch: code {}",
+            launch_err
+        )));
+    }
     #[cfg(feature = "gpu-profile")]
     crate::cuda::profile::record_op("graph_launch", _launch_start);
 
-    // D2H back to fresh host tensors. We must wait for the graph to
-    // finish — `to_host` on a DeviceTensor uses a synchronous memcpy,
-    // which serves as the implicit barrier.
-    cache
-        .capture_stream
-        .synchronize()
-        .map_err(|e| SessionError::ExecutionFailed(format!("cudaStreamSynchronize: {}", e)))?;
+    // Cross-stream gating: D2H waits for compute done.
+    let compute_done = if use_overlap {
+        let pool = stream_pool.expect("use_overlap implies pool");
+        let evt = pool
+            .acquire_event()
+            .map_err(|e| SessionError::ExecutionFailed(format!("acquire compute event: {}", e)))?;
+        evt.record(&pool.compute)
+            .map_err(|e| SessionError::ExecutionFailed(format!("record compute event: {}", e)))?;
+        evt.wait(&pool.d2h[0])
+            .map_err(|e| SessionError::ExecutionFailed(format!("d2h waits compute: {}", e)))?;
+        Some(evt)
+    } else {
+        None
+    };
+
+    // Issue async D2H of every output, then sync the D2H stream.
+    // (The output D2H is wired through DeviceTensor::to_host, which
+    // uses synchronous cudaMemcpy. For overlap mode we sync the D2H
+    // stream first so to_host's sync memcpy is a no-op wait.)
+    if use_overlap {
+        let pool = stream_pool.expect("use_overlap implies pool");
+        pool.d2h[0]
+            .synchronize()
+            .map_err(|e| SessionError::ExecutionFailed(format!("D2H sync: {}", e)))?;
+        // Return events to the pool for reuse.
+        if let Some(e) = h2d_done {
+            pool.release_event(e);
+        }
+        if let Some(e) = compute_done {
+            pool.release_event(e);
+        }
+    } else {
+        // Legacy single-stream path: just sync the capture stream.
+        cache
+            .capture_stream
+            .synchronize()
+            .map_err(|e| SessionError::ExecutionFailed(format!("cudaStreamSynchronize: {}", e)))?;
+    }
+    let _ = (h2d_stream_handle, d2h_stream_handle); // silence unused-var on single-stream path
 
     let mut results = Vec::with_capacity(entry.output_tensors.len());
     for (name, dt) in entry.output_names.iter().zip(entry.output_tensors.iter()) {

@@ -35,6 +35,7 @@ pub mod memory;
 pub mod pool;
 #[cfg(feature = "gpu-profile")]
 pub mod profile;
+pub mod streams;
 
 pub use gpu_executor::{
     execute_graph_gpu, execute_graph_gpu_with_weights, gpu_conv2d_device, gpu_gemm_device,

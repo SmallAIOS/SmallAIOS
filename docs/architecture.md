@@ -387,3 +387,66 @@ between capture and per-op modes ≤ 1e-4 (same compute, just
 different launch mechanism). See
 `onnx-rt/tests/bench_vision_models.rs` for the
 `*_hybrid_with_graph` benchmark variants.
+
+### Multi-Stream Overlap (async-multistream-v1)
+
+Layered on top of the hybrid + graph-capture path,
+`SessionConfig::stream_config = StreamConfig::Overlap {
+transfer_streams }` allocates a per-Session [`StreamPool`] holding:
+
+* one **compute** stream for cuDNN / cuBLAS / `cudaGraphLaunch`
+* `transfer_streams` **H2D** streams for asynchronous host→device
+  input upload
+* `transfer_streams` **D2H** streams for asynchronous device→host
+  output download
+* a small reusable [`Event`] pool
+
+`transfer_streams` is capped at 2 (`Session::ensure_stream_pool`
+returns `SessionError::InvalidConfig` if exceeded). Beyond ~2
+transfer streams, contention on the PCIe / NVLink fabric eats the
+overlap window.
+
+**How it composes with capture (cuda-graphs-v1):**
+
+The capture path is unchanged — it always captures on the cache's
+internal capture stream so the resulting `cudaGraph_t` is
+stream-agnostic. The replay path (`try_replay`) is what changes:
+
+1. **H2D phase.** `cudaMemcpyAsync` the new inputs into the
+   persistent input buffers on `pool.h2d[0]`.
+2. **Cross-stream gate.** `cudaEventRecord` on `pool.h2d[0]`,
+   `cudaStreamWaitEvent` on `pool.compute` — the compute stream
+   queues a barrier waiting for the H2D event without the host
+   blocking.
+3. **Compute phase.** `cudaGraphLaunch` on `pool.compute`. The
+   captured kernel sequence runs there, fed by the input pointers
+   the H2D just filled.
+4. **Cross-stream gate.** `cudaEventRecord` on `pool.compute`,
+   `cudaStreamWaitEvent` on `pool.d2h[0]`.
+5. **D2H phase.** `cudaMemcpyAsync` the persistent output buffers
+   to host on `pool.d2h[0]`.
+6. **One host sync.** `cudaStreamSynchronize(pool.d2h[0])` blocks
+   the calling thread once at the end. The H2D, compute, and D2H
+   for the *next* inference can already be in flight on different
+   streams while this sync is waiting.
+
+`StreamConfig::SingleStream` (the default) is a complete no-op —
+every memcpy and kernel still goes to the cache's capture stream
+(or the default stream when capture is also off), preserving the
+exact byte-for-byte output of every previous mode.
+
+**Targets:** ≥1.3× throughput vs single-stream on B=1 ResNet-50
+serving loops; ≥1.5× combined with graph capture. Single-request
+latency must not regress more than 5% under `Overlap`. See
+`onnx-rt/tests/bench_vision_models.rs` once the multi-stream
+bench variants land alongside the dynamic-batching change.
+
+**Limitations:**
+
+* The per-op (no-graph) path does not currently route through the
+  pool — there's no clean wiring point because each op allocates
+  intermediate device buffers via synchronous `cudaMalloc`. Pair
+  `Overlap` with `CudaGraphMode::Capture` to see speedup.
+* Sessions running multiple concurrent inference threads are
+  outside scope — the pool is not yet thread-safe across `run`
+  calls (use one Session per worker thread until that lands).

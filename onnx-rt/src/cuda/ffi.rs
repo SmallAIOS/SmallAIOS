@@ -183,6 +183,20 @@ pub type cudaGraph_t = *mut core::ffi::c_void;
 /// Opaque CUDA executable graph handle (instantiated graph ready for launch).
 pub type cudaGraphExec_t = *mut core::ffi::c_void;
 
+/// Opaque CUDA event handle. Events express ordering dependencies
+/// between CUDA streams without serializing on the host — see
+/// `cudaEventRecord` + `cudaStreamWaitEvent`.
+pub type cudaEvent_t = *mut core::ffi::c_void;
+
+/// Flag passed to `cudaStreamWaitEvent`. We always pass 0 (no special
+/// behavior); the constant exists for clarity at call sites.
+pub const CUDA_EVENT_WAIT_DEFAULT: u32 = 0;
+
+/// Flag passed to `cudaEventCreateWithFlags`. We use the default
+/// `cudaEventCreate` (no timing, no inter-process) so this constant
+/// is unused for now; left for future expansion.
+pub const CUDA_EVENT_DEFAULT: u32 = 0;
+
 /// `cudaStreamBeginCapture` mode. We use `ThreadLocal` to keep capture state
 /// scoped to the calling thread so concurrent inferences on other threads
 /// can keep dispatching work to the default stream.
@@ -244,6 +258,14 @@ extern "C" {
     pub fn cudaGraphLaunch(graph_exec: cudaGraphExec_t, stream: cudaStream_t) -> cudaError_t;
     pub fn cudaGraphExecDestroy(graph_exec: cudaGraphExec_t) -> cudaError_t;
     pub fn cudaGraphDestroy(graph: cudaGraph_t) -> cudaError_t;
+
+    // ── Event lifecycle (cross-stream ordering for async-multistream-v1) ──
+    pub fn cudaEventCreate(event: *mut cudaEvent_t) -> cudaError_t;
+    pub fn cudaEventDestroy(event: cudaEvent_t) -> cudaError_t;
+    pub fn cudaEventRecord(event: cudaEvent_t, stream: cudaStream_t) -> cudaError_t;
+    pub fn cudaStreamWaitEvent(stream: cudaStream_t, event: cudaEvent_t, flags: u32)
+        -> cudaError_t;
+    pub fn cudaEventSynchronize(event: cudaEvent_t) -> cudaError_t;
 }
 
 // ── cuBLAS FFI ──────────────────────────────────────────────────────
