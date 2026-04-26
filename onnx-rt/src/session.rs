@@ -1248,6 +1248,49 @@ mod tests {
         assert!(!config.enable_profiling);
         assert_eq!(config.max_batch_size, 1);
         assert_eq!(config.thread_count, 1);
+        assert_eq!(config.stream_config, StreamConfig::SingleStream);
+    }
+
+    #[test]
+    fn test_stream_config_default_is_single_stream() {
+        // SingleStream is the documented zero-overhead default; downstream
+        // code branches on this so the invariant is worth a test.
+        assert_eq!(StreamConfig::default(), StreamConfig::SingleStream);
+    }
+
+    #[test]
+    fn test_stream_config_overlap_holds_transfer_count() {
+        // Verify the Overlap variant round-trips its transfer_streams
+        // payload — pattern matching on the variant feeds the lazy
+        // pool-allocation path.
+        let cfg = StreamConfig::Overlap {
+            transfer_streams: 2,
+        };
+        match cfg {
+            StreamConfig::Overlap { transfer_streams } => assert_eq!(transfer_streams, 2),
+            other => panic!("expected Overlap, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_session_error_invalid_config_display() {
+        // The new InvalidConfig variant must format with a clear prefix
+        // so callers can grep logs for it.
+        let e = SessionError::InvalidConfig(String::from("transfer_streams must be <= 2"));
+        let s = format!("{}", e);
+        assert!(s.starts_with("invalid config: "), "got {}", s);
+        assert!(s.contains("transfer_streams"));
+    }
+
+    #[test]
+    fn test_session_error_invalid_config_eq() {
+        // PartialEq on SessionError is used in IPC-side error mapping;
+        // make sure the new variant participates correctly.
+        let a = SessionError::InvalidConfig(String::from("x"));
+        let b = SessionError::InvalidConfig(String::from("x"));
+        let c = SessionError::InvalidConfig(String::from("y"));
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 
     #[test]
