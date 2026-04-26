@@ -3960,3 +3960,80 @@ fn test_cuda_graph_cache_lazy_init_when_off() {
     // Cache slot exists but is empty.
     assert!(session.cuda_graph_cache.borrow().is_none());
 }
+
+// ── async-multistream-v1: stream pool + event ordering tests ──────────
+
+/// Lifecycle smoke test for `StreamPool`. Allocates a pool with 2
+/// transfer streams, syncs every stream (no-op since nothing is
+/// queued), drops it. Exercises `cudaStreamCreate` / `cudaEventCreate`
+/// / `cudaStreamDestroy` / `cudaEventDestroy` end-to-end.
+#[test]
+#[ignore]
+fn test_stream_pool_lifecycle() {
+    let _rt = cuda::CudaRuntime::init().expect("CUDA init");
+    let pool = cuda::streams::StreamPool::new(2).expect("pool new");
+    assert_eq!(pool.h2d.len(), 2);
+    assert_eq!(pool.d2h.len(), 2);
+    pool.synchronize_all().expect("sync all");
+}
+
+/// Event reuse: acquire two events, release one, acquire again — should
+/// get the released event back without allocating.
+#[test]
+#[ignore]
+fn test_stream_pool_event_reuse() {
+    let _rt = cuda::CudaRuntime::init().expect("CUDA init");
+    let pool = cuda::streams::StreamPool::new(1).expect("pool new");
+    let e1 = pool.acquire_event().expect("acquire 1");
+    let raw1 = e1.raw();
+    pool.release_event(e1);
+    let e2 = pool.acquire_event().expect("acquire 2 (should be e1)");
+    // Same handle returned (LIFO reuse).
+    assert_eq!(e2.raw(), raw1);
+}
+
+/// SessionConfig validation: `transfer_streams > 2` rejected at the
+/// first Overlap-mode inference via `ensure_stream_pool()`.
+#[test]
+#[ignore]
+fn test_stream_config_caps_transfer_streams_at_2() {
+    use smallaios_onnx_rt::session::{Session, SessionConfig, SessionError, StreamConfig};
+
+    if cuda::CudaRuntime::init().is_err() {
+        eprintln!("skipping: no CUDA device");
+        return;
+    }
+
+    let mut config = SessionConfig::default();
+    config.stream_config = StreamConfig::Overlap {
+        transfer_streams: 5,
+    };
+    let session = Session::new(config);
+    let err = session
+        .ensure_stream_pool()
+        .expect_err("should reject transfer_streams=5");
+    match err {
+        SessionError::InvalidConfig(msg) => {
+            assert!(msg.contains("transfer_streams"), "msg = {}", msg);
+        }
+        other => panic!("expected InvalidConfig, got {:?}", other),
+    }
+}
+
+/// Pool-aware lazy init: with `SingleStream` config the pool slot
+/// stays `None` even after `ensure_stream_pool` is called — there's
+/// no work to allocate.
+#[test]
+#[ignore]
+fn test_ensure_stream_pool_noop_on_single_stream() {
+    use smallaios_onnx_rt::session::{Session, SessionConfig};
+
+    if cuda::CudaRuntime::init().is_err() {
+        eprintln!("skipping: no CUDA device");
+        return;
+    }
+
+    let session = Session::new(SessionConfig::default());
+    session.ensure_stream_pool().expect("noop ok");
+    assert!(session.stream_pool.borrow().is_none());
+}

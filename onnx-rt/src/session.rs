@@ -768,6 +768,12 @@ impl Session {
                             slot.as_ref().unwrap().clone()
                         };
                         let mut cache_slot = self.cuda_graph_cache.borrow_mut();
+                        // Lazily allocate the multi-stream pool (no-op
+                        // on SingleStream config). Errors propagate as
+                        // SessionError::InvalidConfig before any
+                        // inference work happens.
+                        self.ensure_stream_pool()?;
+                        let pool_slot = self.stream_pool.borrow();
                         return crate::executor_hybrid::execute_graph_hybrid_with_capture(
                             graph,
                             &input_pairs,
@@ -776,6 +782,7 @@ impl Session {
                             Some(&cache),
                             &mut cache_slot,
                             self.config.cuda_graph,
+                            pool_slot.as_ref(),
                         );
                     }
                 }
