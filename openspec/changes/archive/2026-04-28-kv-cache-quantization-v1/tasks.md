@@ -70,7 +70,7 @@
 
 - [x] 8.1 `cargo fmt --check` passes
 - [x] 8.2 `cargo clippy -- -D warnings` passes for `onnx-rt` with the new module
-- [x] 8.3 `cargo test --workspace` passes including all new unit tests and the end-to-end Llama-3.2-1B accuracy test
+- [x] 8.3 `cargo test --workspace` passes including all new unit tests for the compression module (the end-to-end Llama-3.2-1B accuracy test is part of the deferred §7 scope and is not exercised here)
 - [ ] 8.4 Add a memory micro-benchmark to `bench/` measuring `CompressedKVCache` allocated bytes at 512, 1024, 2048, and 4096 context lengths — **DEFERRED**: bench/docs follow-on; tracked separately.
 - [ ] 8.5 Add an accuracy micro-benchmark to `bench/` measuring the Frobenius error of `CompressedKVCache::attention_logits` versus the f16 reference across a synthetic random-query workload — **DEFERRED**: bench/docs follow-on; tracked separately.
 - [ ] 8.6 Update `docs/kv-compression-design.md` with any implementation-driven refinements discovered during the task list (for example, the exact re-orthogonalization cadence if 512 turns out to be wrong) — **DEFERRED**: bench/docs follow-on; tracked separately.
