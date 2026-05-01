@@ -1,6 +1,6 @@
 ## 1. Phase 1 — ExecutionBackend trait + CPU refactor
 
-- [ ] 1.1 Define `ExecutionBackend` trait in `onnx-rt::backend` (object-safe, `#![no_std]`, vendor-neutral). Include `can_run`, `dispatch`, `probe`, `name`, and an `estimated_cost` hook for future cost-based selection.
+- [ ] 1.1 Define `ExecutionBackend` trait in `onnx-rt::backend` (object-safe, `#![no_std]`, vendor-neutral). Include `can_run`, `dispatch`, `probe`, `name`, and an `estimated_ns(&self, op: &OpDescriptor) -> u64` hook for future latency-based selection (returns nanoseconds; backends with no real estimate may return a fixed sentinel).
 - [ ] 1.2 Define supporting types: `OpDescriptor`, `TensorEnv`, `ExecError` (with `FallbackToCpu`, `BackendUnavailable`, `Internal` variants), `BackendError`.
 - [ ] 1.3 Refactor existing host-CPU dispatch (NEON/SVE/AVX/AVX-512 kernels) into a `CpuBackend` struct implementing `ExecutionBackend`. No behavior change; outputs must be byte-identical.
 - [ ] 1.4 Update `SessionConfig` with a `backends: Vec<Box<dyn ExecutionBackend>>` field (heapless equivalent for `no_std`). Default = `[CpuBackend::new()]`.
@@ -67,4 +67,4 @@
 - [ ] 6.5 Run `just clippy` (clean), `just fmt-check` (clean), `just test` (all passing); verify coverage ratchet not regressed.
 - [ ] 6.6 Update `CLAUDE.md` "Workspace Architecture" and "Build Configuration" sections with the new crate and recipes.
 - [ ] 6.7 `/opsx:verify` the change before marking it done.
-- [ ] 6.8 Open follow-up change shells: `fpga-dpu-backend-v1` (DPU `.xmodel` runtime as a Backend), `fpga-custom-npu-v1` (HLS NPU informed by perf measurements), `fpga-manager-v1` (dynamic bitstream reconfig). Link from this change's PR description.
+- [ ] 6.8 Open follow-up change shells: `fpga-dpu-backend-v1` (DPU `.xmodel` runtime as an `ExecutionBackend` impl), `fpga-custom-npu-v1` (HLS NPU informed by perf measurements), `fpga-manager-v1` (dynamic bitstream reconfig). Link from this change's PR description.

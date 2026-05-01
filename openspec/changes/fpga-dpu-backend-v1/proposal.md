@@ -14,7 +14,7 @@
 - Per-op fallback to `CpuBackend` for ops the DPU does not support (LayerNorm, custom activations, etc.) — leverages the fallback semantics already in the HAL
 - Documentation of the offline workflow: ONNX → quantized ONNX (Brevitas) → Vitis AI compile → `.xmodel`, run on x86 Linux box, ship `.xmodel` to SmallAIOS
 - New CI matrix entry: build with `dpu` feature enabled
-- New `just run-arm-zynqmp-dpu` recipe (bakes a stock DPU bitstream into the QEMU boot image; real-hardware run is documented but not in CI)
+- New `just run-arm-zynqmp-dpu` recipe. The recipe assembles a QEMU boot image carrying the same stock DPU bitstream artifact used on real hardware, but **under QEMU this validates only software-side packaging and `.xmodel` parsing plumbing** — QEMU's ZynqMP machine models do not emulate PL configuration or execute DPU instructions. Real-hardware execution is documented in `docs/zynqmp-dpu.md` but not in CI.
 
 Out of scope:
 - DPU **bitstream** generation (we use AMD's stock DPU overlay; custom DPU configurations deferred)

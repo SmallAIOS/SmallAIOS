@@ -16,7 +16,7 @@ The Zynq UltraScale+ Platform Management Unit (PMU) provides an Inter-Processor 
 
 - New `arch/aarch64-zynqmp::pmu` module: PMU IPI driver (request/response over IPI registers, message format per Xilinx XilPM)
 - New `FpgaManager` API: `load_bitstream(&[u8]) -> Result<()>` (full PL reconfig); `load_partial(&[u8], region) -> Result<()>` (partial reconfig — gated behind a feature flag, may be deferred to a v2)
-- Bitstream image format support: parse `.bit`/`.bin` headers, validate target device, hand off raw configuration data to PMU
+- Bitstream image format support: parse Xilinx `.bit` headers (rich metadata: target device, design name, build date) and validate target device against the running SOM. Accept raw `.bin` (configuration data with no header) only when accompanied by an out-of-band SmallAIOS manifest carrying target-device + signature metadata. Hand off raw configuration data to PMU after validation.
 - IRQ-driven completion: wait for PMU response, surface configuration errors (CRC mismatch, unsupported format, partial-reconfig-not-allowed)
 - `verified-boot` integration hook: bitstream signature check before handing off to PMU (gated behind the existing `verified-boot` feature; integrates with the project's PQC stack — ML-DSA-65 signatures)
 - Documentation: when to use static (FSBL) vs dynamic (FpgaManager) loading; security implications of runtime PL reconfig

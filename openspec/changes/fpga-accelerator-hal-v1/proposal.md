@@ -4,7 +4,7 @@ SmallAIOS targets AI inference workloads but currently has no path to FPGA accel
 
 ## What Changes
 
-- Introduce a generic accelerator HAL in `onnx-rt` (a `Backend` trait + runtime dispatch) designed without DPU or `.xmodel` knowledge — backends are pluggable, ARM-only fallback is the default
+- Introduce a generic accelerator HAL in `onnx-rt` (an `ExecutionBackend` trait + runtime dispatch) designed without DPU or `.xmodel` knowledge — backends are pluggable, ARM-only fallback is the default
 - Add a QEMU stub backend (a fake AXI-mapped accelerator device with deterministic latency) so the HAL is exercisable end-to-end on Mac/Linux dev hosts with no FPGA hardware
 - Add a new `arch/aarch64-zynqmp` board crate for Zynq UltraScale+: Cadence UART (not PL011), GIC-400, generic timer, DDR memory map, EL1 boot via AMD's FSBL+ATF chain (SmallAIOS as the EL1 payload in `BOOT.BIN`)
 - Add a reusable AXI master + AXI-DMA driver framework with PS-PL cache-coherency handling (HPC vs HP port semantics on UltraScale+)
@@ -20,7 +20,7 @@ Not included (future changes):
 
 ### New Capabilities
 
-- `accelerator-hal`: Generic ONNX-runtime backend abstraction. Defines the `Backend` trait, op-dispatch contract, tensor/buffer ownership rules, fallback-to-ARM semantics, and the QEMU stub backend used as a reference implementation.
+- `accelerator-hal`: Generic ONNX-runtime backend abstraction. Defines the `ExecutionBackend` trait, op-dispatch contract, tensor/buffer ownership rules, fallback-to-ARM semantics, and the QEMU stub backend used as a reference implementation.
 - `zynqmp-board`: Zynq UltraScale+ MPSoC (K26 SOM) board support for `arch/aarch64-zynqmp`. Covers boot via FSBL+ATF, Cadence UART, GIC-400, generic timer, DDR memory map, A53-only execution.
 - `axi-dma-framework`: Reusable AXI master + AXI-DMA driver framework. Covers register access, scatter-gather DMA descriptors, IRQ-driven completion, and PS-PL cache-coherency handling for UltraScale+ HPC/HP ports.
 

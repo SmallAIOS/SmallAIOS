@@ -75,11 +75,20 @@ The board crate SHALL provide a driver for the ARMv8 generic timer suitable for 
 - **THEN** it SHALL read `CNTFRQ_EL0` and use that value for time conversions
 - **AND** it SHALL NOT hard-code a frequency
 
-#### Scenario: One-shot deadline fires
+#### Scenario: One-shot deadline fires (functional)
 
 - **WHEN** the timer is programmed to fire at a specific `CNTPCT_EL0` value
 - **THEN** an interrupt SHALL be raised at or after that value
-- **AND** the latency between the deadline and the IRQ handler entry SHALL be under 5 µs in QEMU virt configuration
+- **AND** the registered IRQ handler SHALL run to completion in the QEMU `xlnx-zcu102` machine
+- **AND** the handler SHALL observe `CNTPCT_EL0 >= deadline` on entry
+
+#### Scenario: One-shot deadline latency (real hardware)
+
+- **WHEN** the timer is programmed to fire at a specific `CNTPCT_EL0` value on a real KV260 / KR260
+- **AND** the latency between the deadline and the IRQ handler entry is measured over at least 1000 trials
+- **THEN** the 99th-percentile latency SHALL be under 5 µs
+- **AND** the measurement methodology SHALL be documented in `docs/zynqmp-boot.md`
+- **NOTE:** This scenario is gated to real-hardware test runs only; QEMU scheduling jitter makes the bound unmeasurable in emulation.
 
 ### Requirement: DDR Memory Map Definition
 

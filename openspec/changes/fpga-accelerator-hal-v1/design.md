@@ -24,7 +24,7 @@ Both will eventually exist as backends. The DPU is fastest to first-light; the c
 ## Goals / Non-Goals
 
 **Goals:**
-- Define a `Backend` trait in `onnx-rt` with no DPU/`.xmodel`/Vitis AI vocabulary
+- Define a `ExecutionBackend` trait in `onnx-rt` with no DPU/`.xmodel`/Vitis AI vocabulary
 - Make ARM-only execution one backend among several; fallback semantics explicit and per-op
 - Provide a QEMU stub backend that exercises the HAL end-to-end on dev hosts
 - Provide a `arch/aarch64-zynqmp` board crate sufficient to boot SmallAIOS on a real KV260/KR260 (UART output, GIC interrupts, generic timer, DDR map) — A53 cores only
@@ -46,18 +46,18 @@ Both will eventually exist as backends. The DPU is fastest to first-light; the c
 
 ### Decision 1: Define the HAL with op granularity, not subgraph granularity
 
-The `Backend` trait operates at the **single-op** level: `can_run(&self, op: &OpDescriptor) -> bool` and `dispatch(&self, op: &OpDescriptor, tensors: &mut TensorEnv) -> Result<()>`.
+The `ExecutionBackend` trait operates at the **single-op** level: `can_run(&self, op: &OpDescriptor) -> bool` and `dispatch(&self, op: &OpDescriptor, tensors: &mut TensorEnv) -> Result<()>`.
 
 **Why:** A subgraph-granularity HAL would mirror the DPU's `.xmodel` model (compile a subgraph, fire it as a unit) and bake AMD's design choices into our boundary. Op-granularity is more general — a backend that wants subgraph-level execution can implement an internal scheduler/JIT and still satisfy an op-level interface (e.g., by lazy-batching). Op granularity also lets us implement per-op fallback to ARM trivially.
 
 **Alternatives considered:**
 - *Subgraph granularity*: Faster path for DPU integration, but constrains the custom NPU and `onnx-rt`'s existing per-op dispatcher. Rejected.
 - *Whole-graph offload*: Even more constraining; rejected for the same reason.
-- *Hybrid (op + optional subgraph batching)*: Possible later. The op-level trait is forward-compatible — a future `BatchedBackend: Backend` extension trait can opt in.
+- *Hybrid (op + optional subgraph batching)*: Possible later. The op-level trait is forward-compatible — a future `BatchedBackend: ExecutionBackend` extension trait can opt in.
 
-### Decision 2: ARM-only execution is a `Backend` implementation, not a special case
+### Decision 2: ARM-only execution is a `ExecutionBackend` implementation, not a special case
 
-The existing CPU dispatch path (NEON/SVE on aarch64; AVX/AVX2/AVX-512 on x86) is refactored to live behind a `CpuBackend` that implements `Backend`. The runtime's dispatcher always selects from a list of registered backends; if no accelerator backend claims an op, `CpuBackend` runs it.
+The existing CPU dispatch path (NEON/SVE on aarch64; AVX/AVX2/AVX-512 on x86) is refactored to live behind a `CpuBackend` struct that implements `ExecutionBackend`. The runtime's dispatcher always selects from a list of registered backends; if no accelerator backend claims an op, `CpuBackend` runs it.
 
 **Why:** Symmetry is the only way to keep the HAL honest. If "CPU" is a special path that bypasses the trait, the trait will accumulate quiet assumptions ("the CPU always runs first, then accelerators get whatever's left"). Making CPU just another backend forces the dispatch policy to be explicit.
 
@@ -76,9 +76,9 @@ Backends receive a `TensorEnv` providing read access to inputs and write access 
 
 ### Decision 4: Backend selection is static at session creation, not per-op dynamic
 
-`SessionConfig` gains a `backends: Vec<Box<dyn Backend>>` (or const slice in `no_std`). Order = priority. At session-build time, the runtime walks the graph and binds each op to a backend (the first one whose `can_run` returns true) — a precomputed dispatch table. No per-op decisions at inference time.
+`SessionConfig` gains a `backends: Vec<Box<dyn ExecutionBackend>>` (or const slice in `no_std`). Order = priority. At session-build time, the runtime walks the graph and binds each op to a backend (the first one whose `can_run` returns true) — a precomputed dispatch table. No per-op decisions at inference time.
 
-**Why:** Per-op dynamic dispatch adds latency and makes profiling harder. Static binding plays nicely with the existing memory planner (tensor residency is known up front) and with future hybrid-residency optimizations. Backends can still report soft costs (`estimated_ns`) so the runtime can pick the cheapest option among multiple capable backends.
+**Why:** Per-op dynamic dispatch adds latency and makes profiling harder. Static binding plays nicely with the existing memory planner (tensor residency is known up front) and with future hybrid-residency optimizations. Backends can still report soft costs via an `estimated_ns(&self, op: &OpDescriptor) -> u64` hook (estimated nanoseconds of execution time; backends with no real estimate may return a fixed sentinel) so the runtime can pick the cheapest option among multiple capable backends.
 
 **Alternatives considered:**
 - *Dynamic dispatch*: Required only if backends have shape/dtype-dependent capability gaps that can't be predicted. Premature for now; revisit if needed.
@@ -125,7 +125,7 @@ Existing `arch/aarch64` may target generic AArch64 / QEMU virt; Zynq UltraScale+
 ## Risks / Trade-offs
 
 - **[Risk] HAL trait churns once a real backend lands** → Mitigation: build the QEMU stub first and treat *it* as the conformance test for the HAL. If the stub plus a sketch of how the DPU/NPU would slot in works, we have higher confidence the trait is right. The DPU change can still propose HAL refinements; that's fine.
-- **[Risk] Static dispatch decision (Decision 4) is wrong for some future backend** → Mitigation: cost-based selection still leaves room for the backend to report dynamic costs at session-build time. If we hit a case requiring per-op dynamic dispatch, we add it as an opt-in (`Backend::is_dynamic() -> bool`).
+- **[Risk] Static dispatch decision (Decision 4) is wrong for some future backend** → Mitigation: cost-based selection still leaves room for the backend to report dynamic costs at session-build time. If we hit a case requiring per-op dynamic dispatch, we add it as an opt-in (`ExecutionBackend::is_dynamic() -> bool`).
 - **[Risk] Cache-coherency type discipline (Decision 5) is over-engineered if real workloads only use one port** → Mitigation: it costs little (two phantom-typed buffer types). If we never use HP ports, the `HpPort` type is dead code, and that's fine.
 - **[Risk] FSBL+ATF dependency means BOOT.BIN generation requires Vitis on x86 Linux** → Mitigation: this is an offline build step, not a runtime dependency. We document it in `docs/zynqmp-boot.md`. Unit tests run on host CPU and don't need it. CI for the kernel build can still produce an ELF; BOOT.BIN packaging is a downstream step run only when releasing for actual hardware.
 - **[Risk] QEMU stub diverges from real DPU/NPU behavior in subtle ways and bakes wrong assumptions into the runtime** → Mitigation: the stub is intentionally minimal — it does not pretend to model DPU latency, error modes, or instruction encoding. Anything stub-specific is gated behind a `qemu-stub` feature, never default.
@@ -134,17 +134,21 @@ Existing `arch/aarch64` may target generic AArch64 / QEMU virt; Zynq UltraScale+
 
 ## Migration Plan
 
-1. **Phase 1 — Trait + CPU refactor (no behavior change):** Define `Backend`, refactor existing CPU dispatch into `CpuBackend`. All existing tests must pass with byte-identical results. Land before any new backend.
+1. **Phase 1 — Trait + CPU refactor (no behavior change):** Define `ExecutionBackend`, refactor existing CPU dispatch into `CpuBackend`. All existing tests must pass with byte-identical results. Land before any new backend.
 2. **Phase 2 — QEMU stub:** Add `qemu-stub` backend behind a feature flag. Add QEMU device (custom `-device` patch or QEMU plugin) and a `just run-arm-zynqmp-stub` recipe. Land alongside Phase 3.
 3. **Phase 3 — Zynq board + AXI/DMA:** New `arch/aarch64-zynqmp` crate. New AXI/AXI-DMA driver framework. New `just build-kernel-arm-zynqmp` recipe. Boot test in QEMU. (Real hardware boot is not part of this change; that's a follow-up qualification activity once a board is in hand.)
 4. **Phase 4 — Documentation:** `docs/zynqmp-boot.md` (FSBL+ATF chain, BOOT.BIN packaging via `bootgen`), `docs/accelerator-hal.md` (writing a backend), `docs/axi-dma.md` (port semantics, cache coherency).
 
 **Rollback:** Phases 1–3 each land as separate PRs. Trait + CPU refactor can be reverted independently of the Zynq board work. QEMU stub is feature-gated and can be disabled without affecting other targets.
 
+## Resolved Decisions
+
+- **Trait name: `ExecutionBackend`.** Considered `Backend` (too generic — collides with networking/codec backend nomenclature), `OpBackend` (too narrow — implies single-op only). `ExecutionBackend` is unambiguous and used consistently in proposal, design, specs, and tasks.
+- **Cost-hook name and units: `estimated_ns(&self, op: &OpDescriptor) -> u64`.** Returns estimated nanoseconds. Backends with no real estimate may return a fixed sentinel. Considered `estimated_cost` (abstract units) — rejected as ambiguous.
+
 ## Open Questions
 
-1. Should `Backend` be object-safe (`dyn Backend`) or generic (`<B: Backend>`)? Object-safety simplifies the dispatch table at the cost of a vtable indirection per op. Most backends will be cold-path enough that vtable cost is invisible; lean object-safe unless benchmarks show otherwise. **Default for tasks: object-safe.**
+1. Should `ExecutionBackend` be object-safe (`dyn ExecutionBackend`) or generic (`<B: ExecutionBackend>`)? Object-safety simplifies the dispatch table at the cost of a vtable indirection per op. Most backends will be cold-path enough that vtable cost is invisible; lean object-safe unless benchmarks show otherwise. **Default for tasks: object-safe.**
 2. Where does the AXI/DMA framework live — inside `arch/aarch64-zynqmp`, or in a sibling crate (`drivers/axi`)? Versal will reuse it. Defer until we see how much code it actually is; if >500 lines, split it. **Default for tasks: start inside `arch/aarch64-zynqmp`, plan to split.**
 3. Does the QEMU stub need to model AXI burst behavior, or is a single-beat MMIO transfer enough to exercise the driver? **Default for tasks: single-beat is enough for v1; bursts become a stretch goal.**
 4. Should we pin the AMD Vitis version used to generate `BOOT.BIN`? Reproducibility matters for DO-178C. **Default for tasks: yes — pin in `docs/zynqmp-boot.md`, fail soft on mismatch.**
-5. Naming: `Backend` is generic enough that it might collide with other contexts. `OpBackend`? `ExecutionBackend`? **Default for tasks: `ExecutionBackend`** to disambiguate from networking backends and other uses.
