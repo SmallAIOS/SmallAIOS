@@ -118,6 +118,14 @@ docker-build:
 docker-build-gpu:
     {{docker}} build -f Dockerfile.cuda -t smallaios/runtime:gpu .
 
+# Build Jetson Orin Docker image (NVIDIA L4T JetPack 6 base, cc_87)
+docker-build-jetson:
+    {{docker}} build -f Dockerfile.jetson -t smallaios/runtime:jetson .
+
+# Build Jetson Orin slim image (l4t-cuda runtime + cuDNN, ~3 GB vs ~9.8 GB)
+docker-build-jetson-slim:
+    {{docker}} build -f Dockerfile.jetson.slim -t smallaios/runtime:jetson-slim .
+
 # Build and push multi-arch Docker image
 docker-push:
     {{docker}} buildx build --platform linux/amd64,linux/arm64 \
@@ -130,6 +138,20 @@ docker-local:
 # Run local Docker with GPU profile
 docker-local-gpu:
     docker compose --profile gpu up --build
+
+# Run local Docker with Jetson profile (ARM64 + Tegra Orin GPU)
+docker-local-jetson:
+    docker compose --profile jetson up --build
+
+# Run local Docker with Jetson slim profile (~3 GB image)
+docker-local-jetson-slim:
+    docker compose --profile jetson-slim up --build
+
+# Smoke-test the Jetson GPU image end-to-end (build + boot + GPU init + /v1/inference).
+# Run this on a Jetson Orin Nano / NX / AGX with NVIDIA Container Runtime installed.
+# Pass variant=slim to test Dockerfile.jetson.slim instead of the default.
+test-jetson-gpu variant="":
+    ./scripts/test-jetson-gpu.sh {{variant}}
 
 # Clean local Docker resources
 docker-local-clean:

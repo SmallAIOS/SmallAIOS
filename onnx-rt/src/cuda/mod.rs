@@ -113,9 +113,17 @@ impl core::fmt::Display for CudaError {
 
 // ── Compile-time CUDA major version ─────────────────────────────────
 
-/// CUDA major version these bindings target.
-/// Used for runtime compatibility check.
-const TARGET_CUDA_MAJOR: i32 = 13;
+/// Lowest CUDA major version these bindings are known to be ABI-
+/// compatible with. The FFI surface we use (cudaMalloc / cudaMemcpy /
+/// cudaGetDeviceCount / cublas{Sgemm,GemmEx} / cudnnConvolutionForward
+/// / cudaGraphLaunch) has been stable since CUDA 11; we explicitly
+/// support 12.x (Jetson Orin / JetPack 6 / L4T R36.4) and 13.x (DGX
+/// Spark, x86 + discrete GPU images). Anything outside that range
+/// is rejected because the cudaDeviceProp layout (which we don't
+/// rely on, but other CUDA call sites do) and the cublasGemmEx
+/// compute-type enum can shift.
+const MIN_CUDA_MAJOR: i32 = 12;
+const MAX_CUDA_MAJOR: i32 = 13;
 
 // ── Device discovery ────────────────────────────────────────────────
 
@@ -222,14 +230,15 @@ pub fn runtime_version() -> Result<i32, CudaError> {
     Ok(version)
 }
 
-/// Check that the CUDA runtime major version matches compiled bindings.
+/// Check that the CUDA runtime major version is within the supported
+/// range (currently 12.x – 13.x). See `MIN_CUDA_MAJOR` / `MAX_CUDA_MAJOR`.
 pub fn check_version() -> Result<i32, CudaError> {
     let version = runtime_version()?;
     // CUDA version encoding: major * 1000 + minor * 10
     let major = version / 1000;
-    if major != TARGET_CUDA_MAJOR {
+    if !(MIN_CUDA_MAJOR..=MAX_CUDA_MAJOR).contains(&major) {
         return Err(CudaError::VersionMismatch {
-            expected_major: TARGET_CUDA_MAJOR,
+            expected_major: MAX_CUDA_MAJOR,
             actual_major: major,
         });
     }

@@ -9,12 +9,22 @@ publish = false
 
 [features]
 default = []
-tegra = ["cc_53"]  # Tegra T210 SoC-integrated GM20B GPU
-cc_53 = []    # Maxwell (Jetson Nano)
+# `tegra` selects the legacy Tegra X1 (GM20B) bare-metal HAL — used by
+# `smallaios-arch-aarch64` for Jetson Nano original / TX1 boot. The
+# bare-metal Tegra register-level drivers under `src/tegra/` are
+# X1-specific (Falcon ucode, GM20B GR engine, etc.) and remain gated
+# by this flag.
+tegra = ["cc_53"]
+# `tegra-orin` is the container-side (CUDA via NGC L4T) target for the
+# Orin family — Nano Super 8 GB, NX 8 / 16 GB, AGX 32 / 64 GB. It does
+# NOT pull in the X1 bare-metal HAL — the Jetson container path uses
+# the userspace CUDA runtime mounted by NVIDIA Container Toolkit.
+tegra-orin = ["cc_87"]
+cc_53 = []    # Maxwell (Tegra X1 / Jetson Nano original / TX1)
 cc_70 = []    # Volta (V100)
 cc_75 = []    # Turing (T4)
 cc_80 = []    # Ampere (A100)
-cc_87 = []    # Ampere (Jetson Orin)
+cc_87 = []    # Ampere (Jetson Orin Nano / NX / AGX)
 cc_90 = []    # Hopper (H100)
 cc_100 = []   # Blackwell (B200, DGX Spark)
 

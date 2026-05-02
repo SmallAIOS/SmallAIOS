@@ -365,8 +365,11 @@ pub struct Session {
     /// for hybrid mode and a CUDA runtime is attached. Stored as
     /// `Arc<DeviceTensor>` so the hybrid value map can share buffers
     /// across inferences without device→device memcpy.
+    ///
+    /// `Mutex` (not `RefCell`) so `Session: Send + Sync` for use in
+    /// multi-threaded HTTP request handlers.
     #[cfg(feature = "cuda")]
-    pub device_initializer_cache: core::cell::RefCell<DeviceInitCacheSlot>,
+    pub device_initializer_cache: std::sync::Mutex<DeviceInitCacheSlot>,
     /// Per-Session CUDA Graph cache for the hybrid + capture path.
     /// Populated lazily on the first `Session::run` call when the
     /// session is configured for `GpuResidency::Hybrid` and
@@ -374,7 +377,7 @@ pub struct Session {
     /// stream and one or more captured `cudaGraphExec_t` keyed by
     /// input shape + dtype.
     #[cfg(feature = "cuda")]
-    pub cuda_graph_cache: core::cell::RefCell<crate::cuda::graph_cache::CudaGraphCacheSlot>,
+    pub cuda_graph_cache: std::sync::Mutex<crate::cuda::graph_cache::CudaGraphCacheSlot>,
     /// Per-Session CUDA stream pool for multi-stream overlap. `None`
     /// when `SessionConfig::stream_config = SingleStream` (default)
     /// or before the first multi-stream inference. Lazily allocated
@@ -382,10 +385,21 @@ pub struct Session {
     /// `Overlap`-mode `run` call. Holds one compute stream + N H2D +
     /// N D2H streams + an event reuse pool.
     #[cfg(feature = "cuda")]
-    pub stream_pool: core::cell::RefCell<Option<crate::cuda::streams::StreamPool>>,
+    pub stream_pool: std::sync::Mutex<Option<crate::cuda::streams::StreamPool>>,
     /// Discriminator for the session's origin / dispatch path.
     pub kind: SessionKind,
 }
+
+// Static assertion: `Session` must remain `Send + Sync` so it can be
+// embedded in `HttpServer::route_fn` closures and `std::thread::spawn`
+// bodies. CUDA-feature regressions historically reintroduced
+// `RefCell<...>` and bare `*mut c_void` here; this trips at
+// `cargo check` instead of waiting for a downstream link error.
+#[cfg(feature = "cuda")]
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Session>();
+};
 
 /// ONNX model file magic bytes: `\x08` (field 1, varint wire type).
 ///
@@ -596,11 +610,11 @@ impl Session {
             #[cfg(feature = "cuda")]
             gpu_weights: None,
             #[cfg(feature = "cuda")]
-            device_initializer_cache: core::cell::RefCell::new(None),
+            device_initializer_cache: std::sync::Mutex::new(None),
             #[cfg(feature = "cuda")]
-            cuda_graph_cache: core::cell::RefCell::new(None),
+            cuda_graph_cache: std::sync::Mutex::new(None),
             #[cfg(feature = "cuda")]
-            stream_pool: core::cell::RefCell::new(None),
+            stream_pool: std::sync::Mutex::new(None),
             kind: SessionKind::Onnx,
         }
     }
@@ -622,7 +636,7 @@ impl Session {
                 transfer_streams
             )));
         }
-        let mut slot = self.stream_pool.borrow_mut();
+        let mut slot = self.stream_pool.lock().unwrap();
         if slot.is_some() {
             return Ok(());
         }
@@ -740,7 +754,7 @@ impl Session {
                         // every TensorProto and re-uploading every
                         // initializer to device on each inference.
                         let cache = {
-                            let mut slot = self.device_initializer_cache.borrow_mut();
+                            let mut slot = self.device_initializer_cache.lock().unwrap();
                             if slot.is_none() {
                                 let mut map: BTreeMap<
                                     String,
@@ -767,13 +781,13 @@ impl Session {
                             }
                             slot.as_ref().unwrap().clone()
                         };
-                        let mut cache_slot = self.cuda_graph_cache.borrow_mut();
+                        let mut cache_slot = self.cuda_graph_cache.lock().unwrap();
                         // Lazily allocate the multi-stream pool (no-op
                         // on SingleStream config). Errors propagate as
                         // SessionError::InvalidConfig before any
                         // inference work happens.
                         self.ensure_stream_pool()?;
-                        let pool_slot = self.stream_pool.borrow();
+                        let pool_slot = self.stream_pool.lock().unwrap();
                         return crate::executor_hybrid::execute_graph_hybrid_with_capture(
                             graph,
                             &input_pairs,
@@ -1132,9 +1146,9 @@ impl Session {
                     .into_iter()
                     .collect::<BTreeMap<String, crate::cuda::gpu_executor::DeviceTensor>>(),
             )),
-            device_initializer_cache: core::cell::RefCell::new(None),
-            cuda_graph_cache: core::cell::RefCell::new(None),
-            stream_pool: core::cell::RefCell::new(None),
+            device_initializer_cache: std::sync::Mutex::new(None),
+            cuda_graph_cache: std::sync::Mutex::new(None),
+            stream_pool: std::sync::Mutex::new(None),
             kind: SessionKind::Safetensors,
         })
     }

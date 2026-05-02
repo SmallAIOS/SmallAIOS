@@ -1,6 +1,8 @@
 # SmallAIOS Local Development
-# CPU:  docker compose up --build
-# GPU:  docker compose --profile gpu up --build
+# CPU:          docker compose up --build
+# GPU:          docker compose --profile gpu up --build           (x86 + discrete GPU)
+# Jetson:       docker compose --profile jetson up --build        (ARM64 + Tegra Orin, ~9.8 GB)
+# Jetson slim:  docker compose --profile jetson-slim up --build   (ARM64 + Tegra Orin, ~3 GB)
 
 services:
   smallaios:
@@ -53,3 +55,56 @@ services:
       timeout: 5s
       retries: 3
       start_period: 5s
+
+  smallaios-jetson:
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - SMALLAIOS_MODEL_DIR=/models
+      - SMALLAIOS_PORT=8080
+      - SMALLAIOS_GPU_BACKEND=cuda
+      - SMALLAIOS_BUS_BACKEND=none
+    profiles:
+      - jetson
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      # Build is slow on first run (cold L4T pull + cold cargo); allow a
+      # generous start window before the runtime considers the container
+      # unhealthy.
+      start_period: 30s
+
+  smallaios-jetson-slim:
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson.slim
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/models:ro
+    restart: unless-stopped
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - SMALLAIOS_MODEL_DIR=/models
+      - SMALLAIOS_PORT=8080
+      - SMALLAIOS_GPU_BACKEND=cuda
+      - SMALLAIOS_BUS_BACKEND=none
+    profiles:
+      - jetson-slim
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

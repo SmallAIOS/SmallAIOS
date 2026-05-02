@@ -1,0 +1,77 @@
+# SmallAIOS Jetson Orin Container Build (ARM64 + JetPack 6 / L4T R36.4)
+#
+# Targets the integrated Tegra GPU on Jetson Orin Nano Super, NX, and AGX
+# (compute capability 8.7). For x86-64 + discrete-GPU hosts, use
+# Dockerfile.cuda instead — the L4T base in this file does not run on
+# non-Tegra drivers, and conversely the nvcr.io/nvidia/cuda:13.0 base in
+# Dockerfile.cuda is rejected by Jetson's CDI runtime (driver 540 / CUDA 12.6).
+#
+# Usage:
+#   docker build -f Dockerfile.jetson -t smallaios:jetson .
+#   docker run --runtime=nvidia --rm -p 8080:8080 \
+#     -v "$(pwd)/models:/models:ro" \
+#     -e SMALLAIOS_GPU_BACKEND=cuda smallaios:jetson
+#
+# Or via compose:
+#   docker compose --profile jetson up --build smallaios-jetson
+#
+# See docs/jetson-quickstart.md for the full bring-up walkthrough.
+
+# === Builder + Runtime: NVIDIA L4T JetPack 6 (CUDA 12.6 + cuDNN 9.3) ===
+#
+# JetPack 6 is the stable Jetson stack as of L4T R36.4. The image is large
+# (~3 GB) but bundles the entire user-mode CUDA stack we link against
+# (libcudart.so.12, libcublas.so.12, libcudnn.so.9, libnvrtc.so.12), which
+# the NVIDIA Container Toolkit then complements with the host-mounted
+# libcuda.so.1 driver shim.
+ARG L4T_BASE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
+
+FROM ${L4T_BASE} AS builder
+
+# Install Rust nightly + cross-compilation tools.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl ca-certificates build-essential pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain nightly-2026-02-01 --profile minimal
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN rustup target add aarch64-unknown-linux-gnu
+
+WORKDIR /app
+COPY . .
+
+# Make the L4T-hosted CUDA libs visible to the linker:
+#   * /usr/local/cuda/lib64 — libcudart, libcublas, libcublasLt, libnvrtc
+#   * /usr/local/cuda/lib64/stubs — libcuda stub (real driver shim is
+#     mounted at runtime by NVIDIA Container Toolkit)
+#   * /usr/lib/aarch64-linux-gnu — libcudnn (cuDNN 9.3 ships here on L4T)
+ENV RUSTFLAGS="-L /usr/local/cuda/lib64 -L /usr/local/cuda/lib64/stubs -L /usr/lib/aarch64-linux-gnu"
+
+# Build with cuda + nvidia_gpu features. tegra-orin selects cc_87 on
+# smallaios-arch-nvidia (Ampere Orin). The binary dynamically links
+# against libcudart/cublas/cudnn from the L4T base; libcuda comes
+# from the host driver via the NVIDIA Container Toolkit at runtime.
+RUN cargo build --release --target aarch64-unknown-linux-gnu \
+        -p smallaios-container \
+        --features cuda,nvidia_gpu,smallaios-arch-nvidia/tegra-orin && \
+    cp /app/target/aarch64-unknown-linux-gnu/release/smallaios-container \
+       /app/smallaios
+
+# === Runtime: same L4T JetPack base, slim copy ===
+FROM ${L4T_BASE}
+
+COPY --from=builder /app/smallaios /smallaios
+
+ENV SMALLAIOS_MODEL_DIR=/models
+ENV SMALLAIOS_PORT=8080
+ENV SMALLAIOS_GPU_BACKEND=cuda
+ENV SMALLAIOS_BUS_BACKEND=none
+
+EXPOSE 8080
+VOLUME /models
+
+ENTRYPOINT ["/smallaios"]
