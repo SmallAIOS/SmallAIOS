@@ -157,6 +157,15 @@ jobs:
     # `cargo check` does not link, so we don't need libcudart on the
     # runner — only the Rust toolchain. This unblocks GPU-feature
     # development without requiring a GPU CI host.
+    #
+    # We do NOT use `--workspace` here because `arch/aarch64` and
+    # `arch/riscv64` carry unguarded `core::arch::asm!` blocks that
+    # only assemble for their own target_arch. The `Unit Tests` job
+    # has the same constraint and uses the same curated-list pattern.
+    # The list below covers every workspace crate that touches the
+    # `cuda` / `nvidia_gpu` features either directly or via a
+    # dependency edge — adding a new crate that imports `cuda::*`
+    # means adding it here too.
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly
@@ -164,7 +173,13 @@ jobs:
           toolchain: nightly-2026-02-01
           components: rust-src
       - name: cargo check --features cuda,nvidia_gpu
-        run: cargo check -p smallaios-onnx-rt -p smallaios-container --features cuda,nvidia_gpu
+        run: |
+          cargo check \
+            -p smallaios-onnx-rt \
+            -p smallaios-container \
+            -p smallaios-arch-nvidia \
+            -p smallaios-compute \
+            --features cuda,nvidia_gpu
 
   jetson-image-build:
     name: Jetson Image Build (advisory, QEMU)

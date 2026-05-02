@@ -122,7 +122,7 @@ docker-build-gpu:
 docker-build-jetson:
     {{docker}} build -f Dockerfile.jetson -t smallaios/runtime:jetson .
 
-# Build Jetson Orin slim image (l4t-cuda runtime + cuDNN, ~3 GB vs ~9.8 GB)
+# Build Jetson Orin slim image (l4t-cuda runtime + cuDNN, ~4 GB vs ~9.8 GB)
 docker-build-jetson-slim:
     {{docker}} build -f Dockerfile.jetson.slim -t smallaios/runtime:jetson-slim .
 

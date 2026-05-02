@@ -7,9 +7,9 @@ container on an NVIDIA Jetson Orin (Nano Super, NX, or AGX).
 
 | Board                 | SoC      | GPU        | CC  | Tested |
 |-----------------------|----------|------------|-----|--------|
-| Jetson Orin Nano Super (8 GB) | Orin     | Ampere | 8.7 | yes (NX dev box) |
-| Jetson Orin NX (8 / 16 GB)    | Orin     | Ampere | 8.7 | yes |
-| Jetson AGX Orin (32 / 64 GB)  | Orin     | Ampere | 8.7 | architectural — same image |
+| Jetson Orin Nano Super (8 GB) | Orin     | Ampere | 8.7 | not directly — same SoC + cc 8.7 as the validated NX |
+| Jetson Orin NX (8 / 16 GB)    | Orin     | Ampere | 8.7 | yes — 16 GB validated end-to-end |
+| Jetson AGX Orin (32 / 64 GB)  | Orin     | Ampere | 8.7 | not directly — same SoC + cc 8.7 |
 | Jetson Nano (original)        | Tegra X1 | Maxwell | 5.3 | NO — see "Why not Nano original?" below |
 
 The Orin family ships with JetPack 6 / L4T R36.4+ and a fixed CUDA 12.6
@@ -115,7 +115,7 @@ curl http://localhost:8080/v1/models # [{"name":"squeezenet","file_size":4956208
 
 ### "requirements not met: cuda>=13.0..."
 
-```
+```text
 docker: Error response from daemon: failed to create task for container:
 ... failed to construct OCI spec modifier: requirements not met:
 cuda>=13.0||brand=...&&driver>=535... not met

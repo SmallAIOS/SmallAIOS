@@ -237,8 +237,16 @@ pub fn check_version() -> Result<i32, CudaError> {
     // CUDA version encoding: major * 1000 + minor * 10
     let major = version / 1000;
     if !(MIN_CUDA_MAJOR..=MAX_CUDA_MAJOR).contains(&major) {
+        // Report the boundary that was actually violated, not always
+        // the upper bound — otherwise a CUDA 11.x runtime gets the
+        // misleading "expected major 13" message.
+        let expected_major = if major < MIN_CUDA_MAJOR {
+            MIN_CUDA_MAJOR
+        } else {
+            MAX_CUDA_MAJOR
+        };
         return Err(CudaError::VersionMismatch {
-            expected_major: MAX_CUDA_MAJOR,
+            expected_major,
             actual_major: major,
         });
     }

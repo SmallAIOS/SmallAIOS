@@ -64,7 +64,17 @@ RUN cargo build --release --target aarch64-unknown-linux-gnu \
 # === Runtime: same L4T JetPack base, slim copy ===
 FROM ${L4T_BASE}
 
-COPY --from=builder /app/smallaios /smallaios
+# Run as a dedicated non-root user. The smallaios binary only needs to
+# read /models and bind port 8080 (>1024) — neither requires root.
+# Fixed UID 10001 keeps host-side bind-mount permission semantics
+# predictable across hosts.
+RUN groupadd --system --gid 10001 smallaios && \
+    useradd --system --uid 10001 --gid 10001 \
+            --no-create-home --shell /usr/sbin/nologin \
+            --home-dir /nonexistent smallaios && \
+    mkdir -p /models && chown smallaios:smallaios /models
+
+COPY --from=builder --chown=smallaios:smallaios /app/smallaios /smallaios
 
 ENV SMALLAIOS_MODEL_DIR=/models
 ENV SMALLAIOS_PORT=8080
@@ -73,5 +83,6 @@ ENV SMALLAIOS_BUS_BACKEND=none
 
 EXPOSE 8080
 VOLUME /models
+USER smallaios
 
 ENTRYPOINT ["/smallaios"]

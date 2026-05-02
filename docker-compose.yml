@@ -2,7 +2,7 @@
 # CPU:          docker compose up --build
 # GPU:          docker compose --profile gpu up --build           (x86 + discrete GPU)
 # Jetson:       docker compose --profile jetson up --build        (ARM64 + Tegra Orin, ~9.8 GB)
-# Jetson slim:  docker compose --profile jetson-slim up --build   (ARM64 + Tegra Orin, ~3 GB)
+# Jetson slim:  docker compose --profile jetson-slim up --build   (ARM64 + Tegra Orin, ~4 GB)
 
 services:
   smallaios:

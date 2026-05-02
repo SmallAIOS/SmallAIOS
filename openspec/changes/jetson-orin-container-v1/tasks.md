@@ -15,7 +15,7 @@
 
 ## 3. CI gate for the cuda feature
 
-- [x] 3.1 Add a job `cuda-check` to `.github/workflows/ci.yml` that runs `cargo check --workspace --features cuda,nvidia_gpu` on `ubuntu-latest`
+- [x] 3.1 Add a job `cuda-check` to `.github/workflows/ci.yml` that runs `cargo check --features cuda,nvidia_gpu` on `ubuntu-latest`. **Deviation:** `--workspace` is infeasible because `arch/aarch64` and `arch/riscv64` carry unguarded `core::arch::asm!` blocks that only assemble for their own target_arch (matches the existing `Unit Tests` job's curated-list pattern). The job covers `smallaios-onnx-rt` + `smallaios-container` + `smallaios-arch-nvidia` + `smallaios-compute` — every workspace crate that touches the `cuda`/`nvidia_gpu` features either directly or via a dependency edge. Comment in the workflow file documents the constraint and the rule for adding new crates.
 - [x] 3.2 Wire `cuda-check` into the `change-gates` meta-job so it blocks merge
 - [x] 3.3 Verify on this PR that the new gate catches a deliberately-reverted-Send change (test-time only — revert local change after green run)
 

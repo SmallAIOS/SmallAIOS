@@ -16,17 +16,36 @@
 //!
 //! # Safety contract for `Send + Sync`
 //!
-//! CUDA primary contexts are bound to a process and become "current"
-//! on whichever thread last called `cudaSetDevice`. Stream and graph
-//! handles do not own a thread — they own a (process, device) pair.
-//! `cudaGraphLaunch`, `cudaStreamSynchronize`, `cudaStreamCreate`, and
-//! `cudaStreamDestroy` are all documented as thread-safe with respect
-//! to the same handle as long as the calling thread has a current
-//! context for the same device. `Session` pins itself to a single
-//! device and the executor re-asserts the device before each inference
-//! via [`crate::cuda::CudaRuntime`]. Therefore moving these handles
-//! between worker threads is sound, and the data they reference (graph
-//! topology, captured kernels) is never mutated after creation.
+//! Per the CUDA Runtime API, stream / event / graph handles can only
+//! be safely used from a thread that has the **owning device made
+//! current** via `cudaSetDevice`. Each host thread has its own
+//! "current device" state; HTTP worker pools enter with no device
+//! current. Lazy primary-context bind (the default for a single-GPU
+//! process) papers over many cases, but the soundness of moving these
+//! handles between threads requires an explicit guarantee, not luck.
+//!
+//! The guarantee `Session` makes:
+//!
+//! 1. **Single device per `Session`.** A `Session` is constructed
+//!    against exactly one [`crate::cuda::CudaRuntime`], which records
+//!    one [`crate::cuda::CudaDeviceInfo::device_id`]. The Session
+//!    never re-targets across devices.
+//! 2. **Re-bind on every cross-thread entry point.** Every public
+//!    method on `Session` that may be invoked from an HTTP worker
+//!    thread or a `std::thread::spawn` body — `Session::run` and
+//!    `Session::ensure_stream_pool` — calls
+//!    `crate::cuda::set_device(rt.device.device_id)` *before*
+//!    acquiring any of the cached-handle mutexes. The rebind is
+//!    cheap (a thread-local pointer write in libcudart) and is the
+//!    point at which the Send claim is discharged.
+//!
+//! Together, these mean the `unsafe impl Send + Sync` is sound for
+//! the deployments smallaios supports today (single-GPU host;
+//! container-mode HTTP request thread pool). Multi-device hosts
+//! would require either a per-`Session` device pin enforced with a
+//! thread-pinning newtype, or a dedicated CUDA worker thread — both
+//! out of scope for the current milestone. Anyone widening that
+//! envelope MUST audit this contract.
 
 use core::ptr;
 

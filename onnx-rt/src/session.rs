@@ -636,7 +636,21 @@ impl Session {
                 transfer_streams
             )));
         }
-        let mut slot = self.stream_pool.lock().unwrap();
+        // Re-bind device on the calling thread before touching CUDA
+        // (StreamPool::new calls cudaStreamCreate). See
+        // `cuda::graph` for the Send + Sync safety story.
+        if let Some(rt) = self.cuda_runtime.as_deref() {
+            crate::cuda::set_device(rt.device.device_id).map_err(|e| {
+                SessionError::ExecutionFailed(alloc::format!(
+                    "cudaSetDevice({}): {}",
+                    rt.device.device_id,
+                    e
+                ))
+            })?;
+        }
+        let mut slot = self.stream_pool.lock().map_err(|_| {
+            SessionError::ExecutionFailed(String::from("stream_pool mutex poisoned"))
+        })?;
         if slot.is_some() {
             return Ok(());
         }
@@ -749,12 +763,30 @@ impl Session {
                     use alloc::collections::BTreeMap;
                     use alloc::sync::Arc;
                     if let Some(rt) = self.cuda_runtime.as_deref() {
+                        // Re-bind the Session's device on the calling
+                        // thread before any CUDA op. cudaSetDevice is
+                        // per-thread; HTTP worker pools enter with no
+                        // current device, and the Send/Sync safety
+                        // contract for our cached handles depends on
+                        // this rebind. See `crate::cuda::graph` module
+                        // docs for the full safety story.
+                        crate::cuda::set_device(rt.device.device_id).map_err(|e| {
+                            SessionError::ExecutionFailed(alloc::format!(
+                                "cudaSetDevice({}): {}",
+                                rt.device.device_id,
+                                e
+                            ))
+                        })?;
                         // Lazy-populate the device-resident initializer
                         // cache on first hybrid run. Skips re-decoding
                         // every TensorProto and re-uploading every
                         // initializer to device on each inference.
                         let cache = {
-                            let mut slot = self.device_initializer_cache.lock().unwrap();
+                            let mut slot = self.device_initializer_cache.lock().map_err(|_| {
+                                SessionError::ExecutionFailed(String::from(
+                                    "device_initializer_cache mutex poisoned",
+                                ))
+                            })?;
                             if slot.is_none() {
                                 let mut map: BTreeMap<
                                     String,
@@ -781,13 +813,21 @@ impl Session {
                             }
                             slot.as_ref().unwrap().clone()
                         };
-                        let mut cache_slot = self.cuda_graph_cache.lock().unwrap();
+                        let mut cache_slot = self.cuda_graph_cache.lock().map_err(|_| {
+                            SessionError::ExecutionFailed(String::from(
+                                "cuda_graph_cache mutex poisoned",
+                            ))
+                        })?;
                         // Lazily allocate the multi-stream pool (no-op
                         // on SingleStream config). Errors propagate as
                         // SessionError::InvalidConfig before any
                         // inference work happens.
                         self.ensure_stream_pool()?;
-                        let pool_slot = self.stream_pool.lock().unwrap();
+                        let pool_slot = self.stream_pool.lock().map_err(|_| {
+                            SessionError::ExecutionFailed(String::from(
+                                "stream_pool mutex poisoned",
+                            ))
+                        })?;
                         return crate::executor_hybrid::execute_graph_hybrid_with_capture(
                             graph,
                             &input_pairs,

@@ -24,8 +24,9 @@
 #   10  docker compose build failed
 #   20  health/ready did not become green within the timeout
 #   30  GPU init line missing (silent CPU fallback or wrong device)
-#   40  inference request did not return 200
-#   50  prerequisite check failed (missing docker, no nvidia runtime, etc.)
+#   40  inference request did not return 200, or response shape is wrong
+#   50  prerequisite check failed (missing docker / curl / nvidia runtime / compose plugin / python3)
+#   51  unknown variant argument (only "slim", "fat", "full", or empty are accepted)
 
 set -euo pipefail
 
@@ -58,14 +59,23 @@ info()   { yellow "[jetson-gpu] $*"; }
 ok()     { green  "[jetson-gpu] $*"; }
 fail()   { red    "[jetson-gpu] $*"; }
 
+TMP_FILES_TO_REMOVE=()
+
 cleanup() {
     info "Tearing down container ..."
     docker compose --profile "$COMPOSE_PROFILE" down --remove-orphans >/dev/null 2>&1 || true
+    for f in "${TMP_FILES_TO_REMOVE[@]}"; do
+        rm -f "$f" 2>/dev/null || true
+    done
 }
 trap cleanup EXIT
 
 # --- Prereqs --------------------------------------------------------
 command -v docker >/dev/null 2>&1 || { fail "docker not installed"; exit 50; }
+command -v curl   >/dev/null 2>&1 || { fail "curl not installed";   exit 50; }
+command -v python3 >/dev/null 2>&1 || { fail "python3 not installed (needed to build the f32 inference payload)"; exit 50; }
+docker compose version >/dev/null 2>&1 \
+    || { fail "docker compose plugin not installed"; exit 50; }
 docker info 2>/dev/null | grep -q "Runtimes:.*nvidia" \
     || { fail "NVIDIA Container Runtime not configured (install nvidia-container-toolkit)"; exit 50; }
 
@@ -132,27 +142,54 @@ else
 fi
 
 # --- Inference round-trip ------------------------------------------
-info "POST /v1/inference (squeezenet) ..."
-# SqueezeNet 1.1 takes a [1, 3, 224, 224] f32 input. We don't ship a
-# fixture-encoded request body in this smoke test — the goal is just
-# to confirm the endpoint is reachable end-to-end and returns 200 on
-# a well-formed but minimal payload. Inference contract details live
-# in onnx-rt integration tests.
-HTTP_CODE=$(curl -s -o /tmp/jetson-infer.out -w "%{http_code}" \
+info "Generating a [1, 3, 224, 224] f32 input for SqueezeNet ..."
+# Build a real, deterministic input payload so /v1/inference receives
+# a well-formed tensor and the smoke test exercises the GPU-side
+# parse-decode-dispatch path end-to-end. Use python3 (universally
+# present on JetPack hosts) instead of jq, which doesn't handle a
+# 150528-element float array efficiently.
+REQ_FILE="$(mktemp -t smallaios-jetson-req.XXXXXX.json)"
+RESP_FILE="$(mktemp -t smallaios-jetson-resp.XXXXXX.txt)"
+# Make sure the temp files are cleaned up alongside container teardown.
+TMP_FILES_TO_REMOVE+=("$REQ_FILE" "$RESP_FILE")
+python3 - <<'PY' > "$REQ_FILE"
+import json
+shape = [1, 3, 224, 224]
+n = shape[0] * shape[1] * shape[2] * shape[3]
+data = [(i % 256) / 255.0 for i in range(n)]
+print(json.dumps({
+    "model": "squeezenet",
+    "inputs": {"data": {"shape": shape, "dtype": "float32", "data": data}}
+}))
+PY
+
+info "POST /v1/inference (squeezenet, real f32 input, expect 200) ..."
+HTTP_CODE=$(curl -s -o "$RESP_FILE" -w "%{http_code}" \
     -X POST http://localhost:8080/v1/inference \
     -H "Content-Type: application/json" \
-    -d '{"model":"squeezenet"}' || true)
+    --data-binary @"$REQ_FILE" || true)
 
-if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "400" ]; then
-    # 400 is acceptable here — the smoke test sends a minimal probe
-    # body, and the runtime correctly rejecting it (rather than
-    # crashing or timing out) still proves the pipeline is wired up
-    # GPU-side. 200 with a real fixture body would be a stronger
-    # check; that's covered by the onnx-rt integration tests.
-    ok "/v1/inference returned ${HTTP_CODE} (endpoint reachable)."
+if [ "$HTTP_CODE" = "200" ]; then
+    # Sanity-check the response shape: must contain a 1000-element
+    # output tensor (SqueezeNet ImageNet logits) under the model's
+    # output name. Don't assert exact values — those depend on
+    # numerical determinism we don't guarantee across CUDA versions.
+    if python3 -c "
+import json, sys
+with open('$RESP_FILE') as f: d = json.load(f)
+out = next(iter(d['outputs'].values()))
+assert out['dtype'] == 'float32', f'wrong dtype: {out[\"dtype\"]}'
+assert len(out['data']) == 1000, f'wrong output size: {len(out[\"data\"])}'
+" 2>/dev/null; then
+        ok "/v1/inference returned 200 with valid [1, 1000] f32 logits."
+    else
+        fail "/v1/inference returned 200 but response shape is wrong"
+        head -c 400 "$RESP_FILE" 2>/dev/null
+        exit 40
+    fi
 else
-    fail "/v1/inference returned ${HTTP_CODE} (expected 200 or 400)"
-    cat /tmp/jetson-infer.out 2>/dev/null || true
+    fail "/v1/inference returned ${HTTP_CODE} (expected 200)"
+    head -c 400 "$RESP_FILE" 2>/dev/null
     exit 40
 fi
 

@@ -31,6 +31,14 @@ The repository SHALL provide two Jetson-specific Dockerfiles, both producing ima
 - **AND** `docker compose --profile jetson up` and `docker compose --profile jetson-slim up` SHALL be the user-visible invocations
 - **AND** the existing `gpu` profile (x86 + discrete GPU via `Dockerfile.cuda`) SHALL remain functional and unchanged
 
+#### Scenario: Container runs as non-root user
+
+- **GIVEN** the runtime stage of `Dockerfile.jetson` or `Dockerfile.jetson.slim`
+- **THEN** the image SHALL declare a `USER` directive resolving to a dedicated non-root account (e.g. `smallaios` at UID 10001)
+- **AND** that account SHALL own `/smallaios` and `/models` so a plain `docker run` works without manual permission fixups
+- **AND** the `smallaios` binary SHALL launch with no Linux capabilities beyond what the unprivileged user inherits — listening on 8080 (>1024) and reading `/models` are the only privileged-resource interactions, neither of which requires root
+- **AND** any future Dockerfile that exposes a network endpoint SHALL follow the same non-root pattern
+
 #### Scenario: Slim variant runtime base
 
 - **GIVEN** `Dockerfile.jetson.slim`
