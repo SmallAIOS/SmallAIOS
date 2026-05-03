@@ -100,6 +100,17 @@ docker compose --profile jetson-slim up --build    # Jetson Orin (recommended)
 docker compose --profile jetson up --build         # Jetson Orin (full JetPack base)
 ```
 
+### Unikernel deployments
+
+| Surface | Build / run | Hardware | Status |
+|---------|-------------|----------|--------|
+| QEMU x86-64 / ARM64 / RISC-V | `just run-x86` / `run-arm` / `run-riscv` | Any host with QEMU | Working |
+| Jetson Orin under KVM (smoke test) | `just run-jetson-kvm SSH_HOST=user@orin` | Jetson Orin (any carrier) on JetPack 6 / L4T R36.4+ | Phase 1 of [`unikernel-orin-bringup-v1`](openspec/changes/unikernel-orin-bringup-v1/) |
+| Jetson Orin bare metal (UEFI USB) | TBD | Jetson Orin via USB stick | Phase 2 of [`unikernel-orin-bringup-v1`](openspec/changes/unikernel-orin-bringup-v1/) (planned) |
+
+See [docs/jetson-kvm-quickstart.md](docs/jetson-kvm-quickstart.md) for the
+Jetson KVM unikernel workflow (Mac- or x86-as-build-host + Orin-as-runner).
+
 ## CI/CD
 
 The [CI pipeline](.github/workflows/ci.yml) runs on every push and PR:
