@@ -13,9 +13,7 @@ Dependency kind encoding:
 SPDX-License-Identifier: Apache-2.0
 """
 import json
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
