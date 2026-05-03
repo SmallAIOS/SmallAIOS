@@ -1,18 +1,15 @@
-## 1. Phase 1 — Inventory the full Code Quality view
+## 1. Phase 1 — Inventory the Code Quality view
 
-- [x] 1.1 Inventory captured in `openspec/changes/codeql-quality-cleanup-v1/findings.md`. User provided UI content directly (API does not expose Code Quality view). Discovered the view aggregates two sources: CodeQL `code-quality` suite + GitHub Copilot Code Review observations.
-- [x] 1.2 User-reported entries confirmed in the inventory (8 findings total).
-- [x] 1.3 Markdown findings traced to GitHub Copilot Code Review (not CodeQL, not markdownlint). Documented in findings.md.
-- [x] 1.4 Rust findings on `session.rs` and `integration_inference.rs` are also Copilot Review observations — not CodeQL header/lint rules.
-- [x] 1.5 Scope-check gate: 8 findings, 2 distinct sources. Threshold (>30 findings or >5 unanticipated rule IDs) NOT exceeded. Continue to Phase 2.
-- [x] 1.6 Confirmed 7 active `rust/hard-coded-cryptographic-value` findings on develop match `proposal.md` (analysis 1207890049, sarif 6dd2d066-45c3-11f1-9110-80dbf988e3e1).
+- [x] 1.1 Inventory captured. The Code Quality view aggregates two sources: CodeQL `code-quality` suite (true static-analysis lints) + GitHub Copilot Code Review (AI-authored review observations). 8 findings total: 3 unused-import (CodeQL) + 5 review observations (Copilot). API doesn't expose this surface; user provided UI content directly.
+- [x] 1.2 Triaged: 4 actionable in this change (3 Python deletes + 1 test refactor); 2 accept-as-noise (archived material — see §9 Deferrals); 2 deferred to other owners (see §9).
+- [x] 1.3 Scope-check gate: 8 findings, 2 distinct sources. Threshold (>30 findings or >5 unanticipated rule IDs) NOT exceeded. Continue to Phase 2.
+- [x] 1.4 Confirmed 7 active `rust/hard-coded-cryptographic-value` findings on develop match `proposal.md` (analysis 1207890049, sarif 6dd2d066-45c3-11f1-9110-80dbf988e3e1) — these are Phase 3+ work.
 
-## 2. Phase 2 — Trivial Python fixes + bonus test refactor
+## 2. Phase 2 — Python unused imports + test refactor
 
-- [x] 2.1 Deleted `import os` (line 16) and `import sys` (line 18) from `scripts/dsm-matrix.py`. Confirmed `python3 -c "import ast; ast.parse(open('scripts/dsm-matrix.py').read())"` parses cleanly.
-- [x] 2.2 Deleted `import os` (line 14) from `scripts/lcov-to-sonar.py`. Confirmed parses cleanly.
-- [x] 2.3 No additional Python findings surfaced.
-- [x] 2.4 Bonus per finding #5: refactored `session_custom_config` test in `onnx-rt/tests/integration_inference.rs` to use `..SessionConfig::default()` struct update syntax — only the 4 fields the test actually exercises are explicit now. `cargo test --test integration_inference session_custom_config` passes; `cargo fmt --check` clean.
+- [x] 2.1 `scripts/dsm-matrix.py`: deleted `import os` and `import sys` (genuinely unused per grep of `\b(os|sys)\.`). Script parses cleanly via `ast.parse`.
+- [x] 2.2 `scripts/lcov-to-sonar.py`: deleted `import os` (only `sys` is used). Script parses cleanly.
+- [x] 2.3 `onnx-rt/tests/integration_inference.rs::session_custom_config`: refactored to use `..SessionConfig::default()` so only the 4 fields under test are explicit. Test passes; `cargo fmt --check` clean. This addresses the Copilot review suggestion on that test.
 
 ## 3. Phase 3 — Confirm CodeQL config strategy
 
@@ -78,3 +75,17 @@ For each remaining finding from the Phase 1 inventory not addressed by Phases 2/
 - [ ] 8.4 Merge to `develop` once approved.
 - [ ] 8.5 **One-week soak:** monitor daily CodeQL runs on `develop` for 7 days post-merge. If no recurrence of `rust/hard-coded-cryptographic-value` on affected paths, the suppression strategy is validated. If recurrence happens, open a follow-up change to revise the strategy.
 - [ ] 8.6 After the soak, run `/opsx:archive codeql-quality-cleanup-v1` to archive this change and update main specs with the deltas from `specs/codeql-suppression-policy/spec.md` and `specs/documentation/spec.md`.
+
+## 9. Deferrals & accept-as-noise (out of scope for this change)
+
+These items came out of Phase 1 triage but are intentionally not addressed in this change. Recorded here so they don't get lost when this change archives.
+
+**Deferred to follow-up change:**
+- `onnx-rt/src/session.rs` eager-vs-lazy `transfer_streams <= 2` validation. `Session::new(config: SessionConfig) -> Self` returns `Self`, not `Result`. Moving validation eager requires an API decision (return `Result`, add `try_new`, or surface a `SessionConfig::validate()` method). That belongs in its own change (`session-config-eager-validation-v1`), not a code-quality cleanup. Lazy validation in `ensure_stream_pool` works correctly today.
+
+**Deferred to upstream change owner:**
+- `openspec/changes/formal-proving-and-redteam-v1/tasks.md`: Copilot review suggested scripting the manual PR-revert verification step. That's a process improvement to the formal-proving change's plan, not a quality-view cleanup. Surface to PR #122 / the change's owner.
+
+**Accept-as-noise (no action):**
+- `openspec/changes/archive/2026-04-28-microsoft-fused-ops-v1/tasks.md`: Copilot questioned `SMALLAIOS_MODEL_DIR` (singular) vs `SMALLAIOS_MODELS_DIR` (plural). The singular form is the established convention documented in CLAUDE.md and is the actual env var read by `smallaios-container`. The archived doc is correct. Per Decision 4 in `design.md`, archived openspec changes are historical records and SHALL NOT be edited solely to silence Quality findings.
+- `openspec/changes/async-multistream-v1/tasks.md`: Copilot flagged "≥1.3× / ≥1.5×" throughput target as ambiguous. This change is being archived in PR #126; the file moves to `openspec/changes/archive/2026-05-03-async-multistream-v1/tasks.md` and the same archived-material policy applies.
