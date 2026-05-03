@@ -10,8 +10,42 @@
 //! `cudaGraphInstantiate`.
 //!
 //! All three types release their underlying resource in `Drop`. The
-//! handles are not `Send`/`Sync` because cuDNN/cuBLAS handles bound to
-//! a stream are thread-local.
+//! raw handles are wrapped here with `unsafe impl Send + Sync` so a
+//! [`Session`](crate::session::Session) can be embedded in a
+//! multi-threaded HTTP request handler.
+//!
+//! # Safety contract for `Send + Sync`
+//!
+//! Per the CUDA Runtime API, stream / event / graph handles can only
+//! be safely used from a thread that has the **owning device made
+//! current** via `cudaSetDevice`. Each host thread has its own
+//! "current device" state; HTTP worker pools enter with no device
+//! current. Lazy primary-context bind (the default for a single-GPU
+//! process) papers over many cases, but the soundness of moving these
+//! handles between threads requires an explicit guarantee, not luck.
+//!
+//! The guarantee `Session` makes:
+//!
+//! 1. **Single device per `Session`.** A `Session` is constructed
+//!    against exactly one [`crate::cuda::CudaRuntime`], which records
+//!    one [`crate::cuda::CudaDeviceInfo::device_id`]. The Session
+//!    never re-targets across devices.
+//! 2. **Re-bind on every cross-thread entry point.** Every public
+//!    method on `Session` that may be invoked from an HTTP worker
+//!    thread or a `std::thread::spawn` body — `Session::run` and
+//!    `Session::ensure_stream_pool` — calls
+//!    `crate::cuda::set_device(rt.device.device_id)` *before*
+//!    acquiring any of the cached-handle mutexes. The rebind is
+//!    cheap (a thread-local pointer write in libcudart) and is the
+//!    point at which the Send claim is discharged.
+//!
+//! Together, these mean the `unsafe impl Send + Sync` is sound for
+//! the deployments smallaios supports today (single-GPU host;
+//! container-mode HTTP request thread pool). Multi-device hosts
+//! would require either a per-`Session` device pin enforced with a
+//! thread-pinning newtype, or a dedicated CUDA worker thread — both
+//! out of scope for the current milestone. Anyone widening that
+//! envelope MUST audit this contract.
 
 use core::ptr;
 
@@ -24,6 +58,10 @@ use super::CudaError;
 pub struct CaptureStream {
     stream: ffi::cudaStream_t,
 }
+
+// SAFETY: see module-level safety contract.
+unsafe impl Send for CaptureStream {}
+unsafe impl Sync for CaptureStream {}
 
 impl CaptureStream {
     /// Create a fresh CUDA stream via `cudaStreamCreate`. The stream
@@ -81,6 +119,10 @@ pub struct CudaGraph {
     graph: ffi::cudaGraph_t,
 }
 
+// SAFETY: see module-level safety contract.
+unsafe impl Send for CudaGraph {}
+unsafe impl Sync for CudaGraph {}
+
 impl CudaGraph {
     /// Wrap a previously-captured graph handle. Caller transfers
     /// ownership; Drop will release the underlying graph.
@@ -115,6 +157,10 @@ impl Drop for CudaGraph {
 pub struct CudaGraphExec {
     graph_exec: ffi::cudaGraphExec_t,
 }
+
+// SAFETY: see module-level safety contract.
+unsafe impl Send for CudaGraphExec {}
+unsafe impl Sync for CudaGraphExec {}
 
 impl CudaGraphExec {
     /// Instantiate an immutable [`CudaGraph`] into an executable

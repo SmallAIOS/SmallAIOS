@@ -1,0 +1,113 @@
+# SmallAIOS Jetson Orin — Slim Container Variant
+#
+# Same target as Dockerfile.jetson (Jetson Orin Nano Super / NX / AGX,
+# JetPack 6 / L4T R36.4+, compute capability 8.7), but built for a
+# smaller image footprint:
+#
+#   Dockerfile.jetson         ≈ 9.8 GB (full L4T JetPack 6 base)
+#   Dockerfile.jetson.slim    ≈ 4.1 GB (l4t-cuda runtime + just cuDNN)
+#
+# The build stage still uses the full JetPack image so cargo/rustc and
+# the CUDA dev libs are present at link time. The runtime stage is the
+# leaner `l4t-cuda:12.6.11-runtime` (~2 GB) plus the cuDNN .so files
+# copied from the builder. We drop everything else: TensorRT, NPP, VPI,
+# CUDA samples, nvcc, GStreamer, multimedia API.
+#
+# Trade-offs vs. the fat image:
+#   + ~5.7 GB smaller image — faster pulls, smaller K8s registry footprint
+#   + No TensorRT / no nvcc / no VPI / no multimedia API / no DLA compiler
+#     in the runtime container (none of which SmallAIOS uses today)
+#   - First-time apt repo / cuDNN version drift is no longer NVIDIA-managed
+#     (we pin libcudnn .so files at build time)
+#   - If a future SmallAIOS feature pulls in TensorRT or VPI, the slim
+#     image will need the missing libs added explicitly
+#
+# Usage:
+#   docker build -f Dockerfile.jetson.slim -t smallaios:jetson-slim .
+#   docker run --runtime=nvidia --rm -p 8080:8080 \
+#     -v "$(pwd)/models:/models:ro" \
+#     -e SMALLAIOS_GPU_BACKEND=cuda smallaios:jetson-slim
+#
+# Or via compose:
+#   docker compose --profile jetson-slim up --build
+
+ARG L4T_BUILDER_BASE=nvcr.io/nvidia/l4t-jetpack:r36.4.0
+ARG L4T_RUNTIME_BASE=nvcr.io/nvidia/l4t-cuda:12.6.11-runtime
+
+# === Builder: full JetPack (reuses Dockerfile.jetson's cached layer) ===
+FROM ${L4T_BUILDER_BASE} AS builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        curl ca-certificates build-essential pkg-config && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+    sh -s -- -y --default-toolchain nightly-2026-02-01 --profile minimal
+
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+RUN rustup target add aarch64-unknown-linux-gnu
+
+WORKDIR /app
+COPY . .
+
+ENV RUSTFLAGS="-L /usr/local/cuda/lib64 -L /usr/local/cuda/lib64/stubs -L /usr/lib/aarch64-linux-gnu"
+
+RUN cargo build --release --target aarch64-unknown-linux-gnu \
+        -p smallaios-container \
+        --features cuda,nvidia_gpu,smallaios-arch-nvidia/tegra-orin && \
+    cp /app/target/aarch64-unknown-linux-gnu/release/smallaios-container \
+       /app/smallaios
+
+# === Runtime: l4t-cuda runtime + cuDNN copied from builder ===
+FROM ${L4T_RUNTIME_BASE}
+
+# cuDNN 9 splits into several .so files that are dlopen'd lazily by
+# the frontend libcudnn.so. Ship all of them — collectively ~956 MB,
+# but trimming further requires per-workload knowledge of which
+# engines are reachable. Anyone wanting to go lower can drop
+# libcudnn_adv (288 MB) if the workload has no RNN / attention ops,
+# or libcudnn_engines_precompiled (510 MB) at the cost of cold-start
+# JIT compile time. The defaults below preserve full SmallAIOS Conv /
+# fused-op coverage.
+COPY --from=builder \
+    /usr/lib/aarch64-linux-gnu/libcudnn.so.9 \
+    /usr/lib/aarch64-linux-gnu/libcudnn.so.9.3.0 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_cnn.so.9 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_cnn.so.9.3.0 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_ops.so.9 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_ops.so.9.3.0 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_graph.so.9 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_graph.so.9.3.0 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_adv.so.9 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_adv.so.9.3.0 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_engines_precompiled.so.9 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_engines_precompiled.so.9.3.0 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_engines_runtime_compiled.so.9 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_engines_runtime_compiled.so.9.3.0 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_heuristic.so.9 \
+    /usr/lib/aarch64-linux-gnu/libcudnn_heuristic.so.9.3.0 \
+    /usr/lib/aarch64-linux-gnu/
+
+RUN ldconfig
+
+# Non-root user — see Dockerfile.jetson for the full rationale.
+RUN groupadd --system --gid 10001 smallaios && \
+    useradd --system --uid 10001 --gid 10001 \
+            --no-create-home --shell /usr/sbin/nologin \
+            --home-dir /nonexistent smallaios && \
+    mkdir -p /models && chown smallaios:smallaios /models
+
+COPY --from=builder --chown=smallaios:smallaios /app/smallaios /smallaios
+
+ENV SMALLAIOS_MODEL_DIR=/models
+ENV SMALLAIOS_PORT=8080
+ENV SMALLAIOS_GPU_BACKEND=cuda
+ENV SMALLAIOS_BUS_BACKEND=none
+
+EXPOSE 8080
+VOLUME /models
+USER smallaios
+
+ENTRYPOINT ["/smallaios"]

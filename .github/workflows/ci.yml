@@ -148,6 +148,64 @@ jobs:
           -p smallaios-sdr
           -p smallaios-bench
 
+  cuda-check:
+    name: CUDA Feature Check (cargo check --features cuda)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # Cheap gate that catches Send/Sync regressions in the GPU code path.
+    # `cargo check` does not link, so we don't need libcudart on the
+    # runner — only the Rust toolchain. This unblocks GPU-feature
+    # development without requiring a GPU CI host.
+    #
+    # We do NOT use `--workspace` here because `arch/aarch64` and
+    # `arch/riscv64` carry unguarded `core::arch::asm!` blocks that
+    # only assemble for their own target_arch. The `Unit Tests` job
+    # has the same constraint and uses the same curated-list pattern.
+    # The list below covers every workspace crate that touches the
+    # `cuda` / `nvidia_gpu` features either directly or via a
+    # dependency edge — adding a new crate that imports `cuda::*`
+    # means adding it here too.
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src
+      - name: cargo check --features cuda,nvidia_gpu
+        run: |
+          cargo check \
+            -p smallaios-onnx-rt \
+            -p smallaios-container \
+            -p smallaios-arch-nvidia \
+            -p smallaios-compute \
+            --features cuda,nvidia_gpu
+
+  jetson-image-build:
+    name: Jetson Image Build (advisory, QEMU)
+    runs-on: ubuntu-latest
+    # Advisory until a self-hosted Jetson runner is available — there's no way
+    # to run a real Tegra runtime test on GitHub-hosted runners. This job
+    # at least catches Dockerfile.jetson syntactic / dependency rot under
+    # QEMU emulation.
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build Dockerfile.jetson under QEMU (linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.jetson
+          platforms: linux/arm64
+          push: false
+          load: false
+          cache-from: type=gha,scope=jetson
+          cache-to: type=gha,mode=max,scope=jetson
+
   test-formal-gate:
     name: Unit Tests (formal-gate)
     runs-on: ubuntu-latest
@@ -1074,7 +1132,7 @@ jobs:
     name: Change Gates
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [check-format, clippy, test, test-formal-gate, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check, cargo-deny, check-cycles, semver-api-check, coverage-threshold]
+    needs: [check-format, clippy, test, test-formal-gate, cuda-check, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check, cargo-deny, check-cycles, semver-api-check, coverage-threshold]
     if: github.event_name == 'pull_request'
     steps:
       - name: All gates passed
