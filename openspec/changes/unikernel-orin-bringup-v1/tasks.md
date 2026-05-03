@@ -1,29 +1,31 @@
 # Tasks — unikernel-orin-bringup-v1
 
-## 0. Verification on the J4012 (prereq for both phases)
+## 0. Verification on an Orin NX dev carrier (prereq for both phases)
 
-- [ ] 0.1 Capture and record the output of `cat /proc/cmdline | tr ' ' '\n' | grep root=`, `lsblk`, `cat /etc/nv_tegra_release`, `ls /sys/firmware/efi/efivars/ 2>/dev/null && echo UEFI-PRESENT || echo NO-UEFI`, `lsmod | grep kvm`, `cat /proc/device-tree/compatible` — paste in the change PR description so the design assumptions are pinned to ground truth on this specific J4012 SKU
-- [ ] 0.2 Confirm UEFI is present (Phase 2 prerequisite) — if not, escalate before starting Phase 2
-- [ ] 0.3 Confirm `kvm` module is loaded (Phase 1 prerequisite) — if not, document the `modprobe kvm` workaround in the Phase 1 quickstart
+> **Note:** "J4012" in the proposal narrative is shorthand for the Orin-NX-on-J-class-carrier configuration. The Phase 1 + 2 work is carrier-agnostic — the SoC (`nvidia,tegra234`) is what governs the BSP. Captured evidence from one such Orin NX 16 GB host (P3767-0000 module on P3768-0000 reference carrier) lives at `notes/0.1-orin-nx-verification-evidence.md`.
+
+- [x] 0.1 Capture and record the output of `cat /proc/cmdline | tr ' ' '\n' | grep root=`, `lsblk`, `cat /etc/nv_tegra_release`, `ls /sys/firmware/efi/efivars/ 2>/dev/null && echo UEFI-PRESENT || echo NO-UEFI`, `lsmod | grep kvm`, `cat /proc/device-tree/compatible` — paste in the change PR description so the design assumptions are pinned to ground truth on this specific Orin NX SKU. (Done on a P3767-0000+P3768-0000 / R36.4.7 host; see `notes/0.1-orin-nx-verification-evidence.md`.)
+- [x] 0.2 Confirm UEFI is present (Phase 2 prerequisite) — if not, escalate before starting Phase 2. (Confirmed: `Boot####` variables present in `/sys/firmware/efi/efivars/`.)
+- [x] 0.3 Confirm `/dev/kvm` is available (Phase 1 prerequisite). On JetPack 6 (L4T R36.x) KVM is **compiled into the kernel** (`modinfo kvm` reports `filename: (builtin)`), so `lsmod | grep kvm` returns empty even when KVM is fully operational; the right check is `[ -c /dev/kvm ]`. If `/dev/kvm` is missing on a JetPack 6 host, the running kernel is non-standard — escalate (no `modprobe kvm` fix exists for builtin KVM). The Phase 1 quickstart and smoke script must use the `/dev/kvm` check, not `lsmod`.
 
 ## 1. Phase 1 — KVM-on-L4T smoke test
 
 ### 1a. `just` recipe + smoke script
 
-- [ ] 1.1 Add `run-jetson-kvm SSH_HOST [KERNEL_PATH=target/aarch64-unknown-none/release/smallaios-kernel.bin]` recipe to `Justfile`. Recipe: cross-build via `cargo build --target aarch64-unknown-none -p smallaios-kernel --release`, scp to `$SSH_HOST:~`, ssh into `$SSH_HOST` and `qemu-system-aarch64 -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic -kernel ~/smallaios-kernel.bin`
+- [ ] 1.1 Add `run-jetson-kvm SSH_HOST="" [KERNEL_PATH=target/aarch64-unknown-none/release/smallaios-aarch64]` recipe to `Justfile`. Recipe **depends on `build-kernel-arm`** (the existing recipe that produces the bin via `cargo build --release --target aarch64-unknown-none -p smallaios-arch-aarch64`). When `SSH_HOST` is non-empty, scp the kernel to `$SSH_HOST:~/` and run `qemu-system-aarch64 -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic -kernel ~/smallaios-aarch64` over ssh. When `SSH_HOST` is empty, run the same QEMU command locally (the Jetson-as-build-host case; the Mac-as-build-host case uses the SSH_HOST form). **Crate name correction from the proposal:** the bootable AArch64 binary is produced by the `smallaios-arch-aarch64` crate (which has `[[bin]] name = "smallaios-aarch64"` in `arch/aarch64/Cargo.toml`), not the `smallaios-kernel` library crate.
 - [ ] 1.2 Add `scripts/test-jetson-kvm.sh [SSH_HOST]` — non-interactive wrapper around the recipe, with a serial-output assertion (greps the captured stdout for an expected boot banner). Exit 0 on hit, non-zero with a captured-output dump on miss
 - [ ] 1.3 Document expected vs failure exit codes inside the script header (mirroring the convention in `scripts/test-jetson-gpu.sh`)
-- [ ] 1.4 Verify the recipe end-to-end on the actual J4012 — capture the full boot output and paste in the PR description as the Phase 1 acceptance evidence
+- [ ] 1.4 Verify the recipe end-to-end on a real Orin NX (P3767-0000 / R36.4.7 host or equivalent) — capture the full boot output and paste in the PR description as the Phase 1 acceptance evidence. Acceptable execution modes: (a) Mac-as-build-host + Orin-NX-as-runner via SSH_HOST; (b) Orin-NX-as-both via the no-arg recipe variant. Document which mode produced the captured evidence.
 
 ### 1b. CI smoke build
 
-- [ ] 1.5 Add a `kvm-smoke-build` job to `.github/workflows/ci.yml`: `cargo build --target aarch64-unknown-none -p smallaios-kernel --release`, then run the artifact under TCG-emulated `qemu-system-aarch64 -M virt,gic-version=3 -nographic -kernel <bin>` with a 30-second timeout, asserting the same banner the J4012 test asserts
+- [ ] 1.5 Add a `kvm-smoke-build` job to `.github/workflows/ci.yml`: `cargo build --target aarch64-unknown-none -p smallaios-arch-aarch64 --release` (matches the `build-kernel-arm` recipe), then run `target/aarch64-unknown-none/release/smallaios-aarch64` under TCG-emulated `qemu-system-aarch64 -M virt,gic-version=3 -nographic -kernel <bin>` with a 30-second timeout, asserting the same banner the on-Orin test asserts. (Note: the existing `Build AArch64 Kernel` CI job already produces this artifact; consider depending on its upload-artifact rather than rebuilding.)
 - [ ] 1.6 Wire `kvm-smoke-build` into the `change-gates` meta-job so it blocks merge
 - [ ] 1.7 Verify the gate catches a deliberately-broken `boot.rs` (revert the deliberate break before pushing)
 
 ### 1c. Docs
 
-- [ ] 1.8 Create `docs/jetson-kvm-quickstart.md` covering: prerequisites (`apt install qemu-system-arm` on the J4012, KVM module check), one-command run, expected boot output snippet, troubleshooting (missing KVM, GICv3 mismatch, virtio panic, "Hello, world but then page fault" — common early-boot symptoms)
+- [ ] 1.8 Create `docs/jetson-kvm-quickstart.md` covering: prerequisites (`apt install qemu-system-arm` on the Orin host; user must be in the `kvm` group or have an ACL on `/dev/kvm` — `sudo usermod -aG kvm $USER` then re-login is the standard fix; check via `[ -c /dev/kvm ]` and `id -nG | grep -q kvm`), Mac-cross-build-and-scp workflow as the recommended path (Mac as workstation, Orin as runner — keeps the Orin clean of the Rust toolchain), one-command run, expected boot output snippet, troubleshooting (missing `/dev/kvm`, kvm group not granted, GICv3 mismatch, virtio panic, "Hello, world but then page fault" — common early-boot symptoms)
 - [ ] 1.9 Add a Jetson-KVM row to `README.md`'s deployment matrix linking to the quickstart, distinct from the existing Jetson container row
 - [ ] 1.10 Update `CLAUDE.md` "Current state" to note Phase 1 lands a KVM-hosted unikernel test path on Orin
 
