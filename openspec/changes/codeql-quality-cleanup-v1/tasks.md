@@ -13,28 +13,40 @@
 
 ## 3. Phase 3 — Confirm CodeQL config strategy
 
-- [ ] 3.1 Check the repo for existing `.github/codeql/` directory and config file. If absent, plan to create `.github/codeql/codeql-config.yml`.
-- [ ] 3.2 Determine whether GitHub default-setup CodeQL honors a custom `codeql-config.yml`. (Typical: default-setup ignores it; workflow-driven setup uses it.) Visit repo Settings → Code security → Code scanning to check current setup mode.
-- [ ] 3.3 If default-setup ignores config, decide between (a) migrating to workflow-driven CodeQL (out of scope for this change — would be a separate `codeql-workflow-migration-v1`), or (b) falling back to inline `// lgtm[rust/hard-coded-cryptographic-value]` annotations on the affected lines.
-- [ ] 3.4 Document the chosen path in `findings.md` (and optionally update `design.md` Open Question #1 with the resolution).
+- [x] 3.1 Checked `.github/codeql/` — no directory existed pre-change. Created `.github/codeql/codeql-config.yml`.
+- [x] 3.2 Repo uses **workflow-driven CodeQL** (`.github/workflows/codeql.yml` invokes `github/codeql-action/init@v4` for the rust/python/actions/go matrix). Workflow-driven setup honors `config-file:` passed to the init action, so a custom `codeql-config.yml` IS effective. (Default-setup would have ignored it — but that's not the path here.)
+- [x] 3.3 N/A — workflow-driven setup honors the config; no migration or fallback needed.
+- [x] 3.4 Resolved Open Question #1 from `design.md` here in tasks.md: workflow-driven; Phase 4 (config + module extraction) proceeds.
 
 ## 4. Phase 4 — KAT-vector module extraction (path-ignore strategy)
 
-Skip this phase if Phase 3 chose inline annotations instead.
+Phase 4 was the chosen path. Outcome differs in scope from the original plan:
+the seven flagged sites split into two distinct classes once read in context.
 
-- [ ] 4.1 Create `security/src/crypto/ml_kem_test_vectors.rs` with the byte-array constants currently inline at `ml_kem.rs:804` (and any nearby siblings — likely there are more KAT vectors in the same file even if CodeQL only flagged one). Mark each `pub(crate) const` and document the FIPS / NIST source.
-- [ ] 4.2 Create `security/src/crypto/ml_dsa_test_vectors.rs` with the byte-array constants currently at `ml_dsa.rs:1070, 1157, 1351, 1480` and any nearby siblings.
-- [ ] 4.3 Create `net/src/quic/protection_test_vectors.rs` (or `net/src/quic/test_vectors/protection.rs`) with the IVs currently at `protection.rs:227, 281` and any nearby siblings.
-- [ ] 4.4 Update `mod` declarations in `security/src/crypto/mod.rs` (or wherever the parent `mod` is) and `net/src/quic/mod.rs` to declare the new test-vector modules, gated `#[cfg(any(test, feature = "kat-vectors"))]` or similar if the vectors are only used by tests.
-- [ ] 4.5 Update `use` paths in code that previously referenced the inline constants. Ensure no public API names change. Run `just test` — all tests must still pass and produce identical results.
-- [ ] 4.6 Add `paths-ignore` entry in `.github/codeql/codeql-config.yml`:
+- [x] 4.1 `security/src/crypto/ml_kem.rs:804` — investigation showed this is **production code**, not a KAT byte array: `let e2 = prf(random_coins, (2 * ML_KEM_768_K) as u8, ETA2);` (FIPS 203 §7.2 PRF domain-separation index). Cannot be extracted as a test vector. The pre-existing inline `// lgtm[rust/hard-coded-cryptographic-value]` comment cites the FIPS section and remains as documentation. No new `ml_kem_test_vectors.rs` file is created. Out of scope for path-ignore.
+- [x] 4.2 `security/src/crypto/ml_dsa.rs:1070, 1157, 1351, 1480` — same finding as 4.1: these are **production code** lines (`sample_uniform(rho, (i * 256 + j) as u16)` in ExpandA, `sample_mask(&rho_pp, kappa + i as u16)` in ExpandMask). FIPS 204 §6.x mandates the call shape. Pre-existing `// lgtm` comments cite the FIPS sections. No `ml_dsa_test_vectors.rs` file is created.
+- [x] 4.3 `net/src/quic/protection.rs:227, 281` — these ARE genuine test fixtures inside `#[cfg(test)] mod tests`. Created `net/src/quic/protection_test_vectors.rs` with six `pub(super) const` byte-pattern fixtures (`TEST_KEY_AA`, `TEST_IV_BB`, `TEST_HP_KEY_CC`, `TEST_WRONG_KEY_01`, `TEST_HP_KEY_DD`, `TEST_HP_SAMPLE_EE`). The module is `#![cfg(test)]`-gated so it does not affect production build size or surface.
+- [x] 4.4 Added `#[cfg(test)] #[path = "protection_test_vectors.rs"] mod test_vectors;` declaration inside `protection.rs`. The `#[cfg(test)]` gate prevents the module from being included in production builds.
+- [x] 4.5 Updated test bodies in `protection.rs` (`test_keys()`, `test_aead_decrypt_wrong_key`, `test_header_protection_roundtrip`, `test_header_protection_short_header`) to import the constants via `use super::test_vectors::*;`. No public API names changed. `cargo test -p smallaios-net --lib quic::protection` passes 13/13 with byte-identical assertions.
+- [x] 4.6 Added `.github/codeql/codeql-config.yml`:
   ```yaml
   paths-ignore:
     - "**/*_test_vectors.rs"
     - "**/test_vectors/**"
   ```
-- [ ] 4.7 Confirm `just clippy -D warnings`, `just fmt-check`, `just arch-check` all pass.
-- [ ] 4.8 Confirm coverage gate (≥80%) is not regressed: `cargo llvm-cov --workspace --fail-under-lines 80`.
+  Wired into `.github/workflows/codeql.yml` via `config-file: ./.github/codeql/codeql-config.yml` on the `github/codeql-action/init@v4` step.
+- [x] 4.7 Verified: `just fmt-check` clean, `just clippy` clean (zero warnings under `-D warnings`), `just arch-check` reports all 14 host crates acyclic at module level. `just test` passes (no failures across the workspace; `quic::protection` 13/13).
+- [ ] 4.8 Coverage gate (≥80%) not regressed — deferred to CI run on the PR (the existing `Coverage Threshold` job will report; local `cargo llvm-cov` skipped to keep this PR scoped to suppression strategy).
+
+### Phase 4 follow-up scope note
+
+The five `ml_kem.rs` / `ml_dsa.rs` production-code findings will likely re-fire on the next CodeQL scan because they are not on a `*_test_vectors.rs` path. They are not KAT data; they are FIPS-mandated PRF domain-separation indices that cannot be moved out of the call site. Options for a follow-up (NOT in this PR):
+
+1. Targeted `query-filters` block in `codeql-config.yml` excluding `rust/hard-coded-cryptographic-value` for those two paths, with rationale comment citing FIPS.
+2. UI dismissal as "won't fix — false positive" once the suppression policy doc lands and reviewers can cite it.
+3. Refactor the `prf` / `sample_uniform` / `sample_mask` signatures so the second argument is wrapped in a typed `DomainTag(u8)` / `DomainTag(u16)` newtype that CodeQL's heuristic does not flag.
+
+Decision deferred to Phase 6 (one-off triage), where it can be batched with whatever the next CodeQL run surfaces.
 
 ## 5. Phase 5 — Phase 4 fallback: inline annotations
 
