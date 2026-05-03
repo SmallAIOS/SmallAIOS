@@ -23,11 +23,16 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
 use core::ptr;
+use std::sync::Mutex;
 
 use super::ffi;
 use super::CudaError;
+
+// SAFETY: see `crate::cuda::graph` module-level safety contract.
+// Stream and Event raw handles point to CUDA primary-context-bound
+// kernel-side resources. They are valid in any thread that has the
+// same device current. `Session` pins itself to a single device.
 
 /// Owned non-default CUDA stream. Created by `cudaStreamCreate`,
 /// destroyed by `cudaStreamDestroy` on Drop. Best-effort
@@ -36,6 +41,10 @@ use super::CudaError;
 pub struct Stream {
     stream: ffi::cudaStream_t,
 }
+
+// SAFETY: see module top.
+unsafe impl Send for Stream {}
+unsafe impl Sync for Stream {}
 
 impl Stream {
     pub fn new() -> Result<Self, CudaError> {
@@ -86,6 +95,10 @@ impl Drop for Stream {
 pub struct Event {
     event: ffi::cudaEvent_t,
 }
+
+// SAFETY: see module top.
+unsafe impl Send for Event {}
+unsafe impl Sync for Event {}
 
 impl Event {
     pub fn new() -> Result<Self, CudaError> {
@@ -160,7 +173,7 @@ pub struct StreamPool {
     /// Event reuse pool. Events are cheap but `cudaEventCreate`
     /// still has measurable cost; keep a small free list so the
     /// hot path can `acquire_event` instead of allocating.
-    events: RefCell<Vec<Event>>,
+    events: Mutex<Vec<Event>>,
 }
 
 impl StreamPool {
@@ -183,7 +196,7 @@ impl StreamPool {
             compute,
             h2d,
             d2h,
-            events: RefCell::new(starter),
+            events: Mutex::new(starter),
         })
     }
 
@@ -191,7 +204,7 @@ impl StreamPool {
     /// pool is empty. Caller must call [`release_event`] when done so
     /// the event can be reused.
     pub fn acquire_event(&self) -> Result<Event, CudaError> {
-        if let Some(e) = self.events.borrow_mut().pop() {
+        if let Some(e) = self.events.lock().unwrap().pop() {
             return Ok(e);
         }
         Event::new()
@@ -200,7 +213,7 @@ impl StreamPool {
     /// Return an event to the pool for reuse. No-op if the pool is
     /// already at its soft cap (16); the event is dropped instead.
     pub fn release_event(&self, e: Event) {
-        let mut pool = self.events.borrow_mut();
+        let mut pool = self.events.lock().unwrap();
         if pool.len() < 16 {
             pool.push(e);
         }
