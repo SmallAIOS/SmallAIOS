@@ -16,6 +16,11 @@ Thumbs.db
 # Local artifacts (AI-generated, temp files, not for git)
 .local/
 
+# Local model fixtures pulled at runtime (e.g. by
+# scripts/test-jetson-gpu.sh or scripts/download-test-fixtures.sh).
+# Models are not source-of-truth and would balloon the repo.
+/models/
+
 # TLA+ model checker artifacts
 states/
 *_TTrace_*.bin

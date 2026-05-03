@@ -82,6 +82,24 @@ qemu-system-riscv64 -machine virt -cpu rv64 -m 512M -nographic \
   -bios default -kernel target/riscv64gc-unknown-none-elf/release/smallaios-riscv64
 ```
 
+### Container deployments
+
+| Surface | Dockerfile | Compose profile | Image size | Hardware |
+|---------|-----------|-----------------|-----------|----------|
+| CPU only (slim, scratch base) | `Dockerfile` | (default) | ~1 MB | x86-64 / ARM64 / RISC-V hosts |
+| x86 + discrete NVIDIA GPU | `Dockerfile.cuda` | `gpu` | ~3 GB | x86-64 + Hopper / Blackwell / Ada / Ampere data-center GPUs |
+| Jetson Orin — slim | `Dockerfile.jetson.slim` | `jetson-slim` | ~4 GB | Jetson Orin Nano Super / NX / AGX (JetPack 6 / L4T R36.4+) — recommended for production |
+| Jetson Orin — full JetPack | `Dockerfile.jetson` | `jetson` | ~10 GB | Same hardware; bundles full JetPack 6 (TensorRT, VPI, NPP, multimedia) — convenience target for first-time bring-up |
+
+See [docs/jetson-quickstart.md](docs/jetson-quickstart.md) for the Jetson workflow and the slim/full trade-offs.
+
+```bash
+docker compose up                                  # CPU
+docker compose --profile gpu up --build            # x86 + discrete GPU
+docker compose --profile jetson-slim up --build    # Jetson Orin (recommended)
+docker compose --profile jetson up --build         # Jetson Orin (full JetPack base)
+```
+
 ## CI/CD
 
 The [CI pipeline](.github/workflows/ci.yml) runs on every push and PR:

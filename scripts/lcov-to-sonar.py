@@ -11,7 +11,6 @@ expansion and generic instantiation).
 SonarCloud generic format spec:
 https://docs.sonarsource.com/sonarqube-cloud/enriching/test-coverage/generic-test-data/
 """
-import os
 import sys
 from collections import defaultdict
 
