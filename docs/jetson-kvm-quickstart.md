@@ -75,7 +75,7 @@ What `run-jetson-kvm` does:
 
 1. `just build-kernel-arm` — `cargo build --release --target aarch64-unknown-none -p smallaios-arch-aarch64` (release, with build-std). Produces `target/aarch64-unknown-none/release/smallaios-aarch64`.
 2. `scp` the kernel ELF to `~/smallaios-aarch64` on the Jetson.
-3. `ssh` into the Jetson and run `qemu-system-aarch64 -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic -kernel ~/smallaios-aarch64 -serial stdio`.
+3. `ssh` into the Jetson and run `qemu-system-aarch64 -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic -kernel ~/smallaios-aarch64 -serial mon:stdio`.
 
 Cold-cache build on M-series Mac ≈ 2 min; incremental ≈ 5–30 s. The Orin-side run is sub-second to boot under KVM (the kernel reaches its banner before the SSH session can echo).
 
@@ -181,11 +181,11 @@ Common early-boot failure patterns and what to inspect:
 
 ### Boot is fast but no output appears
 
-Likely a serial-routing issue. The `-nographic` flag wires `-serial stdio`
-to the controlling terminal, but if the kernel is writing to a different
-UART (say, the Tegra X1 NS16550 instead of QEMU virt's PL011), nothing
-shows up. Confirm the build used the default `qemu-virt` feature, not
-`tegra-x1`:
+Likely a serial-routing issue. With `-nographic -serial mon:stdio`, QEMU
+multiplexes monitor + first PL011 UART onto the controlling terminal. If
+the kernel is writing to a different UART (say, the Tegra X1 NS16550
+instead of QEMU virt's PL011), nothing shows up. Confirm the build used
+the default `qemu-virt` feature, not `tegra-x1`:
 
 ```bash
 # Default features include qemu-virt; if you accidentally built with

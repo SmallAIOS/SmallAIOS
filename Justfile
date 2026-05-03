@@ -34,8 +34,16 @@ build-kernel-x86:
     {{cargo}} build --release --target x86_64-unknown-none -p smallaios-arch-x86_64 {{build_std}}
 
 # Build AArch64 kernel (release)
+#
+# RUSTFLAGS is set explicitly here (rather than relying on
+# `[target.aarch64-unknown-none].rustflags` in `.cargo/config.toml`) because
+# cargo doubles config-file rustflags into the final bin's rustc invocation
+# when `-Z build-std` is in play, which causes rust-lld to load `linker.ld`
+# twice and emit overlapping section file offsets. CI's `Build AArch64
+# Kernel` job already takes the env-var path; this keeps `just`-driven local
+# builds (notably Apple Silicon) on the same path.
 build-kernel-arm:
-    {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
+    RUSTFLAGS="-C link-arg=-Tarch/aarch64/linker.ld" {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
 
 # Build RISC-V kernel (release)
 build-kernel-riscv:
@@ -46,8 +54,9 @@ build-kernel-x86-debug:
     {{cargo}} build --target x86_64-unknown-none -p smallaios-arch-x86_64 {{build_std}}
 
 # Build AArch64 kernel (debug)
+# RUSTFLAGS env var matches `build-kernel-arm` — see comment there.
 build-kernel-arm-debug:
-    {{cargo}} build --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
+    RUSTFLAGS="-C link-arg=-Tarch/aarch64/linker.ld" {{cargo}} build --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
 
 # Build RISC-V kernel (debug)
 build-kernel-riscv-debug:
@@ -184,7 +193,7 @@ run-jetson-kvm SSH_HOST="" KERNEL_PATH="target/aarch64-unknown-none/release/smal
         echo "[jetson-kvm] Running on {{SSH_HOST}}: qemu-system-aarch64 -accel kvm -cpu host"
         ssh "{{SSH_HOST}}" "qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic \
-            -kernel $REMOTE_BIN -serial stdio"
+            -kernel $REMOTE_BIN -serial mon:stdio"
     else
         echo "[jetson-kvm] Local mode (assuming we're on the Jetson)"
         if [ ! -c /dev/kvm ]; then
@@ -197,7 +206,7 @@ run-jetson-kvm SSH_HOST="" KERNEL_PATH="target/aarch64-unknown-none/release/smal
         fi
         qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic \
-            -kernel "$KERNEL" -serial stdio
+            -kernel "$KERNEL" -serial mon:stdio
     fi
 
 # Smoke-test the Jetson unikernel KVM boot end-to-end (Phase 1 acceptance).

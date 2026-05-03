@@ -314,7 +314,7 @@ jobs:
           timeout 30 qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu cortex-a72 -m 1G -nographic \
             -kernel target/aarch64-unknown-none/release/smallaios-aarch64 \
-            -serial stdio 2>&1 | tee boot.log || true
+            -serial mon:stdio 2>&1 | tee boot.log || true
           echo "=== Boot log ==="
           cat boot.log
           echo "=== Asserting Phase 1 boot banner ==="

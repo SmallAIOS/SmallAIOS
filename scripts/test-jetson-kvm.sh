@@ -69,7 +69,13 @@ fi
 
 # ─── Step 2: Build the kernel ─────────────────────────────────────────────────
 info "Building AArch64 kernel (release)"
-if ! cargo build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 \
+# Set RUSTFLAGS explicitly (matches `Build AArch64 Kernel` CI job and the
+# `build-kernel-arm` Justfile recipe). Without it, cargo falls back to
+# `[target.aarch64-unknown-none].rustflags` from `.cargo/config.toml`, which
+# it then doubles into the bin's rustc invocation when `-Z build-std` is in
+# play, causing rust-lld to emit overlapping section file offsets.
+if ! RUSTFLAGS="-C link-arg=-Tarch/aarch64/linker.ld" \
+    cargo build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 \
     -Z build-std=core,compiler_builtins,alloc \
     -Z build-std-features=compiler-builtins-mem 2>&1; then
     fail "Build failed"
@@ -85,14 +91,18 @@ if [ -n "$SSH_HOST" ]; then
     info "Copying kernel to $SSH_HOST:~/$REMOTE_BIN"
     scp -q "$KERNEL_PATH" "$SSH_HOST:~/$REMOTE_BIN"
     info "Running qemu-system-aarch64 over ssh on $SSH_HOST"
-    timeout "$BOOT_TIMEOUT" ssh "$SSH_HOST" \
-        "qemu-system-aarch64 -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic \
-         -kernel ~/$REMOTE_BIN -serial stdio" \
+    # `timeout` runs on the remote (Linux/coreutils) so the build host
+    # doesn't need GNU coreutils — Apple Silicon Mac doesn't ship it.
+    ssh "$SSH_HOST" \
+        "timeout --foreground $BOOT_TIMEOUT qemu-system-aarch64 \
+         -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic \
+         -kernel ~/$REMOTE_BIN -serial mon:stdio" \
         > "$LOG" 2>&1 || true
 else
-    timeout "$BOOT_TIMEOUT" qemu-system-aarch64 \
+    # Local mode: this script is running on the Jetson itself.
+    timeout --foreground "$BOOT_TIMEOUT" qemu-system-aarch64 \
         -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic \
-        -kernel "$KERNEL_PATH" -serial stdio \
+        -kernel "$KERNEL_PATH" -serial mon:stdio \
         > "$LOG" 2>&1 || true
 fi
 
