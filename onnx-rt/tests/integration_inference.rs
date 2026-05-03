@@ -32,16 +32,15 @@ fn session_default_config() {
 
 #[test]
 fn session_custom_config() {
+    // Override only the fields this test exercises; remaining fields stay at
+    // their defaults via struct update syntax. Keeps the test resilient to
+    // future SessionConfig field additions.
     let config = SessionConfig {
         optimization_level: OptimizationLevel::Extended,
         enable_profiling: true,
         max_batch_size: 16,
         thread_count: 4,
-        parallel: smallaios_onnx_rt::parallel::ParallelConfig::default(),
-        gpu_config: None,
-        gpu_residency: smallaios_onnx_rt::session::GpuResidency::default(),
-        cuda_graph: smallaios_onnx_rt::session::CudaGraphMode::default(),
-        stream_config: smallaios_onnx_rt::session::StreamConfig::default(),
+        ..SessionConfig::default()
     };
     let session = Session::new(config);
     assert!(!session.is_initialized());
