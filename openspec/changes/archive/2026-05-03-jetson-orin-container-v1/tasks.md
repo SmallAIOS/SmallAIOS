@@ -88,5 +88,5 @@
 ## 11. Verify + archive
 
 - [x] 11.1 Run `openspec validate jetson-orin-container-v1 --strict`
-- [ ] 11.2 Open PR against `develop` with proposal/design/tasks/specs and the implementation
-- [ ] 11.3 After merge, run `/opsx:archive jetson-orin-container-v1` (will move to `openspec/changes/archive/2026-05-02-jetson-orin-container-v1`)
+- [x] 11.2 Open PR against `develop` with proposal/design/tasks/specs and the implementation — PR #124, squash-merged 2026-05-03 as commit 8d6edff
+- [x] 11.3 After merge, run `/opsx:archive jetson-orin-container-v1` (moved to `openspec/changes/archive/2026-05-03-jetson-orin-container-v1`)
