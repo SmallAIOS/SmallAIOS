@@ -124,9 +124,21 @@ pub const GPU_IRQ_NONSTALL: u32 = 190;
 // `EFI_DTB_TABLE_GUID` — see `boot_uefi.rs` (sub-PR 2c) — so the kernel
 // doesn't bundle its own DTS.
 
-/// Tegra Combined UART (TCU). NS16550-compatible register layout, but the
-/// access pattern is the SoC-side mailbox interface used by NVIDIA's bring-up
-/// firmware. Concrete driver lands in sub-PR 2d (`tegra234_uart.rs`).
+/// **Tegra Combined UART (TCU)** mailbox at `0x0C28_0000`. NVIDIA's
+/// UEFI on Jetson Orin sends `con_out` through this mailbox; the
+/// SCE/RCE/BPMP firmware drains the FIFO and routes bytes to the
+/// physical UART pin wired to the J-class carrier's debug header.
+/// The mailbox stays alive across `ExitBootServices` because the
+/// firmware draining it is independent of UEFI's lifecycle.
+///
+/// Earlier iterations tried UART_1 at `0x0310_0000` directly, but
+/// NVIDIA's UEFI gates UART_1's clock before exit, producing an SError
+/// (EC=0x2F) on register access from EL1 post-EBS. The TCU mailbox
+/// is the path that survives.
+///
+/// The TCU is *not* NS16550-compatible — it's a write-only mailbox
+/// with a 1-byte payload + a "last in transaction" header bit. See
+/// `tegra234_uart::putc` for the protocol.
 #[cfg(feature = "tegra234")]
 pub const UART_BASE: usize = 0x0C28_0000;
 
