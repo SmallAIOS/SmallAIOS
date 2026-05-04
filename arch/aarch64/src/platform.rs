@@ -16,7 +16,9 @@
 compile_error!("Platform features are mutually exclusive — pick exactly one of `qemu-virt`, `tegra-x1`, `tegra234`");
 
 #[cfg(not(any(feature = "qemu-virt", feature = "tegra-x1", feature = "tegra234")))]
-compile_error!("Exactly one platform feature must be enabled: `qemu-virt`, `tegra-x1`, or `tegra234`");
+compile_error!(
+    "Exactly one platform feature must be enabled: `qemu-virt`, `tegra-x1`, or `tegra234`"
+);
 
 // ─── QEMU virt machine ──────────────────────────────────────────────────────
 
