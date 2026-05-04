@@ -79,12 +79,15 @@ fi
 
 # ─── Step 2: Build the kernel ─────────────────────────────────────────────────
 info "Building AArch64 kernel (release)"
-# Set RUSTFLAGS explicitly (matches `Build AArch64 Kernel` CI job and the
-# `build-kernel-arm` Justfile recipe). Without it, cargo falls back to
-# `[target.aarch64-unknown-none].rustflags` from `.cargo/config.toml`, which
-# it then doubles into the bin's rustc invocation when `-Z build-std` is in
-# play, causing rust-lld to emit overlapping section file offsets.
-if ! RUSTFLAGS="-C link-arg=-Tarch/aarch64/linker.ld" \
+# RUSTFLAGS matches the CI `build-aarch64` and `aarch64-qemu-smoke` jobs
+# byte-for-byte (`-D warnings -C link-arg=-Tarch/aarch64/linker.ld`) so a
+# build that's clean here is also clean in CI. Setting it via env (rather
+# than relying on `[target.aarch64-unknown-none].rustflags` in
+# `.cargo/config.toml`) also dodges a cargo quirk: under `-Z build-std`,
+# config-file rustflags get doubled into the bin's rustc invocation, which
+# loads `linker.ld` twice and makes rust-lld emit overlapping section
+# file offsets.
+if ! RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker.ld" \
     cargo build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 \
     -Z build-std=core,compiler_builtins,alloc \
     -Z build-std-features=compiler-builtins-mem 2>&1; then

@@ -35,15 +35,15 @@ build-kernel-x86:
 
 # Build AArch64 kernel (release)
 #
-# RUSTFLAGS is set explicitly here (rather than relying on
-# `[target.aarch64-unknown-none].rustflags` in `.cargo/config.toml`) because
-# cargo doubles config-file rustflags into the final bin's rustc invocation
-# when `-Z build-std` is in play, which causes rust-lld to load `linker.ld`
-# twice and emit overlapping section file offsets. CI's `Build AArch64
-# Kernel` job already takes the env-var path; this keeps `just`-driven local
-# builds (notably Apple Silicon) on the same path.
+# RUSTFLAGS matches CI (`build-aarch64` / `aarch64-qemu-smoke`) byte-for-byte:
+# `-D warnings -C link-arg=-Tarch/aarch64/linker.ld`. A clean local build is
+# therefore a clean CI build. Setting via env (rather than relying on
+# `[target.aarch64-unknown-none].rustflags` in `.cargo/config.toml`) also
+# dodges a cargo quirk: under `-Z build-std`, config-file rustflags get
+# doubled into the final bin's rustc invocation, which makes rust-lld load
+# `linker.ld` twice and emit overlapping section file offsets.
 build-kernel-arm:
-    RUSTFLAGS="-C link-arg=-Tarch/aarch64/linker.ld" {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
+    RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker.ld" {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
 
 # Build RISC-V kernel (release)
 build-kernel-riscv:
@@ -54,7 +54,9 @@ build-kernel-x86-debug:
     {{cargo}} build --target x86_64-unknown-none -p smallaios-arch-x86_64 {{build_std}}
 
 # Build AArch64 kernel (debug)
-# RUSTFLAGS env var matches `build-kernel-arm` — see comment there.
+# Same env-var-RUSTFLAGS rationale as `build-kernel-arm` (see comment there)
+# but without `-D warnings` — debug iteration shouldn't fail on a transient
+# warning. Promote to release before pushing if you want the CI-strict gate.
 build-kernel-arm-debug:
     RUSTFLAGS="-C link-arg=-Tarch/aarch64/linker.ld" {{cargo}} build --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
 
