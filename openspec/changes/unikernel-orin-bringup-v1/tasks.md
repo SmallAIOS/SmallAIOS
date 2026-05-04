@@ -54,11 +54,19 @@
 - [x] 2.8 Modify `arch/aarch64/src/boot.rs` to dispatch on feature: `tegra-x1` keeps the existing X1 boot-ROM hand-off; `tegra234` enters via `boot_uefi.rs`. **Resolved at the bin target level rather than inside `boot.rs`**: bare-metal `aarch64-unknown-none` builds (qemu-virt / tegra-x1 / tegra234 chain-loaded via U-Boot) use `[[bin]] smallaios-aarch64` which links against `boot.rs::_start`; UEFI builds use `[[bin]] smallaios-uefi` (`required-features = ["tegra234"]`, target `aarch64-unknown-uefi`) which links against `boot_uefi::efi_main`. `boot.rs` itself is now `#[cfg(target_os = "none")]`-gated in `lib.rs` so it isn't compiled into UEFI builds (it references linker-script symbols `__bss_start` etc. that don't exist for PE/COFF).
 - [x] 2.9 Build smoke: `cargo build --target aarch64-unknown-uefi -p smallaios-kernel --features tegra234` produces a `smallaios.efi` PE/COFF artifact. **Landed**, with the package corrected to `smallaios-arch-aarch64` (the original wording referenced `smallaios-kernel` but that crate has no bin target — `arch/aarch64/Cargo.toml` is where the bin definitions live). `just build-kernel-uefi` produces `target/aarch64-unknown-uefi/release/smallaios-uefi.efi` (1.1 MB PE32+ Aarch64 EFI application).
 
-### 2d. Tegra234 UART (first observable signal)
+### 2d. First observable signal (UEFI `con_out` route)
 
-- [ ] 2.10 Create `arch/aarch64/src/tegra234_uart.rs` — Tegra Combined UART (TCU) MMIO driver at `0x0c280000`. NS16550-compatible register layout. Polling write_byte initially; interrupt-driven later
-- [ ] 2.11 Wire `tegra234_uart` into the `console` module under the `tegra234` feature, replacing the X1 `uart`
-- [ ] 2.12 First milestone observable on the J4012: kernel UEFI-boots from USB, prints "Hello, world from SmallAIOS on Tegra234" over the TCU. Capture the serial output via a USB-to-TTL cable on the J4012's UART header. Paste in the PR description
+The original split for 2d coupled three tasks (TCU driver, console wiring,
+hardware test). In practice it was easier to ship the on-board
+proof-of-life via UEFI's `SimpleTextOutputProtocol` first and defer the
+kernel-side TCU driver until after `ExitBootServices` is wired up. This
+isolates two distinct failure modes — "did the .efi load?" vs. "does
+the post-handoff kernel reach the TCU?" — and reaches the milestone
+sooner.
+
+- [~] 2.10 Create `arch/aarch64/src/tegra234_uart.rs` — Tegra Combined UART (TCU) MMIO driver at `0x0c280000`. NS16550-compatible register layout. Polling write_byte initially; interrupt-driven later. **Deferred** to the post-2d sub-PR that lands `ExitBootServices` + the actual `kernel_main` handoff (the kernel-side TCU driver is only needed once UEFI's `con_out` is no longer available, i.e. after ExitBootServices).
+- [~] 2.11 Wire `tegra234_uart` into the `console` module under the `tegra234` feature, replacing the X1 `uart`. **Deferred** alongside 2.10.
+- [x] 2.12 First milestone observable on the J4012: kernel UEFI-boots from USB, prints "Hello, world from SmallAIOS on Tegra234" over the TCU. Capture the serial output via a USB-to-TTL cable on the J4012's UART header. Paste in the PR description. **Landed in sub-PR 2d**: `efi_main` prints the banner via `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` (`SystemTable.con_out`) before halting in `wfi`. On the Orin's UEFI firmware `con_out` is routed through the TCU mailbox, so the banner reaches whatever serial console is wired to the J-class carrier's UART header. The output isn't yet produced by the kernel itself (it's UEFI-side, before ExitBootServices) but it lands on the documented TCU port and validates the .efi-load pipeline end-to-end.
 
 ### 2e. GICv3 + timer + minimal interrupt dispatch
 
