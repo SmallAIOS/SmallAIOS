@@ -9,6 +9,11 @@
 //! On Tegra X1, U-Boot pre-initializes UART-A at 115200 8N1.
 //! The `init()` function is a no-op — only polled TX is needed.
 
+// `platform` is only referenced by the qemu-virt and tegra-x1 inner modules;
+// the tegra234 stub drops bytes and the future TCU driver will live in its own
+// `tegra234_uart.rs` (sub-PR 2d), so gate the import to avoid a dead-import
+// warning under `--features tegra234`.
+#[cfg(any(feature = "qemu-virt", feature = "tegra-x1"))]
 use crate::platform;
 
 // ─── PL011 (QEMU virt) ──────────────────────────────────────────────────────
@@ -92,14 +97,37 @@ mod ns16550a {
     }
 }
 
+// ─── Tegra Combined UART (TCU) — Tegra234 ───────────────────────────────────
+//
+// Stub. The real TCU driver lands in sub-PR 2d (`tegra234_uart.rs`) and
+// supersedes this module. The stub exists so that `--features tegra234`
+// builds compile under `-D warnings` (otherwise `byte` is unused and the
+// `use crate::platform` import is dead). It deliberately drops bytes — the
+// kernel will print to a black hole until the real driver lands, which is
+// fine for the scaffolding sub-PRs. Callers see the same `init() / putc()`
+// API as on the other platforms.
+#[cfg(feature = "tegra234")]
+mod tcu_stub {
+    /// No-op. The real TCU driver pre-init lands in sub-PR 2d.
+    pub fn init() {}
+
+    /// Drops `byte`. Replaced by the real TCU MMIO writer in sub-PR 2d.
+    pub fn putc(byte: u8) {
+        let _ = byte;
+    }
+}
+
 // ─── Public API (platform-independent) ───────────────────────────────────────
 
-/// Initialize the UART. No-op on Tegra (U-Boot pre-inits).
+/// Initialize the UART. No-op on Tegra X1 (U-Boot pre-inits) and on
+/// Tegra234 (the real TCU driver in sub-PR 2d also pre-init's via UEFI).
 pub fn init() {
     #[cfg(feature = "qemu-virt")]
     pl011::init();
     #[cfg(feature = "tegra-x1")]
     ns16550a::init();
+    #[cfg(feature = "tegra234")]
+    tcu_stub::init();
 }
 
 /// Write a single byte to UART.
@@ -108,6 +136,8 @@ pub fn putc(byte: u8) {
     pl011::putc(byte);
     #[cfg(feature = "tegra-x1")]
     ns16550a::putc(byte);
+    #[cfg(feature = "tegra234")]
+    tcu_stub::putc(byte);
 }
 
 /// Write a string to UART, converting `\n` to `\r\n`.

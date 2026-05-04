@@ -6,12 +6,17 @@
 //! Selected at compile time via Cargo feature flags:
 //! - `qemu-virt` (default): QEMU virt machine (PL011, GICv3)
 //! - `tegra-x1`: NVIDIA Jetson Nano / Tegra X1 (NS16550A, GICv2)
+//! - `tegra234`: NVIDIA Jetson Orin family / Tegra234 (TCU UART, GICv3)
 
-#[cfg(all(feature = "qemu-virt", feature = "tegra-x1"))]
-compile_error!("Features `qemu-virt` and `tegra-x1` are mutually exclusive");
+#[cfg(any(
+    all(feature = "qemu-virt", feature = "tegra-x1"),
+    all(feature = "qemu-virt", feature = "tegra234"),
+    all(feature = "tegra-x1", feature = "tegra234"),
+))]
+compile_error!("Platform features are mutually exclusive — pick exactly one of `qemu-virt`, `tegra-x1`, `tegra234`");
 
-#[cfg(not(any(feature = "qemu-virt", feature = "tegra-x1")))]
-compile_error!("Exactly one platform feature must be enabled: `qemu-virt` or `tegra-x1`");
+#[cfg(not(any(feature = "qemu-virt", feature = "tegra-x1", feature = "tegra234")))]
+compile_error!("Exactly one platform feature must be enabled: `qemu-virt`, `tegra-x1`, or `tegra234`");
 
 // ─── QEMU virt machine ──────────────────────────────────────────────────────
 
@@ -108,6 +113,45 @@ pub const GPU_IRQ_STALL: u32 = 189;
 #[cfg(feature = "tegra-x1")]
 pub const GPU_IRQ_NONSTALL: u32 = 190;
 
+// ─── NVIDIA Tegra234 (Jetson Orin family) ───────────────────────────────────
+//
+// Sources: NVIDIA Tegra234 Technical Reference Manual (DP-10465-001) and the
+// upstream Linux DTS at `arch/arm64/boot/dts/nvidia/tegra234.dtsi`. These
+// constants are factual hardware addresses (not copyrightable expression).
+// The actual DTB is provided by the Orin's UEFI firmware at runtime via
+// `EFI_DTB_TABLE_GUID` — see `boot_uefi.rs` (sub-PR 2c) — so the kernel
+// doesn't bundle its own DTS.
+
+/// Tegra Combined UART (TCU). NS16550-compatible register layout, but the
+/// access pattern is the SoC-side mailbox interface used by NVIDIA's bring-up
+/// firmware. Concrete driver lands in sub-PR 2d (`tegra234_uart.rs`).
+#[cfg(feature = "tegra234")]
+pub const UART_BASE: usize = 0x0C28_0000;
+
+/// GICv3 Distributor base (Tegra234 puts the GIC at the Tegra-family
+/// SCF address; same for Orin Nano / NX / AGX).
+#[cfg(feature = "tegra234")]
+pub const GICD_BASE: usize = 0x0F40_0000;
+
+/// GICv3 Redistributor base (one frame per CPU; Tegra234 has up to 12 cores
+/// total but Orin NX 16 GB exposes 8 — the redistributor span covers all of
+/// them and is sized at runtime by `gicv3.rs` in sub-PR 2e).
+#[cfg(feature = "tegra234")]
+pub const GICR_BASE: usize = 0x0F44_0000;
+
+/// DRAM base. Standard for the Tegra234 family.
+#[cfg(feature = "tegra234")]
+pub const DRAM_BASE: usize = 0x8000_0000;
+
+/// Kernel load address — DRAM_BASE + 512 KiB. Matches the Linux ARM64 boot
+/// protocol convention so the same artifact is bootable via U-Boot `booti`
+/// from L4T's extlinux config. The UEFI boot path uses the
+/// `aarch64-unknown-uefi` target instead (rust's built-in PE/COFF emission)
+/// and the .efi loader chooses the load address at runtime — this constant
+/// is unused on that path.
+#[cfg(feature = "tegra234")]
+pub const KERNEL_LOAD_ADDR: usize = 0x8008_0000;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -181,5 +225,25 @@ mod tests {
         assert_eq!(GPU_BAR1_BASE, 0x5800_0000);
         assert_eq!(GPU_IRQ_STALL, 189);
         assert_eq!(GPU_IRQ_NONSTALL, 190);
+    }
+
+    #[cfg(feature = "tegra234")]
+    #[test]
+    fn test_tegra234_addresses() {
+        assert_eq!(UART_BASE, 0x0C28_0000);
+        assert_eq!(GICD_BASE, 0x0F40_0000);
+        assert_eq!(GICR_BASE, 0x0F44_0000);
+        assert_eq!(DRAM_BASE, 0x8000_0000);
+        assert_eq!(KERNEL_LOAD_ADDR, 0x8008_0000);
+    }
+
+    #[cfg(feature = "tegra234")]
+    #[test]
+    fn test_tegra234_load_offset_matches_linux_image_protocol() {
+        // ARM64 Linux boot protocol convention: KERNEL_LOAD_ADDR is
+        // DRAM_BASE + 512 KiB so U-Boot's `booti` lands the kernel at a
+        // fixed offset above the start of DRAM. The Tegra X1 layout
+        // follows the same convention; Tegra234 keeps it for symmetry.
+        assert_eq!(KERNEL_LOAD_ADDR - DRAM_BASE, 512 * 1024);
     }
 }

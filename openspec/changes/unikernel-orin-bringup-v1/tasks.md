@@ -44,9 +44,9 @@
 
 ### 2b. Linker script + DTS
 
-- [ ] 2.4 Create `arch/aarch64/linker-tegra234.ld` modeled on `linker-tegra.ld`, with Orin DRAM at `0x80000000` and PE/COFF-compatible image base for UEFI loadable
-- [ ] 2.5 Create `arch/aarch64/dts/tegra234-smallaios.dts` extracted from the upstream Linux `arch/arm64/boot/dts/nvidia/tegra234.dtsi` (or L4T's), trimmed to just the nodes the unikernel uses: `cpus`, `psci`, `timer`, GIC, the Tegra Combined UART (TCU) at `0x0c280000`, and the memory node. Strip everything else
-- [ ] 2.6 Document the DTS extraction provenance (which upstream commit, license boilerplate) in a header comment in the DTS file
+- [x] 2.4 Create `arch/aarch64/linker-tegra234.ld` modeled on `linker-tegra.ld`, with Orin DRAM at `0x80000000` and PE/COFF-compatible image base for UEFI loadable. **Landed**: `arch/aarch64/linker-tegra234.ld` covers the bare-metal `aarch64-unknown-none --features tegra234` path (chain-load via U-Boot `booti` from L4T's extlinux). The UEFI-bootable PE/COFF artifact is produced from a different target (`aarch64-unknown-uefi`, rust's built-in PE/COFF emission, no custom linker script — see task 2.9) so the "PE/COFF-compatible image base" wording in the original proposal is satisfied by the *target choice*, not by this script. The `image_header` section is reserved for a future hybrid PE/COFF + Image stamp à la Linux's EFI stub if we ever want a single artifact bootable via both UEFI and U-Boot. Sub-PR 2b also added Tegra234 platform constants to `arch/aarch64/src/platform.rs` (UART, GIC, DRAM, KERNEL_LOAD_ADDR), updated the `compile_error!` mutex to admit `tegra234`, and added a `tcu_stub` module to `uart.rs` so `--features tegra234` compiles cleanly under `-D warnings` until sub-PR 2d lands the real TCU driver.
+- [~] 2.5 ~~Create `arch/aarch64/dts/tegra234-smallaios.dts` extracted from the upstream Linux~~ **Deferred — likely not needed**. Sub-PR 2c (task 2.7) reads the DTB from UEFI at runtime via `EFI_DTB_TABLE_GUID`; the Orin's NVIDIA-supplied UEFI firmware provides the FDT. The unikernel doesn't bundle its own DTS. Re-open this task only if the OVMF-on-QEMU CI smoke (task 2.22) ends up needing one. Side benefit of deferring: avoids the GPL-2.0-vs-Apache-2.0 license question that copying upstream Linux's `tegra234.dtsi` would create.
+- [~] 2.6 ~~Document the DTS extraction provenance~~ **Deferred** alongside 2.5 above (no DTS file to provenance).
 
 ### 2c. UEFI entry + boot
 
