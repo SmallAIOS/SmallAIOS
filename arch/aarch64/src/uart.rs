@@ -5,6 +5,12 @@
 //!
 //! - **QEMU virt** (`qemu-virt`): PL011 UART @ 0x0900_0000
 //! - **Tegra X1** (`tegra-x1`): NS16550A UART-A @ 0x7000_6000 (reg-shift=2)
+//! - **Tegra234** (`tegra234`): TCU @ 0x0C28_0000 — **stub for now**, the
+//!   real driver lands in sub-PR 2d (`tegra234_uart.rs`). Until then, the
+//!   stub silently drops bytes. **Do not interpret missing serial output
+//!   under `--features tegra234` as a boot failure** — it's expected and
+//!   the kernel still reaches its idle loop. Use the QEMU virt or Tegra X1
+//!   feature flag if you need observable serial output for now.
 //!
 //! On Tegra X1, U-Boot pre-initializes UART-A at 115200 8N1.
 //! The `init()` function is a no-op — only polled TX is needed.
@@ -120,7 +126,7 @@ mod tcu_stub {
 // ─── Public API (platform-independent) ───────────────────────────────────────
 
 /// Initialize the UART. No-op on Tegra X1 (U-Boot pre-inits) and on
-/// Tegra234 (the real TCU driver in sub-PR 2d also pre-init's via UEFI).
+/// Tegra234 (the real TCU driver in sub-PR 2d also pre-inits via UEFI).
 pub fn init() {
     #[cfg(feature = "qemu-virt")]
     pl011::init();

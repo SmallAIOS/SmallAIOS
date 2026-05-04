@@ -18,11 +18,15 @@
  *   DRAM_BASE          = 0x80000000 (Tegra234 standard)
  *   KERNEL_LOAD_ADDR   = 0x80080000 (DRAM_BASE + 512 KiB, Image protocol)
  *
- * The image header at .text.image_header reserves 64 bytes for the
- * ARM64 Linux boot protocol stamp (used by U-Boot's `booti`). A future
- * sub-PR may extend it to a hybrid PE/COFF + Image stamp so the same
- * artifact is bootable from both UEFI and U-Boot — see the EFI stub
- * pattern Linux uses. For now this script targets the Image-only path.
+ * NOTE: this script does not currently reserve the ARM64 Linux Image
+ * header at `.text.image_header` — the existing `image_header` module is
+ * `#[cfg(feature = "tegra-x1")]`-only, so a `tegra234` build emits no
+ * such section. If we ever want a hybrid PE/COFF + Image-stamped artifact
+ * bootable from both UEFI and U-Boot (à la Linux's EFI stub pattern), a
+ * follow-up sub-PR should: (1) generalize the `image_header` module to
+ * cover `tegra234` as well, (2) re-add `KEEP(*(.text.image_header))`
+ * here. Until then we explicitly do not, to avoid producing dead-section
+ * artifacts and to keep the linker output predictable.
  */
 
 ENTRY(_start)
@@ -31,11 +35,9 @@ SECTIONS
 {
     . = 0x80080000;
 
-    /* Image header must come first for ARM64 Linux boot protocol. */
     .text : ALIGN(0x1000)
     {
         __text_start = .;
-        KEEP(*(.text.image_header))
         KEEP(*(.text.boot))
         *(.text .text.*)
         __text_end = .;
