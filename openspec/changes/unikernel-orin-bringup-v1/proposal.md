@@ -55,3 +55,15 @@ If Phase 2 grows beyond ~5 weeks of effort, we split it out as `unikernel-orin-b
 | **Total** | | **~4-6 weeks** |
 
 GPU and any eMMC-write paths add multi-month follow-ups outside this change.
+
+## Verification evidence (added after initial proposal)
+
+A representative Orin NX 16 GB host (`p3767-0000` module on `p3768-0000` reference carrier — the J-class carrier shipped by NVIDIA's Jetson Orin Dev Kit; the Seeed J4012 carrier is a different PCB layout with the same SoC) was captured against this proposal's task 0.1 / 0.2 / 0.3 prerequisites. The findings refined three planning details without altering scope or sequencing — the proposal's structure stands.
+
+1. **"J4012" wording is over-specific.** Both phases are carrier-agnostic at the SoC level (`nvidia,tegra234`). Documentation should say "Orin NX dev carrier" rather than name a specific SKU.
+2. **KVM is built into the JetPack 6 kernel.** `modinfo kvm` reports `filename: (builtin)`. The Phase 1 prereq check is `[ -c /dev/kvm ]`, not `lsmod | grep kvm`; there is no `modprobe kvm` workaround on JetPack 6 because there is no module to load.
+3. **The bootable AArch64 binary is built by the `smallaios-arch-aarch64` crate** (`[[bin]] name = "smallaios-aarch64"` in `arch/aarch64/Cargo.toml`), not the `smallaios-kernel` library crate. Phase 1's `just run-jetson-kvm` recipe should depend on the existing `build-kernel-arm` recipe.
+
+Mac-Apple-Silicon-as-build-host + Orin-NX-as-runner is a fully supported workflow because the target is `aarch64-unknown-none` (freestanding, no host OS dependency); the Phase 1 quickstart should document this path as the recommended one — keeps the Orin a clean test target rather than a Rust dev environment.
+
+Full evidence: `notes/0.1-orin-nx-verification-evidence.md`. tasks.md task 0.1 / 0.2 / 0.3 are checked off based on this evidence; Phase 1 implementation work is unblocked.

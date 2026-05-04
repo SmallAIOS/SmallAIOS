@@ -34,8 +34,16 @@ build-kernel-x86:
     {{cargo}} build --release --target x86_64-unknown-none -p smallaios-arch-x86_64 {{build_std}}
 
 # Build AArch64 kernel (release)
+#
+# RUSTFLAGS matches CI (`build-aarch64` / `aarch64-qemu-smoke`) byte-for-byte:
+# `-D warnings -C link-arg=-Tarch/aarch64/linker.ld`. A clean local build is
+# therefore a clean CI build. Setting via env (rather than relying on
+# `[target.aarch64-unknown-none].rustflags` in `.cargo/config.toml`) also
+# dodges a cargo quirk: under `-Z build-std`, config-file rustflags get
+# doubled into the final bin's rustc invocation, which makes rust-lld load
+# `linker.ld` twice and emit overlapping section file offsets.
 build-kernel-arm:
-    {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
+    RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker.ld" {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
 
 # Build RISC-V kernel (release)
 build-kernel-riscv:
@@ -46,8 +54,11 @@ build-kernel-x86-debug:
     {{cargo}} build --target x86_64-unknown-none -p smallaios-arch-x86_64 {{build_std}}
 
 # Build AArch64 kernel (debug)
+# Same env-var-RUSTFLAGS rationale as `build-kernel-arm` (see comment there)
+# but without `-D warnings` — debug iteration shouldn't fail on a transient
+# warning. Promote to release before pushing if you want the CI-strict gate.
 build-kernel-arm-debug:
-    {{cargo}} build --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
+    RUSTFLAGS="-C link-arg=-Tarch/aarch64/linker.ld" {{cargo}} build --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
 
 # Build RISC-V kernel (debug)
 build-kernel-riscv-debug:
@@ -152,6 +163,62 @@ docker-local-jetson-slim:
 # Pass variant=slim to test Dockerfile.jetson.slim instead of the default.
 test-jetson-gpu variant="":
     ./scripts/test-jetson-gpu.sh {{variant}}
+
+# === Jetson unikernel (KVM-on-L4T smoke test) ===
+
+# Boot the AArch64 unikernel under KVM on a Jetson Orin (Phase 1).
+#
+# Two execution modes:
+#   - SSH_HOST given (recommended): cross-build locally, scp to the Jetson,
+#     run qemu+KVM there. Use this from a Mac / x86 dev box.
+#   - SSH_HOST empty: build and run locally. Use this when the recipe is
+#     invoked on the Jetson itself (Rust toolchain must be present locally).
+#
+# The kernel boots on real Cortex-A78AE cores via -accel kvm; peripherals
+# come from QEMU virt (PL011 UART, GICv3, virtio). See docs/jetson-kvm-quickstart.md.
+#
+# Prerequisites on the Jetson runner:
+#   - qemu-system-aarch64 (apt install qemu-system-arm)
+#   - /dev/kvm accessible (member of `kvm` group; see quickstart)
+run-jetson-kvm SSH_HOST="" KERNEL_PATH="target/aarch64-unknown-none/release/smallaios-aarch64": build-kernel-arm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    KERNEL="{{KERNEL_PATH}}"
+    if [ ! -f "$KERNEL" ]; then
+        # Exit code 10 mirrors `build failed` in scripts/test-jetson-kvm.sh.
+        echo "Kernel artifact not found: $KERNEL" >&2
+        exit 10
+    fi
+    if [ -n "{{SSH_HOST}}" ]; then
+        echo "[jetson-kvm] Copying $KERNEL to {{SSH_HOST}}:~/"
+        scp "$KERNEL" "{{SSH_HOST}}:~/"
+        REMOTE_BIN="~/$(basename "$KERNEL")"
+        echo "[jetson-kvm] Running on {{SSH_HOST}}: qemu-system-aarch64 -accel kvm -cpu host"
+        ssh "{{SSH_HOST}}" "qemu-system-aarch64 \
+            -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic \
+            -kernel $REMOTE_BIN -serial mon:stdio"
+    else
+        echo "[jetson-kvm] Local mode (assuming we're on the Jetson)"
+        # Exit codes mirror scripts/test-jetson-kvm.sh:
+        #   21 = /dev/kvm missing or not accessible (the same code the smoke
+        #        script uses, so callers can treat them uniformly).
+        if [ ! -c /dev/kvm ]; then
+            echo "ERROR: /dev/kvm not present. Phase 1 requires KVM (built into JetPack 6 kernel)." >&2
+            exit 21
+        fi
+        if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
+            echo "ERROR: /dev/kvm not accessible. Run: sudo usermod -aG kvm \$USER && re-login" >&2
+            exit 21
+        fi
+        qemu-system-aarch64 \
+            -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic \
+            -kernel "$KERNEL" -serial mon:stdio
+    fi
+
+# Smoke-test the Jetson unikernel KVM boot end-to-end (Phase 1 acceptance).
+# See scripts/test-jetson-kvm.sh for assertion details and exit codes.
+test-jetson-kvm SSH_HOST="":
+    ./scripts/test-jetson-kvm.sh "{{SSH_HOST}}"
 
 # Clean local Docker resources
 docker-local-clean:
