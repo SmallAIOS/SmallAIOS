@@ -33,7 +33,7 @@ build-container-arm gpu="":
 build-kernel-x86:
     {{cargo}} build --release --target x86_64-unknown-none -p smallaios-arch-x86_64 {{build_std}}
 
-# Build AArch64 kernel (release)
+# Build AArch64 kernel (release, qemu-virt) — links against `linker.ld`.
 #
 # RUSTFLAGS matches CI (`build-aarch64` / `aarch64-qemu-smoke`) byte-for-byte:
 # `-D warnings -C link-arg=-Tarch/aarch64/linker.ld`. A clean local build is
@@ -44,6 +44,23 @@ build-kernel-x86:
 # `linker.ld` twice and emit overlapping section file offsets.
 build-kernel-arm:
     RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker.ld" {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 {{build_std}}
+
+# Build AArch64 kernel for Jetson Orin family (Tegra234) — links against
+# `linker-tegra234.ld`. The .cargo/config.toml unconditionally passes
+# `-Tarch/aarch64/linker.ld` (qemu-virt's address 0x40080000) to every
+# `aarch64-unknown-none` build, which would link the kernel at the wrong
+# DRAM address for an Orin (0x80080000). RUSTFLAGS env override replaces
+# the config rustflags entirely so only `linker-tegra234.ld` ends up in
+# the rust-lld invocation. Always invoke this recipe (or set RUSTFLAGS
+# manually) when building with `--features tegra234`; a bare
+# `cargo build --features tegra234` will silently link at the wrong
+# address.
+#
+# The Tegra X1 (Jetson Nano) build lives further down at `build-kernel-jetson`
+# (it has `dtb-jetson` as a dep + does an `objcopy -O binary` to produce
+# `Image` — kept separate to preserve that pipeline).
+build-kernel-tegra234:
+    RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker-tegra234.ld" {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 --no-default-features --features tegra234 {{build_std}}
 
 # Build RISC-V kernel (release)
 build-kernel-riscv:
