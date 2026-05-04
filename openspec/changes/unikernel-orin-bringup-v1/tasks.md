@@ -31,16 +31,16 @@
 
 ### 1d. Phase 1 close-out
 
-- [ ] 1.11 Tag Phase 1 sub-PR title `feat(arch/aarch64): unikernel-orin-bringup-v1 phase 1 — KVM smoke on Orin`, target `develop`.
-- [ ] 1.12 PR green + reviewer sign-off + squash-merge.
+- [x] 1.11 Tag Phase 1 sub-PR title `feat(arch/aarch64): unikernel-orin-bringup-v1 phase 1 — KVM smoke on Orin`, target `develop`. (Landed as PR #132.)
+- [x] 1.12 PR green + reviewer sign-off + squash-merge. (Squash-merged 2026-05-03 as `aeb14b3`.)
 
 ## 2. Phase 2 — Tegra234 BSP scaffolding
 
 ### 2a. Cargo + toolchain
 
-- [ ] 2.1 Add `aarch64-unknown-uefi` to `rust-toolchain.toml` `targets` so `rustup target add` resolves cleanly for local devs
-- [ ] 2.2 Add `tegra234` feature to `arch/aarch64/Cargo.toml` (`tegra234 = []` initially, gates conditional code), with a doc-comment distinguishing it from `tegra-x1` (X1 / cc 5.3 bare-metal) and from `arch/nvidia`'s `tegra-orin` (Orin userspace CUDA)
-- [ ] 2.3 Update `arch/aarch64/Cargo.toml` to gate `tegra-x1`-only files (display, PCIe, GICv2) so `tegra234` builds don't pull them in
+- [x] 2.1 Add `aarch64-unknown-uefi` to `rust-toolchain.toml` `targets` so `rustup target add` resolves cleanly for local devs.
+- [x] 2.2 Add `tegra234` feature to `arch/aarch64/Cargo.toml` (`tegra234 = []` initially, gates conditional code), with a doc-comment distinguishing it from `tegra-x1` (X1 / cc 5.3 bare-metal) and from `arch/nvidia`'s `tegra-orin` (Orin userspace CUDA).
+- [x] 2.3 Update `arch/aarch64/Cargo.toml` to gate `tegra-x1`-only files (display, PCIe, GICv2) so `tegra234` builds don't pull them in. **Already gated at the Rust source level** (`#[cfg(feature = "tegra-x1")]` on `fb_console`, `gicv2`, `image_header`, `onnx_demo`, `tegra_dc`, `tegra_edid`, `tegra_pcie`, `tegra_sor` in `arch/aarch64/src/lib.rs`); declaring the `tegra234` feature in 2.2 is sufficient because the cfg expressions exclude X1 modules whenever `tegra-x1` itself isn't enabled. `--features tegra234 --no-default-features` doesn't yet build (intentional — `platform.rs`'s `compile_error!` enforces "exactly one platform feature must be enabled" until sub-PR 2b/2c lands the Tegra234 platform constants and entry path). Authoritative references: [`docs/architecture.md`](../../../docs/architecture.md) (Layer 2 HAL feature-gating model), [`docs/scheduling-model.md`](../../../docs/scheduling-model.md) (cooperative async tick lands per-platform under the same feature flags), [`docs/release-runbook.md`](../../../docs/release-runbook.md) (platform features track the workspace-shared version under `cargo-release`).
 
 ### 2b. Linker script + DTS
 

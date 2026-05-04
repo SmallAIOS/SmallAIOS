@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "SmallAIOS AArch64 architecture HAL: boot, GICv2/v3, paging, SVE, Tegra X1"
+description = "SmallAIOS AArch64 architecture HAL: boot, GICv2/v3, paging, SVE, Tegra X1, Tegra234"
 publish = false
 
 [lib]
@@ -18,7 +18,15 @@ path = "src/main.rs"
 [features]
 default = ["qemu-virt"]
 qemu-virt = []
+# Tegra X1 (Cortex-A57, GICv2, NS16550A) — Jetson Nano. Userspace CUDA path
+# lives in `arch/nvidia` under its own `tegra-orin` feature flag.
 tegra-x1 = ["smallaios-onnx-rt", "smallaios-arch-nvidia"]
+# Tegra234 (Cortex-A78AE, GICv3, TCU UART) — Jetson Orin family.
+# Initially empty: the feature exists so `lib.rs` can `cfg`-gate the
+# Phase 2 modules (boot_uefi, tegra234_uart, gicv3) added by subsequent
+# sub-PRs of `unikernel-orin-bringup-v1`. Distinct from `arch/nvidia`'s
+# `tegra-orin` (Orin userspace CUDA) by design.
+tegra234 = []
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
