@@ -292,7 +292,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    needs: build-aarch64
+    # No `needs:` — this job rebuilds the AArch64 kernel from source so it
+    # exercises the same RUSTFLAGS / target / linker-script path the Jetson
+    # quickstart documents. Running independently lets it parallel with
+    # `build-aarch64` rather than serialize behind it.
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@nightly

@@ -183,8 +183,9 @@ run-jetson-kvm SSH_HOST="" KERNEL_PATH="target/aarch64-unknown-none/release/smal
     set -euo pipefail
     KERNEL="{{KERNEL_PATH}}"
     if [ ! -f "$KERNEL" ]; then
+        # Exit code 10 mirrors `build failed` in scripts/test-jetson-kvm.sh.
         echo "Kernel artifact not found: $KERNEL" >&2
-        exit 1
+        exit 10
     fi
     if [ -n "{{SSH_HOST}}" ]; then
         echo "[jetson-kvm] Copying $KERNEL to {{SSH_HOST}}:~/"
@@ -196,13 +197,16 @@ run-jetson-kvm SSH_HOST="" KERNEL_PATH="target/aarch64-unknown-none/release/smal
             -kernel $REMOTE_BIN -serial mon:stdio"
     else
         echo "[jetson-kvm] Local mode (assuming we're on the Jetson)"
+        # Exit codes mirror scripts/test-jetson-kvm.sh:
+        #   21 = /dev/kvm missing or not accessible (the same code the smoke
+        #        script uses, so callers can treat them uniformly).
         if [ ! -c /dev/kvm ]; then
             echo "ERROR: /dev/kvm not present. Phase 1 requires KVM (built into JetPack 6 kernel)." >&2
-            exit 2
+            exit 21
         fi
         if [ ! -r /dev/kvm ] || [ ! -w /dev/kvm ]; then
             echo "ERROR: /dev/kvm not accessible. Run: sudo usermod -aG kvm \$USER && re-login" >&2
-            exit 3
+            exit 21
         fi
         qemu-system-aarch64 \
             -M virt,gic-version=3 -cpu host -accel kvm -m 1G -nographic \

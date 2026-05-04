@@ -10,8 +10,9 @@ KVM. Peripherals come from QEMU's `virt` machine (PL011 UART at
 `virt` board — Tegra234-specific bring-up is Phase 2 of the
 `unikernel-orin-bringup-v1` change.
 
-This is a **container-host smoke test**, not bare-metal. The Orin's eMMC /
-NVMe boot is untouched.
+This is a **VM/hypervisor-hosted smoke test** (QEMU virt under KVM on the
+running L4T host kernel), not bare-metal. The Orin's eMMC / NVMe boot is
+untouched.
 
 ---
 
@@ -94,7 +95,9 @@ Cold-cache build on M-series Mac ≈ 2 min; incremental ≈ 5–30 s. The Orin-s
 [uart] PL011 @ 0x09000000 initialized
 [boot] BSS cleared, stack initialized
 [boot] Running at EL1
-[boot] DTB address: 0x40000000
+[boot] DTB address: 0x… (varies — QEMU/KVM usually reports 0x0 here when
+                          no -dtb is passed; expect a non-zero address only
+                          if you supply `-dtb …`)
 …
 ```
 

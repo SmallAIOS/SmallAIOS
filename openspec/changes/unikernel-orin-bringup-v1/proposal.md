@@ -56,7 +56,7 @@ If Phase 2 grows beyond ~5 weeks of effort, we split it out as `unikernel-orin-b
 
 GPU and any eMMC-write paths add multi-month follow-ups outside this change.
 
-## Verification evidence (added post-merge)
+## Verification evidence (added after initial proposal)
 
 A representative Orin NX 16 GB host (`p3767-0000` module on `p3768-0000` reference carrier — the J-class carrier shipped by NVIDIA's Jetson Orin Dev Kit; the Seeed J4012 carrier is a different PCB layout with the same SoC) was captured against this proposal's task 0.1 / 0.2 / 0.3 prerequisites. The findings refined three planning details without altering scope or sequencing — the proposal's structure stands.
 
