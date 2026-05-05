@@ -15,6 +15,16 @@ path = "src/lib.rs"
 name = "smallaios-aarch64"
 path = "src/main.rs"
 
+# UEFI bin for Jetson Orin family. Built via `just build-kernel-uefi`
+# (target `aarch64-unknown-uefi`, `--features tegra234`). `required-features`
+# means cargo silently skips this bin on default `cargo build` invocations
+# without `--features tegra234`, so existing CI jobs that don't opt in
+# stay unaffected.
+[[bin]]
+name = "smallaios-uefi"
+path = "src/main_uefi.rs"
+required-features = ["tegra234"]
+
 [features]
 default = ["qemu-virt"]
 qemu-virt = []

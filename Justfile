@@ -62,6 +62,18 @@ build-kernel-arm:
 build-kernel-tegra234:
     RUSTFLAGS="-D warnings -C link-arg=-Tarch/aarch64/linker-tegra234.ld" {{cargo}} build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 --no-default-features --features tegra234 {{build_std}}
 
+# Build SmallAIOS as a UEFI loadable (.efi PE/COFF) for Jetson Orin family.
+# Uses `aarch64-unknown-uefi` target (rust's built-in PE/COFF emission, no
+# custom linker script). The `smallaios-uefi` bin's `required-features =
+# ["tegra234"]` ensures it's only built when tegra234 is enabled. Output:
+# `target/aarch64-unknown-uefi/release/smallaios-uefi.efi`.
+#
+# Sub-PR 2c: produces the .efi but `efi_main` halts after locating the DTB
+# (no ExitBootServices yet). Sub-PR 2d adds the real ExitBootServices +
+# kernel_main handoff alongside the TCU UART driver. See task 2.9.
+build-kernel-uefi:
+    RUSTFLAGS="-D warnings" {{cargo}} build --release --target aarch64-unknown-uefi -p smallaios-arch-aarch64 --bin smallaios-uefi --no-default-features --features tegra234 {{build_std}}
+
 # Build RISC-V kernel (release)
 build-kernel-riscv:
     {{cargo}} build --release --target riscv64gc-unknown-none-elf -p smallaios-arch-riscv64 {{build_std}}
