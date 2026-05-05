@@ -40,7 +40,11 @@ impl Status {
     }
 }
 
-/// `EFI_HANDLE` — opaque pointer.
+/// `EFI_HANDLE` — opaque pointer. UEFI handles are passed by value
+/// throughout the spec; deriving `Copy` matches that semantic and
+/// avoids ownership churn in code that re-uses a handle across
+/// multiple boot-services calls.
+#[derive(Clone, Copy)]
 #[repr(transparent)]
 pub struct Handle(pub *mut c_void);
 
@@ -105,16 +109,88 @@ pub struct SystemTable {
     pub configuration_table: *const ConfigurationTable,
 }
 
-/// `EFI_BOOT_SERVICES` (UEFI 2.10 §7) — opaque to us until the sub-PR
-/// that lands `ExitBootServices` + memory-map handoff to `kernel_main`.
-/// Defining the struct as header-only here keeps the
-/// `SystemTable.boot_services` pointer typed without pinning the layout
-/// of fields we don't yet use.
+/// `EFI_MEMORY_DESCRIPTOR` (UEFI 2.10 §7.2). One entry in the memory
+/// map returned by `GetMemoryMap`. Real implementations are allowed to
+/// return descriptors *larger* than this struct — the spec hands you
+/// the actual stride via `descriptor_size`. We never index into the
+/// descriptor array with native Rust indexing for that reason; we walk
+/// it byte-by-byte using the spec-given size.
+#[repr(C)]
+pub struct MemoryDescriptor {
+    pub typ: u32,
+    pub _padding: u32,
+    pub physical_start: u64,
+    pub virtual_start: u64,
+    pub number_of_pages: u64,
+    pub attribute: u64,
+}
+
+/// `EFI_BOOT_SERVICES` (UEFI 2.10 §7). Layout up to and including
+/// `ExitBootServices` is required so the field offsets match the
+/// firmware-provided table. We type only the fn pointers we actually
+/// invoke (`get_memory_map`, `exit_boot_services`); the rest are kept
+/// as `usize` placeholders so the `#[repr(C)]` layout still matches
+/// the spec offsets without forcing us to declare every fn signature.
+///
+/// Spec field order (UEFI 2.10 Table 7-1):
+///   Hdr, RaiseTPL, RestoreTPL, AllocatePages, FreePages,
+///   **GetMemoryMap**, AllocatePool, FreePool, CreateEvent, SetTimer,
+///   WaitForEvent, SignalEvent, CloseEvent, CheckEvent,
+///   InstallProtocolInterface, ReinstallProtocolInterface,
+///   UninstallProtocolInterface, HandleProtocol, Reserved,
+///   RegisterProtocolNotify, LocateHandle, LocateDevicePath,
+///   InstallConfigurationTable, LoadImage, StartImage, Exit,
+///   UnloadImage, **ExitBootServices**, ... (more after).
+///
+/// We stop at `ExitBootServices` (slot #27 after Hdr) because nothing
+/// past that point is reached before we leave UEFI.
 #[repr(C)]
 pub struct BootServices {
     pub header: TableHeader,
-    // ExitBootServices + GetMemoryMap fields land alongside the real
-    // post-ExitBootServices kernel handoff.
+
+    // Task Priority Services (2 fn ptrs).
+    pub raise_tpl: usize,
+    pub restore_tpl: usize,
+
+    // Memory Services (5 fn ptrs).
+    pub allocate_pages: usize,
+    pub free_pages: usize,
+    pub get_memory_map: unsafe extern "efiapi" fn(
+        memory_map_size: *mut usize,
+        memory_map: *mut MemoryDescriptor,
+        map_key: *mut usize,
+        descriptor_size: *mut usize,
+        descriptor_version: *mut u32,
+    ) -> Status,
+    pub allocate_pool: usize,
+    pub free_pool: usize,
+
+    // Event & Timer Services (6 fn ptrs).
+    pub create_event: usize,
+    pub set_timer: usize,
+    pub wait_for_event: usize,
+    pub signal_event: usize,
+    pub close_event: usize,
+    pub check_event: usize,
+
+    // Protocol Handler Services (9 slots — one is a Reserved field).
+    pub install_protocol_interface: usize,
+    pub reinstall_protocol_interface: usize,
+    pub uninstall_protocol_interface: usize,
+    pub handle_protocol: usize,
+    pub _reserved: usize,
+    pub register_protocol_notify: usize,
+    pub locate_handle: usize,
+    pub locate_device_path: usize,
+    pub install_configuration_table: usize,
+
+    // Image Services (5 fn ptrs).
+    pub load_image: usize,
+    pub start_image: usize,
+    pub exit: usize,
+    pub unload_image: usize,
+    pub exit_boot_services:
+        unsafe extern "efiapi" fn(image_handle: Handle, map_key: usize) -> Status,
 }
 
 /// `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` (UEFI 2.10 §12.4). The

@@ -6,28 +6,26 @@
 //! Entered via `efi_main(image_handle, system_table) -> Status` from the
 //! `aarch64-unknown-uefi` bin target (`smallaios-uefi`).
 //!
-//! This sub-PR (2d) adds the **first observable signal**: efi_main
-//! prints a banner via UEFI's `SimpleTextOutputProtocol` (the
-//! `con_out` slot of the system table) before halting. On Jetson Orin
-//! the firmware routes `con_out` through the TCU mailbox, so the
-//! banner reaches whatever serial console the user has attached to the
-//! J-class carrier's UART header. This validates the .efi-load path
-//! end-to-end (PE/COFF parse → image load → entry → DTB lookup →
-//! console output) without yet requiring a post-`ExitBootServices`
-//! kernel-side TCU UART driver.
+//! Flow:
+//! 1. Print banner via UEFI's `SimpleTextOutputProtocol` (`con_out`).
+//! 2. Walk `system_table.configuration_table[]` to find the DTB via
+//!    `EFI_DTB_TABLE_GUID` and capture it.
+//! 3. Call `GetMemoryMap` + `ExitBootServices` (re-fetching the memory
+//!    map if the first ExitBootServices fails with INVALID_PARAMETER —
+//!    the spec-mandated retry shape).
+//! 4. Jump to `kernel_main(dtb_addr)`. After this point UEFI's services
+//!    are gone; output flows through the kernel-side `tegra234_uart`
+//!    driver which writes to the TCU directly.
 //!
-//! What's NOT here yet: `ExitBootServices`, the actual jump to
-//! `kernel_main`, and the kernel-side TCU UART driver. Those land in
-//! the sub-PR after this one. After ExitBootServices `con_out` is no
-//! longer valid, so we need the kernel-side UART before we can keep
-//! producing output. Splitting the milestones this way isolates "did
-//! the .efi load and run?" from "does the post-handoff kernel reach
-//! and drive the TCU?" — the failure modes are different and worth
-//! catching independently.
+//! Sub-PR 2d (the predecessor) handled steps 1-2 and stopped at a
+//! `wfi` halt before ExitBootServices. This sub-PR (2e) adds steps 3
+//! and 4 and the matching `tegra234_uart.rs` driver.
 
 #![cfg(feature = "tegra234")]
 
-use crate::uefi::{ConfigurationTable, Handle, Status, SystemTable, EFI_DTB_TABLE_GUID};
+use crate::uefi::{
+    ConfigurationTable, Handle, MemoryDescriptor, Status, SystemTable, EFI_DTB_TABLE_GUID,
+};
 use core::ffi::c_void;
 
 /// Devicetree blob pointer captured during `efi_main`. Sub-PR 2d-real
@@ -124,19 +122,130 @@ unsafe fn print_hex64(system_table: *const SystemTable, val: u64) {
     unsafe { print(system_table, s) };
 }
 
+/// Static buffer for the UEFI memory map. UEFI hands you a copy of
+/// the in-memory map of every physical region; for Jetson Orin that's
+/// typically a few hundred descriptors of 48 bytes each, so 32 KiB is
+/// comfortably enough headroom. The buffer must be at least 8-byte
+/// aligned because `MemoryDescriptor` contains `u64` fields — wrapping
+/// it in `repr(align(8))` guarantees that even though the underlying
+/// element type is `u8`. If the firmware reports a larger map
+/// `GetMemoryMap` fails with `BUFFER_TOO_SMALL` and we surface the
+/// status code on serial.
+const MEMORY_MAP_BUF_SIZE: usize = 32 * 1024;
+#[repr(C, align(8))]
+struct MemoryMapBuf([u8; MEMORY_MAP_BUF_SIZE]);
+static mut MEMORY_MAP_BUF: MemoryMapBuf = MemoryMapBuf([0; MEMORY_MAP_BUF_SIZE]);
+
+/// `EFI_INVALID_PARAMETER` — the canonical "memory map changed under
+/// you, retry" signal from `ExitBootServices`. Other status codes
+/// (`BUFFER_TOO_SMALL`, etc.) are reported by `GetMemoryMap` directly
+/// and surface verbatim to the caller, so we don't enumerate them here.
+const EFI_INVALID_PARAMETER: usize = 0x8000_0000_0000_0002;
+
+/// Call `GetMemoryMap` then `ExitBootServices`, retrying once if the
+/// first `ExitBootServices` fails with `INVALID_PARAMETER` (which means
+/// the memory map changed between the two calls). Returns the final
+/// `Status` from `ExitBootServices` — `Status::SUCCESS` means UEFI
+/// boot services have torn down and the caller now owns the machine.
+///
+/// Emits diagnostic breadcrumbs via `con_out` between each call so we
+/// can see exactly which firmware call faults if anything goes wrong.
+///
+/// # Safety
+/// Caller must guarantee the system table pointer + image handle are
+/// the ones UEFI handed `efi_main`. After this returns success the
+/// system table's `boot_services` pointer is invalid; callers must
+/// not dereference it.
+unsafe fn exit_boot_services(image_handle: Handle, system_table: *const SystemTable) -> Status {
+    let st = unsafe { &*system_table };
+    let bs = unsafe { &*st.boot_services };
+
+    // The UEFI ExitBootServices retry pattern: first try, if it returns
+    // INVALID_PARAMETER, refresh the memory map and try once more.
+    for attempt in 0..2 {
+        unsafe {
+            print(system_table, "[boot]   attempt ");
+            print_hex64(system_table, attempt as u64);
+            print(system_table, " — calling GetMemoryMap\r\n");
+        }
+        let mut map_size: usize = MEMORY_MAP_BUF_SIZE;
+        let mut map_key: usize = 0;
+        let mut desc_size: usize = 0;
+        let mut desc_version: u32 = 0;
+        // SAFETY: MEMORY_MAP_BUF is a static mut owned by us; we serialize
+        // calls (single-threaded, called only from efi_main). Use the
+        // raw-pointer form so we don't create an aliasing reference to
+        // the static (Rust 2024 `static_mut_refs` lint). The
+        // `MemoryMapBuf` wrapper guarantees 8-byte alignment so the
+        // `*mut MemoryDescriptor` cast doesn't violate alignment.
+        let buf_ptr = (&raw mut MEMORY_MAP_BUF) as *mut u8 as *mut MemoryDescriptor;
+        let gmm_status = unsafe {
+            (bs.get_memory_map)(
+                &mut map_size,
+                buf_ptr,
+                &mut map_key,
+                &mut desc_size,
+                &mut desc_version,
+            )
+        };
+        unsafe {
+            print(system_table, "[boot]   GetMemoryMap returned 0x");
+            print_hex64(system_table, gmm_status.0 as u64);
+            print(system_table, ", map_size=");
+            print_hex64(system_table, map_size as u64);
+            print(system_table, ", desc_size=");
+            print_hex64(system_table, desc_size as u64);
+            print(system_table, ", map_key=");
+            print_hex64(system_table, map_key as u64);
+            print(system_table, "\r\n");
+        }
+        if !gmm_status.is_success() {
+            // Buffer too small or some other issue — bail. Caller will
+            // see the non-success Status and halt with a breadcrumb.
+            return gmm_status;
+        }
+
+        unsafe {
+            print(system_table, "[boot]   calling ExitBootServices(map_key=");
+            print_hex64(system_table, map_key as u64);
+            print(system_table, ")\r\n");
+        }
+        let ebs_status = unsafe { (bs.exit_boot_services)(image_handle, map_key) };
+        // Note: if ebs succeeded, `con_out` is now invalid — printing
+        // anything else here would be undefined behavior. We only print
+        // on the *failure* path, before returning.
+        if ebs_status.is_success() {
+            return ebs_status;
+        }
+        unsafe {
+            print(system_table, "[boot]   ExitBootServices returned 0x");
+            print_hex64(system_table, ebs_status.0 as u64);
+            print(system_table, "\r\n");
+        }
+        if ebs_status.0 != EFI_INVALID_PARAMETER {
+            // Some other failure — give up.
+            return ebs_status;
+        }
+        // INVALID_PARAMETER → memory map changed; loop and retry once.
+    }
+    // Two attempts wasn't enough — return the last error code shape.
+    Status(EFI_INVALID_PARAMETER)
+}
+
 /// UEFI image entry point. Called by the firmware after `LoadImage` +
 /// `StartImage`. Spec signature: `EFI_STATUS efi_main(EFI_HANDLE,
 /// EFI_SYSTEM_TABLE*)`.
 ///
+/// Returns only on the failure paths (so UEFI can free the image and
+/// re-prompt for a boot device); the success path tail-calls
+/// `kernel_main` which never returns.
+///
 /// # Safety
 /// Called exactly once by UEFI firmware with `image_handle` and
-/// `system_table` set per UEFI 2.10 §4.1. Until the sub-PR after this
-/// wires in `ExitBootServices` and the kernel handoff, this function
-/// never returns control to UEFI — it parks in a `wfi` loop after
-/// printing the banner and capturing the DTB pointer.
+/// `system_table` set per UEFI 2.10 §4.1.
 #[no_mangle]
 pub unsafe extern "efiapi" fn efi_main(
-    _image_handle: Handle,
+    image_handle: Handle,
     system_table: *const SystemTable,
 ) -> Status {
     unsafe {
@@ -151,10 +260,7 @@ pub unsafe extern "efiapi" fn efi_main(
         print(system_table, "========================================\r\n");
     }
 
-    // Locate the Devicetree blob. The firmware on Jetson Orin's UEFI
-    // exposes it via EFI_DTB_TABLE_GUID; we record it here so the
-    // next sub-PR can pass it to kernel_main, and print it now so the
-    // user can confirm the lookup worked over serial.
+    // Locate the Devicetree blob.
     let dtb = unsafe { find_dtb(system_table) };
     unsafe {
         DTB_PTR = dtb;
@@ -168,17 +274,38 @@ pub unsafe extern "efiapi" fn efi_main(
             print_hex64(system_table, dtb as u64);
             print(system_table, "\r\n");
         }
-        print(
-            system_table,
-            "[boot] efi_main reached, halting (Phase 2 first-observable-signal milestone)\r\n",
-        );
+        print(system_table, "[boot] calling ExitBootServices\r\n");
     }
 
-    loop {
+    // Tear down UEFI. After this returns success we own the machine and
+    // can no longer use any boot-services calls (including `con_out`).
+    let ebs = unsafe { exit_boot_services(image_handle, system_table) };
+    if !ebs.is_success() {
+        // ExitBootServices failed. We're still under UEFI, so con_out
+        // is still valid — print a diagnostic and return. UEFI will
+        // either reload the image or re-prompt for a different boot
+        // entry depending on its config.
         unsafe {
-            core::arch::asm!("wfi");
+            print(system_table, "[boot] ExitBootServices FAILED, status=");
+            print_hex64(system_table, ebs.0 as u64);
+            print(system_table, "\r\n");
         }
+        return ebs;
     }
+
+    // ExitBootServices succeeded. UEFI services are torn down. Tail-
+    // call `kernel_main(dtb)`, which runs through the standard boot
+    // stages and never returns.
+    //
+    // Verified on Orin NX hardware (P3767-0000 + P3768-0000, JetPack
+    // 6.2.1 / L4T R36.4.7): kernel_main runs to its idle loop without
+    // exception. There is no observable serial output yet — see
+    // `tegra234_uart` for the placeholder driver and the deferred
+    // follow-up that lands real UART output (post-EBS access to both
+    // UART_1 and the TCU mailbox is blocked by the SoC firewall /
+    // page-table state when ExitBootServices is called from EL2).
+    let kernel_main: extern "C" fn(u64) -> ! = crate::kernel_main;
+    kernel_main(dtb as u64);
 }
 
 #[cfg(test)]

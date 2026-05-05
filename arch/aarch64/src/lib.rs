@@ -50,6 +50,8 @@ pub mod tegra_sor;
 #[cfg(feature = "tegra234")]
 pub mod boot_uefi;
 #[cfg(feature = "tegra234")]
+pub mod tegra234_uart;
+#[cfg(feature = "tegra234")]
 pub mod uefi;
 
 /// Kernel entry point called from assembly boot code.
@@ -72,6 +74,8 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
     uart::puts("  Platform: AArch64 (QEMU virt)\n");
     #[cfg(feature = "tegra-x1")]
     uart::puts("  Platform: Tegra X1 (Jetson Nano)\n");
+    #[cfg(feature = "tegra234")]
+    uart::puts("  Platform: Tegra234 (Jetson Orin)\n");
     uart::puts("========================================\n");
     uart::puts("\n");
 
