@@ -85,8 +85,8 @@ sooner.
 
 ### 2f. USB image packaging
 
-- [ ] 2.17 Add a `build-jetson-usb-image` `just` recipe that takes the built `smallaios.efi`, `mkfs.fat -F32` an image of size N (parameter, default 256 MB), copies `smallaios.efi` to `EFI/BOOT/BOOTAA64.EFI`, emits `build-jetson-usb.img`
-- [ ] 2.18 Document the `dd if=build-jetson-usb.img of=/dev/sdX bs=4M status=progress` workflow in `docs/jetson-orin-uefi-boot.md`, with a prominent warning to confirm the target device
+- [x] 2.17 Add a `build-jetson-usb-image` `just` recipe that takes the built `smallaios.efi`, `mkfs.fat -F32` an image of size N (parameter, default 256 MB), copies `smallaios.efi` to `EFI/BOOT/BOOTAA64.EFI`, emits `build-jetson-usb.img`. **Landed in sub-PR 2f.** Output is `build/smallaios-jetson-usb.img`. Cross-platform via `mtools` (no root / no loopback): `mformat -F` creates the FAT32 filesystem inside the image file, `mcopy` drops the `.efi` at `EFI/BOOT/BOOTAA64.EFI`. Recipe checks for `mtools` at start with a clear `brew install mtools` / `apt install mtools` hint, and prints a `dd` deploy hint (with target-device warning) at the end. Image is "superfloppy" FAT32 (no MBR partition table) — UEFI accepts both per spec.
+- [ ] 2.18 Document the `dd if=build-jetson-usb.img of=/dev/sdX bs=4M status=progress` workflow in `docs/jetson-orin-uefi-boot.md`, with a prominent warning to confirm the target device. *(Lands in sub-PR 2g alongside the rest of the boot procedure docs.)*
 
 ### 2g. Boot procedure docs (the primary user surface)
 
