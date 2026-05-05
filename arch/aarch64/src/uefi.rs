@@ -96,24 +96,47 @@ pub struct SystemTable {
     pub console_in_handle: Handle,
     pub con_in: *const c_void,
     pub console_out_handle: Handle,
-    pub con_out: *const c_void,
+    pub con_out: *mut SimpleTextOutputProtocol,
     pub standard_error_handle: Handle,
-    pub std_err: *const c_void,
+    pub std_err: *mut SimpleTextOutputProtocol,
     pub runtime_services: *const c_void,
     pub boot_services: *const BootServices,
     pub number_of_table_entries: usize,
     pub configuration_table: *const ConfigurationTable,
 }
 
-/// `EFI_BOOT_SERVICES` (UEFI 2.10 §7) — opaque to us in sub-PR 2c.
-/// Sub-PR 2d adds the `ExitBootServices` and memory-map function
-/// pointers needed to actually leave UEFI. Defining the struct as
-/// header-only here keeps the `SystemTable.boot_services` typed without
-/// pinning the layout of fields we don't yet use.
+/// `EFI_BOOT_SERVICES` (UEFI 2.10 §7) — opaque to us until the sub-PR
+/// that lands `ExitBootServices` + memory-map handoff to `kernel_main`.
+/// Defining the struct as header-only here keeps the
+/// `SystemTable.boot_services` pointer typed without pinning the layout
+/// of fields we don't yet use.
 #[repr(C)]
 pub struct BootServices {
     pub header: TableHeader,
-    // Real fields land in sub-PR 2d.
+    // ExitBootServices + GetMemoryMap fields land alongside the real
+    // post-ExitBootServices kernel handoff.
+}
+
+/// `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` (UEFI 2.10 §12.4). The
+/// `SystemTable.con_out` field points to one of these. On Jetson Orin
+/// the firmware routes `con_out` through the TCU mailbox, so calling
+/// `output_string` here lands on whatever serial console the user has
+/// attached to the J-class carrier's UART header — which is exactly
+/// what we need for the "first observable signal" milestone before any
+/// kernel-side TCU driver exists.
+///
+/// Layout: `Reset` is the first slot, `OutputString` the second; spec
+/// guarantees stable ordering. We only call `output_string` here.
+/// `TestString`, `QueryMode`, `SetMode`, `SetAttribute`, `ClearScreen`,
+/// `SetCursorPosition`, `EnableCursor`, and the `Mode` pointer are
+/// defined by the spec but unused — declaring the trailing fields would
+/// require more spec types we don't need yet, so we deliberately stop
+/// at the second fn pointer. Pointer arithmetic stays correct because
+/// we never index past the declared end.
+#[repr(C)]
+pub struct SimpleTextOutputProtocol {
+    pub reset: unsafe extern "efiapi" fn(this: *mut Self, extended_verification: bool) -> Status,
+    pub output_string: unsafe extern "efiapi" fn(this: *mut Self, string: *const u16) -> Status,
 }
 
 #[cfg(test)]
