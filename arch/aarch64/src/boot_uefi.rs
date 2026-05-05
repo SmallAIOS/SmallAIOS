@@ -28,17 +28,26 @@ use crate::uefi::{
 };
 use core::ffi::c_void;
 
-/// Devicetree blob pointer captured during `efi_main`. Sub-PR 2d-real
-/// (the next one) will pass this to `kernel_main` after
-/// `ExitBootServices`. Stored as a `static mut` (rather than threading
-/// it through the halt loop) so the eventual jump from `efi_main` →
-/// `kernel_main` doesn't have to re-derive it.
+/// Devicetree blob pointer captured during `efi_main`.
 ///
 /// # Safety
 /// Only written from `efi_main`, only once, while still under UEFI's
-/// boot-services environment (single-threaded, identity-mapped). After
-/// `ExitBootServices` it becomes effectively immutable.
+/// boot-services environment (single-threaded, identity-mapped).
 static mut DTB_PTR: *const c_void = core::ptr::null();
+
+/// System-table pointer captured during `efi_main`. The kernel-side
+/// UART driver (`crate::tegra234_uart`) reads this to reach
+/// `con_out.output_string` for the **interim "kernel uses UEFI con_out
+/// for output"** mode. This is set unconditionally; whether the kernel
+/// actually uses it depends on whether `tegra234_uart::putc` is built
+/// in DRAM-stash or con_out mode.
+///
+/// # Safety
+/// Only written from `efi_main`, only once. Used after kernel_main is
+/// called; the system table remains valid as long as we don't call
+/// `ExitBootServices`. If we ever do call ExitBootServices and then
+/// keep using this pointer, the read becomes UB.
+pub(crate) static mut SYSTEM_TABLE: *const SystemTable = core::ptr::null();
 
 /// Walk the system table's configuration entries and return the
 /// vendor-table pointer for `EFI_DTB_TABLE_GUID`, or null if not found.
@@ -245,7 +254,7 @@ unsafe fn exit_boot_services(image_handle: Handle, system_table: *const SystemTa
 /// `system_table` set per UEFI 2.10 §4.1.
 #[no_mangle]
 pub unsafe extern "efiapi" fn efi_main(
-    image_handle: Handle,
+    _image_handle: Handle,
     system_table: *const SystemTable,
 ) -> Status {
     unsafe {
@@ -264,6 +273,7 @@ pub unsafe extern "efiapi" fn efi_main(
     let dtb = unsafe { find_dtb(system_table) };
     unsafe {
         DTB_PTR = dtb;
+        SYSTEM_TABLE = system_table;
         if dtb.is_null() {
             print(
                 system_table,
@@ -274,38 +284,47 @@ pub unsafe extern "efiapi" fn efi_main(
             print_hex64(system_table, dtb as u64);
             print(system_table, "\r\n");
         }
-        print(system_table, "[boot] calling ExitBootServices\r\n");
     }
 
-    // Tear down UEFI. After this returns success we own the machine and
-    // can no longer use any boot-services calls (including `con_out`).
-    let ebs = unsafe { exit_boot_services(image_handle, system_table) };
-    if !ebs.is_success() {
-        // ExitBootServices failed. We're still under UEFI, so con_out
-        // is still valid — print a diagnostic and return. UEFI will
-        // either reload the image or re-prompt for a different boot
-        // entry depending on its config.
-        unsafe {
-            print(system_table, "[boot] ExitBootServices FAILED, status=");
-            print_hex64(system_table, ebs.0 as u64);
-            print(system_table, "\r\n");
-        }
-        return ebs;
-    }
-
-    // ExitBootServices succeeded. UEFI services are torn down. Tail-
-    // call `kernel_main(dtb)`, which runs through the standard boot
-    // stages and never returns.
+    // ── INTERIM: skip ExitBootServices ──────────────────────────────
     //
-    // Verified on Orin NX hardware (P3767-0000 + P3768-0000, JetPack
-    // 6.2.1 / L4T R36.4.7): kernel_main runs to its idle loop without
-    // exception. There is no observable serial output yet — see
-    // `tegra234_uart` for the placeholder driver and the deferred
-    // follow-up that lands real UART output (post-EBS access to both
-    // UART_1 and the TCU mailbox is blocked by the SoC firewall /
-    // page-table state when ExitBootServices is called from EL2).
+    // Sub-PR 2e demonstrated ExitBootServices works (silent halt
+    // confirmed). But the kernel-side UART path post-EBS is firewalled
+    // on Tegra234 and we don't yet have a working post-EBS output
+    // mechanism (see `tegra234_uart.rs` for the failed attempts and
+    // the candidate follow-up paths).
+    //
+    // Until we sort that out, we **don't** call ExitBootServices here.
+    // We tail-call `kernel_main` while UEFI's services (specifically
+    // `con_out`) are still alive, so `tegra234_uart::putc` can route
+    // through `SYSTEM_TABLE.con_out` and produce visible output on the
+    // J-class carrier's TTL header.
+    //
+    // This is **not a real kernel boot** — UEFI services persist and
+    // we're effectively a fancy UEFI app. But it lets us validate the
+    // rest of the kernel logic (memory detection, heap allocator,
+    // banner, etc.) on real hardware and gives us a visible
+    // proof-of-life that's a real kernel-side print, not a UEFI
+    // bootloader print.
+    //
+    // The follow-up sub-PR will reinstate the ExitBootServices call
+    // alongside a working post-EBS UART driver.
+    unsafe {
+        print(
+            system_table,
+            "[boot] skipping ExitBootServices (interim mode); calling kernel_main\r\n",
+        );
+    }
     let kernel_main: extern "C" fn(u64) -> ! = crate::kernel_main;
     kernel_main(dtb as u64);
+}
+
+/// Silence dead-code warning for the still-correct `exit_boot_services`
+/// helper. The interim mode above doesn't call it; the follow-up
+/// sub-PR will reinstate the real handoff.
+#[allow(dead_code)]
+fn _keep_exit_boot_services_alive() {
+    let _ = exit_boot_services;
 }
 
 #[cfg(test)]

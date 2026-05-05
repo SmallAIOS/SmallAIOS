@@ -59,11 +59,12 @@
 #[allow(unused_imports)]
 use crate::platform::UART_BASE as _;
 
-/// Placeholder buffer: `putc` writes here instead of MMIO. Up to 1
-/// KiB of buffered output is preserved across kernel boot stages;
-/// further bytes are dropped silently. Future debugging tooling can
-/// reach the buffer via `/dev/mem` from L4T after a soft reset, since
-/// DRAM contents survive the reset.
+use crate::boot_uefi::SYSTEM_TABLE;
+
+/// DRAM-stash fallback buffer used when `SYSTEM_TABLE` is null (i.e.
+/// the kernel was reached without going through `boot_uefi::efi_main`,
+/// or the system table got cleared). 1 KiB is plenty for early-boot
+/// scaffolding; further bytes are dropped silently.
 const DIAG_BUF_SIZE: usize = 1024;
 
 #[repr(C, align(8))]
@@ -77,14 +78,32 @@ static mut DIAG_BUF: DiagBuf = DiagBuf {
     bytes: [0; DIAG_BUF_SIZE],
 };
 
-/// Stash a byte. Never faults (no MMIO). See module docs for why
-/// this is a placeholder rather than a real UART driver.
+/// Push a single byte. Routes through UEFI's `con_out.output_string`
+/// while it's still valid (the interim mode in `boot_uefi::efi_main`
+/// keeps boot services alive); falls back to the DRAM stash otherwise.
 ///
 /// # Safety
-/// Single-threaded; the static buffer isn't synchronized for concurrent
-/// access. Phase 2's kernel boot is single-threaded so this is fine.
+/// Single-threaded. `SYSTEM_TABLE` must be either null or a valid
+/// pointer to an active UEFI system table. We don't check the table's
+/// signature header — the firmware-provided pointer is trusted, same
+/// as everywhere else in `boot_uefi.rs`.
 pub fn putc(byte: u8) {
     unsafe {
+        let st = SYSTEM_TABLE;
+        if !st.is_null() {
+            let con_out = (*st).con_out;
+            if !con_out.is_null() {
+                // Two-byte UCS-2 string: the byte (widened to u16) +
+                // a NUL terminator. UEFI's output_string writes only
+                // up to the first NUL, so this emits exactly one
+                // character per call.
+                let s: [u16; 2] = [byte as u16, 0];
+                let f = (*con_out).output_string;
+                let _ = f(con_out, s.as_ptr());
+                return;
+            }
+        }
+        // Fallback: DRAM stash if con_out isn't reachable.
         let buf = &raw mut DIAG_BUF;
         let cursor = (*buf).cursor;
         if cursor < DIAG_BUF_SIZE {
@@ -95,6 +114,6 @@ pub fn putc(byte: u8) {
 }
 
 /// No-op. Kept for symmetry with the `pl011::init` / `ns16550a::init`
-/// shape in `uart.rs`; a real driver would use this to set baud /
-/// pad / clock state if needed.
+/// shape in `uart.rs`; a real (post-EBS) driver would use this to
+/// set baud / pad / clock state if needed.
 pub fn init() {}

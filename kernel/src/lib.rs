@@ -23,8 +23,11 @@ pub mod syscall;
 #[cfg(feature = "verified-boot")]
 pub mod boot_integrity;
 
-/// Kernel version
-pub const VERSION: &str = "0.1.0";
+/// Kernel version. Sourced from the workspace `Cargo.toml` package
+/// version at compile time so the constant tracks `cargo-release`
+/// bumps automatically rather than drifting against a hardcoded
+/// string.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Kernel name
 pub const NAME: &str = "SmallAIOS";
