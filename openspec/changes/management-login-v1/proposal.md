@@ -15,11 +15,15 @@ the IPC/network stack and a serial UART driver in `peripheral`.
 This change wires those into a small management layer:
 
 1. A **local console login** on the existing serial/TTY (boot
-   recovery, first-boot setup, fully offline path).
+   recovery, first-boot setup, fully offline path) with explicit
+   `logout` / `exit` to end a session cleanly.
 2. A **shadow-style password file** with **Argon2id** hashing
    (memory-hard; SHA-3 alone is too fast).
-3. A built-in **viewer** role with capability-scoped read-only
-   access to monitoring data only.
+3. A **three-role model** — `Root` (full access), `Operator`
+   (load/unload models + read telemetry), and `Viewer`
+   (read-only telemetry; the role the `console-monitor-v1`
+   top-style monitor is designed for) — with a precise
+   role-vs-syscall partition.
 4. A **Zenoh admin/telemetry channel** (`smallaios/admin/**` for
    request/response, `smallaios/metrics/**` for streaming
    telemetry) reusing the existing PQC-backed transport.
@@ -162,8 +166,14 @@ automatic.
     rate-limit to 1 attempt/sec and lock after 5 consecutive
     failures for 60 s.
 - Successful login establishes a **session token** with a `Role`
-  capability (`Role::Root` or `Role::Viewer`) attached to the
-  current process / control plane.
+  capability (`Role::Root`, `Role::Operator`, or `Role::Viewer`)
+  attached to the current process / control plane.
+- Explicit `logout` / `exit` console command (and Ctrl-D EOF
+  handling) invalidates the session token, clears the audit
+  identity, redraws the login prompt, and writes a `logout`
+  audit record. Idle sessions are auto-logged-out after a
+  configurable timeout (default 15 min for `Root`, 60 min for
+  `Operator` and `Viewer`; lives in `mgmt/policy.toml`).
 
 ### Shadow file format and password hashing (Layer 0/1)
 
@@ -184,23 +194,64 @@ automatic.
 
 ### Roles and capabilities (Layer 0)
 
-- New `auth-roles` capability:
-  - `Role::Root` — full kernel/user-space access.
-  - `Role::Viewer` — may **read** telemetry, model metadata,
-    inference statistics, log tail; may **not** load models, mutate
-    config, change passwords (other than its own), or call any
-    `*_write` / `*_load` syscall.
-- Role is attached to the active session token. Existing capability
-  checks gain a `min_role: Role` field; rejecting a viewer is a
-  non-fatal `EPERM`-style error returned over the channel.
+- New `auth-roles` capability with three roles:
+  - **`Role::Root`** — full kernel/user-space access. Auth
+    administration, system power control, OS updates, network
+    config, model load/unload, telemetry, audit-log read.
+  - **`Role::Operator`** — model lifecycle and read access:
+    `model_load` / `model_unload`, `metrics_read`,
+    `audit_read` (own-actions only), `auth_change_password`
+    (own only). May **not** create users, change other users'
+    passwords, mutate `auth/`, `network/`, `mgmt/`, or
+    `update/` config, reboot/shutdown the system, push OS
+    updates, or write to `/data/automotive/`.
+  - **`Role::Viewer`** — read-only telemetry. The role the
+    `console-monitor-v1` top-style monitor is built around.
+    `metrics_read`, `audit_read` (own-actions only),
+    `auth_change_password` (own only), `auth_whoami`. May
+    **not** load models, mutate any config, reboot, update,
+    or call any `*_write` / `*_load` / `*_admin` syscall.
+
+- **Role-vs-syscall partition** (precise matrix lives in
+  `design.md`; v1 surface is ~30 entries). Sketch:
+
+  | Operation | Root | Operator | Viewer |
+  |-----------|:----:|:--------:|:------:|
+  | `auth_login` / `auth_whoami` | ✓ | ✓ | ✓ |
+  | `auth_change_password` (own) | ✓ | ✓ | ✓ |
+  | `auth_create_user` / `auth_change_password` (other) | ✓ | — | — |
+  | `model_load` / `model_unload` | ✓ | ✓ | — |
+  | `metrics_read` / `audit_read` (own) | ✓ | ✓ | ✓ |
+  | `audit_read` (all) | ✓ | — | — |
+  | `system_power(STATUS)` | ✓ | ✓ | ✓ |
+  | `system_power(REBOOT|SHUTDOWN)` | ✓ | — | — |
+  | `system_update_*` | ✓ | — | — |
+  | Config write — `auth/*`, `mgmt/*`, `update/*` | ✓ | — | — |
+  | Config write — `network/*`, `automotive/*` | ✓ | — | — |
+  | Config write — `system.toml` (hostname, log level) | ✓ | — | — |
+
+- Role is attached to the active session token. Existing
+  capability checks gain a `min_role: Role` field; rejecting a
+  non-qualifying caller is a non-fatal `EPERM`-style error
+  returned over whatever transport made the request.
+
+- A pre-provisioned `Role::Operator` and `Role::Viewer` user
+  do **not** exist by default — first boot creates only `root`,
+  and `root` runs `auth_create_user` (TTY shell command,
+  Zenoh admin verb) to add an operator and a viewer when
+  needed. No latent service accounts.
 
 ### Syscall surface (Layer 0)
 
-Three new syscalls (43, 44, 45 — incrementing the current ~46):
+Five new syscalls (43–47, incrementing the current ~46):
 
 - `auth_login(user_ptr, user_len, pass_ptr, pass_len) -> session_id`
-- `auth_change_password(old_ptr, old_len, new_ptr, new_len) -> 0|err`
-- `auth_whoami() -> { role: u8, user_id: u32 }`
+- `auth_logout() -> 0|err`
+- `auth_change_password(old_ptr, old_len, new_ptr, new_len, target_user_ptr, target_user_len) -> 0|err`
+  — `target_user` may be `null` (own password); non-null requires `Role::Root`.
+- `auth_create_user(user_ptr, user_len, role: u8, initial_password_ptr, initial_password_len) -> 0|err`
+  — root only; sets the `must_change_password_on_login` flag for the new user.
+- `auth_whoami() -> { role: u8, user_id: u32, login_unix_time: u64, idle_seconds: u32 }`
 
 The shadow file is read **only** through these syscalls; user
 space cannot map or read the file directly even as root (defense
@@ -246,12 +297,17 @@ against a compromised admin tool exfiltrating hashes).
 - `auth-shadow`: shadow file format, Argon2id parameters, atomic
   rewrite semantics, on-disk layout, version field, file
   permissions.
-- `auth-roles`: `Role::Root` / `Role::Viewer` definitions, the
-  read/write syscall partition, and the `min_role` capability
-  guard.
+- `auth-roles`: `Role::Root` / `Role::Operator` / `Role::Viewer`
+  definitions, the role-vs-syscall partition matrix, the
+  `min_role` capability guard, the rule that `Operator` and
+  `Viewer` accounts are created explicitly (no latent service
+  accounts), the per-role idle-timeout policy, and the rule
+  that `auth_change_password` accepts a target only when the
+  caller is `Root`.
 - `console-login`: TTY login flow, first-boot setup, echo-off
   password entry, lockout / rate-limit policy, recovery boot
-  argument.
+  argument, explicit `logout` / `exit` / Ctrl-D handling, and
+  the per-role idle-timeout auto-logout.
 - `mgmt-zenoh-admin`: `smallaios/admin/**` request/response
   contract, bearer-token lifecycle, error encoding.
 - `mgmt-zenoh-telemetry`: `smallaios/metrics/**` schema and
@@ -295,7 +351,9 @@ against a compromised admin tool exfiltrating hashes).
     trait, validator pipeline, atomic-rewrite helper, audit-log
     ring.
   - `security/src/argon2id.rs` — clean-room Argon2id (no_std).
-  - `kernel/` — three new syscalls + role-tagged session table.
+  - `kernel/` — five new syscalls (`auth_login`, `auth_logout`,
+    `auth_change_password`, `auth_create_user`, `auth_whoami`)
+    + role-tagged session table + per-role idle-timeout sweeper.
   - `peripheral/src/uart.rs` — echo-off read + raw-mode toggle.
   - `container/src/mgmt_zenoh.rs` — Zenoh admin/telemetry surface
     (one impl of `ConfigSurface`).
@@ -346,10 +404,10 @@ against a compromised admin tool exfiltrating hashes).
    opaque random ID looked up server-side? Opaque is simpler;
    JWT lets the viewer cache the token across reconnects without a
    kernel round-trip.
-3. Do we want `Role::Operator` (can load models but not change
-   passwords) in v1 as well, or strictly root + viewer? Spec is
-   currently strictly two-role; adding a third is straightforward
-   if requested.
+3. *(resolved)* Three roles — `Root`, `Operator`, `Viewer` —
+   committed. `Operator` can load/unload models and read
+   telemetry; `Viewer` is read-only and is the role the
+   `console-monitor-v1` top-style monitor is designed for.
 4. Should the `Config` model live in its own `mgmt` Layer 1
    crate or fold into `auth`? They are conceptually distinct
    (config-of-everything vs identity-and-access) and mgmt will
@@ -362,3 +420,8 @@ against a compromised admin tool exfiltrating hashes).
    regressions reaching production but increases friction during
    feature development. Leaning build time with a clear error
    message and the `cargo xtask` scaffolder above.
+6. Per-role idle-timeout defaults — `Root` 15 min, `Operator`
+   60 min, `Viewer` 60 min. Reasonable for an attended box;
+   may be too aggressive for a viewer running `top`-style
+   monitor for hours. Open: should `console-monitor-v1`
+   reset the idle timer on any keypress (yes, almost certainly).
