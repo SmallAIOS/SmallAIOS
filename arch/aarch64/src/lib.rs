@@ -14,6 +14,11 @@
 
 #![no_std]
 
+// Bare-metal entry. References linker-defined `__bss_start` / `__bss_end` /
+// `__stack_top` symbols that come from `arch/aarch64/linker*.ld`, so it only
+// makes sense for `target_os = "none"` builds. The UEFI bin (`smallaios-uefi`,
+// target `aarch64-unknown-uefi`) enters via `boot_uefi::efi_main` instead.
+#[cfg(target_os = "none")]
 pub mod boot;
 pub mod console;
 #[cfg(feature = "tegra-x1")]
@@ -39,6 +44,16 @@ pub mod tegra_pcie;
 #[cfg(feature = "tegra-x1")]
 pub mod tegra_sor;
 
+// UEFI boot path for Tegra234. The types module compiles for any target as
+// long as `tegra234` is on (lets host tests reach the GUID parsing code);
+// `boot_uefi::efi_main` uses `extern "efiapi"` which is portable.
+#[cfg(feature = "tegra234")]
+pub mod boot_uefi;
+#[cfg(feature = "tegra234")]
+pub mod tegra234_uart;
+#[cfg(feature = "tegra234")]
+pub mod uefi;
+
 /// Kernel entry point called from assembly boot code.
 ///
 /// At this point we have:
@@ -59,6 +74,8 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
     uart::puts("  Platform: AArch64 (QEMU virt)\n");
     #[cfg(feature = "tegra-x1")]
     uart::puts("  Platform: Tegra X1 (Jetson Nano)\n");
+    #[cfg(feature = "tegra234")]
+    uart::puts("  Platform: Tegra234 (Jetson Orin)\n");
     uart::puts("========================================\n");
     uart::puts("\n");
 

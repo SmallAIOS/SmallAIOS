@@ -5,10 +5,21 @@
 //!
 //! - **QEMU virt** (`qemu-virt`): PL011 UART @ 0x0900_0000
 //! - **Tegra X1** (`tegra-x1`): NS16550A UART-A @ 0x7000_6000 (reg-shift=2)
+//! - **Tegra234** (`tegra234`): TCU @ 0x0C28_0000 — **stub for now**, the
+//!   real driver lands in sub-PR 2d (`tegra234_uart.rs`). Until then, the
+//!   stub silently drops bytes. **Do not interpret missing serial output
+//!   under `--features tegra234` as a boot failure** — it's expected and
+//!   the kernel still reaches its idle loop. Use the QEMU virt or Tegra X1
+//!   feature flag if you need observable serial output for now.
 //!
 //! On Tegra X1, U-Boot pre-initializes UART-A at 115200 8N1.
 //! The `init()` function is a no-op — only polled TX is needed.
 
+// `platform` is only referenced by the qemu-virt and tegra-x1 inner modules;
+// the tegra234 stub drops bytes and the future TCU driver will live in its own
+// `tegra234_uart.rs` (sub-PR 2d), so gate the import to avoid a dead-import
+// warning under `--features tegra234`.
+#[cfg(any(feature = "qemu-virt", feature = "tegra-x1"))]
 use crate::platform;
 
 // ─── PL011 (QEMU virt) ──────────────────────────────────────────────────────
@@ -92,14 +103,26 @@ mod ns16550a {
     }
 }
 
+// ─── Tegra Combined UART (TCU) — Tegra234 ───────────────────────────────────
+//
+// The real TCU driver lives at `crate::tegra234_uart`. The `tcu_stub` that
+// preceded it (sub-PR 2b) has been removed — `tegra234_uart::putc` now
+// drives MMIO directly, and `--features tegra234` post-`ExitBootServices`
+// kernel output reaches the J-carrier UART header.
+
 // ─── Public API (platform-independent) ───────────────────────────────────────
 
-/// Initialize the UART. No-op on Tegra (U-Boot pre-inits).
+/// Initialize the UART. No-op on Tegra X1 (U-Boot pre-inits), on
+/// Tegra234 (NVIDIA's UEFI pre-inits, and the firmware's settings
+/// persist across `ExitBootServices`), and (trivially) on QEMU virt
+/// where `pl011::init` does the real work.
 pub fn init() {
     #[cfg(feature = "qemu-virt")]
     pl011::init();
     #[cfg(feature = "tegra-x1")]
     ns16550a::init();
+    #[cfg(feature = "tegra234")]
+    crate::tegra234_uart::init();
 }
 
 /// Write a single byte to UART.
@@ -108,6 +131,8 @@ pub fn putc(byte: u8) {
     pl011::putc(byte);
     #[cfg(feature = "tegra-x1")]
     ns16550a::putc(byte);
+    #[cfg(feature = "tegra234")]
+    crate::tegra234_uart::putc(byte);
 }
 
 /// Write a string to UART, converting `\n` to `\r\n`.

@@ -287,6 +287,44 @@ jobs:
           cat boot.log
           echo "=== RISC-V QEMU smoke test completed ==="
 
+  aarch64-qemu-smoke:
+    name: AArch64 QEMU Smoke Test (Jetson KVM path)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # No `needs:` — this job rebuilds the AArch64 kernel from source so it
+    # exercises the same RUSTFLAGS / target / linker-script path the Jetson
+    # quickstart documents. Running independently lets it parallel with
+    # `build-aarch64` rather than serialize behind it.
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools
+          targets: aarch64-unknown-none
+      - name: Install QEMU
+        run: sudo apt-get update && sudo apt-get install -y qemu-system-arm
+      - name: Build AArch64 kernel (release)
+        run: cargo build --release --target aarch64-unknown-none -p smallaios-arch-aarch64 $BUILD_STD
+        env:
+          RUSTFLAGS: "-D warnings -C link-arg=-Tarch/aarch64/linker.ld"
+      - name: Boot in QEMU virt with GICv3 (TCG, timeout 30s)
+        run: |
+          # No KVM on GitHub runners — use TCG. Same machine + GIC version as
+          # the Jetson recipe path so the kernel exercises the same init shape.
+          # Asserts the boot banner that kernel_main() prints unconditionally.
+          timeout 30 qemu-system-aarch64 \
+            -M virt,gic-version=3 -cpu cortex-a72 -m 1G -nographic \
+            -kernel target/aarch64-unknown-none/release/smallaios-aarch64 \
+            -serial mon:stdio 2>&1 | tee boot.log || true
+          echo "=== Boot log ==="
+          cat boot.log
+          echo "=== Asserting Phase 1 boot banner ==="
+          grep -q "SmallAIOS" boot.log || { echo "FAIL: 'SmallAIOS' banner missing"; exit 1; }
+          grep -q "BSS cleared" boot.log || { echo "FAIL: '[boot] BSS cleared' marker missing — kernel did not reach BSS-clear stage"; exit 1; }
+          echo "PASS: AArch64 kernel boots under QEMU virt + GICv3 (Phase 1 path validated under TCG)"
+
   image-size:
     name: Image Size Check (<15 MB)
     runs-on: ubuntu-latest
@@ -1132,7 +1170,7 @@ jobs:
     name: Change Gates
     runs-on: ubuntu-latest
     permissions: {}
-    needs: [check-format, clippy, test, test-formal-gate, cuda-check, build-x86_64, build-aarch64, build-riscv64, build-jetson, docker-build-local, semver-check, cargo-deny, check-cycles, semver-api-check, coverage-threshold]
+    needs: [check-format, clippy, test, test-formal-gate, cuda-check, build-x86_64, build-aarch64, build-riscv64, build-jetson, aarch64-qemu-smoke, docker-build-local, semver-check, cargo-deny, check-cycles, semver-api-check, coverage-threshold]
     if: github.event_name == 'pull_request'
     steps:
       - name: All gates passed
