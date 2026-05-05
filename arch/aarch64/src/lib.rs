@@ -96,15 +96,40 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
     }
     uart::puts("[boot] Running at EL");
     uart::put_dec((current_el >> 2) & 0x3);
-    uart::putc(b'\n');
+    uart::puts("\n");
 
     uart::puts("[boot] DTB address: 0x");
     uart::put_hex(dtb_addr);
-    uart::putc(b'\n');
+    uart::puts("\n");
 
     // ── Stage 2: Memory ──────────────────────────────────────────────
     uart::puts("\n[boot] Stage 2: Memory detection\n");
+
     let mut phys_map = smallaios_kernel::mem::phys::PhysMemoryMap::new();
+
+    // Tegra234 with NVIDIA's UEFI doesn't expose `/memory@…` nodes in
+    // the DTB (root holds only `/tegra-carveouts` and `/bus@0`). The
+    // firmware-blessed source of truth for usable RAM is the EFI
+    // memory map, harvested by `boot_uefi::harvest_efi_memory_map`
+    // before `kernel_main` is called. Iterate the harvested regions
+    // here and skip the FDT-based parser.
+    //
+    // For qemu-virt and tegra-x1 we still use the existing DTB parser
+    // — those firmwares populate `/memory@…` normally.
+    #[cfg(feature = "tegra234")]
+    {
+        let count = boot_uefi::efi_memory_region_count();
+        for i in 0..count {
+            if let Some(r) = boot_uefi::efi_memory_region(i) {
+                let _ = phys_map.add_region(
+                    smallaios_kernel::mem::PhysAddr::new(r.base as usize),
+                    r.size as usize,
+                    smallaios_kernel::mem::phys::RegionKind::Usable,
+                );
+            }
+        }
+    }
+    #[cfg(not(feature = "tegra234"))]
     unsafe {
         smallaios_kernel::mem::phys::parse_dtb(dtb_addr as usize, &mut phys_map);
     }
@@ -150,7 +175,7 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
         uart::put_hex(platform::GICD_BASE as u64);
         uart::puts(", GICC @ 0x");
         uart::put_hex(platform::GICC_BASE as u64);
-        uart::putc(b'\n');
+        uart::puts("\n");
         uart::puts("[irq]  Timer IRQ (PPI 30) enabled\n");
     }
 
@@ -160,7 +185,7 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
         uart::puts("\n[boot] Stage 4: PCIe enumeration\n");
         uart::puts("[pcie] Tegra AFI controller @ 0x");
         uart::put_hex(platform::PCIE_AFI_BASE as u64);
-        uart::putc(b'\n');
+        uart::puts("\n");
         uart::puts("[pcie] Enabling clocks and PHY...\n");
 
         let pcie_ok = unsafe { tegra_pcie::init() };
@@ -192,7 +217,7 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
                     {
                         uart::puts("  <-- RTL8168/8169 GbE");
                     }
-                    uart::putc(b'\n');
+                    uart::puts("\n");
 
                     // Show active BARs
                     for bar_idx in 0..6 {
@@ -213,7 +238,7 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
                                 uart::put_dec(size);
                                 uart::puts(" B");
                             }
-                            uart::putc(b'\n');
+                            uart::puts("\n");
                         }
                     }
                 }
@@ -254,7 +279,7 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
                 }
                 uart::puts("[hdmi] DC0 enabled, framebuffer @ 0x");
                 uart::put_hex(platform::FRAMEBUFFER_BASE as u64);
-                uart::putc(b'\n');
+                uart::puts("\n");
 
                 // Initialize framebuffer console
                 let stride = tegra_dc::align_stride_64(
@@ -315,6 +340,6 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
         uart::puts(":");
         uart::put_dec(location.line() as u64);
     }
-    uart::putc(b'\n');
+    uart::puts("\n");
     halt_loop();
 }
