@@ -124,8 +124,14 @@ transport Y."
   without physical access. Required prerequisite for
   `remote-update-v1` (the update flow ends with a
   reboot-into-new-slot).
-- **Dependencies:** `management-login-v1` (auth + roles + Zenoh
-  admin keyspace must exist first).
+- **Dependencies:** `management-login-v1` — provides auth, roles,
+  the Zenoh admin keyspace, **and the management surface
+  convention** (`Config` model, `ConfigSurface` trait, audit log,
+  `/data/` layout). This change does not add fields to `Config`
+  (verbs only, no persistent settings) but its `reboot` /
+  `shutdown` / `status` verbs are exposed through the same TTY,
+  Zenoh, and (later) UDS surfaces by implementing handlers, not
+  by adding new transport plumbing.
 - **Risks:** (1) A bug that triggers a reboot loop is
   catastrophic on a remote box — the watchdog-rollback machinery
   doesn't exist until `remote-update-v1`, so for v1 we must

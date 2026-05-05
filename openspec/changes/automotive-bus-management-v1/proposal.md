@@ -193,9 +193,16 @@ for v1 and tracked as follow-ups.
   industrial CAN segments without an IP gateway, and gives
   operators a path to use existing automotive tooling
   (CANoe, jPO) for management.
-- **Dependencies:** `management-login-v1` (verbs + audit log),
-  `system-power-control-v1` (reboot path), `remote-update-v1`
-  (transport trait + A/B slots).
+- **Dependencies:** `management-login-v1` — provides auth, the
+  audit log, **and the management surface convention** (`Config`
+  model, `ConfigSurface` trait, `/data/` layout). This change
+  adds `automotive/uds.toml` to the `Config` model **and** adds
+  a fourth `ConfigSurface` impl (`UdsConfigSurface`) so every
+  existing option is automatically reachable over the CAN bus
+  by the universal-exposure invariant — no per-feature UDS
+  plumbing. `system-power-control-v1` (reboot path) and
+  `remote-update-v1` (transport trait + A/B slots) are also
+  dependencies.
 - **Risks:** (1) Mis-implementing ISO-TP flow control would
   silently corrupt large transfers — the design.md must enumerate
   every state transition and the test plan must replay vectors

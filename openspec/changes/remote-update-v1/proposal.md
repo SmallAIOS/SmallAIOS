@@ -210,9 +210,15 @@ update pipeline.
 - **Downstream:** unblocks running SmallAIOS as a
   field-deployable appliance. Required by serving teams who
   cannot send someone with a USB stick to every box.
-- **Dependencies:** `management-login-v1` (auth gate),
-  `system-power-control-v1` (the post-update reboot uses
-  `system_power`).
+- **Dependencies:** `management-login-v1` — provides auth, the
+  Zenoh admin keyspace, **and the management surface
+  convention** (`Config` model, `ConfigSurface` trait,
+  `/data/` layout, audit log). This change adds
+  `update/policy.toml` to the `Config` model (watchdog window,
+  slot retention, transport allowlist) and reuses the existing
+  TOML / TTY / Zenoh `ConfigSurface` impls — no new transport
+  plumbing. `system-power-control-v1` is also a dependency
+  (the post-update reboot uses `system_power`).
 - **Risks:** (1) Boot-pointer corruption is fatal — must be
   CRC-protected and written with a journaled-replace scheme.
   (2) Watchdog tuning per platform: too short and false

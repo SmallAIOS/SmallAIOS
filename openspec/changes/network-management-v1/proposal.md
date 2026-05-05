@@ -223,10 +223,15 @@ routing table see only the bond, not the slaves.
   balance-xor) for any networked SmallAIOS unit. Required for
   `management-login-v1` to be useful in any non-static-IP
   environment.
-- **Dependencies:** `management-login-v1` (admin surface for
-  live config changes); none in the other direction (this
+- **Dependencies:** `management-login-v1` — provides auth, the
+  Zenoh admin keyspace, **and the management surface
+  convention** (`Config` model, `ConfigSurface` trait,
+  `/data/` layout, audit log, atomic-rewrite). This change
+  adds `network/<iface>.toml` and `network/<bond>.toml` to the
+  `Config` model and reuses the existing TOML / TTY / Zenoh
+  `ConfigSurface` impls. None in the other direction — this
   change can ship in parallel and is not blocked by the
-  power-control or update changes).
+  power-control or update changes.
 - **Risks:**
   (1) LACP is the largest single piece (~1200 LOC) and has
   several timing-sensitive state machines; mis-implementation
