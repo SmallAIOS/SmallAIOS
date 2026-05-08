@@ -217,15 +217,20 @@ pub fn remove_header_protection(
 }
 
 #[cfg(test)]
+#[path = "protection_test_vectors.rs"]
+mod test_vectors;
+
+#[cfg(test)]
 mod tests {
+    use super::test_vectors::*;
     use super::*;
 
     fn test_keys() -> PacketProtectionKeys {
-        // lgtm[rust/hard-coded-cryptographic-value] — deterministic test fixtures, not production keys
+        // Deterministic byte-pattern fixtures — see `protection_test_vectors.rs`.
         PacketProtectionKeys::new(
-            &[0xAA; 32],
-            &[0xBB; 12],
-            &[0xCC; 16],
+            &TEST_KEY_AA,
+            &TEST_IV_BB,
+            &TEST_HP_KEY_CC,
             CipherSuite::Aes256Gcm,
         )
     }
@@ -274,12 +279,11 @@ mod tests {
         let mut ciphertext = [0u8; 128];
         let ct_len = aead_encrypt(&keys, 1, aad, plaintext, &mut ciphertext).unwrap();
 
-        // Decrypt with different keys
-        // lgtm[rust/hard-coded-cryptographic-value] — deterministic test fixtures, not production keys
+        // Decrypt with different keys (see `protection_test_vectors.rs`).
         let wrong_keys = PacketProtectionKeys::new(
-            &[0x01; 32],
-            &[0xBB; 12],
-            &[0xCC; 16],
+            &TEST_WRONG_KEY_01,
+            &TEST_IV_BB,
+            &TEST_HP_KEY_CC,
             CipherSuite::Aes256Gcm,
         );
         let mut decrypted = [0u8; 128];
@@ -348,8 +352,8 @@ mod tests {
 
     #[test]
     fn test_header_protection_roundtrip() {
-        let hp_key = [0xDD; 16];
-        let sample = [0xEE; HP_SAMPLE_LEN];
+        let hp_key = TEST_HP_KEY_DD;
+        let sample = TEST_HP_SAMPLE_EE;
         let mut first_byte = 0xC3u8; // Long header
         let original_first = first_byte;
         let mut pn_bytes = [0x00, 0x01, 0x02, 0x03];
@@ -366,8 +370,8 @@ mod tests {
 
     #[test]
     fn test_header_protection_short_header() {
-        let hp_key = [0xDD; 16];
-        let sample = [0xEE; HP_SAMPLE_LEN];
+        let hp_key = TEST_HP_KEY_DD;
+        let sample = TEST_HP_SAMPLE_EE;
         let mut first_byte = 0x43u8; // Short header (bit 7 = 0)
         let original = first_byte;
         let mut pn = [0x00];
