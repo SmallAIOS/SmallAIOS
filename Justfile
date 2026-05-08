@@ -74,6 +74,57 @@ build-kernel-tegra234:
 build-kernel-uefi:
     RUSTFLAGS="-D warnings" {{cargo}} build --release --target aarch64-unknown-uefi -p smallaios-arch-aarch64 --bin smallaios-uefi --no-default-features --features tegra234 {{build_std}}
 
+# Build a bootable FAT32 USB image with `smallaios-uefi.efi` at the
+# UEFI fallback path (`EFI/BOOT/BOOTAA64.EFI`). Default size 256 MB,
+# override via `SIZE_MB=N`. Output: `build/smallaios-jetson-usb.img`.
+#
+# Cross-platform via `mtools` (no root, no loopback mount): `mformat`
+# creates the FAT32 filesystem inside the image file and `mcopy`
+# drops files in. Install once on the build host:
+#   - macOS:  brew install mtools
+#   - Debian: sudo apt install mtools
+#
+# The image is a "superfloppy" FAT32 (no MBR partition table). UEFI
+# accepts both partitioned and superfloppy formats per the spec; for
+# Jetson Orin the simpler superfloppy works. The recipe ends with a
+# friendly hint about the `dd` command — `dd` to the USB stick is a
+# separate manual step (intentionally not in the recipe so we never
+# accidentally write to the wrong device). See
+# `docs/jetson-orin-uefi-boot.md` for the full deploy procedure.
+build-jetson-usb-image SIZE_MB="256": build-kernel-uefi
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v mformat >/dev/null 2>&1 || ! command -v mcopy >/dev/null 2>&1; then
+        echo "ERROR: mtools (mformat/mcopy) not found." >&2
+        echo "  macOS:  brew install mtools" >&2
+        echo "  Debian: sudo apt install mtools" >&2
+        exit 1
+    fi
+    mkdir -p build
+    IMG=build/smallaios-jetson-usb.img
+    EFI=target/aarch64-unknown-uefi/release/smallaios-uefi.efi
+    [ -f "$EFI" ] || { echo "ERROR: $EFI not found (expected from build-kernel-uefi)" >&2; exit 1; }
+    # Create a fresh sparse image of the requested size.
+    rm -f "$IMG"
+    dd if=/dev/zero of="$IMG" bs=1M count={{SIZE_MB}} status=none
+    # Format as FAT32. `-F`: FAT32. `-i <file>`: operate on the image
+    # file instead of a device. `::` is mtools' syntax for "the root
+    # of the (only) drive in this image."
+    mformat -F -v SMALLAIOS -i "$IMG" ::
+    # Lay out EFI/BOOT/ and drop the .efi at the standard fallback
+    # path UEFI walks when no explicit boot option is selected.
+    mmd -i "$IMG" ::/EFI
+    mmd -i "$IMG" ::/EFI/BOOT
+    mcopy -i "$IMG" "$EFI" ::/EFI/BOOT/BOOTAA64.EFI
+    echo ""
+    echo "Created $IMG ({{SIZE_MB}} MB)"
+    echo ""
+    echo "To deploy to a USB stick (REPLACE /dev/sdX with your stick — confirm via lsblk on Linux"
+    echo "or 'diskutil list' on macOS, dd to the wrong device will overwrite it!):"
+    echo "  sudo dd if=$IMG of=/dev/sdX bs=4M status=progress conv=fdatasync"
+    echo ""
+    echo "Then plug the stick into the Orin, power-cycle, hammer Esc/F11 for the UEFI menu."
+
 # Build RISC-V kernel (release)
 build-kernel-riscv:
     {{cargo}} build --release --target riscv64gc-unknown-none-elf -p smallaios-arch-riscv64 {{build_std}}
