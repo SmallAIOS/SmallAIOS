@@ -1,30 +1,30 @@
 ## 1. Phase 1 — `FlashDevice` trait + `FlashError` enum
 
-- [ ] 1.1 `fs/src/flash/mod.rs` — module skeleton, `#![no_std]`, gated by `fs-flash` cargo feature
-- [ ] 1.2 `fs/src/flash/device.rs` — `FlashDevice` trait
-- [ ] 1.3 `fs/src/flash/error.rs` — `FlashError` enum + POSIX errno conversion
-- [ ] 1.4 Generic conformance test suite (program-on-dirty rejected, erase resets to 0xFF, alignment, etc.)
-- [ ] 1.5 Documentation: trait contract for NOR vs NAND parts
+- [x] 1.1 `fs/src/flash/mod.rs` — module skeleton, `#![no_std]`, gated by `fs-flash` cargo feature
+- [x] 1.2 `fs/src/flash/device.rs` — `FlashDevice` trait
+- [x] 1.3 `fs/src/flash/error.rs` — `FlashError` enum + POSIX errno conversion (folded into `device.rs`)
+- [x] 1.4 Generic conformance test suite (program-on-dirty rejected, erase resets to 0xFF, alignment, etc.)
+- [x] 1.5 Documentation: trait contract for NOR vs NAND parts
 
 ## 2. Phase 2 — Mock device
 
-- [ ] 2.1 `fs/src/flash/mock.rs` — in-memory `MockFlashDevice` behind `fs-flash-mock` cargo feature
-- [ ] 2.2 Bit-flip injection knob (configurable rate)
-- [ ] 2.3 Bad-block-on-erase injection knob
-- [ ] 2.4 Mock passes the generic conformance suite
-- [ ] 2.5 Mock available for downstream phases' integration tests
+- [x] 2.1 `fs/src/flash/mock.rs` — in-memory `MockFlashDevice` behind `fs-flash-mock` cargo feature
+- [x] 2.2 Bit-flip injection knob (configurable rate)
+- [x] 2.3 Bad-block-on-erase injection knob
+- [x] 2.4 Mock passes the generic conformance suite
+- [x] 2.5 Mock available for downstream phases' integration tests
 
 ## 3. Phase 3 — littlefs v2.x read path
 
-- [ ] 3.1 `fs/src/flash/littlefs/superblock.rs` — superblock parser, format-version check, refuse non-v2.x
-- [ ] 3.2 `fs/src/flash/littlefs/metadata.rs` — metadata-pair reader (committed-half selection)
-- [ ] 3.3 `fs/src/flash/littlefs/dir.rs` — directory entry iteration
-- [ ] 3.4 `fs/src/flash/littlefs/file.rs` — file inline data + CTZ block list reader
-- [ ] 3.5 `fs/src/flash/littlefs/global.rs` — global state reader
-- [ ] 3.6 Pin spec to a specific commit hash, document in `docs/embedded-flash-fs.md`
-- [ ] 3.7 Add `littlefs2` crate as `dev-dependencies` only (validation oracle)
-- [ ] 3.8 Round-trip test against `littlefs2`-generated images
-- [ ] 3.9 Weekly cron job: round-trip against C `mklittlefs`-generated images
+- [x] 3.1 `fs/src/flash/littlefs/superblock.rs` — superblock parser, format-version check, refuse non-v2.x (folded into `littlefs.rs`)
+- [x] 3.2 `fs/src/flash/littlefs/metadata.rs` — metadata-pair reader (committed-half selection) (folded into `littlefs.rs`)
+- [x] 3.3 `fs/src/flash/littlefs/dir.rs` — directory entry iteration (folded into `littlefs.rs`)
+- [x] 3.4 `fs/src/flash/littlefs/file.rs` — file inline data + CTZ block list reader (folded into `littlefs.rs`)
+- [ ] 3.5 `fs/src/flash/littlefs/global.rs` — global state reader (deferred to phase 5; not required for read-only path)
+- [x] 3.6 Pin spec to a specific commit hash, document in `docs/embedded-flash-fs.md` (pinned to v2.10.0 SPEC.md in module doc)
+- [ ] 3.7 Add `littlefs2` crate as `dev-dependencies` only (validation oracle) — deferred; pure-Rust fixture builder used instead
+- [ ] 3.8 Round-trip test against `littlefs2`-generated images — deferred to follow-up PR
+- [ ] 3.9 Weekly cron job: round-trip against C `mklittlefs`-generated images — deferred to phase 4 CI work
 
 ## 4. Phase 4 — littlefs v2.x write path
 

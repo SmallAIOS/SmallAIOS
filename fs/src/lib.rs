@@ -106,4 +106,4 @@ pub mod overlay {}
 ///
 /// Filled by `embedded-flash-fs-v1` Phases 1 → N.
 #[cfg(feature = "fs-flash")]
-pub mod flash {}
+pub mod flash;
