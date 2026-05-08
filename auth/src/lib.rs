@@ -17,11 +17,11 @@
 //!
 //! ## Status
 //!
-//! This is a Wave 0 **skeleton**. Implementation is scheduled as
-//! `management-login-v1` Phases 1–10:
+//! Implementation is sequenced as `management-login-v1` Phases 1–10:
 //!
-//! 1. Argon2id KDF (in `security`) + KAT vectors.
-//! 2. `auth/` crate scaffold (this file) + shadow parser + role enum.
+//! 1. Argon2id KDF (in `security`) + KAT vectors. **Landed.**
+//! 2. `auth/` crate scaffold (this file) + shadow parser + role enum
+//!    + tier auto-selection + atomic-write trait. **This phase.**
 //! 3. Kernel auth syscalls + session table.
 //! 4. Console-login (TTY first-boot, login, lockout, idle sweep).
 //! 5. `mgmt/` crate scaffold + `Config` + `ConfigSurface` trait.
@@ -30,29 +30,30 @@
 //! 8. Zenoh telemetry keyspace.
 //! 9. TOTP (RFC 6238) + `totp_setup` syscall.
 //! 10. Audit chain + signed checkpoints + denial audit.
-//!
-//! Each phase ships as a separate PR per the agent-team plan.
 
 #![no_std]
 #![forbid(unsafe_code)]
 
-// ─── Module skeleton ─────────────────────────────────────────────────────────
-//
-// These `pub mod` declarations are intentionally empty stubs in Wave 0.
-// The `management-login-v1` implementation agent fills them per phase.
-// Empty modules keep the public-API surface stable so downstream crates
-// (`mgmt`, `ipc`, `container`) can name `auth::role::Role` etc. before
-// the bodies land.
+extern crate alloc;
+
+// ─── Phase 2 modules ─────────────────────────────────────────────────────────
 
 /// Three-role taxonomy: `Root`, `Operator`, `Viewer`.
-///
-/// Filled by `management-login-v1` Phase 2.
-pub mod role {}
+pub mod role;
 
 /// Shadow file format, parser, and atomic-rewrite helper.
-///
-/// Filled by `management-login-v1` Phase 2.
-pub mod shadow {}
+pub mod shadow;
+
+/// Atomic shadow-rewrite trait (`stage → fsync → rename`) plus an
+/// in-memory test impl and a `KernelAtomicWriter` stub awaiting
+/// `embedded-filesystem-v1` Phase 7 (F2FS RW).
+pub mod atomic_write;
+
+/// Argon2id per-tier parameter selection from available RAM.
+pub mod tier;
+
+// ─── Future-phase scaffolding (kept as empty stubs so downstream crates
+//      can name them once the bodies land) ────────────────────────────────────
 
 /// Kernel session table API surface.
 ///
@@ -69,3 +70,12 @@ pub mod token {}
 ///
 /// Filled by `management-login-v1` Phase 4.
 pub mod console {}
+
+// ─── Re-exports ──────────────────────────────────────────────────────────────
+
+pub use role::{Role, RoleError};
+pub use shadow::{
+    parse_file, parse_record, serialize_file, serialize_record, verify_file_permissions,
+    ShadowEntry, ShadowError, FLAG_MUST_CHANGE_PASSWORD,
+};
+pub use tier::select_tier;
