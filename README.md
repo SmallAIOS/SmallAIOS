@@ -106,10 +106,11 @@ docker compose --profile jetson up --build         # Jetson Orin (full JetPack b
 |---------|-------------|----------|--------|
 | QEMU x86-64 / ARM64 / RISC-V | `just run-x86` / `run-arm` / `run-riscv` | Any host with QEMU | Working |
 | Jetson Orin under KVM (smoke test) | `just run-jetson-kvm SSH_HOST=user@orin` | Jetson Orin (any carrier) on JetPack 6 / L4T R36.4+ | Phase 1 of [`unikernel-orin-bringup-v1`](openspec/changes/unikernel-orin-bringup-v1/) |
-| Jetson Orin bare metal (UEFI USB) | TBD | Jetson Orin via USB stick | Phase 2 of [`unikernel-orin-bringup-v1`](openspec/changes/unikernel-orin-bringup-v1/) (planned) |
+| Jetson Orin bare metal (UEFI USB) | `just build-jetson-usb-image` then `dd` | Jetson Orin via USB stick | Phase 2 of [`unikernel-orin-bringup-v1`](openspec/changes/unikernel-orin-bringup-v1/) — kernel runs end-to-end on real hardware (interim mode; post-`ExitBootServices` UART deferred to a follow-up) |
 
-See [docs/jetson-kvm-quickstart.md](docs/jetson-kvm-quickstart.md) for the
-Jetson KVM unikernel workflow (Mac- or x86-as-build-host + Orin-as-runner).
+See:
+- [docs/jetson-kvm-quickstart.md](docs/jetson-kvm-quickstart.md) — Jetson KVM unikernel workflow (Phase 1)
+- [docs/jetson-orin-uefi-boot.md](docs/jetson-orin-uefi-boot.md) — Jetson Orin UEFI USB-boot quickstart (Phase 2)
 
 ## CI/CD
 
