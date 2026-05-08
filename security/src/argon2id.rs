@@ -980,9 +980,9 @@ mod tests {
     #[test]
     fn phc_round_trip() {
         // Test-only fixtures, not production secrets.
+        // Use the absolute-minimum tier to keep tests fast.
         let password = b"correct horse battery staple"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
         let salt = b"saltsalt12345678"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
-        // Use the absolute-minimum tier to keep tests fast.
         let params = Argon2idParams {
             m_cost_kib: 8,
             t_cost: 1,
