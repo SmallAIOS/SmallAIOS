@@ -36,6 +36,8 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
+extern crate alloc;
+
 // ─── Module skeleton ─────────────────────────────────────────────────────────
 //
 // Each `pub mod` is gated by its owning cargo feature. Modules contain
@@ -46,7 +48,7 @@
 ///
 /// Filled by `embedded-filesystem-v1` Phase 1.
 #[cfg(feature = "fs-on-disk-mounts")]
-pub mod block {}
+pub mod block;
 
 /// GPT partition table parser + protective-MBR writer + v1 layout
 /// enforcement.

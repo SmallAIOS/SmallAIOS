@@ -30,6 +30,8 @@ pub mod paging;
 pub mod platform;
 pub mod syscall;
 pub mod uart;
+#[cfg(feature = "fs-block-virtio")]
+pub mod virtio_blk;
 
 #[cfg(feature = "tegra-x1")]
 pub mod image_header;

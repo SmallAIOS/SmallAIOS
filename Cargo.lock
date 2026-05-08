@@ -692,6 +692,7 @@ name = "smallaios-arch-aarch64"
 version = "0.2.1"
 dependencies = [
  "smallaios-arch-nvidia",
+ "smallaios-fs",
  "smallaios-kernel",
  "smallaios-onnx-rt",
 ]
@@ -739,6 +740,7 @@ dependencies = [
 name = "smallaios-arch-x86_64"
 version = "0.2.1"
 dependencies = [
+ "smallaios-fs",
  "smallaios-kernel",
 ]
 
