@@ -37,8 +37,12 @@ tegra-x1 = ["smallaios-onnx-rt", "smallaios-arch-nvidia"]
 # sub-PRs of `unikernel-orin-bringup-v1`. Distinct from `arch/nvidia`'s
 # `tegra-orin` (Orin userspace CUDA) by design.
 tegra234 = []
+# virtio-blk MMIO driver — `BlockDevice` impl over the modern (1.0+)
+# virtio-blk transport. Built on by `embedded-filesystem-v1` Phase 1.
+fs-block-virtio = ["dep:smallaios-fs", "smallaios-fs/fs-on-disk-mounts", "smallaios-fs/fs-block-virtio"]
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
 smallaios-onnx-rt = { path = "../../onnx-rt", optional = true, default-features = false, features = ["cpu"] }
 smallaios-arch-nvidia = { path = "../nvidia", optional = true, default-features = false, features = ["tegra"] }
+smallaios-fs = { path = "../../fs", optional = true }

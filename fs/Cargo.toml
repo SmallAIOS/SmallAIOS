@@ -1,0 +1,68 @@
+[package]
+name = "smallaios-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "On-disk and raw-flash filesystem stack for SmallAIOS"
+publish = false
+
+[dependencies]
+# Layer 1 — depends on kernel (block I/O traits), security (SHA-3-256
+# integrity, ML-DSA-65 signature verification on manifests/deltas),
+# and mgmt (audit-ring integration + config fields).
+smallaios-kernel = { path = "../kernel" }
+smallaios-security = { path = "../security" }
+smallaios-mgmt = { path = "../mgmt" }
+
+[features]
+default = []
+
+# ─── Block-device + on-disk filesystem features ──────────────────────────────
+# Owned by `embedded-filesystem-v1`.
+#
+# `fs-on-disk-mounts`: master switch that turns on /models/ + /data/
+# mounts at boot. Pulls in the zstd squashfs decompressor by default
+# (the algorithm SmallAIOS image-build pipelines emit). Off until
+# `embedded-filesystem-v1` Checkpoint C lands.
+fs-on-disk-mounts = ["fs-squashfs-zstd"]
+# `fs-block-virtio`: virtio-blk driver (QEMU CI smoke).
+fs-block-virtio = []
+# `fs-block-nvme`: NVMe driver (x86-64 servers, USB-NVMe carriers).
+fs-block-nvme = []
+# `fs-block-ahci`: legacy SATA AHCI driver.
+fs-block-ahci = []
+# `fs-block-sdhci`: SD/MMC/eMMC driver (Jetson Orin Tegra234 BSP).
+fs-block-sdhci = []
+# Compression algorithms supported on the squashfs read path. Each is
+# additive — `fs-on-disk-mounts` enables zstd by default; pull in
+# additional ones explicitly only on targets that mount third-party
+# squashfs images.
+fs-squashfs-zstd = []
+fs-squashfs-xz = []
+fs-squashfs-gzip = []
+fs-squashfs-lz4 = []
+# `fs-test-helpers`: opt-in audit-event recording shim used by the
+# squashfs conformance tests (and any host-side caller that wants
+# to assert audit-stub firing). Pulls in `std` for `thread_local!`,
+# so it must NOT be enabled on bare-metal targets.
+fs-test-helpers = []
+
+# ─── Overlay features ────────────────────────────────────────────────────────
+# Owned by `embedded-overlay-v1`.
+#
+# `fs-overlay-mounts`: turns /models/ into a merged view (lower =
+# squashfs A/B slot, upper = /data/models-upper/ on F2FS).
+fs-overlay-mounts = []
+
+# ─── Raw-flash features ──────────────────────────────────────────────────────
+# Owned by `embedded-flash-fs-v1`.
+#
+# `fs-flash`: enable raw-flash filesystem (littlefs v2.x) for MCU/FPGA
+# targets.
+fs-flash = []
+# `fs-flash-mock`: enable in-memory mock FlashDevice for CI.
+fs-flash-mock = []
+
+# Formal-gate feature for CI verification.
+formal-gate = []

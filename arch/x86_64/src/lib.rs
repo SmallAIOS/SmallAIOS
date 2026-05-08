@@ -17,6 +17,8 @@ pub mod interrupts;
 pub mod paging;
 pub mod serial;
 pub mod syscall;
+#[cfg(feature = "fs-block-virtio")]
+pub mod virtio_blk;
 
 use core::panic::PanicInfo;
 
