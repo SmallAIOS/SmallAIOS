@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: model_add syscall
-The kernel SHALL expose a new `model_add` syscall (number 49) callable by `Role::Operator` and `Role::Root`. Signature:
+The kernel SHALL expose a new `model_add` syscall (`ONNX_MODEL_ADD = 0x36`, in the existing ONNX category) callable by `Role::Operator` and `Role::Root`. Signature:
 
 ```text
 model_add(name_ptr, name_len, contents_fd, expected_size) -> 0 | -errno
@@ -26,7 +26,7 @@ Behavior: validates `name` against the reserved-suffix list, acquires the per-na
 - **AND** SHALL NOT acquire the per-name lock
 
 ### Requirement: model_remove syscall
-The kernel SHALL expose a new `model_remove` syscall (number 50) callable by `Role::Root` only. Signature:
+The kernel SHALL expose a new `model_remove` syscall (`ONNX_MODEL_REMOVE = 0x37`, in the existing ONNX category) callable by `Role::Root` only. Signature:
 
 ```text
 model_remove(name_ptr, name_len, mode: u8) -> 0 | -errno

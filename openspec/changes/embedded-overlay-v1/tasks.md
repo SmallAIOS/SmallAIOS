@@ -24,8 +24,8 @@
 
 ## 3. Phase 3 — model_add / model_remove syscalls
 
-- [ ] 3.1 Add `model_add` syscall (49) per `kernel-syscalls`
-- [ ] 3.2 Add `model_remove` syscall (50) per `kernel-syscalls`
+- [ ] 3.1 Add `model_add` syscall (`ONNX_MODEL_ADD = 0x36`) per `kernel-syscalls`
+- [ ] 3.2 Add `model_remove` syscall (`ONNX_MODEL_REMOVE = 0x37`) per `kernel-syscalls`
 - [ ] 3.3 Hook into existing `min_role` capability dispatch
 - [ ] 3.4 SHA-3-256 fingerprint sidecar writer integrated with `model_add`
 - [ ] 3.5 Optional ML-DSA-65 signature sidecar (always written when payload provides one; validity checked at load time per integrity spec)
@@ -90,7 +90,7 @@ The implementation (PR 2) gating list:
 
 ## 7. Cross-phase verification
 
-- [ ] 7.1 Documentation updates: `docs/architecture.md` syscall table 49/50; new `docs/embedded-overlay.md` operator runbook (model_add / model_remove flows)
+- [ ] 7.1 Documentation updates: `docs/architecture.md` ONNX-category syscall table includes `ONNX_MODEL_ADD = 0x36` and `ONNX_MODEL_REMOVE = 0x37`; new `docs/embedded-overlay.md` operator runbook (model_add / model_remove flows)
 - [ ] 7.2 Image-size regression check: overlay code stays ≤ 30 KB compiled growth budget
 - [ ] 7.3 Reserved-suffix CI lint to catch accidental introduction of conflicting test fixture names
 - [ ] 7.4 Update SmallAIOS user-space CLI tools to know about `/models/` upper layer (for `model list --include-whiteouts`)

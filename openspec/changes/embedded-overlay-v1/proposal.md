@@ -121,8 +121,8 @@ signature over the model file's SHA-3-256 fingerprint.
 
 ### `model_add` / `model_remove` syscalls
 
-Two new syscalls in the kernel's auth-gated table (numbers 49 and
-50, after `boot_success = 48` from `embedded-filesystem-v1`):
+Two new syscalls extending the existing ONNX category
+(`ONNX_MODEL_ADD = 0x36` and `ONNX_MODEL_REMOVE = 0x37`):
 
 ```text
 model_add(name_ptr, name_len, contents_fd) -> 0 | -errno
@@ -156,8 +156,8 @@ appropriate whiteout / removes the upper entry.
 - `posix-vfs` (from `embedded-filesystem-v1`): the `/models/`
   mount becomes a merged view rather than a direct squashfs
   mount.
-- `kernel-syscalls`: adds `model_add` (49), `model_remove` (50);
-  bumps documented count.
+- `kernel-syscalls`: adds `ONNX_MODEL_ADD` (0x36),
+  `ONNX_MODEL_REMOVE` (0x37) in the existing ONNX category.
 - `mgmt-config-layout` (from `management-login-v1` /
   `embedded-filesystem-v1`): adds `fs.overlay.*` configuration
   fields with `#[reload("live")]` annotations.

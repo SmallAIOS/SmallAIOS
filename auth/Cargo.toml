@@ -1,0 +1,27 @@
+[package]
+name = "smallaios-auth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Identity, authentication, and role-based access control for SmallAIOS"
+publish = false
+
+[dependencies]
+# Layer 1 — depends only on Layer 0 (kernel + security).
+# Concrete dependencies will be added by the management-login-v1
+# implementation phases (Argon2id, shadow file, role table).
+smallaios-security = { path = "../security" }
+smallaios-kernel = { path = "../kernel" }
+
+[features]
+default = []
+# Build-time feature wiring matching `management-login-v1` design:
+# - `pqc-hybrid`: ML-KEM-768 + ML-DSA-65 hybrid PQC stack (default in security).
+# - `formal-gate`: enable formal-verification gates for CI.
+# - `mgmt-token-mldsa`: optional ML-DSA-65 signed bearer tokens.
+# - `mgmt-token-ed25519-legacy`: legacy Ed25519 tokens, off by default,
+#   compile-time-excluded when off (no Ed25519 code linked).
+mgmt-token-mldsa = []
+mgmt-token-ed25519-legacy = []
+formal-gate = []

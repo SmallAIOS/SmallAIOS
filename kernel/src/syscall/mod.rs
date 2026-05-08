@@ -3,15 +3,16 @@
 
 //! Syscall dispatch interface.
 //!
-//! ~64 syscalls organized into categories:
+//! ~73 syscalls organized into categories:
 //! - Memory (0x00-0x0F): allocation, tensor buffers, GPU mapping
 //! - Task (0x10-0x1F): spawn, yield, join, affinity, priority
 //! - IPC (0x20-0x2F): pub/sub, request/reply, channels
-//! - ONNX (0x30-0x3F): model load, session, inference
+//! - ONNX (0x30-0x3F): model load, session, inference, model add/remove
 //! - Device (0x40-0x4F): enumerate, open, ioctl, DMA
-//! - System (0x50-0x5F): info, time, shutdown, random, watchdog
+//! - System (0x50-0x5F): info, time, shutdown, random, watchdog, boot_success
 //! - Capability (0x60-0x6F): create, revoke, delegate, check, list
 //! - POSIX (0x70-0x8F): open/close/read/write, mmap, epoll, socket, time
+//! - Auth (0x90-0x9F): login, logout, change-password, create-user, whoami, totp_setup
 //!
 //! In unikernel mode these are direct function calls (no ring transition).
 //! In VM mode they use `syscall`/`svc` instructions dispatched through
@@ -26,8 +27,10 @@ pub mod posix;
 pub mod system;
 pub mod task;
 
-/// Maximum syscall number (exclusive). Covers 0x00..0x90.
-pub const SYSCALL_TABLE_SIZE: usize = 0x90;
+/// Maximum syscall number (exclusive). Covers 0x00..0xA0 — extended
+/// from 0x90 to 0xA0 by `wave0-scaffolding-stubs` to make room for
+/// the Auth category (0x90-0x9F) reserved for `management-login-v1`.
+pub const SYSCALL_TABLE_SIZE: usize = 0xA0;
 
 /// Syscall numbers — Memory category (0x00-0x0F).
 pub mod nr {
@@ -67,6 +70,13 @@ pub mod nr {
     pub const ONNX_RUN: usize = 0x33;
     pub const ONNX_GET_METADATA: usize = 0x34;
     pub const ONNX_LIST_PROVIDERS: usize = 0x35;
+    /// Reserved by `embedded-overlay-v1` — operator-added model upload to
+    /// the writable upper layer. Implemented by the overlay agent in its
+    /// Phase 3.
+    pub const ONNX_MODEL_ADD: usize = 0x36;
+    /// Reserved by `embedded-overlay-v1` — root-only model removal /
+    /// whiteout / unhide. Implemented by the overlay agent in its Phase 3.
+    pub const ONNX_MODEL_REMOVE: usize = 0x37;
 
     // Device syscalls (0x40-0x4F)
     pub const DEV_ENUMERATE: usize = 0x40;
@@ -83,6 +93,10 @@ pub mod nr {
     pub const SYS_RANDOM: usize = 0x54;
     pub const SYS_WATCHDOG_PET: usize = 0x55;
     pub const SYS_WATCHDOG_REMAINING: usize = 0x56;
+    /// Reserved by `embedded-filesystem-v1` — Root-only commit of an A/B
+    /// boot slot after self-tests + first successful auth pass.
+    /// Idempotent. Implemented by the filesystem agent in its Phase 10.
+    pub const SYS_BOOT_SUCCESS: usize = 0x57;
 
     // Capability syscalls (0x60-0x6F)
     pub const CAP_CREATE: usize = 0x60;
@@ -110,6 +124,24 @@ pub mod nr {
     pub const POSIX_NANOSLEEP: usize = 0x7F;
     pub const POSIX_GETRANDOM: usize = 0x80;
     pub const POSIX_SOCKET: usize = 0x81;
+
+    // Auth syscalls (0x90-0x9F) — reserved by `management-login-v1`.
+    // Implemented by the auth agent in its Phase 3. ABI documented in
+    // `openspec/changes/management-login-v1/specs/kernel-syscalls/spec.md`.
+    /// `auth_login(user_ptr, user_len, pass_ptr, pass_len, factor2_ptr, factor2_len) -> session_id | -errno`
+    pub const AUTH_LOGIN: usize = 0x90;
+    /// `auth_logout() -> 0 | -errno`
+    pub const AUTH_LOGOUT: usize = 0x91;
+    /// `auth_change_password(old_ptr, old_len, new_ptr, new_len, target_user_ptr, target_user_len) -> 0 | -errno`
+    pub const AUTH_CHANGE_PASSWORD: usize = 0x92;
+    /// `auth_create_user(user_ptr, user_len, role: u8, initial_pass_ptr, initial_pass_len) -> 0 | -errno`
+    pub const AUTH_CREATE_USER: usize = 0x93;
+    /// `auth_whoami(out_ptr) -> 0 | -errno`
+    pub const AUTH_WHOAMI: usize = 0x94;
+    /// `auth_totp_setup(user_ptr, user_len, secret_out_ptr) -> 0 | -errno`
+    /// (RFC 6238 secret enrolment; opt-in per `management-login-v1` Q21.)
+    pub const AUTH_TOTP_SETUP: usize = 0x95;
+    // 0x96-0x9F reserved for future auth-related syscalls.
 }
 
 /// Syscall error codes.
