@@ -77,13 +77,13 @@ pub mod f2fs {}
 ///
 /// Filled by `embedded-filesystem-v1` Phase 4.
 #[cfg(feature = "fs-on-disk-mounts")]
-pub mod boot_config {}
+pub mod boot_config;
 
 /// bsdiff delta-update applier with ML-DSA-65 signed pre/post checks.
 ///
 /// Filled by `embedded-filesystem-v1` Phase 4.
 #[cfg(feature = "fs-on-disk-mounts")]
-pub mod delta {}
+pub mod delta;
 
 /// Per-mount LRU block cache (16 MiB models, 4 MiB data) +
 /// 256 KiB write-coalescing buffer.
