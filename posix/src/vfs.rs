@@ -142,6 +142,35 @@ impl VfsNode {
     }
 }
 
+// ─── Auth-protected path guard ───────────────────────────────────────────────
+
+/// Path prefix under which the auth subsystem stores its shadow file
+/// and any future credential blobs. The `/data/` mount itself does not
+/// yet exist in the VFS (it lands with `embedded-filesystem-v1` Phase
+/// 6), but [`is_auth_protected_path`] is wired into the lookup *now*
+/// so userspace cannot reach the shadow file the moment the mount is
+/// added.
+///
+/// Spec: `management-login-v1` Phase 3 ("VFS auth-path guard").
+pub const AUTH_PROTECTED_PREFIX: &str = "/data/auth/";
+
+/// Returns `true` iff `path` resolves anywhere under
+/// [`AUTH_PROTECTED_PREFIX`]. Trailing slashes and the directory
+/// itself (`/data/auth`) are also rejected.
+///
+/// Path normalization is intentionally simple — paths must begin with
+/// `/data/auth` followed by either end-of-string or another `/`. This
+/// prevents trivial bypass attempts like `/data/auth.bak/...` from
+/// matching.
+pub fn is_auth_protected_path(path: &str) -> bool {
+    // Match the directory itself (with or without trailing slash).
+    if path == "/data/auth" || path == "/data/auth/" {
+        return true;
+    }
+    // Match any path beneath the directory.
+    path.starts_with(AUTH_PROTECTED_PREFIX)
+}
+
 // ─── VFS Tree ────────────────────────────────────────────────────────────────
 
 /// The virtual filesystem tree.
@@ -189,9 +218,22 @@ impl VfsTree {
     ///
     /// Path must start with `/`. Components are separated by `/`.
     /// Trailing slashes are tolerated.
+    ///
+    /// # Auth defense
+    ///
+    /// Per `management-login-v1` Phase 3, paths under `/data/auth/`
+    /// are denied with `EACCES` regardless of the lookup mode. This
+    /// fires *before* the actual VFS walk so the guard is preserved
+    /// once the `/data/` mount lands in `embedded-filesystem-v1`
+    /// Phase 6: the shadow file is reachable only via the kernel's
+    /// auth syscalls, never through the userspace VFS surface.
     pub fn lookup(&self, path: &str) -> Result<&VfsNode, Errno> {
         if !path.starts_with('/') {
             return Err(Errno::EINVAL);
+        }
+
+        if is_auth_protected_path(path) {
+            return Err(Errno::EACCES);
         }
 
         // Root lookup
@@ -1056,5 +1098,45 @@ mod tests {
         let n_direct = direct.lookup("/dev/null").unwrap();
         assert_eq!(n_via_table.inode, n_direct.inode);
         assert_eq!(n_via_table.kind, n_direct.kind);
+    }
+
+    // ─── Auth-protected path guard tests ────────────────────────────────
+
+    #[test]
+    fn lookup_under_data_auth_returns_eacces() {
+        // Spec: `management-login-v1` Phase 3, "VFS auth-path guard".
+        let vfs = build_default_vfs();
+        assert_eq!(vfs.lookup("/data/auth/shadow"), Err(Errno::EACCES));
+        assert_eq!(vfs.lookup("/data/auth/shadow.tmp"), Err(Errno::EACCES));
+        assert_eq!(vfs.lookup("/data/auth"), Err(Errno::EACCES));
+        assert_eq!(vfs.lookup("/data/auth/"), Err(Errno::EACCES));
+        assert_eq!(vfs.lookup("/data/auth/policy.toml"), Err(Errno::EACCES));
+    }
+
+    #[test]
+    fn lookup_sibling_data_paths_unaffected() {
+        // The guard must not over-match — `/data/audit` (without the
+        // trailing `/`) and `/data/auth.bak` are NOT under
+        // `/data/auth/`. They should fall through to ENOENT (the
+        // mount doesn't exist yet) rather than EACCES.
+        let vfs = build_default_vfs();
+        assert_eq!(vfs.lookup("/data/audit"), Err(Errno::ENOENT));
+        assert_eq!(vfs.lookup("/data/auth.bak"), Err(Errno::ENOENT));
+        assert_eq!(vfs.lookup("/data/authx"), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn is_auth_protected_path_recognizes_canonical_forms() {
+        assert!(is_auth_protected_path("/data/auth"));
+        assert!(is_auth_protected_path("/data/auth/"));
+        assert!(is_auth_protected_path("/data/auth/shadow"));
+        assert!(is_auth_protected_path("/data/auth/shadow.tmp"));
+        assert!(is_auth_protected_path("/data/auth/sub/dir"));
+
+        assert!(!is_auth_protected_path("/data/auth.bak"));
+        assert!(!is_auth_protected_path("/data/auths"));
+        assert!(!is_auth_protected_path("/data/audit"));
+        assert!(!is_auth_protected_path("/dev/null"));
+        assert!(!is_auth_protected_path("/"));
     }
 }
