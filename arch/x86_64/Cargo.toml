@@ -17,6 +17,10 @@ path = "src/main.rs"
 
 [features]
 default = []
+# virtio-blk MMIO driver — `BlockDevice` impl over the modern (1.0+)
+# virtio-blk transport. Built on by `embedded-filesystem-v1` Phase 1.
+fs-block-virtio = ["dep:smallaios-fs", "smallaios-fs/fs-on-disk-mounts", "smallaios-fs/fs-block-virtio"]
 
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
+smallaios-fs = { path = "../../fs", optional = true }

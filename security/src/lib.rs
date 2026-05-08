@@ -22,6 +22,7 @@
 
 extern crate alloc;
 
+pub mod argon2id;
 pub mod audit;
 pub mod boundary;
 pub mod capability;

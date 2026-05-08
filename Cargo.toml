@@ -22,6 +22,9 @@ members = [
     "sdr",
     "bench",
     "sched-types",
+    "auth",
+    "mgmt",
+    "fs",
     "tools/coverage-probe",
 ]
 

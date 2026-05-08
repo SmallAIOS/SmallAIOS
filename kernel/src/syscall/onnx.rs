@@ -147,6 +147,25 @@ pub fn sys_onnx_list_providers(args: &SyscallArgs) -> SyscallResult {
     SyscallError::NotSupported.as_i64()
 }
 
+/// `onnx_model_add(name_ptr, name_len, blob_ptr, blob_len, sig_ptr, sig_len)` -> 0 | -errno
+///
+/// Wave-0 stub. The real handler ships in `embedded-overlay-v1` Phase 3
+/// (operator-uploads, writes to the F2FS overlay upper layer). Until
+/// then this returns `-ENOSYS`. Routed here so the dispatch table has a
+/// stable entry point at 0x36; the overlay agent will swap in the real
+/// handler without touching the dispatcher.
+pub fn sys_onnx_model_add(_args: &SyscallArgs) -> SyscallResult {
+    -38 // -ENOSYS
+}
+
+/// `onnx_model_remove(name_ptr, name_len)` -> 0 | -errno
+///
+/// Wave-0 stub. Root-only model removal; the overlay agent's Phase 3
+/// fills the body. Returns `-ENOSYS` until then.
+pub fn sys_onnx_model_remove(_args: &SyscallArgs) -> SyscallResult {
+    -38 // -ENOSYS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
