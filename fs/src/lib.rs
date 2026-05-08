@@ -98,7 +98,7 @@ pub mod cache {}
 ///
 /// Filled by `embedded-overlay-v1` Phases 1 → 6.
 #[cfg(feature = "fs-overlay-mounts")]
-pub mod overlay {}
+pub mod overlay;
 
 /// Raw-flash filesystem (littlefs v2.x) for MCU/FPGA targets.
 /// Includes `FlashDevice` trait, per-bus drivers (QSPI NOR, ONFI NAND),
