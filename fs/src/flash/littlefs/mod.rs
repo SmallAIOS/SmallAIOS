@@ -73,6 +73,7 @@ pub(super) enum FlashAllocError {
     /// No free blocks remain in the allocator's pool.
     NoFreeBlocks,
 }
+use commit::{build_metadata_half, CommitEntry};
 use format::{
     crc32c_update, read_u32_be, read_u32_le, LFS2_MAJOR_VERSION, LFS2_SUPERBLOCK_MAGIC,
     MAX_TAGS_PER_HALF, NAME_MAX, TAG_NAME_DIR, TAG_NAME_REG, TAG_NAME_SUPERBLOCK, TAG_STRUCT_CTZ,
@@ -439,9 +440,143 @@ pub struct LittleFs<'a, D: FlashDevice> {
     root: [u32; 2],
     /// Mutable mount state; populated on the first write-path call.
     mutable: Option<MutableState>,
+    /// Most recent `fadvise` hint applied to this mount. v1 honors the
+    /// hint advisorily — it does not yet steer block-cache or
+    /// write-batching decisions. The tests verify the hint round-trips
+    /// cleanly (SEQUENTIAL/RANDOM/etc.) so a future cache layer can pick
+    /// it up without an API break.
+    fadvise: FadviseHint,
+}
+
+/// POSIX `fadvise`-style hint accepted on `/flash/`-backed file
+/// descriptors.
+///
+/// Per `posix-vfs` spec, SmallAIOS routes the relevant subset of
+/// `posix_fadvise` constants to the underlying littlefs cache layer:
+///
+/// * `Sequential` — caller will read in offset order. v1 is a no-op
+///   placeholder; future versions can enable read-ahead and coalesce
+///   appends into a single metadata-pair commit.
+/// * `Random` — caller will read at random offsets. Disables any
+///   read-ahead. v1 is a no-op (the reader has no prefetch yet).
+/// * `WillNeed` — caller intends to access the data soon. Accepted as
+///   a no-op (POSIX semantics: a hint, not a command).
+/// * `DontNeed` — caller is finished with the data. Accepted as a
+///   no-op.
+/// * `BatchWrite` — SmallAIOS-specific extension — write-batching
+///   directive used by the audit-log writer to coalesce short appends
+///   into one metadata-pair commit. v1 accepts and round-trips the
+///   hint; the actual coalescing logic lands when the audit-log
+///   integration test suite ships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FadviseHint {
+    /// No hint set (mount default).
+    #[default]
+    Normal,
+    /// Reads will be sequential.
+    Sequential,
+    /// Reads will be at random offsets.
+    Random,
+    /// Caller will need this data soon.
+    WillNeed,
+    /// Caller is done with this data.
+    DontNeed,
+    /// Coalesce short appends (SmallAIOS extension).
+    BatchWrite,
 }
 
 impl<'a, D: FlashDevice> LittleFs<'a, D> {
+    /// Test whether `device` already carries a valid littlefs v2 root
+    /// metadata-pair. Used by the boot sequencer to decide between
+    /// [`Self::mount`] and [`Self::format`].
+    ///
+    /// Returns `true` only if both halves of the root pair are readable
+    /// and at least one half passes the CRC commit check AND records the
+    /// `b"littlefs"` superblock magic. A device that has never been
+    /// formatted (raw `0xFF` after manufacturing erase) returns `false`.
+    pub fn is_formatted(device: &mut D, config: LittleFsConfig) -> bool {
+        let root = [0u32, 1u32];
+        let view = match read_metadata_pair(device, root, config.block_size) {
+            Ok(v) => v,
+            Err(_) => return false,
+        };
+        for t in &view.tags {
+            if t.is_name() && t.typ == TAG_NAME_SUPERBLOCK && t.id == 0 && t.data.len() >= 8 {
+                let mut m = [0u8; 8];
+                m.copy_from_slice(&t.data[0..8]);
+                if m == LFS2_SUPERBLOCK_MAGIC {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Format `device` as a fresh, empty littlefs v2 image.
+    ///
+    /// Writes a brand-new root metadata-pair at blocks 0 and 1 containing
+    /// only the superblock entry. The two halves are written with
+    /// successive revisions (0 in `blocks[0]`, 1 in `blocks[1]`) so the
+    /// commit-half-selection rule picks `blocks[1]` as the active half on
+    /// the subsequent mount; this matches the post-mkfs state the
+    /// upstream `mklittlefs` tool produces.
+    ///
+    /// **Power-fail safety.** If the host loses power partway through
+    /// `format`, the medium is left in a partially-formatted state that
+    /// SHALL not satisfy [`Self::is_formatted`] (or, in the rare case
+    /// only one half made it to flash, will satisfy it with a single
+    /// committed half). On the next boot, the kernel SHALL re-run
+    /// format-on-presence rather than try to mount the partial image.
+    ///
+    /// Caller MUST hold a `PhysicalPresenceProvider::asserted() == true`
+    /// signal (or equivalent operator gesture) before invoking this; the
+    /// VFS-mount sequencer handles the gating.
+    pub fn format(device: &mut D, config: LittleFsConfig) -> Result<(), LittleFsError> {
+        // Erase the two root-pair blocks.
+        device.erase(0).map_err(|_| LittleFsError::Io)?;
+        device.erase(1).map_err(|_| LittleFsError::Io)?;
+
+        // Build the superblock entry payload: u32 version (major.minor),
+        // u32 block_size, u32 block_count, u32 name_max, u32 file_max,
+        // u32 attr_max — matches the test-fixture layout and the v2 SPEC.
+        // Encoded as `(major << 16) | minor`; v2.0 → minor = 0.
+        let version: u32 = u32::from(LFS2_MAJOR_VERSION) << 16;
+        let mut sb_payload = Vec::with_capacity(24);
+        sb_payload.extend_from_slice(&version.to_le_bytes());
+        sb_payload.extend_from_slice(&config.block_size.to_le_bytes());
+        sb_payload.extend_from_slice(&config.block_count.to_le_bytes());
+        sb_payload.extend_from_slice(&255u32.to_le_bytes()); // name_max
+        sb_payload.extend_from_slice(&0x7FFF_FFFFu32.to_le_bytes()); // file_max
+        sb_payload.extend_from_slice(&1022u32.to_le_bytes()); // attr_max
+
+        let entry = CommitEntry {
+            typ_name: TAG_NAME_SUPERBLOCK,
+            id: 0,
+            name: b"littlefs".to_vec(),
+            typ_struct: TAG_STRUCT_INLINE,
+            struct_payload: sb_payload,
+        };
+        let entries = [entry];
+
+        // Program both halves. Use a pad-up to prog_size on each side.
+        let block_size = config.block_size as usize;
+        let prog_size = config.prog_size.max(1) as usize;
+        for (block, revision) in [(0u32, 0u32), (1u32, 1u32)] {
+            let mut bytes = build_metadata_half(revision, &entries, None)
+                .map_err(|_| LittleFsError::Unsupported)?;
+            if bytes.len() > block_size {
+                return Err(LittleFsError::Unsupported);
+            }
+            // Pad up to a prog_size multiple with `0xFF` (erased state),
+            // matching what `commit_pair` does on subsequent writes.
+            let pad_to = bytes.len().div_ceil(prog_size) * prog_size;
+            bytes.resize(pad_to, 0xFF);
+            let off = u64::from(block) * (block_size as u64);
+            device.program(off, &bytes).map_err(|_| LittleFsError::Io)?;
+        }
+        Ok(())
+    }
+
     /// Mount the filesystem image stored on `device`.
     pub fn mount(device: &'a mut D, config: LittleFsConfig) -> Result<Self, LittleFsError> {
         // Per SPEC.md the root metadata-pair lives at blocks 0 and 1.
@@ -482,7 +617,25 @@ impl<'a, D: FlashDevice> LittleFs<'a, D> {
             config,
             root,
             mutable: None,
+            fadvise: FadviseHint::default(),
         })
+    }
+
+    /// Apply a `fadvise` hint to this mount. v1 records the hint for
+    /// inspection by the tests and any future cache layer; no behavioral
+    /// change is observable today (POSIX permits a hint to be silently
+    /// ignored).
+    ///
+    /// Phase 3 wires the API end-to-end so a `posix_fadvise` syscall on
+    /// a `/flash/`-backed file descriptor round-trips cleanly through
+    /// the VFS into the littlefs runtime.
+    pub fn fadvise(&mut self, hint: FadviseHint) {
+        self.fadvise = hint;
+    }
+
+    /// Currently active `fadvise` hint (test introspection).
+    pub fn fadvise_hint(&self) -> FadviseHint {
+        self.fadvise
     }
 
     /// Parsed superblock (informational).
