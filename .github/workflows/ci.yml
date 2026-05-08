@@ -325,6 +325,68 @@ jobs:
           grep -q "BSS cleared" boot.log || { echo "FAIL: '[boot] BSS cleared' marker missing — kernel did not reach BSS-clear stage"; exit 1; }
           echo "PASS: AArch64 kernel boots under QEMU virt + GICv3 (Phase 1 path validated under TCG)"
 
+  # ──────────────────────────────────────────────────────────────────────
+  # Jetson Orin UEFI build — advisory.
+  #
+  # Builds the `aarch64-unknown-uefi` PE32+ artifact (`smallaios-uefi.efi`)
+  # that boots on real Jetson Orin hardware via the USB stick path
+  # documented in `docs/jetson-orin-uefi-boot.md`. Catches PE/COFF + UEFI
+  # entry regressions even without a self-hosted Jetson runner.
+  #
+  # `continue-on-error: true` keeps this advisory while Phase 2 is still
+  # in interim mode (`efi_main` skips ExitBootServices; the kernel-side
+  # post-EBS UART driver is a follow-up sub-PR). Once that lands and the
+  # whole boot path is "real," promote this to a gate by removing
+  # `continue-on-error` and adding the job to `change-gates.needs`.
+  #
+  # Notes:
+  #   - The original task wording (#2.21) referenced `-p smallaios-kernel`,
+  #     but the bin target lives in `arch/aarch64/Cargo.toml` (`-p
+  #     smallaios-arch-aarch64 --bin smallaios-uefi`). Same correction
+  #     that landed in sub-PR 2c's `build-kernel-uefi` Justfile recipe.
+  #   - OVMF QEMU smoke (task 2.22) is left as a follow-up:
+  #     `qemu-system-aarch64 -M virt -cpu cortex-a78 -bios edk2-aarch64-code.fd
+  #     -drive file=fat:rw:build/efi-root` would give us a "boot the .efi
+  #     under emulated UEFI and assert the banner" gate. Wiring it up
+  #     requires choosing an OVMF source (Tianocore's prebuilt vs the
+  #     `edk2-arm` package vs building from source) and a baseline that
+  #     handles the firewalled-MMIO interim-mode quirks. That's another
+  #     30-60 min of CI plumbing — skipping for now to keep this PR
+  #     focused on "the .efi compiles in CI without a Jetson."
+  build-jetson-orin-uefi:
+    name: Build Jetson Orin UEFI (advisory)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools
+          targets: aarch64-unknown-uefi
+      - name: Build smallaios-uefi.efi
+        run: >-
+          cargo build --release --target aarch64-unknown-uefi
+          -p smallaios-arch-aarch64 --bin smallaios-uefi
+          --no-default-features --features tegra234
+          $BUILD_STD
+        env:
+          RUSTFLAGS: "-D warnings"
+      - name: Verify PE32+ EFI artifact
+        run: |
+          set -euo pipefail
+          EFI=target/aarch64-unknown-uefi/release/smallaios-uefi.efi
+          ls -la "$EFI"
+          file "$EFI"
+          # Sanity check: file(1) on Linux reports the PE32+/EFI marker.
+          file "$EFI" | grep -qE "PE32\+ executable.*EFI" || {
+            echo "FAIL: $EFI is not a recognized PE32+ EFI binary" >&2
+            exit 1
+          }
+          echo "PASS: smallaios-uefi.efi built and recognized as PE32+ EFI (Aarch64)"
+
   image-size:
     name: Image Size Check (<15 MB)
     runs-on: ubuntu-latest

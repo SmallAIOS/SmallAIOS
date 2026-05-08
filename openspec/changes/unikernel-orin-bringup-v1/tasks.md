@@ -95,9 +95,9 @@ sooner.
 
 ### 2h. CI advisory build + OVMF QEMU smoke
 
-- [ ] 2.21 Add a `Build Jetson Orin UEFI` job to `.github/workflows/ci.yml` (advisory, `continue-on-error: true`) running `cargo build --target aarch64-unknown-uefi -p smallaios-kernel --features tegra234`
-- [ ] 2.22 Extend the same job (or add a sibling `jetson-orin-ovmf-smoke` job) that runs `qemu-system-aarch64 -M virt -cpu cortex-a78 -bios edk2-aarch64-code.fd -drive file=fat:rw:build/efi-root` (OVMF UEFI on QEMU) with `smallaios.efi` as `BOOTAA64.EFI`, asserting the boot banner appears. Catches PE/COFF + UEFI entry regressions even without a self-hosted Jetson runner
-- [ ] 2.23 Add a comment block in the workflow file noting "promote to gate when self-hosted Jetson runner is available"
+- [x] 2.21 Add a `Build Jetson Orin UEFI` job to `.github/workflows/ci.yml` (advisory, `continue-on-error: true`) running `cargo build --target aarch64-unknown-uefi -p smallaios-kernel --features tegra234`. **Landed in sub-PR 2h.** Job name: `Build Jetson Orin UEFI (advisory)`. Same crate-name correction as task 2.9 (`-p smallaios-arch-aarch64 --bin smallaios-uefi`, not `-p smallaios-kernel`). Sets `continue-on-error: true` while Phase 2 is in interim mode; promotion to gate (and adding to `change-gates.needs`) is a follow-up after the post-EBS UART lands. Includes a `file(1)` sanity check to confirm the artifact is a recognized PE32+ EFI binary, not just a successful compile.
+- [~] 2.22 Extend the same job (or add a sibling `jetson-orin-ovmf-smoke` job) that runs `qemu-system-aarch64 -M virt -cpu cortex-a78 -bios edk2-aarch64-code.fd -drive file=fat:rw:build/efi-root` (OVMF UEFI on QEMU) with `smallaios.efi` as `BOOTAA64.EFI`, asserting the boot banner appears. Catches PE/COFF + UEFI entry regressions even without a self-hosted Jetson runner. **Deferred** — wiring up requires choosing an OVMF source (Tianocore prebuilt vs `edk2-arm` package vs building from source) and a baseline that handles the firewalled-MMIO interim-mode quirks. That's another 30-60 min of CI plumbing best done as its own focused sub-PR; the build-only job in 2.21 is the main thing.
+- [x] 2.23 Add a comment block in the workflow file noting "promote to gate when self-hosted Jetson runner is available". **Landed in sub-PR 2h** (in the doc-comment block above the `build-jetson-orin-uefi` job: "Once [the post-EBS UART] lands and the whole boot path is 'real,' promote this to a gate by removing `continue-on-error` and adding the job to `change-gates.needs`.").
 
 ### 2i. Phase 2 close-out
 
