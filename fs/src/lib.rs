@@ -68,9 +68,10 @@ pub mod squashfs;
 /// superblock, checkpoint, NAT, SIT, SSA, inode, dir, data, fsync,
 /// garbage collection.
 ///
-/// Filled by `embedded-filesystem-v1` Phases 5 → 8.
+/// Phase 5 (read path) lands in this module; Phases 7-9 (write path,
+/// fsync, GC) extend it without rearranging the public API.
 #[cfg(feature = "fs-on-disk-mounts")]
-pub mod f2fs {}
+pub mod f2fs;
 
 /// A/B boot pointer (8 MiB partition, double-buffered records,
 /// monotonic generation counter, UEFI variable mirror).
