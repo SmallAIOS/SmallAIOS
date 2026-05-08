@@ -22,8 +22,10 @@ default = []
 # Owned by `embedded-filesystem-v1`.
 #
 # `fs-on-disk-mounts`: master switch that turns on /models/ + /data/
-# mounts at boot. Off until `embedded-filesystem-v1` Checkpoint C lands.
-fs-on-disk-mounts = []
+# mounts at boot. Pulls in the zstd squashfs decompressor by default
+# (the algorithm SmallAIOS image-build pipelines emit). Off until
+# `embedded-filesystem-v1` Checkpoint C lands.
+fs-on-disk-mounts = ["fs-squashfs-zstd"]
 # `fs-block-virtio`: virtio-blk driver (QEMU CI smoke).
 fs-block-virtio = []
 # `fs-block-nvme`: NVMe driver (x86-64 servers, USB-NVMe carriers).
@@ -32,11 +34,19 @@ fs-block-nvme = []
 fs-block-ahci = []
 # `fs-block-sdhci`: SD/MMC/eMMC driver (Jetson Orin Tegra234 BSP).
 fs-block-sdhci = []
-# Compression algorithms supported on the squashfs read path.
+# Compression algorithms supported on the squashfs read path. Each is
+# additive — `fs-on-disk-mounts` enables zstd by default; pull in
+# additional ones explicitly only on targets that mount third-party
+# squashfs images.
 fs-squashfs-zstd = []
 fs-squashfs-xz = []
 fs-squashfs-gzip = []
 fs-squashfs-lz4 = []
+# `fs-test-helpers`: opt-in audit-event recording shim used by the
+# squashfs conformance tests (and any host-side caller that wants
+# to assert audit-stub firing). Pulls in `std` for `thread_local!`,
+# so it must NOT be enabled on bare-metal targets.
+fs-test-helpers = []
 
 # ─── Overlay features ────────────────────────────────────────────────────────
 # Owned by `embedded-overlay-v1`.
