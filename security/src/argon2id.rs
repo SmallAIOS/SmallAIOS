@@ -838,7 +838,7 @@ fn parse_u32(s: &str) -> Option<u32> {
     if s.is_empty() {
         return None;
     }
-    let mut n: u32 = 0;
+    let mut n: u32 = 0; // lgtm[rust/hard-coded-cryptographic-value] integer accumulator, not a secret
     for c in s.chars() {
         let d = c.to_digit(10)?;
         n = n.checked_mul(10)?.checked_add(d)?;
@@ -891,13 +891,17 @@ fn push_b64(out: &mut String, input: &[u8]) {
 }
 
 fn b64_decode(s: &str) -> Result<Vec<u8>, Error> {
+    // The constants 26, 52, 62, 63 are the offsets of the four character
+    // ranges (A-Z, a-z, 0-9, +, /) in the standard base64 alphabet from
+    // RFC 4648 Table 1. CodeQL's `rust/hard-coded-cryptographic-value` rule
+    // misclassifies these as cryptographic secrets; they are not.
     fn val(c: u8) -> Result<u8, Error> {
         match c {
-            b'A'..=b'Z' => Ok(c - b'A'),
-            b'a'..=b'z' => Ok(c - b'a' + 26),
-            b'0'..=b'9' => Ok(c - b'0' + 52),
-            b'+' => Ok(62),
-            b'/' => Ok(63),
+            b'A'..=b'Z' => Ok(c - b'A'), // lgtm[rust/hard-coded-cryptographic-value] RFC 4648 base64 alphabet, not a secret
+            b'a'..=b'z' => Ok(c - b'a' + 26), // lgtm[rust/hard-coded-cryptographic-value] RFC 4648 base64 alphabet, not a secret
+            b'0'..=b'9' => Ok(c - b'0' + 52), // lgtm[rust/hard-coded-cryptographic-value] RFC 4648 base64 alphabet, not a secret
+            b'+' => Ok(62), // lgtm[rust/hard-coded-cryptographic-value] RFC 4648 base64 alphabet, not a secret
+            b'/' => Ok(63), // lgtm[rust/hard-coded-cryptographic-value] RFC 4648 base64 alphabet, not a secret
             _ => Err(Error::Base64Decode),
         }
     }
@@ -953,10 +957,11 @@ mod tests {
     ///   d0 1e f0 45 2d 75 b6 5e  b5 25 20 e9 6b 01 e6 59
     #[test]
     fn rfc9106_section5_3_argon2id_kat() {
-        let password = [0x01u8; 32];
-        let salt = [0x02u8; 16];
-        let secret = [0x03u8; 8];
-        let ad = [0x04u8; 12];
+        // RFC 9106 §5.3 reference vector — deterministic test fixtures, not production secrets.
+        let password = [0x01u8; 32]; // lgtm[rust/hard-coded-cryptographic-value] RFC 9106 §5.3 test vector
+        let salt = [0x02u8; 16]; // lgtm[rust/hard-coded-cryptographic-value] RFC 9106 §5.3 test vector
+        let secret = [0x03u8; 8]; // lgtm[rust/hard-coded-cryptographic-value] RFC 9106 §5.3 test vector
+        let ad = [0x04u8; 12]; // lgtm[rust/hard-coded-cryptographic-value] RFC 9106 §5.3 test vector
         let params = Argon2idParams {
             m_cost_kib: 32,
             t_cost: 3,
@@ -974,8 +979,9 @@ mod tests {
     /// PHC round-trip: hash a password, format, parse, verify.
     #[test]
     fn phc_round_trip() {
-        let password = b"correct horse battery staple";
-        let salt = b"saltsalt12345678";
+        // Test-only fixtures, not production secrets.
+        let password = b"correct horse battery staple"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
+        let salt = b"saltsalt12345678"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
         // Use the absolute-minimum tier to keep tests fast.
         let params = Argon2idParams {
             m_cost_kib: 8,
@@ -992,7 +998,7 @@ mod tests {
         assert!(argon2id_verify(password, &phc).unwrap());
 
         // Different password fails.
-        assert!(!argon2id_verify(b"wrong password", &phc).unwrap());
+        assert!(!argon2id_verify(b"wrong password", &phc).unwrap()); // lgtm[rust/hard-coded-cryptographic-value] negative-case test fixture
     }
 
     /// Tier constructors return valid parameters.
@@ -1006,8 +1012,9 @@ mod tests {
     /// Salt < 8 bytes is rejected.
     #[test]
     fn short_salt_rejected() {
+        // Test-only Argon2id parameters, not a secret.
         let params = Argon2idParams {
-            m_cost_kib: 8,
+            m_cost_kib: 8, // lgtm[rust/hard-coded-cryptographic-value] test parameter
             t_cost: 1,
             p_cost: 1,
         };
@@ -1022,8 +1029,9 @@ mod tests {
         use argon2::{Algorithm, Argon2, Params, Version};
 
         for &(m, t, p) in &[(8u32, 1u32, 1u32), (16, 2, 1), (32, 3, 2)] {
-            let password = b"oracle-test-password";
-            let salt = b"oracle-test-saltX"; // 17 bytes ≥ 8
+            // Oracle-comparison test fixtures, not production secrets.
+            let password = b"oracle-test-password"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
+            let salt = b"oracle-test-saltX"; // 17 bytes ≥ 8 — lgtm[rust/hard-coded-cryptographic-value] test fixture
             let params = Argon2idParams {
                 m_cost_kib: m,
                 t_cost: t,
@@ -1048,8 +1056,9 @@ mod tests {
         use argon2::password_hash::{PasswordHash, PasswordVerifier};
         use argon2::Argon2;
 
-        let password = b"interop-test";
-        let salt = b"interop-saltAAAAAAAA";
+        // PHC interop test fixtures, not production secrets.
+        let password = b"interop-test"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
+        let salt = b"interop-saltAAAAAAAA"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
         let params = Argon2idParams {
             m_cost_kib: 16,
             t_cost: 2,
@@ -1069,8 +1078,9 @@ mod tests {
     /// must all complete without panicking and produce 32-byte tags.
     #[test]
     fn parameter_sweep() {
-        let password = b"sweep";
-        let salt = b"sweepsalt0000000";
+        // Parameter-sweep test fixtures, not production secrets.
+        let password = b"sweep"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
+        let salt = b"sweepsalt0000000"; // lgtm[rust/hard-coded-cryptographic-value] test fixture
         for &m in &[8u32, 16, 32] {
             for &t in &[1u32, 2] {
                 for &p in &[1u32, 2] {
