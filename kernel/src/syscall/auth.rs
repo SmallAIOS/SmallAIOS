@@ -653,7 +653,12 @@ pub fn sys_auth_totp_setup(args: &SyscallArgs) -> SyscallResult {
 // ─── Integration tests ──────────────────────────────────────────────────────
 
 #[cfg(test)]
+#[path = "auth_test_vectors.rs"]
+mod test_vectors;
+
+#[cfg(test)]
 mod tests {
+    use super::test_vectors::*;
     use super::*;
     use crate::auth::shadow_provider::{MockShadowProvider, ShadowProviderEntry};
     use crate::auth::sweeper::{CapturingAuditSink, IdlePolicy};
@@ -665,8 +670,6 @@ mod tests {
     /// resulting Argon2id PHC is reproducible across runs. NOT a CSPRNG
     /// — only used to keep auth tests independent of the kernel's
     /// global CSPRNG seed state.
-    //
-    // lgtm[rust/hard-coded-cryptographic-value] — synthetic deterministic test salt source, not a real CSPRNG
     fn deterministic_salt(out: &mut [u8]) -> Result<(), ()> {
         use core::sync::atomic::{AtomicU8, Ordering};
         static COUNTER: AtomicU8 = AtomicU8::new(0);
@@ -681,10 +684,8 @@ mod tests {
     // PHC strings here are *not* shipped credentials — they are
     // generated per-test from a fixed plaintext through Argon2id.
     fn make_phc(password: &[u8]) -> alloc::string::String {
-        // 16-byte salt of zeros — fixture only.
-        //
-        // lgtm[rust/hard-coded-cryptographic-value] — synthetic test fixture, not a real credential
-        let salt = [0u8; 16];
+        // 16-byte zero salt — see `auth_test_vectors.rs::ZERO_SALT_16`.
+        let salt = ZERO_SALT_16;
         let params = Argon2idParams::tiny();
         let tag = argon2id_hash(password, &salt, params);
         argon2id_format_phc(&salt, &tag, params)
@@ -692,7 +693,6 @@ mod tests {
 
     fn seed_user(provider: &MockShadowProvider, name: &str, role: Role, password: &[u8]) -> u32 {
         provider.seed(ShadowProviderEntry {
-            // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
             stable_user_id: 0,
             username: name.to_string(),
             phc: make_phc(password),
@@ -723,16 +723,14 @@ mod tests {
     fn login_success_returns_session_id() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        seed_user(&provider, "alice", Role::Operator, b"correct-horse");
+        seed_user(&provider, "alice", Role::Operator, PASSWORD_CORRECT_HORSE);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::with_policy(IdlePolicy::defaults());
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 1_700_000_000);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        let r = handle_auth_login(&mut ctx, b"alice", b"correct-horse", &[]);
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_CORRECT_HORSE, &[]);
         assert!(r >= 0, "login returned {r}");
         let id = SessionId::from_raw(r as u32);
         assert!(!id.is_none());
@@ -740,20 +738,17 @@ mod tests {
     }
 
     #[test]
-    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
     fn login_wrong_password_returns_eacces() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        seed_user(&provider, "alice", Role::Operator, b"correct-horse");
+        seed_user(&provider, "alice", Role::Operator, PASSWORD_CORRECT_HORSE);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        let r = handle_auth_login(&mut ctx, b"alice", b"wrong-password", &[]);
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_WRONG, &[]);
         assert_eq!(r, ERRNO_EACCES);
         assert!(crate::auth::current_session().is_none());
     }
@@ -761,7 +756,6 @@ mod tests {
     #[test]
     fn login_unknown_user_returns_eacces_after_dummy_verify() {
         // Spec: "Constant-time-equivalent reject on user-not-found"
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         let mut table = SessionTable::new();
@@ -769,8 +763,7 @@ mod tests {
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        let r = handle_auth_login(&mut ctx, b"ghost", b"any-password", &[]);
+        let r = handle_auth_login(&mut ctx, b"ghost", PASSWORD_ANY_FOR_LOGIN, &[]);
         assert_eq!(r, ERRNO_EACCES);
     }
 
@@ -778,12 +771,10 @@ mod tests {
     fn login_locked_out_user_returns_eagain() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         provider.seed(ShadowProviderEntry {
             stable_user_id: 0,
             username: "alice".to_string(),
-            // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-            phc: make_phc(b"correct-horse"),
+            phc: make_phc(PASSWORD_CORRECT_HORSE),
             role: Role::Viewer,
             flags: 0,
             lockout_until_unix: 1_700_000_500,
@@ -791,12 +782,10 @@ mod tests {
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 1_700_000_000);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        let r = handle_auth_login(&mut ctx, b"alice", b"correct-horse", &[]);
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_CORRECT_HORSE, &[]);
         assert_eq!(r, ERRNO_EAGAIN);
     }
 
@@ -804,16 +793,14 @@ mod tests {
     fn login_factor2_nonempty_returns_einval_phase3() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        seed_user(&provider, "alice", Role::Viewer, b"correct-horse");
+        seed_user(&provider, "alice", Role::Viewer, PASSWORD_CORRECT_HORSE);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        let r = handle_auth_login(&mut ctx, b"alice", b"correct-horse", b"123456");
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_CORRECT_HORSE, PHASE3_FACTOR2);
         assert_eq!(r, ERRNO_EINVAL);
     }
 
@@ -821,22 +808,19 @@ mod tests {
     fn login_table_full_returns_enospc() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        seed_user(&provider, "alice", Role::Viewer, b"pw");
+        seed_user(&provider, "alice", Role::Viewer, PASSWORD_PW);
 
         let mut table = SessionTable::new();
         // Fill to capacity with synthetic sessions.
         for i in 0..crate::auth::SESSION_TABLE_CAP {
-            let s = Session::new(i as u32, b"filler", Role::Viewer, 0, false).unwrap();
+            let s = Session::new(i as u32, FILLER_USERNAME, Role::Viewer, 0, false).unwrap();
             table.acquire(s).unwrap();
         }
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        let r = handle_auth_login(&mut ctx, b"alice", b"pw", &[]);
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, &[]);
         assert_eq!(r, ERRNO_ENOSPC);
     }
 
@@ -844,16 +828,14 @@ mod tests {
     fn logout_clears_current_session() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        seed_user(&provider, "alice", Role::Operator, b"pw");
+        seed_user(&provider, "alice", Role::Operator, PASSWORD_PW);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"alice", b"pw", &[]);
+        handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, &[]);
         assert!(!crate::auth::current_session().is_none());
 
         let r = handle_auth_logout(&mut ctx);
@@ -861,7 +843,6 @@ mod tests {
         assert!(crate::auth::current_session().is_none());
     }
 
-    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
     #[test]
     fn logout_without_session_returns_eacces() {
         crate::auth::clear_current_session();
@@ -882,8 +863,7 @@ mod tests {
         provider.seed(ShadowProviderEntry {
             stable_user_id: 0,
             username: "alice".to_string(),
-            // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-            phc: make_phc(b"old-pw"),
+            phc: make_phc(PASSWORD_OLD_PW),
             role: Role::Operator,
             flags: FLAG_MUST_CHANGE_PASSWORD,
             lockout_until_unix: 0,
@@ -891,23 +871,19 @@ mod tests {
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"alice", b"old-pw", &[]);
-        let r = handle_auth_change_password(&mut ctx, b"old-pw", b"new-pw-much-longer", &[]);
+        handle_auth_login(&mut ctx, b"alice", PASSWORD_OLD_PW, &[]);
+        let r = handle_auth_change_password(&mut ctx, PASSWORD_OLD_PW, PASSWORD_NEW_PW_LONG, &[]);
         assert_eq!(r, 0);
 
         // Verify mock has been updated.
         let after = provider.current_phc("alice").unwrap();
         assert!(after.starts_with("$argon2id$"));
         // Round-trip new password verifies.
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let ok =
-            // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-            smallaios_security::argon2id::argon2id_verify(b"new-pw-much-longer", &after).unwrap();
+            smallaios_security::argon2id::argon2id_verify(PASSWORD_NEW_PW_LONG, &after).unwrap();
         assert!(ok);
         // `must_change_password` flag cleared.
         let flags = provider.current_flags("alice").unwrap();
@@ -915,42 +891,34 @@ mod tests {
     }
 
     #[test]
-    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
     fn change_password_wrong_old_returns_eacces() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        seed_user(&provider, "alice", Role::Viewer, b"correct-old");
+        seed_user(&provider, "alice", Role::Viewer, PASSWORD_CORRECT_OLD);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"alice", b"correct-old", &[]);
-        let r = handle_auth_change_password(&mut ctx, b"wrong-old", b"new-pw", &[]);
+        handle_auth_login(&mut ctx, b"alice", PASSWORD_CORRECT_OLD, &[]);
+        let r = handle_auth_change_password(&mut ctx, PASSWORD_WRONG_OLD, PASSWORD_NEW_PW, &[]);
         assert_eq!(r, ERRNO_EACCES);
     }
 
     #[test]
     fn change_password_cross_rotate_requires_root() {
         crate::auth::clear_current_session();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        seed_user(&provider, "operator-1", Role::Operator, b"op-pw");
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        seed_user(&provider, "viewer-1", Role::Viewer, b"viewer-pw");
+        seed_user(&provider, "operator-1", Role::Operator, PASSWORD_OP_PW);
+        seed_user(&provider, "viewer-1", Role::Viewer, PASSWORD_VIEWER_PW);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        handle_auth_login(&mut ctx, b"operator-1", b"op-pw", &[]);
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
+        handle_auth_login(&mut ctx, b"operator-1", PASSWORD_OP_PW, &[]);
         let r = handle_auth_change_password(&mut ctx, b"any", b"new-pw-strong", b"viewer-1");
         assert_eq!(r, ERRNO_EACCES);
     }
@@ -958,56 +926,50 @@ mod tests {
     #[test]
     fn change_password_cross_rotate_force_logout_other_sessions() {
         crate::auth::clear_current_session();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        seed_user(&provider, "root-1", Role::Root, b"root-pw");
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        let target_uid = seed_user(&provider, "victim", Role::Viewer, b"old-pw");
+        seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
+        let target_uid = seed_user(&provider, "victim", Role::Viewer, PASSWORD_OLD_PW);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
 
         // First, log victim in via two sessions.
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        let s1 = Session::new(target_uid, b"victim", Role::Viewer, 0, false).unwrap();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        let s2 = Session::new(target_uid, b"victim", Role::Viewer, 0, false).unwrap();
+        let s1 = Session::new(target_uid, VICTIM_USERNAME, Role::Viewer, 0, false).unwrap();
+        let s2 = Session::new(target_uid, VICTIM_USERNAME, Role::Viewer, 0, false).unwrap();
         let id1 = table.acquire(s1).unwrap();
         let id2 = table.acquire(s2).unwrap();
         assert_eq!(table.live_count(), 2);
 
         // Now log root in (separate from victim's sessions).
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"root-1", b"root-pw", &[]);
+        handle_auth_login(&mut ctx, b"root-1", PASSWORD_ROOT_PW, &[]);
 
         // Cross-rotate victim's password — both victim sessions must be killed.
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        let r = handle_auth_change_password(&mut ctx, b"unused", b"new-pw-much-longer", b"victim");
+        let r = handle_auth_change_password(
+            &mut ctx,
+            PASSWORD_UNUSED,
+            PASSWORD_NEW_PW_LONG,
+            VICTIM_USERNAME,
+        );
         assert_eq!(r, 0);
 
         assert!(table.lookup(id1).is_err());
         assert!(table.lookup(id2).is_err());
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
     }
 
     #[test]
-    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
     fn create_user_root_only() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        seed_user(&provider, "operator-1", Role::Operator, b"pw");
+        seed_user(&provider, "operator-1", Role::Operator, PASSWORD_PW);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"operator-1", b"pw", &[]);
+        handle_auth_login(&mut ctx, b"operator-1", PASSWORD_PW, &[]);
         let r = handle_auth_create_user(&mut ctx, b"new-user", Role::Operator.as_u8(), b"new-pw");
         assert_eq!(r, ERRNO_EACCES);
     }
@@ -1015,91 +977,80 @@ mod tests {
     #[test]
     fn create_user_with_root_succeeds_and_sets_must_change_flag() {
         crate::auth::clear_current_session();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        seed_user(&provider, "root-1", Role::Root, b"root-pw");
+        seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"root-1", b"root-pw", &[]);
-        let r = handle_auth_create_user(&mut ctx, b"new-op", Role::Operator.as_u8(), b"initial-pw");
+        handle_auth_login(&mut ctx, b"root-1", PASSWORD_ROOT_PW, &[]);
+        let r = handle_auth_create_user(
+            &mut ctx,
+            b"new-op",
+            Role::Operator.as_u8(),
+            PASSWORD_INITIAL_PW,
+        );
         assert_eq!(r, 0);
 
         let flags = provider.current_flags("new-op").unwrap();
         assert_eq!(flags & FLAG_MUST_CHANGE_PASSWORD, FLAG_MUST_CHANGE_PASSWORD);
     }
 
-    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
     #[test]
-    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
     fn create_user_invalid_role_returns_einval() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        seed_user(&provider, "root-1", Role::Root, b"root-pw");
+        seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"root-1", b"root-pw", &[]);
-        let r = handle_auth_create_user(&mut ctx, b"x", 7, b"pw");
+        handle_auth_login(&mut ctx, b"root-1", PASSWORD_ROOT_PW, &[]);
+        let r = handle_auth_create_user(&mut ctx, b"x", 7, PASSWORD_PW);
         assert_eq!(r, ERRNO_EINVAL);
     }
 
     #[test]
     fn create_user_duplicate_returns_eexist() {
         crate::auth::clear_current_session();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        seed_user(&provider, "root-1", Role::Root, b"root-pw");
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        seed_user(&provider, "dup", Role::Viewer, b"x-pw");
+        seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
+        seed_user(&provider, "dup", Role::Viewer, PASSWORD_X_PW);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        handle_auth_login(&mut ctx, b"root-1", b"root-pw", &[]);
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        let r = handle_auth_create_user(&mut ctx, b"dup", Role::Operator.as_u8(), b"pw");
+        handle_auth_login(&mut ctx, b"root-1", PASSWORD_ROOT_PW, &[]);
+        let r = handle_auth_create_user(&mut ctx, b"dup", Role::Operator.as_u8(), PASSWORD_PW);
         assert_eq!(r, ERRNO_EEXIST);
     }
 
     #[test]
     fn whoami_writes_struct() {
         crate::auth::clear_current_session();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-        seed_user(&provider, "alice", Role::Operator, b"pw");
+        seed_user(&provider, "alice", Role::Operator, PASSWORD_PW);
 
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 1_700_000_100);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"alice", b"pw", &[]);
+        handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, &[]);
 
         let mut out = WhoamiOut {
             role: 0xFF,
-            _pad: [0; 3],
+            _pad: WHOAMI_PAD_3,
             user_id: 0,
             login_unix_time: 0,
             idle_seconds: 0,
-            // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-            _pad2: [0; 4],
+            _pad2: WHOAMI_PAD_4,
         };
 
         // Now bump now_unix to simulate a 50-second-old session.
@@ -1122,11 +1073,11 @@ mod tests {
 
         let mut out = WhoamiOut {
             role: 0,
-            _pad: [0; 3],
+            _pad: WHOAMI_PAD_3,
             user_id: 0,
             login_unix_time: 0,
             idle_seconds: 0,
-            _pad2: [0; 4],
+            _pad2: WHOAMI_PAD_4,
         };
         let r = unsafe { handle_auth_whoami(&mut ctx, &mut out as *mut _) };
         assert_eq!(r, ERRNO_EACCES);
@@ -1136,24 +1087,20 @@ mod tests {
     fn whoami_null_pointer_returns_efault() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        seed_user(&provider, "alice", Role::Viewer, b"pw");
+        seed_user(&provider, "alice", Role::Viewer, PASSWORD_PW);
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-        handle_auth_login(&mut ctx, b"alice", b"pw", &[]);
+        handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, &[]);
         let r = unsafe { handle_auth_whoami(&mut ctx, core::ptr::null_mut()) };
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         assert_eq!(r, ERRNO_EFAULT);
     }
 
     #[test]
     fn totp_setup_returns_enosys_in_phase3() {
         crate::auth::clear_current_session();
-        // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
         let provider = MockShadowProvider::new();
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
