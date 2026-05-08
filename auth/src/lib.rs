@@ -52,6 +52,20 @@ pub mod atomic_write;
 /// Argon2id per-tier parameter selection from available RAM.
 pub mod tier;
 
+// ─── Phase 4 modules ─────────────────────────────────────────────────────────
+
+/// Console-login flow (TTY first-boot, login, lockout, idle sweep).
+pub mod console_login;
+
+/// Recovery boot-arg parser + physical-presence-gated path.
+pub mod recovery;
+
+/// `PhysicalPresenceProvider` trait + per-arch impls.
+pub mod presence;
+
+#[cfg(test)]
+mod console_login_test_vectors;
+
 // ─── Future-phase scaffolding (kept as empty stubs so downstream crates
 //      can name them once the bodies land) ────────────────────────────────────
 
@@ -66,13 +80,22 @@ pub mod session {}
 /// Filled by `management-login-v1` Phase 7.
 pub mod token {}
 
-/// Console-login flow (TTY first-boot, login, lockout, idle sweep).
-///
-/// Filled by `management-login-v1` Phase 4.
-pub mod console {}
-
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
+pub use console_login::{
+    decide_boot, first_boot_setup, run_login_round, run_logout, BootDecision, ConsoleSink,
+    ConsoleSource, FirstBootError, LineOptions, LockoutMap, LockoutSource, LoginOutcome,
+    LogoutOutcome, ReadError, FIRST_BOOT_MAX_ATTEMPTS, FIRST_BOOT_SALT_LEN, LOCKOUT_DURATION_SECS,
+    LOCKOUT_THRESHOLD, SHADOW_DIR, SHADOW_PATH,
+};
+pub use presence::{
+    PhysicalPresenceProvider, PhysicalPresenceRegistry, PresenceQemuFwCfg, PresenceRiscvGpio,
+    PresenceTrustedBootArg, PresenceX86Gpio,
+};
+pub use recovery::{
+    parse_recovery_boot_arg, run_recovery, RecoveryBootArg, RecoveryError, RecoveryOutcome, Rng,
+    RECOVERY_PASSWORD_LEN,
+};
 pub use role::{Role, RoleError};
 pub use shadow::{
     parse_file, parse_record, serialize_file, serialize_record, verify_file_permissions,

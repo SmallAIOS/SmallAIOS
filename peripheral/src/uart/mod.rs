@@ -13,11 +13,16 @@
 #![allow(dead_code)]
 
 pub mod axi_uart_lite;
+pub mod line_discipline;
 pub mod nmea;
 pub mod ns16550a;
 pub mod pl011;
 pub mod sifive;
 
+pub use line_discipline::{
+    read_line, ByteSink, ByteSource, LineDiscipline, LineError, MockSink, MockSource, ReadOptions,
+    KEY_BS, KEY_CR, KEY_CTRL_C, KEY_CTRL_D, KEY_CTRL_U, KEY_DEL, KEY_LF,
+};
 pub use smallaios_kernel::hal::{
     HalError, UartConfig, UartController, UartFlowControl, UartIrqSource, UartParity, UartRxMode,
     UartStopBits,
