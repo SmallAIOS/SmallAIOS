@@ -960,6 +960,7 @@ dependencies = [
 name = "smallaios-posix"
 version = "0.2.1"
 dependencies = [
+ "smallaios-fs",
  "smallaios-kernel",
  "smallaios-net",
 ]

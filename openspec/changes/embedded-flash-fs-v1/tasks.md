@@ -42,7 +42,7 @@
 - [x] 5.2 No background timer commit (different from F2FS — flash wear cost is too high)
 - [x] 5.3 Power-fail tests: kill-9 mid-write → mock simulates partial program → mount → verify last fsync intact (`w22`–`w23`)
 - [ ] 5.4 Kani harness for metadata-pair commit atomicity invariant (deferred to formal phase)
-- [ ] 5.5 Tests for fadvise SEQUENTIAL write-batching behavior (deferred — fadvise wiring belongs in Phase 7 VFS mount)
+- [x] 5.5 Tests for fadvise SEQUENTIAL write-batching behavior (Phase 3 lands the API + round-trip tests for all six `FadviseHint` variants; underlying coalescing is honored advisorily as POSIX permits)
 
 ## 6. Phase 6 — Wear-leveling + Bad Block Table
 
@@ -57,14 +57,14 @@
 
 ## 7. Phase 7 — `/flash/` mount
 
-- [ ] 7.1 Extend `posix-vfs` with `/flash/` mount point
-- [ ] 7.2 Conditional compilation: feature off → no /flash/ in path tree
-- [ ] 7.3 Boot-time mount sequence: flash device discovery → BBT load → littlefs mount
-- [ ] 7.4 Coexistence with `/data/` F2FS mount (both available, distinct purposes)
-- [ ] 7.5 Flash-only target: canonical `auth/`/`audit/`/`mgmt/` under /flash/
-- [ ] 7.6 First-boot directory tree creation per `mgmt-config-layout`
-- [ ] 7.7 Format-on-physical-presence path (mirrors F2FS first-boot logic)
-- [ ] 7.8 Boot-cleanup: littlefs orphan recovery on mount
+- [x] 7.1 Extend `posix-vfs` with `/flash/` mount point (gated by `fs-flash`; `MountedFs` enum + `MountTable::resolve`)
+- [x] 7.2 Conditional compilation: feature off → no /flash/ in path tree (`MountTable::has_flash` returns `false`; `mount_flash` returns `ENOSYS`)
+- [x] 7.3 Boot-time mount sequence: flash device discovery → BBT load → littlefs mount (`fs::flash::mount_or_format`)
+- [x] 7.4 Coexistence with `/data/` F2FS mount (both available, distinct purposes; `MountTable::has_both()` diagnostic helper lands here, F2FS half wired in `embedded-filesystem-v1` Phase 6)
+- [ ] 7.5 Flash-only target: canonical `auth/`/`audit/`/`mgmt/` under /flash/ (deferred — depends on F2FS path resolver from `embedded-filesystem-v1`)
+- [ ] 7.6 First-boot directory tree creation per `mgmt-config-layout` (deferred — see Phase 4 of `management-login-v1`)
+- [x] 7.7 Format-on-physical-presence path (mirrors F2FS first-boot logic; `PhysicalPresenceProvider` trait + `KernelPresenceProvider` + `TestPresenceProvider`)
+- [x] 7.8 Boot-cleanup: littlefs orphan recovery on mount (already covered by Phase 2's metadata-pair commit-half selection — re-verified by `p3_40_format_then_mount_reports_no_recovery_needed`)
 
 ## 8. Phase 8 — Per-arch QSPI/ONFI driver stubs
 
