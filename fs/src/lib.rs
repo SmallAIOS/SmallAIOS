@@ -55,7 +55,7 @@ pub mod block;
 ///
 /// Filled by `embedded-filesystem-v1` Phase 2.
 #[cfg(feature = "fs-on-disk-mounts")]
-pub mod gpt {}
+pub mod gpt;
 
 /// Squashfs 4.0 read-only reader with zstd/xz/gzip/lz4 decoders and
 /// the appended SmallAIOS manifest-footer verifier.
