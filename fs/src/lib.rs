@@ -62,7 +62,7 @@ pub mod gpt;
 ///
 /// Filled by `embedded-filesystem-v1` Phase 3.
 #[cfg(feature = "fs-on-disk-mounts")]
-pub mod squashfs {}
+pub mod squashfs;
 
 /// F2FS read+write implementation (Linux 6.6 LTS feature set):
 /// superblock, checkpoint, NAT, SIT, SSA, inode, dir, data, fsync,
