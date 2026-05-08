@@ -1231,8 +1231,8 @@ mod tests {
     #[test]
     fn lookup_user_finds_match() {
         let users = alloc::vec![
-            make_user("alice", b"a", AuthRole::Operator, 0),
-            make_user("bob", b"b", AuthRole::Viewer, 0),
+            make_user("alice", LOOKUP_USER_PW_A, AuthRole::Operator, 0),
+            make_user("bob", LOOKUP_USER_PW_B, AuthRole::Viewer, 0),
         ];
         let got = lookup_user(&users, b"bob").unwrap();
         assert_eq!(got.username, "bob");
@@ -1240,7 +1240,7 @@ mod tests {
 
     #[test]
     fn lookup_user_missing_returns_none() {
-        let users = alloc::vec![make_user("alice", b"a", AuthRole::Operator, 0)];
+        let users = alloc::vec![make_user("alice", LOOKUP_USER_PW_A, AuthRole::Operator, 0)];
         assert!(lookup_user(&users, b"charlie").is_none());
     }
 

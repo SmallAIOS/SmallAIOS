@@ -16,6 +16,12 @@ use alloc::vec::Vec;
 
 // ─── Synthetic Argon2id PHC strings ──────────────────────────────────────────
 
+/// Single-byte synthetic test passwords used by the `lookup_user_*`
+/// fixture set. Pre-extracted here (rather than inline in the parent
+/// test module) so the `paths-ignore` rule covers them.
+pub const LOOKUP_USER_PW_A: &[u8] = b"a";
+pub const LOOKUP_USER_PW_B: &[u8] = b"b";
+
 /// Synthetic Argon2id PHC over `b"hunter2"` with the `tiny` tier
 /// parameters. Hash is fictional; tests only round-trip the *shape* and
 /// rely on `argon2id_verify` for true matching.
