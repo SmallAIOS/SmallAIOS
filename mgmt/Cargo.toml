@@ -1,0 +1,27 @@
+[package]
+name = "smallaios-mgmt"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed configuration model, ConfigSurface trait, and audit ring for SmallAIOS"
+publish = false
+
+[dependencies]
+# Layer 1 — depends on auth (Layer 1, peer), security + kernel (Layer 0).
+# Reuses ipc-zenoh for the remote management surface.
+smallaios-auth = { path = "../auth" }
+smallaios-security = { path = "../security" }
+smallaios-kernel = { path = "../kernel" }
+
+[features]
+default = []
+# Build-time wiring per `management-login-v1` design:
+# - `bus-zenoh`: enable Zenoh-backed admin/telemetry surfaces.
+# - `bus-dds`: enable DDS-backed admin (placeholder).
+# - `formal-gate`: formal verification gates for CI.
+# - `signed-checkpoints`: ML-DSA-65 signed audit-log checkpoints.
+bus-zenoh = []
+bus-dds = []
+formal-gate = []
+signed-checkpoints = []

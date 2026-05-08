@@ -136,12 +136,12 @@
 
 ## 10. Phase 10 — Boot success syscall + interop CI matrix
 
-- [ ] 10.1 Add `boot_success` syscall (number 48) — Root only, idempotent
+- [ ] 10.1 Add `boot_success` syscall (`SYS_BOOT_SUCCESS = 0x57`, System category) — Root only, idempotent
 - [ ] 10.2 Watchdog arming + disarming wiring through `boot_success`
 - [ ] 10.3 Audit record `boot_success_committed` on commit
 - [ ] 10.4 End-to-end A/B update test: stage delta → reboot → boot_success → next boot
 - [ ] 10.5 End-to-end rollback test: stage delta → reboot → no boot_success → watchdog → previous slot
-- [ ] 10.6 Update `docs/architecture.md` syscall count to 52
+- [ ] 10.6 Update `docs/architecture.md` syscall table to include `SYS_BOOT_SUCCESS = 0x57`
 - [ ] 10.7 Interop CI: full matrix (Ubuntu LTS + Fedora current + macOS via FUSE) for both squashfs and F2FS
 - [ ] 10.8 Image-size regression check: F2FS write path stays within ≤ 200 KB compiled growth budget
 - [ ] 10.9 Boot footprint regression check: total binary ≤ 8.2 MB (vs prior 8.0 MB target)

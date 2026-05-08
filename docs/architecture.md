@@ -450,3 +450,73 @@ bench variants land alongside the dynamic-batching change.
 * Sessions running multiple concurrent inference threads are
   outside scope — the pool is not yet thread-safe across `run`
   calls (use one Session per worker thread until that lands).
+
+## Storage Layout & GPT Partition Type GUIDs
+
+The `embedded-filesystem-v1` change establishes the on-disk
+layout. SmallAIOS-specific partitions use registered type GUIDs so
+external tooling (`gdisk`, `parted`, `lsblk`) can identify them
+without colliding with any existing GUID in the public registry.
+
+### v1 Partition Layout
+
+| Idx | Type GUID                              | Size      | Purpose                                    |
+|----:|----------------------------------------|-----------|--------------------------------------------|
+|   1 | `C12A7328-F81F-11D2-BA4B-00A0C93EC93B` | 256 MiB   | UEFI ESP — bootloader + kernel image       |
+|   2 | `A3F7C2E0-FACE-4FFF-AAAA-000000000001` | ~4 GiB    | SmallAIOS squashfs `/models/` slot A       |
+|   3 | `A3F7C2E0-FACE-4FFF-AAAA-000000000002` | ~4 GiB    | SmallAIOS squashfs `/models/` slot B       |
+|   4 | `8DA63339-0007-60C0-C436-083AC8230908` | remainder | Linux F2FS `/data/`                        |
+|   5 | `A3F7C2E0-FACE-4FFF-BBBB-000000000000` | 8 MiB     | SmallAIOS A/B boot config (double-buffer)  |
+
+Partitions 2 and 3 are equal-size and swappable per the A/B update
+mechanism. The active slot is selected at boot via partition 5
+(see `embedded-filesystem-v1`'s `fs-ab-boot` capability) and a
+mirrored UEFI variable when available.
+
+### SmallAIOS-registered GUID prefix
+
+All SmallAIOS-specific partition type GUIDs share the prefix
+`A3F7C2E0-FACE-4FFF-`, with a discriminator nibble identifying the
+purpose:
+
+| Nibble pattern   | Purpose                                      | Owning change                |
+|------------------|----------------------------------------------|------------------------------|
+| `AAAA-000000000001` | squashfs `/models/` slot A                | `embedded-filesystem-v1`     |
+| `AAAA-000000000002` | squashfs `/models/` slot B                | `embedded-filesystem-v1`     |
+| `BBBB-000000000000` | A/B boot config double-buffer             | `embedded-filesystem-v1`     |
+| `CCCC-000000000001` | _reserved_ — overlay upper-layer partition (if ever split off `/data/`) | `embedded-overlay-v1` (deferred) |
+| `DDDD-000000000001` | _reserved_ — raw-flash littlefs partition | `embedded-flash-fs-v1`       |
+
+The `CCCC-...` and `DDDD-...` slots are pre-reserved here so the
+overlay and flash-fs implementation phases can use them without
+re-litigating the prefix scheme. v1 of overlay places its upper
+layer as a subdir under `/data/` rather than its own partition;
+the `CCCC` GUID is held in case a future v2 splits it out.
+
+### Writable filesystem alternatives
+
+| Target class                         | Writable FS         | Mount point  |
+|--------------------------------------|---------------------|--------------|
+| Block-device (eMMC, NVMe, SATA)      | F2FS (Linux 6.6)    | `/data/`     |
+| Raw-flash MCU/FPGA (NOR via QSPI, NAND via ONFI) | littlefs v2.x | `/flash/` |
+
+Targets MAY support both simultaneously (e.g., an embedded ARM
+SoC with eMMC for bulk plus QSPI NOR for secure config). When
+both are present, `/data/auth/shadow` lives on `/data/` (F2FS) and
+the small-config `/flash/` is a separate read-write surface.
+
+### Syscall numbering reservation
+
+The `wave0-scaffolding-stubs` change reserved syscall numbers
+ahead of implementation so the four management/filesystem changes
+can land their phase PRs without colliding on `kernel/src/syscall/mod.rs`:
+
+| Range          | Category | Owning change            | Status |
+|----------------|----------|--------------------------|--------|
+| 0x36–0x37      | ONNX     | `embedded-overlay-v1`    | reserved (model_add, model_remove) |
+| 0x57           | System   | `embedded-filesystem-v1` | reserved (boot_success) |
+| 0x90–0x95      | Auth (NEW) | `management-login-v1`  | reserved (login, logout, change_password, create_user, whoami, totp_setup) |
+| 0x96–0x9F      | Auth     | future                   | reserved for additional auth syscalls |
+
+`SYSCALL_TABLE_SIZE` was bumped from `0x90` to `0xA0` to cover the
+new Auth category.

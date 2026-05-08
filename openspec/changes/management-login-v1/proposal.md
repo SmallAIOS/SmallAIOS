@@ -243,15 +243,19 @@ automatic.
 
 ### Syscall surface (Layer 0)
 
-Five new syscalls (43–47, incrementing the current ~46):
+Six new syscalls in a NEW Auth category (`0x90`–`0x95`). The
+SmallAIOS syscall scheme groups numbers by category in 0x10-byte
+ranges; the new Auth category fills the next free range. (Pre-
+reserved by `wave0-scaffolding-stubs`; `SYSCALL_TABLE_SIZE` was
+bumped from `0x90` to `0xA0`, with `0x96–0x9F` held for future
+auth-related syscalls.)
 
-- `auth_login(user_ptr, user_len, pass_ptr, pass_len) -> session_id`
-- `auth_logout() -> 0|err`
-- `auth_change_password(old_ptr, old_len, new_ptr, new_len, target_user_ptr, target_user_len) -> 0|err`
-  — `target_user` may be `null` (own password); non-null requires `Role::Root`.
-- `auth_create_user(user_ptr, user_len, role: u8, initial_password_ptr, initial_password_len) -> 0|err`
-  — root only; sets the `must_change_password_on_login` flag for the new user.
-- `auth_whoami() -> { role: u8, user_id: u32, login_unix_time: u64, idle_seconds: u32 }`
+- `auth_login(user_ptr, user_len, pass_ptr, pass_len, factor2_ptr, factor2_len) -> session_id` — `0x90`
+- `auth_logout() -> 0|err` — `0x91`
+- `auth_change_password(old_ptr, old_len, new_ptr, new_len, target_user_ptr, target_user_len) -> 0|err` — `0x92`. `target_user` may be `null` (own password); non-null requires `Role::Root`.
+- `auth_create_user(user_ptr, user_len, role: u8, initial_password_ptr, initial_password_len) -> 0|err` — `0x93`. Root only; sets the `must_change_password_on_login` flag for the new user.
+- `auth_whoami(out_ptr) -> 0|err` — `0x94`. Fills an out struct: `{ role: u8, user_id: u32, login_unix_time: u64, idle_seconds: u32 }`.
+- `auth_totp_setup(user_ptr, user_len, secret_out_ptr) -> 0|err` — `0x95`. RFC 6238 enrolment (Q21 opt-in second factor).
 
 The shadow file is read **only** through these syscalls; user
 space cannot map or read the file directly even as root (defense

@@ -743,6 +743,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallaios-auth"
+version = "0.2.1"
+dependencies = [
+ "smallaios-kernel",
+ "smallaios-security",
+]
+
+[[package]]
 name = "smallaios-bench"
 version = "0.2.1"
 dependencies = [
@@ -791,6 +799,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallaios-fs"
+version = "0.2.1"
+dependencies = [
+ "smallaios-kernel",
+ "smallaios-mgmt",
+ "smallaios-security",
+]
+
+[[package]]
 name = "smallaios-ipc"
 version = "0.2.1"
 dependencies = [
@@ -804,6 +821,15 @@ name = "smallaios-kernel"
 version = "0.2.1"
 dependencies = [
  "smallaios-sched-types",
+ "smallaios-security",
+]
+
+[[package]]
+name = "smallaios-mgmt"
+version = "0.2.1"
+dependencies = [
+ "smallaios-auth",
+ "smallaios-kernel",
  "smallaios-security",
 ]
 

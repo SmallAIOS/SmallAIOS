@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: New `boot_success` syscall
-The kernel SHALL expose a new `boot_success` syscall (number 48, after the auth syscalls 43–47 from `management-login-v1`). The syscall SHALL be callable only by `Role::Root`. Calling `boot_success` SHALL update the active boot config record (per `fs-ab-boot`) to clear `tentative` and set `boot_success = 1`. After successful return, the watchdog SHALL be disarmed.
+The kernel SHALL expose a new `boot_success` syscall (`SYS_BOOT_SUCCESS = 0x57`, in the existing System category). The syscall SHALL be callable only by `Role::Root`. Calling `boot_success` SHALL update the active boot config record (per `fs-ab-boot`) to clear `tentative` and set `boot_success = 1`. After successful return, the watchdog SHALL be disarmed.
 
 ```text
 boot_success() -> 0 | -errno
@@ -28,12 +28,11 @@ The syscall SHALL be idempotent — calling it after the active record already s
 ## MODIFIED Requirements
 
 ### Requirement: Updated documented syscall count
-The architecture documentation SHALL state the v1 syscall count as the prior count plus one (i.e., the post-`management-login-v1` count of "~51 syscalls" is updated to "~52 syscalls"). The new syscall number is stable: `boot_success = 48`.
+The architecture documentation SHALL list one new System-category syscall: `SYS_BOOT_SUCCESS = 0x57`. The post-`embedded-filesystem-v1` syscall count is the post-`management-login-v1` count plus one.
 
-#### Scenario: Architecture doc reflects new count
+#### Scenario: Architecture doc reflects new syscall
 - **WHEN** `docs/architecture.md` is read
-- **THEN** it SHALL state the syscall count of 52
-- **AND** SHALL list `boot_success = 48` in the syscall table
+- **THEN** it SHALL list `SYS_BOOT_SUCCESS = 0x57` in the System-category syscall table
 
 ### Requirement: File syscalls operate on real backing
 Existing file syscalls (`open`, `read`, `write`, `fsync`, `rename`, `stat`, `unlink`, `mkdir`, `rmdir`) SHALL operate against the new on-disk mounts (`/models/` squashfs, `/data/` F2FS) via `posix-vfs`. The syscall ABI SHALL NOT change. Behavior on the in-memory mounts (`/dev/`, `/proc/self/`) SHALL be unchanged.
