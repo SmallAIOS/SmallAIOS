@@ -1,0 +1,27 @@
+name: "SmallAIOS CodeQL Configuration"
+
+# This configuration is consumed by the workflow-driven CodeQL setup in
+# .github/workflows/codeql.yml. The workflow passes `config-file:` to
+# `github/codeql-action/init`, which then honors the directives below.
+#
+# See openspec/changes/codeql-quality-cleanup-v1/ for the policy that drives
+# these entries (capability `codeql-suppression-policy`). When a CodeQL false
+# positive surfaces:
+#   1. Prefer the test-vector module convention. Move literal byte arrays
+#      into a sibling `*_test_vectors.rs` (or `test_vectors/<topic>.rs`).
+#      The `paths-ignore` glob below covers those modules automatically.
+#   2. Reserve any future targeted query-filter for irreducible
+#      production-code false positives — and document the rationale here
+#      and at the call site.
+
+# ────────────────────────────────────────────────────────────────────────────
+# Path filters
+# ────────────────────────────────────────────────────────────────────────────
+#
+# Files matching these globs are excluded from analysis entirely. Reserved
+# for modules whose only contents are known-answer-test (KAT) vectors or
+# other reference fixtures. Byte-array constants in these files would
+# otherwise re-fire `rust/hard-coded-cryptographic-value` on every scan.
+paths-ignore:
+  - "**/*_test_vectors.rs"
+  - "**/test_vectors/**"
