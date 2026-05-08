@@ -13,11 +13,11 @@
 
 ## 2. Phase 2 — GPT partition table
 
-- [ ] 2.1 `fs/src/gpt.rs` — clean-room GPT parser per UEFI 2.10 §5.3
-- [ ] 2.2 Primary + secondary header validation, fallback on primary corrupt
-- [ ] 2.3 Protective MBR writer (for fresh-format path)
-- [ ] 2.4 v1 partition layout enforcement (5-partition table, type GUID checks)
-- [ ] 2.5 SmallAIOS-specific type GUID allocation, documented in `docs/architecture.md`
+- [x] 2.1 `fs/src/gpt.rs` — clean-room GPT parser per UEFI 2.10 §5.3
+- [x] 2.2 Primary + secondary header validation, fallback on primary corrupt
+- [x] 2.3 Protective MBR writer (for fresh-format path)
+- [x] 2.4 v1 partition layout enforcement (5-partition table, type GUID checks)
+- [x] 2.5 SmallAIOS-specific type GUID allocation, documented in `docs/architecture.md`
 - [ ] 2.6 GPT parser fuzz harness
 - [ ] 2.7 Kani harness for parser bounds (no out-of-buffer reads on adversarial input)
 - [ ] 2.8 Tests against `parted`/`gdisk`-produced disks
