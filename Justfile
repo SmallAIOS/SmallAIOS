@@ -15,7 +15,7 @@ build_std := "-Z build-std=core,compiler_builtins,alloc -Z build-std-features=co
 max_kernel_size_mb := "15"
 
 # Host-testable crates for module-level analysis
-host_crates := "smallaios-kernel smallaios-security smallaios-compute smallaios-sched-types smallaios-onnx-rt smallaios-ipc smallaios-net smallaios-posix smallaios-container smallaios-bus smallaios-peripheral smallaios-usb smallaios-sdr smallaios-bench"
+host_crates := "smallaios-kernel smallaios-security smallaios-compute smallaios-sched-types smallaios-onnx-rt smallaios-ipc smallaios-net smallaios-posix smallaios-container smallaios-bus smallaios-peripheral smallaios-usb smallaios-sdr smallaios-bench smallaios-auth smallaios-mgmt smallaios-fs"
 
 # === Container Mode (Library OS) ===
 
@@ -347,7 +347,10 @@ test:
         -p smallaios-posix \
         -p smallaios-container \
         -p smallaios-bus \
-        -p smallaios-bench
+        -p smallaios-bench \
+        -p smallaios-auth \
+        -p smallaios-mgmt \
+        -p smallaios-fs
 
 # Run Metal GPU tests (macOS only)
 test-metal:
@@ -368,6 +371,9 @@ clippy:
         -p smallaios-container \
         -p smallaios-bus \
         -p smallaios-bench \
+        -p smallaios-auth \
+        -p smallaios-mgmt \
+        -p smallaios-fs \
         -- -D warnings
 
 # Format all code

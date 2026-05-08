@@ -227,6 +227,16 @@ pub fn sys_watchdog_remaining(_args: &SyscallArgs) -> SyscallResult {
     30000
 }
 
+/// `boot_success() -> 0 | -errno`
+///
+/// Wave-0 stub. Root-only commit of an A/B boot slot. The real handler
+/// lands in `embedded-filesystem-v1` Phase 10 — until then this returns
+/// `-ENOSYS`. Routed here so the dispatch table has a stable entry
+/// point at 0x57.
+pub fn sys_boot_success(_args: &SyscallArgs) -> SyscallResult {
+    -38 // -ENOSYS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

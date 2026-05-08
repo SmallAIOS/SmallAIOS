@@ -9,7 +9,22 @@ publish = false
 
 [features]
 default = []
+# `fs-flash`: opt-in on-disk `/flash/` mount via the `smallaios-fs`
+# littlefs runtime. Pulls in `smallaios-fs` with its `fs-flash` feature.
+# Default off to keep the in-memory VFS path the only code surface that
+# ships in builds without raw-flash hardware.
+fs-flash = ["dep:smallaios-fs", "smallaios-fs/fs-flash"]
+# `fs-flash-mock`: enable the in-memory `MockFlashDevice` in
+# `smallaios-fs` so the mount conformance tests in `posix` and `fs`
+# can exercise `/flash/` without real hardware.
+fs-flash-mock = ["dep:smallaios-fs", "smallaios-fs/fs-flash-mock"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }
 smallaios-net = { path = "../net" }
+# Layer-1 peer dep: opt-in `/flash/` mount routes through the littlefs
+# runtime in `smallaios-fs`. Default off, gated by the `fs-flash`
+# feature so the in-memory VFS path stays byte-identical when raw flash
+# hardware isn't present. Mirrors the existing `posix → net (L1)`
+# accepted cross-edge for the POSIX socket layer.
+smallaios-fs = { path = "../fs", optional = true }
