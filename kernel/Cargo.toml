@@ -13,6 +13,11 @@ verbose-boot = []
 no-global-alloc = []
 large-memory = []  # Track 64 GiB of pages (16M pages); default tracks 1 GiB (256K pages)
 verified-boot = ["smallaios-security/verified-boot"]  # Boot integrity verification and measurement log
+# `test-mocks` exposes the in-memory `MockShadowProvider` and any other
+# auth-test fixtures so downstream crates (auth/, peripheral/, mgmt/)
+# can drive integration tests without needing the kernel's real F2FS
+# read path. Off by default; production builds carry no fixture code.
+test-mocks = []
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }

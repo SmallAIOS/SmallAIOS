@@ -5,6 +5,7 @@
 //!
 //! Implements post-quantum and classical cryptography:
 //! - SHA-3-256 and SHAKE256 (FIPS 202)
+//! - Blake2b (RFC 7693) — backend for Argon2id's variable-length hash
 //! - AES-256-GCM (FIPS 197 + SP 800-38D)
 //! - CSPRNG (SHAKE256-based, seeded from RDRAND/RNDR)
 //! - ML-KEM-768 (FIPS 203) — key encapsulation
@@ -13,6 +14,7 @@
 //! - Constant-time utilities
 
 pub mod aes_gcm;
+pub mod blake2b;
 pub mod constant_time;
 pub mod csprng;
 pub mod ed25519;
