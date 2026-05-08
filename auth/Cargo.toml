@@ -12,7 +12,7 @@ publish = false
 # Concrete dependencies will be added by the management-login-v1
 # implementation phases (Argon2id, shadow file, role table).
 smallaios-security = { path = "../security" }
-smallaios-kernel = { path = "../kernel" }
+smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
 
 [features]
 default = []
