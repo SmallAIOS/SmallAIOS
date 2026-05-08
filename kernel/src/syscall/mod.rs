@@ -18,6 +18,7 @@
 //! In VM mode they use `syscall`/`svc` instructions dispatched through
 //! architecture-specific entry points.
 
+pub mod auth;
 pub mod capability;
 pub mod device;
 pub mod ipc;
@@ -303,6 +304,11 @@ const fn build_syscall_table() -> [SyscallHandler; SYSCALL_TABLE_SIZE] {
     table[nr::ONNX_RUN] = onnx::sys_onnx_run as SyscallHandler;
     table[nr::ONNX_GET_METADATA] = onnx::sys_onnx_get_metadata as SyscallHandler;
     table[nr::ONNX_LIST_PROVIDERS] = onnx::sys_onnx_list_providers as SyscallHandler;
+    // Reserved by `embedded-overlay-v1`; stub returns -ENOSYS until Phase 3 of
+    // that change ships. See `kernel::syscall::onnx::sys_onnx_model_add` /
+    // `sys_onnx_model_remove`.
+    table[nr::ONNX_MODEL_ADD] = onnx::sys_onnx_model_add as SyscallHandler;
+    table[nr::ONNX_MODEL_REMOVE] = onnx::sys_onnx_model_remove as SyscallHandler;
 
     // Device syscalls
     table[nr::DEV_ENUMERATE] = device::sys_dev_enumerate as SyscallHandler;
@@ -319,6 +325,10 @@ const fn build_syscall_table() -> [SyscallHandler; SYSCALL_TABLE_SIZE] {
     table[nr::SYS_RANDOM] = system::sys_random as SyscallHandler;
     table[nr::SYS_WATCHDOG_PET] = system::sys_watchdog_pet as SyscallHandler;
     table[nr::SYS_WATCHDOG_REMAINING] = system::sys_watchdog_remaining as SyscallHandler;
+    // Reserved by `embedded-filesystem-v1`; stub returns -ENOSYS until
+    // that change's Phase 10 ships. Routed here so the dispatch table
+    // has a stable entry point.
+    table[nr::SYS_BOOT_SUCCESS] = system::sys_boot_success as SyscallHandler;
 
     // Capability syscalls
     table[nr::CAP_CREATE] = capability::sys_cap_create as SyscallHandler;
@@ -347,17 +357,168 @@ const fn build_syscall_table() -> [SyscallHandler; SYSCALL_TABLE_SIZE] {
     table[nr::POSIX_GETRANDOM] = posix::sys_posix_getrandom as SyscallHandler;
     table[nr::POSIX_SOCKET] = posix::sys_posix_socket as SyscallHandler;
 
+    // Auth syscalls (0x90-0x95) — `management-login-v1` Phase 3.
+    // See `kernel::syscall::auth` for handler bodies and the
+    // dispatch-time must-change-password gate is applied by
+    // `dispatch()` *before* hitting these slots.
+    table[nr::AUTH_LOGIN] = auth::sys_auth_login as SyscallHandler;
+    table[nr::AUTH_LOGOUT] = auth::sys_auth_logout as SyscallHandler;
+    table[nr::AUTH_CHANGE_PASSWORD] = auth::sys_auth_change_password as SyscallHandler;
+    table[nr::AUTH_CREATE_USER] = auth::sys_auth_create_user as SyscallHandler;
+    table[nr::AUTH_WHOAMI] = auth::sys_auth_whoami as SyscallHandler;
+    table[nr::AUTH_TOTP_SETUP] = auth::sys_auth_totp_setup as SyscallHandler;
+
     table
+}
+
+// ─── Per-syscall capability + must-change-password gates ─────────────────────
+
+/// Returns the [`crate::auth::MinRole`] gate that applies to `nr`.
+///
+/// Spec: `auth-roles` Q14-Q18. The default is
+/// [`MinRole::Authenticated`] — most syscalls require *some* live
+/// session. The exceptions are listed explicitly:
+///
+/// - `Unauthenticated`: the bootstrap surface (login + always-allowed
+///   diagnostics like `sys_info` / `sys_time` / `sys_log`).
+/// - `Operator`: model lifecycle (`onnx_load` ... `onnx_run`,
+///   `onnx_model_add`).
+/// - `Root`: account management, system power, model removal,
+///   `sys_boot_success`.
+const fn min_role_for(nr: usize) -> crate::auth::MinRole {
+    use crate::auth::MinRole;
+    match nr {
+        // Unauthenticated surface.
+        nr::AUTH_LOGIN
+        | nr::SYS_INFO
+        | nr::SYS_TIME
+        | nr::SYS_LOG
+        | nr::SYS_WATCHDOG_PET
+        | nr::SYS_WATCHDOG_REMAINING => MinRole::Unauthenticated,
+
+        // Root-only surface.
+        nr::AUTH_CREATE_USER | nr::SYS_SHUTDOWN | nr::SYS_BOOT_SUCCESS | nr::ONNX_MODEL_REMOVE => {
+            MinRole::Root
+        }
+
+        // Operator+: model lifecycle and overlay add.
+        nr::ONNX_LOAD
+        | nr::ONNX_UNLOAD
+        | nr::ONNX_CREATE_SESSION
+        | nr::ONNX_RUN
+        | nr::ONNX_GET_METADATA
+        | nr::ONNX_LIST_PROVIDERS
+        | nr::ONNX_MODEL_ADD => MinRole::Operator,
+
+        // Default: authenticated.
+        _ => MinRole::Authenticated,
+    }
+}
+
+/// Allowlist used while a session has `must_change_password = true`.
+/// Spec: `auth-roles` Q18 — only password rotation, whoami, and logout
+/// are honored; everything else returns
+/// [`crate::auth::ERRNO_EAUTHEXPIRED`].
+const fn must_change_password_admits(nr: usize) -> bool {
+    matches!(
+        nr,
+        nr::AUTH_CHANGE_PASSWORD | nr::AUTH_WHOAMI | nr::AUTH_LOGOUT
+    )
+}
+
+/// Return the [`crate::auth::Role`] of the current session, if any.
+fn current_role() -> Option<crate::auth::Role> {
+    let id = crate::auth::current_session();
+    if id.is_none() {
+        return None;
+    }
+    // We can't lock the session table from here without architectural
+    // access — instead, we ask the global table via a helper so the
+    // dispatch path stays read-only. For now (Phase 3, before the
+    // boot path installs a real table), we have no way to look up
+    // the role from a SessionId alone, so we conservatively report
+    // `None`. The real wire-up arrives with Phase 6's mgmt loader.
+    let _ = id;
+    None
+}
+
+/// Returns `true` iff the current session is gated by
+/// `must_change_password`. Phase 3 returns `false` because the kernel
+/// does not yet own a reachable handle to the session table from the
+/// dispatch path; Phase 6's mgmt loader installs the global table and
+/// flips this on. Documenting the contract here so the gate is a
+/// one-line edit when the table goes global.
+fn current_session_must_change_password() -> bool {
+    false
+}
+
+/// Dispatch-time auth-gate enable flag.
+///
+/// While `false` (the boot default), [`dispatch`] skips the
+/// minimum-role and must-change-password gates so the existing
+/// non-auth syscall surface keeps working before the management
+/// subsystem comes online. The boot path flips this to `true` at the
+/// end of `kernel_main` once the session table and `ShadowProvider`
+/// are installed (Phase 6 — `mgmt/`'s policy loader).
+///
+/// Tests can flip this directly via [`set_auth_gate_enabled`] to
+/// exercise the gate logic.
+static AUTH_GATE_ENABLED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Returns whether the dispatch-time auth gate is currently enforced.
+pub fn auth_gate_enabled() -> bool {
+    AUTH_GATE_ENABLED.load(core::sync::atomic::Ordering::Acquire)
+}
+
+/// Enable / disable the dispatch-time auth gate. Called by the boot
+/// path after the session table and `ShadowProvider` are wired up.
+///
+/// Returns the previous value.
+pub fn set_auth_gate_enabled(on: bool) -> bool {
+    AUTH_GATE_ENABLED.swap(on, core::sync::atomic::Ordering::AcqRel)
 }
 
 /// Dispatch a syscall by number.
 ///
 /// This is the main entry point called by architecture-specific handlers.
 /// Returns the syscall result in the register convention (rax / x0).
+///
+/// When [`auth_gate_enabled`] is `true`, two gates are applied
+/// **before** invoking the per-syscall handler:
+///
+/// 1. The must-change-password gate. When the current session has
+///    `must_change_password = true` and `nr` is not on the
+///    [`must_change_password_admits`] allowlist, return
+///    [`crate::auth::ERRNO_EAUTHEXPIRED`].
+/// 2. The minimum-role gate. The session's role is fetched via
+///    [`current_role`] and matched against [`min_role_for`]. On
+///    rejection return [`crate::auth::ERRNO_EACCES`].
+///
+/// Both gates short-circuit before touching the dispatch table, so the
+/// handler functions themselves never observe a forbidden caller.
 pub fn dispatch(args: &SyscallArgs) -> SyscallResult {
     if args.number >= SYSCALL_TABLE_SIZE {
         return SyscallError::NoSys.as_i64();
     }
+
+    if auth_gate_enabled() {
+        // Gate 1: must-change-password. When the bit is set on the
+        // live session, only `auth_change_password` / `auth_whoami`
+        // / `auth_logout` are honored. Apply this BEFORE the role
+        // check — a Root with an expired password should still be
+        // sent through the rotation flow.
+        if current_session_must_change_password() && !must_change_password_admits(args.number) {
+            return crate::auth::ERRNO_EAUTHEXPIRED;
+        }
+
+        // Gate 2: per-syscall minimum role.
+        let gate = min_role_for(args.number);
+        if !gate.admits(current_role()) {
+            return crate::auth::ERRNO_EACCES;
+        }
+    }
+
     let handler = SYSCALL_TABLE[args.number];
     handler(args)
 }
@@ -401,8 +562,12 @@ mod tests {
 
     #[test]
     fn test_registered_count() {
-        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5 capability + 18 posix = 64
-        assert_eq!(registered_count(), 64);
+        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5
+        // capability + 18 posix = 64. Plus the 9 reserved slots wired
+        // by `management-login-v1` Phase 3 (`onnx_model_add` /
+        // `onnx_model_remove` / `sys_boot_success` / 6 auth syscalls)
+        // = 73.
+        assert_eq!(registered_count(), 73);
     }
 
     #[test]
@@ -595,10 +760,17 @@ mod tests {
 
     #[test]
     fn test_gap_slots_return_nosys() {
-        // Verify gaps between categories return NoSys
+        // Verify gaps between categories return NoSys.
+        //
+        // 0x36 / 0x37 / 0x57 used to be in this list as "gap" slots,
+        // but `management-login-v1` Phase 3 wired them to wave-0
+        // stubs (`onnx_model_add`, `onnx_model_remove`, and
+        // `sys_boot_success`) that return `-ENOSYS` (-38) until the
+        // owning agent ships the real handler. They are no longer
+        // gap slots — see `min_role_for` for the per-syscall gate.
         for gap_nr in [
-            0x08, 0x09, 0x0A, 0x0F, 0x17, 0x18, 0x1F, 0x28, 0x2F, 0x36, 0x3F, 0x45, 0x4F, 0x57,
-            0x5F, 0x65, 0x6F, 0x82, 0x8F,
+            0x08, 0x09, 0x0A, 0x0F, 0x17, 0x18, 0x1F, 0x28, 0x2F, 0x3F, 0x45, 0x4F, 0x5F, 0x65,
+            0x6F, 0x82, 0x8F,
         ] {
             let args = SyscallArgs::zero(gap_nr);
             assert_eq!(
@@ -2386,9 +2558,14 @@ mod tests {
 
     #[test]
     fn test_mcdc_registered_count_equals_expected() {
-        // Verify the exact count of non-nosys handlers
-        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5 capability + 18 posix = 64
-        assert_eq!(registered_count(), 64);
+        // Verify the exact count of non-nosys handlers.
+        //
+        // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5
+        // capability + 18 posix = 64. Plus the 9 reserved slots wired
+        // by `management-login-v1` Phase 3 (`onnx_model_add` /
+        // `onnx_model_remove` / `sys_boot_success` / 6 auth syscalls)
+        // = 73.
+        assert_eq!(registered_count(), 73);
     }
 
     #[test]
