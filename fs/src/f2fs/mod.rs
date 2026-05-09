@@ -60,16 +60,22 @@ pub mod crc;
 pub mod data;
 pub mod dir;
 pub mod error;
+pub mod gc;
 pub mod inode;
+pub mod journal;
 pub mod mount;
 pub mod nat;
 pub mod sit;
 pub mod ssa;
 pub mod superblock;
+pub mod write;
+#[cfg(test)]
+pub(crate) mod write_test_vectors;
 
 pub use error::F2fsError;
 pub use mount::{DirIter, F2fs, Inode, InodeKind, Stat};
 pub use superblock::{Superblock, F2FS_SUPER_MAGIC};
+pub use write::{GcStats, WriteStats};
 
 /// F2FS native block size (4 KiB).
 ///

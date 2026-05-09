@@ -36,21 +36,21 @@ use fixtures::{
 
 #[test]
 fn mount_minimal_image_succeeds() {
-    let dev = build_minimal_image(b"hello, f2fs!");
-    let _fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).expect("mount succeeds");
+    let mut dev = build_minimal_image(b"hello, f2fs!");
+    let _fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).expect("mount succeeds");
 }
 
 #[test]
 fn mount_zeroed_device_bad_magic() {
-    let dev = MockBlockDevice::new(4096, DEFAULT_BLOCKS);
-    let r = F2fs::mount(&dev, 0, DEFAULT_BLOCKS);
+    let mut dev = MockBlockDevice::new(4096, DEFAULT_BLOCKS);
+    let r = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS);
     assert!(matches!(r, Err(F2fsError::BadMagic)));
 }
 
 #[test]
 fn root_inode_is_directory() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let root = fs.open_path("/").unwrap();
     assert_eq!(root.kind, InodeKind::Directory);
     assert_eq!(root.inode_number, 3);
@@ -58,8 +58,8 @@ fn root_inode_is_directory() {
 
 #[test]
 fn root_inode_via_empty_path() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let root = fs.open_path("").unwrap();
     assert_eq!(root.kind, InodeKind::Directory);
 }
@@ -68,18 +68,18 @@ fn root_inode_via_empty_path() {
 
 #[test]
 fn primary_corrupt_falls_back_to_secondary() {
-    let dev = build_minimal_image(b"");
+    let mut dev = build_minimal_image(b"");
     corrupt_primary_superblock(&dev);
     // Mount must still succeed using the secondary copy.
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).expect("secondary fallback");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).expect("secondary fallback");
     let _ = fs.open_path("/").unwrap();
 }
 
 #[test]
 fn both_superblocks_corrupt_fails() {
-    let dev = build_minimal_image(b"");
+    let mut dev = build_minimal_image(b"");
     corrupt_both_superblocks(&dev);
-    let r = F2fs::mount(&dev, 0, DEFAULT_BLOCKS);
+    let r = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS);
     assert!(matches!(
         r,
         Err(F2fsError::BadMagic) | Err(F2fsError::SuperblockCrcMismatch)
@@ -90,9 +90,9 @@ fn both_superblocks_corrupt_fails() {
 
 #[test]
 fn unknown_mandatory_feature_rejected() {
-    let dev = build_minimal_image(b"");
+    let mut dev = build_minimal_image(b"");
     set_unsupported_feature(&dev);
-    let r = F2fs::mount(&dev, 0, DEFAULT_BLOCKS);
+    let r = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS);
     assert!(matches!(r, Err(F2fsError::UnsupportedFeature(_))));
 }
 
@@ -100,8 +100,8 @@ fn unknown_mandatory_feature_rejected() {
 
 #[test]
 fn read_dir_yields_dot_dotdot_and_file() {
-    let dev = build_minimal_image(b"hello");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"hello");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let root = fs.open_path("/").unwrap();
     let entries: alloc::vec::Vec<_> = fs.read_dir(&root).unwrap().collect();
     assert_eq!(entries.len(), 3);
@@ -113,8 +113,8 @@ fn read_dir_yields_dot_dotdot_and_file() {
 
 #[test]
 fn read_dir_on_non_dir_fails() {
-    let dev = build_minimal_image(b"x");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"x");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let file = fs.open_path("/file.txt").unwrap();
     assert!(matches!(fs.read_dir(&file), Err(F2fsError::NotADirectory)));
 }
@@ -123,8 +123,8 @@ fn read_dir_on_non_dir_fails() {
 
 #[test]
 fn open_path_resolves_named_file() {
-    let dev = build_minimal_image(b"path test");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"path test");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     assert_eq!(inode.kind, InodeKind::Regular);
     assert_eq!(inode.size, 9);
@@ -132,16 +132,16 @@ fn open_path_resolves_named_file() {
 
 #[test]
 fn open_path_missing_component_fails() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let r = fs.open_path("/nope");
     assert!(matches!(r, Err(F2fsError::PathNotFound)));
 }
 
 #[test]
 fn open_path_traverse_through_file_fails() {
-    let dev = build_minimal_image(b"x");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"x");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let r = fs.open_path("/file.txt/foo");
     assert!(matches!(r, Err(F2fsError::NotADirectory)));
 }
@@ -151,8 +151,8 @@ fn open_path_traverse_through_file_fails() {
 #[test]
 fn read_inline_file_byte_for_byte() {
     let payload = b"hello, f2fs inline data path!";
-    let dev = build_minimal_image(payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     assert_eq!(inode.size as usize, payload.len());
     let mut buf = alloc::vec![0u8; payload.len()];
@@ -164,8 +164,8 @@ fn read_inline_file_byte_for_byte() {
 #[test]
 fn read_inline_partial_at_offset() {
     let payload = b"abcdefghijklmnop";
-    let dev = build_minimal_image(payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut buf = [0u8; 4];
     let n = fs.read_file(&inode, 4, &mut buf).unwrap();
@@ -176,8 +176,8 @@ fn read_inline_partial_at_offset() {
 #[test]
 fn read_inline_past_eof_returns_zero() {
     let payload = b"short";
-    let dev = build_minimal_image(payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut buf = [0u8; 16];
     let n = fs.read_file(&inode, 100, &mut buf).unwrap();
@@ -187,8 +187,8 @@ fn read_inline_past_eof_returns_zero() {
 #[test]
 fn read_inline_large_buffer_truncated() {
     let payload = b"three";
-    let dev = build_minimal_image(payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut buf = [0u8; 100];
     let n = fs.read_file(&inode, 0, &mut buf).unwrap();
@@ -199,8 +199,8 @@ fn read_inline_large_buffer_truncated() {
 #[test]
 fn read_zero_byte_buffer() {
     let payload = b"data";
-    let dev = build_minimal_image(payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut buf: [u8; 0] = [];
     let n = fs.read_file(&inode, 0, &mut buf).unwrap();
@@ -214,8 +214,8 @@ fn read_separate_block_file_byte_for_byte() {
     // Force separate-block (non-inline) file by exceeding the inline
     // threshold (1500 bytes in the builder).
     let payload: alloc::vec::Vec<u8> = (0..2048).map(|i| (i % 251) as u8).collect();
-    let dev = build_minimal_image(&payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(&payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     assert_eq!(inode.size as usize, payload.len());
     let mut buf = alloc::vec![0u8; payload.len()];
@@ -227,8 +227,8 @@ fn read_separate_block_file_byte_for_byte() {
 #[test]
 fn read_separate_block_partial_at_offset() {
     let payload: alloc::vec::Vec<u8> = (0..2048).map(|i| (i % 251) as u8).collect();
-    let dev = build_minimal_image(&payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(&payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut buf = alloc::vec![0u8; 100];
     let n = fs.read_file(&inode, 1024, &mut buf).unwrap();
@@ -242,8 +242,8 @@ fn read_separate_block_partial_at_offset() {
 
 #[test]
 fn stat_directory() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let root = fs.open_path("/").unwrap();
     let s = fs.stat(&root);
     assert_eq!(s.kind, InodeKind::Directory);
@@ -253,8 +253,8 @@ fn stat_directory() {
 #[test]
 fn stat_file() {
     let payload = b"sized";
-    let dev = build_minimal_image(payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let s = fs.stat(&inode);
     assert_eq!(s.kind, InodeKind::Regular);
@@ -266,8 +266,8 @@ fn stat_file() {
 
 #[test]
 fn nat_lookup_root_succeeds() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let nat = fs.lookup_nat_entry(3).unwrap();
     assert!(nat.is_valid_addr());
     assert_eq!(nat.ino, 3);
@@ -275,24 +275,24 @@ fn nat_lookup_root_succeeds() {
 
 #[test]
 fn nat_lookup_unallocated_returns_unallocated_entry() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let nat = fs.lookup_nat_entry(99).unwrap();
     assert!(!nat.is_valid_addr());
 }
 
 #[test]
 fn nat_lookup_zero_nid_rejected() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let r = fs.lookup_nat_entry(0);
     assert!(matches!(r, Err(F2fsError::NodeIdOutOfRange)));
 }
 
 #[test]
 fn nat_lookup_out_of_range_rejected() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let r = fs.lookup_nat_entry(u32::MAX);
     assert!(matches!(r, Err(F2fsError::NodeIdOutOfRange)));
 }
@@ -301,8 +301,8 @@ fn nat_lookup_out_of_range_rejected() {
 
 #[test]
 fn checkpoint_higher_version_wins() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     // Builder writes cp1 with version 7, cp2 with version 5; the
     // higher of the two must be selected.
     assert_eq!(fs.checkpoint().checkpoint_ver, 7);
@@ -313,8 +313,8 @@ fn checkpoint_higher_version_wins() {
 #[test]
 fn mount_then_full_walk_round_trip() {
     let payload: alloc::vec::Vec<u8> = (0..3000).map(|i| ((i * 7) % 251) as u8).collect();
-    let dev = build_minimal_image(&payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(&payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     // Walk root, find the file, read its bytes, compare.
     let root = fs.open_path("/").unwrap();
     let mut found = false;
@@ -336,13 +336,13 @@ fn mount_then_full_walk_round_trip() {
 
 #[test]
 fn back_to_back_mounts() {
-    let dev = build_minimal_image(b"data");
+    let mut dev = build_minimal_image(b"data");
     {
-        let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+        let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
         let _ = fs.open_path("/file.txt").unwrap();
     }
     {
-        let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+        let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
         let _ = fs.open_path("/file.txt").unwrap();
     }
 }
@@ -351,10 +351,10 @@ fn back_to_back_mounts() {
 
 #[test]
 fn distinct_images_have_distinct_payloads() {
-    let dev1 = build_minimal_image(b"AAAAAA");
-    let dev2 = build_minimal_image(b"BBBBBB");
-    let fs1 = F2fs::mount(&dev1, 0, DEFAULT_BLOCKS).unwrap();
-    let fs2 = F2fs::mount(&dev2, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev1 = build_minimal_image(b"AAAAAA");
+    let mut dev2 = build_minimal_image(b"BBBBBB");
+    let fs1 = F2fs::mount(&mut dev1, 0, DEFAULT_BLOCKS).unwrap();
+    let fs2 = F2fs::mount(&mut dev2, 0, DEFAULT_BLOCKS).unwrap();
     let i1 = fs1.open_path("/file.txt").unwrap();
     let i2 = fs2.open_path("/file.txt").unwrap();
     let mut b1 = [0u8; 6];
@@ -369,8 +369,8 @@ fn distinct_images_have_distinct_payloads() {
 
 #[test]
 fn empty_file_size_zero() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     assert_eq!(inode.size, 0);
     let mut buf = [0u8; 16];
@@ -382,15 +382,15 @@ fn empty_file_size_zero() {
 
 #[test]
 fn superblock_block_count_matches() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     assert_eq!(fs.superblock().block_count, DEFAULT_BLOCKS);
 }
 
 #[test]
 fn superblock_root_ino_is_three() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     assert_eq!(fs.superblock().root_ino, 3);
 }
 
@@ -398,8 +398,8 @@ fn superblock_root_ino_is_three() {
 
 #[test]
 fn read_file_on_directory_fails() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let root = fs.open_path("/").unwrap();
     let mut buf = [0u8; 16];
     let r = fs.read_file(&root, 0, &mut buf);
@@ -410,9 +410,9 @@ fn read_file_on_directory_fails() {
 
 #[test]
 fn mount_with_overflow_size_lbas_rejected() {
-    let dev = MockBlockDevice::new(4096, 4);
+    let mut dev = MockBlockDevice::new(4096, 4);
     // size_lbas × block_size_bytes overflows u64.
-    let r = F2fs::mount(&dev, 0, u64::MAX);
+    let r = F2fs::mount(&mut dev, 0, u64::MAX);
     assert!(matches!(r, Err(F2fsError::SizeOverflow)));
 }
 
@@ -430,8 +430,8 @@ fn dentry_hash_is_deterministic_across_calls() {
 
 #[test]
 fn inode_kind_returns_regular_for_file() {
-    let dev = build_minimal_image(b"x");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"x");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     assert_eq!(inode.kind, InodeKind::Regular);
 }
@@ -440,8 +440,8 @@ fn inode_kind_returns_regular_for_file() {
 
 #[test]
 fn stat_links_count_set() {
-    let dev = build_minimal_image(b"y");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"y");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let s = fs.stat(&inode);
     assert!(s.links >= 1);
@@ -471,8 +471,8 @@ fn f2fs_error_path_not_found_message() {
 
 #[test]
 fn read_dir_directory_size_correct() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let root = fs.open_path("/").unwrap();
     // size is 2 dentry blocks (8192 bytes); only the first holds entries.
     assert!(root.size >= 4096);
@@ -482,8 +482,8 @@ fn read_dir_directory_size_correct() {
 
 #[test]
 fn nat_lookup_capacity_boundary_rejected() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     // 1 NAT segment × 512 blocks/segment × 455 entries/block = 232960
     // entries. NID 232960 is out of range.
     let r = fs.lookup_nat_entry(232_960);
@@ -494,14 +494,14 @@ fn nat_lookup_capacity_boundary_rejected() {
 
 #[test]
 fn primary_good_secondary_corrupt_uses_primary() {
-    let dev = build_minimal_image(b"primary wins");
+    let mut dev = build_minimal_image(b"primary wins");
     // Corrupt the secondary at offset 9216.
     let mut block2 = [0u8; 4096];
     smallaios_fs::block::BlockDevice::read_block(&dev, 2, &mut block2).unwrap();
     block2[1024..1028].copy_from_slice(&0u32.to_le_bytes());
     dev.preload(2, &block2);
     // Mount must still succeed using the primary.
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut buf = alloc::vec![0u8; 12];
     let n = fs.read_file(&inode, 0, &mut buf).unwrap();
@@ -514,8 +514,8 @@ fn primary_good_secondary_corrupt_uses_primary() {
 #[test]
 fn read_inline_1500_byte_boundary() {
     let payload: alloc::vec::Vec<u8> = (0..1500).map(|i| (i % 251) as u8).collect();
-    let dev = build_minimal_image(&payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(&payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     assert_eq!(inode.size, 1500);
     let mut buf = alloc::vec![0u8; 1500];
@@ -529,8 +529,8 @@ fn read_inline_1500_byte_boundary() {
 #[test]
 fn read_just_above_inline_threshold() {
     let payload: alloc::vec::Vec<u8> = (0..1501).map(|i| (i % 251) as u8).collect();
-    let dev = build_minimal_image(&payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(&payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     assert_eq!(inode.size, 1501);
     let mut buf = alloc::vec![0u8; 1501];
@@ -544,8 +544,8 @@ fn read_just_above_inline_threshold() {
 #[test]
 fn read_separate_block_past_eof() {
     let payload: alloc::vec::Vec<u8> = (0..2000).map(|i| i as u8).collect();
-    let dev = build_minimal_image(&payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(&payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut buf = [0u8; 16];
     let n = fs.read_file(&inode, 5000, &mut buf).unwrap();
@@ -557,8 +557,8 @@ fn read_separate_block_past_eof() {
 #[test]
 fn read_truncated_at_eof_returns_partial() {
     let payload: alloc::vec::Vec<u8> = (0..2000).map(|i| i as u8).collect();
-    let dev = build_minimal_image(&payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(&payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut buf = [0u8; 100];
     let n = fs.read_file(&inode, 1950, &mut buf).unwrap();
@@ -572,8 +572,8 @@ fn read_truncated_at_eof_returns_partial() {
 
 #[test]
 fn dir_iter_supports_collect() {
-    let dev = build_minimal_image(b"");
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(b"");
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let root = fs.open_path("/").unwrap();
     let names: alloc::vec::Vec<alloc::string::String> =
         fs.read_dir(&root).unwrap().map(|e| e.name).collect();
@@ -588,8 +588,8 @@ fn distinct_payloads_round_trip_within_one_image() {
     // Same image used by `mount_then_full_walk_round_trip`; confirms
     // `read_file` returns the same bytes on second invocation.
     let payload = b"determinism";
-    let dev = build_minimal_image(payload);
-    let fs = F2fs::mount(&dev, 0, DEFAULT_BLOCKS).unwrap();
+    let mut dev = build_minimal_image(payload);
+    let fs = F2fs::mount(&mut dev, 0, DEFAULT_BLOCKS).unwrap();
     let inode = fs.open_path("/file.txt").unwrap();
     let mut a = alloc::vec![0u8; payload.len()];
     let mut b = alloc::vec![0u8; payload.len()];

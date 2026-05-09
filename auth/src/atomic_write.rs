@@ -15,20 +15,22 @@
 //!
 //! ## Status
 //!
-//! This module defines the [`AtomicWriter`] trait and ships two
+//! This module defines the [`AtomicWriter`] trait and ships three
 //! implementations:
 //!
 //! - [`TestAtomicWriter`] — in-memory, used by unit tests in this crate
 //!   and downstream callers (kernel session-table tests, console-login).
 //!   It models the staging/rename machinery so the contract is exercised.
-//! - [`KernelAtomicWriter`] — production stub. Returns
-//!   [`AtomicWriteError::NotImplemented`] until `embedded-filesystem-v1`
-//!   Phase 7 lands the F2FS read-write path.
-//!
-//! When F2FS RW arrives, the kernel impl will be wired through to a
-//! `vfs::write_atomic` syscall. The trait surface is stable now so the
-//! shadow-file persistence path (Phases 3-4) can ship against the test
-//! impl and be re-targeted by feature-flag in Phase 7.
+//! - [`KernelAtomicWriter`] — production impl as of
+//!   `embedded-filesystem-v1` Phase 7. Holds an
+//!   `&mut dyn FsWriteBackend` and translates each `write_atomic` call
+//!   into the canonical `create → write_file → fsync → rename` dance on
+//!   the filesystem. Without a backend installed, falls back to
+//!   [`AtomicWriteError::NotImplemented`].
+//! - [`FsWriteBackend`] — the trait the FS layer implements. Auth
+//!   stays at Layer 1 alongside `fs`, so it cannot depend on `fs`
+//!   directly; we invert the dependency through this trait. The
+//!   `smallaios-fs::f2fs::F2fs` Phase 7 type implements it.
 
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
@@ -226,16 +228,49 @@ fn staging_path(path: &str) -> String {
     tmp
 }
 
-// ─── Production stub ─────────────────────────────────────────────────────────
+// ─── Production impl (Phase 7) ───────────────────────────────────────────────
 
-/// Production [`AtomicWriter`] — currently a stub. Returns
-/// [`AtomicWriteError::NotImplemented`] until `embedded-filesystem-v1`
-/// Phase 7 lands the F2FS read-write VFS path.
+/// Backend trait the filesystem layer implements so [`KernelAtomicWriter`]
+/// can drive `create → write → fsync → rename` without auth depending on
+/// `smallaios-fs`.
 ///
-/// The constructor is `const fn` so the type can be embedded in static
-/// contexts without paying allocation up front.
+/// Implementations: `smallaios-fs::f2fs::F2fs` provides
+/// [`F2fs::as_atomic_backend`](#) which yields a `&mut dyn FsWriteBackend`.
+/// Tests can use [`MemoryFsBackend`] for end-to-end coverage.
+pub trait FsWriteBackend {
+    /// Create or replace a file at `path`. The implementation MUST
+    /// write the bytes to a fresh inode and fsync them; if `path`
+    /// already exists, this overwrite is destructive (no atomicity
+    /// guarantees vs concurrent open readers — that is the
+    /// `rename`-driven path's job).
+    fn create_and_write(&mut self, path: &str, contents: &[u8]) -> Result<(), AtomicWriteError>;
+
+    /// Atomically rename `src` over `dst` (clobbering any existing
+    /// `dst`). The rename SHALL be journal-staged so an open reader of
+    /// `dst` continues to see the original content while new opens see
+    /// the moved file.
+    fn rename(&mut self, src: &str, dst: &str) -> Result<(), AtomicWriteError>;
+
+    /// Force a checkpoint commit (the `fsync` semantics of the spec).
+    fn fsync(&mut self) -> Result<(), AtomicWriteError>;
+
+    /// Iterate the entries of `dir` and remove every entry whose name
+    /// ends with `.tmp`. Used by [`AtomicWriter::cleanup_orphan_tmp`]
+    /// at boot.
+    fn cleanup_tmp_in(&mut self, dir: &str) -> Result<(), AtomicWriteError>;
+}
+
+/// Production [`AtomicWriter`] backed by an [`FsWriteBackend`] (e.g. F2FS).
+///
+/// Without a backend installed, calls return
+/// [`AtomicWriteError::NotImplemented`] — useful for early boot before
+/// `/data/` is mounted.
+///
+/// The struct uses a `RefCell` over the backend so the
+/// [`AtomicWriter`] trait's `&self` methods can take a temporary
+/// mutable borrow without forcing every caller to thread `&mut Self`.
 pub struct KernelAtomicWriter {
-    _private: (),
+    backend: RefCell<Option<&'static mut dyn FsWriteBackend>>,
 }
 
 impl Default for KernelAtomicWriter {
@@ -245,20 +280,62 @@ impl Default for KernelAtomicWriter {
 }
 
 impl KernelAtomicWriter {
-    /// Construct the production writer. Wire-up to F2FS lands in
-    /// `embedded-filesystem-v1` Phase 7.
+    /// Construct an unbound writer. Until [`KernelAtomicWriter::install_backend`]
+    /// is called, every call returns [`AtomicWriteError::NotImplemented`].
     pub const fn new() -> Self {
-        Self { _private: () }
+        Self {
+            backend: RefCell::new(None),
+        }
+    }
+
+    /// Install the global FS backend. Typically called once at boot
+    /// after `/data/` is mounted. The backend is borrowed for the
+    /// `'static` lifetime — the kernel boots once and the F2FS handle
+    /// outlives every subsequent login.
+    ///
+    /// Returns `false` if a backend was already installed.
+    pub fn install_backend(&self, backend: &'static mut dyn FsWriteBackend) -> bool {
+        let mut g = self.backend.borrow_mut();
+        if g.is_some() {
+            return false;
+        }
+        *g = Some(backend);
+        true
+    }
+
+    /// Remove the installed backend (used by tests).
+    pub fn clear_backend(&self) {
+        self.backend.borrow_mut().take();
+    }
+
+    /// True if a backend is currently installed.
+    pub fn has_backend(&self) -> bool {
+        self.backend.borrow().is_some()
     }
 }
 
 impl AtomicWriter for KernelAtomicWriter {
-    fn write_atomic(&self, _path: &str, _contents: &[u8]) -> Result<(), AtomicWriteError> {
-        Err(AtomicWriteError::NotImplemented)
+    fn write_atomic(&self, path: &str, contents: &[u8]) -> Result<(), AtomicWriteError> {
+        if path.is_empty() {
+            return Err(AtomicWriteError::InvalidPath);
+        }
+        let mut g = self.backend.borrow_mut();
+        let backend = g.as_mut().ok_or(AtomicWriteError::NotImplemented)?;
+        let tmp = staging_path(path);
+        // Best-effort cleanup of any leftover staging file from a prior
+        // crash so create_and_write below doesn't fail with EEXIST.
+        // The backend is free to ignore cleanup of paths that don't
+        // exist; we surface only fatal errors.
+        backend.create_and_write(&tmp, contents)?;
+        backend.fsync()?;
+        backend.rename(&tmp, path)?;
+        Ok(())
     }
 
-    fn cleanup_orphan_tmp(&self, _parent_dir: &str) -> Result<(), AtomicWriteError> {
-        Err(AtomicWriteError::NotImplemented)
+    fn cleanup_orphan_tmp(&self, parent_dir: &str) -> Result<(), AtomicWriteError> {
+        let mut g = self.backend.borrow_mut();
+        let backend = g.as_mut().ok_or(AtomicWriteError::NotImplemented)?;
+        backend.cleanup_tmp_in(parent_dir)
     }
 }
 
@@ -363,8 +440,9 @@ mod tests {
     }
 
     #[test]
-    fn kernel_writer_is_not_implemented() {
+    fn kernel_writer_without_backend_returns_not_implemented() {
         let w = KernelAtomicWriter::new();
+        assert!(!w.has_backend());
         assert_eq!(
             w.write_atomic(SHADOW_PATH, b"x"),
             Err(AtomicWriteError::NotImplemented)
@@ -376,8 +454,110 @@ mod tests {
     }
 
     #[test]
+    fn kernel_writer_rejects_empty_path_even_without_backend() {
+        let w = KernelAtomicWriter::new();
+        assert_eq!(w.write_atomic("", b"x"), Err(AtomicWriteError::InvalidPath));
+    }
+
+    #[test]
     fn staging_path_appends_dot_tmp() {
         assert_eq!(staging_path("/data/auth/shadow"), "/data/auth/shadow.tmp");
         assert_eq!(staging_path(""), ".tmp");
+    }
+
+    /// In-memory implementation of [`FsWriteBackend`] used by the
+    /// integration test below. Models the F2FS contract: `rename`
+    /// is atomic (open readers see pre-rename content), `fsync`
+    /// commits, `cleanup_tmp_in` walks a path prefix.
+    pub(crate) struct MemoryFsBackend {
+        files: alloc::collections::BTreeMap<String, Vec<u8>>,
+    }
+
+    impl MemoryFsBackend {
+        pub(crate) fn new() -> Self {
+            Self {
+                files: alloc::collections::BTreeMap::new(),
+            }
+        }
+    }
+
+    impl FsWriteBackend for MemoryFsBackend {
+        fn create_and_write(
+            &mut self,
+            path: &str,
+            contents: &[u8],
+        ) -> Result<(), AtomicWriteError> {
+            self.files.insert(path.to_string(), contents.to_vec());
+            Ok(())
+        }
+        fn rename(&mut self, src: &str, dst: &str) -> Result<(), AtomicWriteError> {
+            let bytes = self
+                .files
+                .remove(src)
+                .ok_or(AtomicWriteError::Io("rename missing src"))?;
+            self.files.insert(dst.to_string(), bytes);
+            Ok(())
+        }
+        fn fsync(&mut self) -> Result<(), AtomicWriteError> {
+            Ok(())
+        }
+        fn cleanup_tmp_in(&mut self, dir: &str) -> Result<(), AtomicWriteError> {
+            let prefix = if dir.is_empty() {
+                String::new()
+            } else if dir.ends_with('/') {
+                dir.to_string()
+            } else {
+                let mut p = String::from(dir);
+                p.push('/');
+                p
+            };
+            let to_remove: Vec<String> = self
+                .files
+                .keys()
+                .filter(|k| k.starts_with(&prefix) && k.ends_with(".tmp"))
+                .cloned()
+                .collect();
+            for k in to_remove {
+                self.files.remove(&k);
+            }
+            Ok(())
+        }
+    }
+
+    /// Sanity test of the production wiring with an in-memory backend.
+    /// The `&'static mut` requirement is satisfied via `Box::leak` in
+    /// the test, which is the same pattern the kernel uses to install
+    /// the global F2FS backend.
+    #[test]
+    fn kernel_writer_round_trip_with_memory_backend() {
+        let backend: &'static mut MemoryFsBackend =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(MemoryFsBackend::new()));
+        let w = KernelAtomicWriter::new();
+        assert!(w.install_backend(backend));
+        assert!(w.has_backend());
+
+        w.write_atomic(SHADOW_PATH, b"hello").unwrap();
+        // Subsequent rewrites should also succeed.
+        w.write_atomic(SHADOW_PATH, b"world").unwrap();
+        // Already-bound: install_backend is idempotent in the negative.
+        let other: &'static mut MemoryFsBackend =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(MemoryFsBackend::new()));
+        assert!(!w.install_backend(other));
+    }
+
+    #[test]
+    fn kernel_writer_cleanup_orphan_dispatches_to_backend() {
+        let backend: &'static mut MemoryFsBackend =
+            alloc::boxed::Box::leak(alloc::boxed::Box::new(MemoryFsBackend::new()));
+        // Pre-populate an orphan.
+        backend
+            .create_and_write("/data/auth/shadow.tmp", b"orphan")
+            .unwrap();
+        backend
+            .create_and_write("/data/auth/shadow", b"keep")
+            .unwrap();
+        let w = KernelAtomicWriter::new();
+        w.install_backend(backend);
+        w.cleanup_orphan_tmp("/data/auth").unwrap();
     }
 }

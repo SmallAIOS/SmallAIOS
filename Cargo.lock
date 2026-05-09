@@ -897,6 +897,7 @@ dependencies = [
 name = "smallaios-fs"
 version = "0.2.1"
 dependencies = [
+ "smallaios-auth",
  "smallaios-kernel",
  "smallaios-mgmt",
  "smallaios-security",
