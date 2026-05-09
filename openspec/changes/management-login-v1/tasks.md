@@ -99,12 +99,12 @@
 
 ## 8. Phase 8 — Zenoh telemetry
 
-- [ ] 8.1 `mgmt/src/telemetry.rs` — publishers for `cpu`, `mem`, `inference`, `log`, `audit_fingerprint`
-- [ ] 8.2 Per-key configurable cadence (`metrics.<key>.interval_ms`), bounds 100 ms–60 s
-- [ ] 8.3 Adaptive cadence (`metrics.<key>.adaptive = { threshold, fast_hz, slow_hz }`)
-- [ ] 8.4 Schema round-trip tests (each metric publishes and parses cleanly)
-- [ ] 8.5 Adaptive-mode test (cross threshold → fast_hz, fall below → slow_hz)
-- [ ] 8.6 Log streaming integration with existing `tracing` / `defmt` infrastructure
+- [x] 8.1 `mgmt/src/surface_zenoh/telemetry/` — publishers for `cpu`, `mem`, `inference`, `log`, `audit_fingerprint` (sibling to `surface_zenoh/admin.rs`; transport-agnostic via `PublishSink` trait)
+- [x] 8.2 Per-key configurable cadence (`metrics.<key>.interval_ms`), bounds 100 ms–60 s (`telemetry::validate_interval_ms`, `clamp_interval`)
+- [x] 8.3 Adaptive cadence (`metrics.<key>.adaptive = { threshold, fast_hz, slow_hz }`) (`telemetry::cadence::AdaptiveCadence` + `CadenceState::adaptive`)
+- [x] 8.4 Schema round-trip tests (each metric publishes and parses cleanly) (`schema::tests::*_round_trip_*`, `publisher::tests::*_publication_round_trips_*`)
+- [x] 8.5 Adaptive-mode test (cross threshold → fast_hz, fall below → slow_hz) (`publisher::tests::adaptive_cpu_*`)
+- [ ] 8.6 Log streaming integration with existing `tracing` / `defmt` infrastructure [DEFERRED — `tracing`/`defmt` adapters land alongside the kernel-side `KernelMetricsSource` in a future `kernel-stats` phase; Phase 8 ships the `LogRecord` schema, the `MetricsSource::drain_logs` hook, and the `StubMetricsSource` fixture used by tests]
 
 ## 9. Phase 9 — TOTP
 

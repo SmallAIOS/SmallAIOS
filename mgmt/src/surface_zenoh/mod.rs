@@ -9,8 +9,8 @@
 //!
 //! Phase 7 lands the admin keyspace, the bearer-token wrapper, the
 //! per-identity / total session caps, and the in-flight live flag.
-//! Phase 8 will land telemetry publications under
-//! `smallaios/metrics/**`.
+//! Phase 8 lands telemetry publications under
+//! `smallaios/metrics/**` (see [`telemetry`]).
 //!
 //! ## Module map
 //!
@@ -22,6 +22,9 @@
 //! - [`token`] — opaque + ML-DSA-65 / Ed25519-legacy token modes.
 //! - [`admin`] — verb dispatcher and bearer-token wrapper.
 //! - [`errors`] — POSIX errno table shared with the syscall surface.
+//! - [`telemetry`] — periodic + event-driven publishers under
+//!   `smallaios/metrics/**` with per-key cadence + adaptive
+//!   thresholds.
 //!
 //! ## ZenohSurface
 //!
@@ -39,6 +42,7 @@ pub mod admin;
 pub mod errors;
 pub mod json;
 pub mod session;
+pub mod telemetry;
 pub mod token;
 
 #[cfg(test)]
