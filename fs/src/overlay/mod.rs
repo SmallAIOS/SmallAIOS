@@ -48,14 +48,23 @@
 //! | [`reserved`]     | Reserved-suffix list + name rejection                         |
 //! | [`lookup`]       | Upper-wins path lookup resolver                               |
 //! | [`merge`]        | `readdir` merger (upper ∪ lower − whiteouts − opaque)         |
+//! | [`write`]        | `OverlayWriter`: stage-and-rename, locks, cap (Phase 2)       |
+//! | [`integrity`]    | SHA-3-256 sidecar + ML-DSA-65 signature sidecar (Phase 2)     |
+//! | [`conflict`]     | Boot-time A/B-swap conflict detection (Phase 2)               |
+//! | [`f2fs_upper`]   | Production `WritableUpperLayer` backed by F2FS (Phase 2)      |
 //!
-//! Filled by `embedded-overlay-v1` Phase 1.
+//! Phase 1 read-only merge is frozen; Phase 2 adds the write path
+//! and integrity verification.
 
 extern crate alloc;
 
 use alloc::string::String;
 use core::fmt;
 
+pub mod conflict;
+#[cfg(feature = "fs-on-disk-mounts")]
+pub mod f2fs_upper;
+pub mod integrity;
 pub mod lookup;
 pub mod lower_layer;
 pub mod merge;
@@ -63,7 +72,19 @@ pub mod opaque;
 pub mod reserved;
 pub mod upper_layer;
 pub mod whiteout;
+pub mod write;
 
+pub use conflict::{
+    detect_conflicts, ConflictMemo, ConflictReport, ConflictWarning, ConflictWarningKind,
+    LowerManifest, MapLowerManifest, OverlayConflict,
+};
+#[cfg(feature = "fs-on-disk-mounts")]
+pub use f2fs_upper::{F2fsUpperLayer, DEFAULT_UPPER_BASE};
+pub use integrity::{
+    decode_hex, encode_hex, encode_sidecar_bytes, hash_bytes, sha3_sidecar_path, sig_sidecar_path,
+    signature_present, verify_fingerprint, verify_signature, IntegrityError, SHA3_SIDECAR_SUFFIX,
+    SIG_SIDECAR_SUFFIX,
+};
 pub use lookup::{lookup, LookupResult};
 pub use lower_layer::{LowerEntry, LowerEntryKind, LowerError, LowerLayer, MockLowerLayer};
 pub use merge::{merge_readdir, MergedEntry, MergedEntryKind};
@@ -71,6 +92,11 @@ pub use opaque::{is_opaque_dir, OPAQUE_MARKER_NAME};
 pub use reserved::{is_reserved_name, reject_if_reserved, RESERVED_SUFFIXES};
 pub use upper_layer::{MockUpperLayer, UpperEntry, UpperEntryKind, UpperError, UpperLayer};
 pub use whiteout::{is_whiteout, list_whiteouts_in, WHITEOUT_SUFFIX};
+pub use write::{
+    whiteout_remove_allowed_for, AddResult, CallerRole, ErroringReader, MockWritableUpperLayer,
+    OverlayCap, OverlayWriteError, OverlayWriter, ReadableFd, ReadableFdError, SliceReader,
+    WritableUpperLayer, STAGING_SUFFIX,
+};
 
 /// Errors produced by the overlay merge layer.
 #[derive(Debug, Clone, PartialEq, Eq)]
