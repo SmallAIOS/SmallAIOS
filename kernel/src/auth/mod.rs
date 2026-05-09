@@ -29,11 +29,15 @@
 //! smallaios_auth::role::Role;` and convert.
 
 pub mod min_role;
+pub mod overlay_locks;
 pub mod session_table;
 pub mod shadow_provider;
 pub mod sweeper;
 
 pub use min_role::MinRole;
+pub use overlay_locks::{
+    NameLock, OverlayLockError, OverlayLockTable, OVERLAY_LOCK_TABLE_CAP, OVERLAY_NAME_MAX,
+};
 pub use session_table::{
     Session, SessionError, SessionId, SessionTable, MAX_USERNAME_LEN, SESSION_TABLE_CAP,
 };
