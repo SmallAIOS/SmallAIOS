@@ -7,6 +7,9 @@ repository.workspace = true
 description = "SmallAIOS container interface: health checks, metrics, orchestration"
 publish = false
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(smallaios_unikernel)'] }
+
 [features]
 default = []
 nvidia_gpu = ["smallaios-arch-nvidia"]

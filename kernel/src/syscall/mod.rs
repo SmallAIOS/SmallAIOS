@@ -23,6 +23,7 @@ pub mod capability;
 pub mod device;
 pub mod ipc;
 pub mod memory;
+pub mod model;
 pub mod onnx;
 pub mod posix;
 pub mod system;
@@ -397,18 +398,26 @@ const fn min_role_for(nr: usize) -> crate::auth::MinRole {
         | nr::SYS_WATCHDOG_REMAINING => MinRole::Unauthenticated,
 
         // Root-only surface.
-        nr::AUTH_CREATE_USER | nr::SYS_SHUTDOWN | nr::SYS_BOOT_SUCCESS | nr::ONNX_MODEL_REMOVE => {
-            MinRole::Root
-        }
+        nr::AUTH_CREATE_USER | nr::SYS_SHUTDOWN | nr::SYS_BOOT_SUCCESS => MinRole::Root,
 
-        // Operator+: model lifecycle and overlay add.
+        // Operator+: model lifecycle and overlay add. ONNX_MODEL_REMOVE
+        // also flows through here even though most modes are Root-only
+        // — the per-mode RBAC refinement happens inside
+        // `kernel::syscall::model::handle_onnx_model_remove` because
+        // mode `2` (unhide) MAY admit Operator under
+        // `fs.overlay.allow_operator_unhide`. Operator + Viewer + no-
+        // session callers that hit any non-Operator mode get
+        // `-EPERM` from the handler itself, with a `DENY:model_remove`
+        // audit record (per `fs-overlay-syscalls` spec scenario
+        // "Operator denied remove").
         nr::ONNX_LOAD
         | nr::ONNX_UNLOAD
         | nr::ONNX_CREATE_SESSION
         | nr::ONNX_RUN
         | nr::ONNX_GET_METADATA
         | nr::ONNX_LIST_PROVIDERS
-        | nr::ONNX_MODEL_ADD => MinRole::Operator,
+        | nr::ONNX_MODEL_ADD
+        | nr::ONNX_MODEL_REMOVE => MinRole::Operator,
 
         // Default: authenticated.
         _ => MinRole::Authenticated,

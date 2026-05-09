@@ -61,10 +61,13 @@ extern crate alloc;
 use alloc::string::String;
 use core::fmt;
 
+pub mod boot_cleanup;
 pub mod conflict;
+pub mod conflict_scan;
 #[cfg(feature = "fs-on-disk-mounts")]
 pub mod f2fs_upper;
 pub mod integrity;
+pub mod kernel_adapter;
 pub mod lookup;
 pub mod lower_layer;
 pub mod merge;
@@ -74,9 +77,13 @@ pub mod upper_layer;
 pub mod whiteout;
 pub mod write;
 
+pub use boot_cleanup::{run_boot_cleanup, BootCleanupReport};
 pub use conflict::{
     detect_conflicts, ConflictMemo, ConflictReport, ConflictWarning, ConflictWarningKind,
     LowerManifest, MapLowerManifest, OverlayConflict,
+};
+pub use conflict_scan::{
+    run_boot_conflict_scan, CapturingConflictAuditSink, ConflictAuditSink, ConflictScanEvent,
 };
 #[cfg(feature = "fs-on-disk-mounts")]
 pub use f2fs_upper::{F2fsUpperLayer, DEFAULT_UPPER_BASE};
@@ -85,6 +92,7 @@ pub use integrity::{
     signature_present, verify_fingerprint, verify_signature, IntegrityError, SHA3_SIDECAR_SUFFIX,
     SIG_SIDECAR_SUFFIX,
 };
+pub use kernel_adapter::{KernelOverlayAdapter, OVERLAY_UPPER_BASE};
 pub use lookup::{lookup, LookupResult};
 pub use lower_layer::{LowerEntry, LowerEntryKind, LowerError, LowerLayer, MockLowerLayer};
 pub use merge::{merge_readdir, MergedEntry, MergedEntryKind};
