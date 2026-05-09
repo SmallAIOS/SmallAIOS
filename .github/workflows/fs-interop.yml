@@ -73,7 +73,7 @@ jobs:
       - uses: actions/checkout@v6
       - name: Install squashfs + f2fs userland
         run: |
-          dnf install -y squashfs-tools f2fs-tools util-linux
+          dnf install -y squashfs-tools f2fs-tools util-linux diffutils coreutils
 
       - name: Build squashfs image
         run: |
