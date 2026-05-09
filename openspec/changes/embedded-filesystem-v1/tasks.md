@@ -109,13 +109,17 @@
 
 ## 7. Phase 7 — F2FS write path
 
-- [ ] 7.1 `fs/src/f2fs/write.rs` — file create, directory create, write extending
-- [ ] 7.2 NAT/SIT/SSA update path, log-structured allocation
-- [ ] 7.3 Atomic rename via journal
-- [ ] 7.4 truncate, unlink, rmdir
-- [ ] 7.5 Round-trip test: SmallAIOS writes → Linux 6.6 reads → `cmp` byte-exact
-- [ ] 7.6 Application-layer `policy.toml` SHA-3-256 fingerprint header
-- [ ] 7.7 Write-coalescing buffer integration
+- [x] 7.1 `fs/src/f2fs/write.rs` — file create, directory create, write extending
+- [x] 7.2 NAT/SIT/SSA update path, log-structured allocation — Phase 7 NAT/SIT in `fs/src/f2fs/write.rs`; Phase 9 integration wires the in-memory SSA reverse map (`record_ssa` + `WriteState::ssa_index`) so GC v2's `live_blocks_from_segment` projection has authoritative data
+- [x] 7.3 Atomic rename via journal
+- [x] 7.4 truncate, unlink, rmdir
+- [ ] 7.5 Round-trip test: SmallAIOS writes → Linux 6.6 reads → `cmp` byte-exact (DEFERRED — needs the F2FS interop CI matrix from task 10.7's coverage)
+- [ ] 7.6 Application-layer `policy.toml` SHA-3-256 fingerprint header (DEFERRED — owned by mgmt phase)
+- [ ] 7.7 Write-coalescing buffer integration (DEFERRED — Phase 6 cache LRU lands first)
+- [x] 7.8 Phase 9 GC v2 wired into the write path — `fs/src/f2fs/write.rs::maybe_run_gc` calls `gc::run_gc_pass_v2` with hot/cold cursor hints, journal staging, and the cooperative-yield budget; integration tests in `fs/tests/integration_gc_v2_writepath.rs` (34 cases, mixed-mtime fragmentation workload preserves bytes)
+- [x] 7.9 Hot/cold cursor seeding from checkpoint pack — `WriteState::cur_hot_segno` / `cur_cold_segno` initialized to `cur_data_segno` on mount; surfaced via `F2fs::allocator_hints` for tests
+- [x] 7.10 Wall-clock injection for GC age classification — `F2fs::set_now_secs` / `now_secs()` setter+getter; production wires the kernel scheduler's clock tick, tests inject deterministic values
+- [x] 7.11 GC journal staging surface — `WriteState::gc_journal_dirty` accumulates `GcJournalRecord` entries before the SIT/NAT mutation lands; drained at `fsync` alongside `journal_dirty`
 
 ## 8. Phase 8 — fsync + checkpoint commit
 
