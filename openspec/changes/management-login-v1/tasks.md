@@ -82,20 +82,20 @@
 
 ## 7. Phase 7 — Zenoh admin + bearer-token wrapper
 
-- [ ] 7.1 `mgmt/src/surface_zenoh.rs` — `ConfigSurface` impl on Zenoh
-- [ ] 7.2 Register `smallaios/admin/**` queryables (login, logout, whoami, passwd, users/add, users/list, heartbeat)
-- [ ] 7.3 JSON request/response codec (reuse existing JSON path in `net`)
-- [ ] 7.4 Bearer-token wrapper: extract → lookup → peer-check → idle-check → reset → dispatch
-- [ ] 7.5 Peer-identity binding (record TLS cert fingerprint or PSK identity at login)
-- [ ] 7.6 Reject token replay from a different peer (test)
-- [ ] 7.7 Per-identity (4) and total (16) Zenoh session caps; `-EAGAIN` on exceed
-- [ ] 7.8 In-flight protection: long-running call survives idle-expiry mid-flight
-- [ ] 7.9 `heartbeat` keepalive verb
-- [ ] 7.10 Optional two-tier (access + refresh) mode behind `mgmt.token.two_tier = true` policy
-- [ ] 7.11 `mgmt-token-mldsa` cargo feature (ML-DSA-65 signed tokens)
-- [ ] 7.12 `mgmt-token-ed25519-legacy` cargo feature, off by default, compile-time excluded when off
-- [ ] 7.13 Cargo-deny rule banning combinations that disable opaque tokens entirely
-- [ ] 7.14 JSON request fuzz harness on the wire codec
+- [x] 7.1 `mgmt/src/surface_zenoh/` — `ConfigSurface` impl on Zenoh (`ZenohSurface` + `ZenohConfigView` adapter)
+- [x] 7.2 Register `smallaios/admin/**` queryables (login, logout, whoami, passwd, users/add, users/list, heartbeat, config/get, config/set, config/changed)
+- [x] 7.3 JSON request/response codec — clean-room `mgmt::surface_zenoh::json` (`serde_json` is `std`-only and brings a substantial transitive tree, so we mirror Phase 5+6's clean-room TOML pattern; `net` did not have a JSON codec to reuse)
+- [x] 7.4 Bearer-token wrapper: extract → lookup → peer-check → idle-check → reset → dispatch (`AdminDispatcher::dispatch`)
+- [x] 7.5 Peer-identity binding (32-byte fingerprint recorded in kernel `Session::peer_identity` at login)
+- [x] 7.6 Reject token replay from a different peer (`cross_peer_replay_eperm` test)
+- [x] 7.7 Per-identity (4) and total (16) Zenoh session caps; `-EAGAIN` on exceed (`per_identity_cap_eagain_on_5th`, `total_cap_eagain_on_17th`)
+- [x] 7.8 In-flight protection: long-running call survives idle-expiry mid-flight (`long_running_call_survives_idle_expiry_via_in_flight_flag`)
+- [x] 7.9 `heartbeat` keepalive verb (`handle_heartbeat`, returns `expires_in`)
+- [ ] 7.10 Optional two-tier (access + refresh) mode behind `mgmt.token.two_tier = true` policy [DEFERRED — orchestration-class clients land in Phase 8/10; opaque + ML-DSA modes ship in Phase 7 and the `mgmt.token_two_tier` Config field is already wired through Phase 5]
+- [x] 7.11 `mgmt-token-mldsa` cargo feature (ML-DSA-65 signed tokens — `surface_zenoh::token::mldsa`)
+- [x] 7.12 `mgmt-token-ed25519-legacy` cargo feature, off by default, compile-time excluded when off (`#[cfg]`-gated `ed25519_legacy` submodule + `binary_excludes_ed25519_when_feature_off` test)
+- [ ] 7.13 Cargo-deny rule banning combinations that disable opaque tokens entirely [DEFERRED — opaque tokens are unconditionally compiled in Phase 7 (no feature can turn them off); the rule lands when a future `mgmt-disable-opaque` feature is contemplated]
+- [x] 7.14 JSON request fuzz harness on the wire codec (`fuzz_smoke_random_bytes_dont_panic` + decode-rejection coverage; the libfuzzer corpus moves to `cargo-fuzz` in Phase 11 cross-cutting verification)
 
 ## 8. Phase 8 — Zenoh telemetry
 

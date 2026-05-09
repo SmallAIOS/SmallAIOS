@@ -28,7 +28,17 @@ default = []
 # - `bus-dds`: enable DDS-backed admin (placeholder).
 # - `formal-gate`: formal verification gates for CI.
 # - `signed-checkpoints`: ML-DSA-65 signed audit-log checkpoints.
+# - `mgmt-token-mldsa`: opt-in ML-DSA-65 signed JWT-style tokens
+#   (Phase 7 — opaque random tokens remain the default; this feature
+#   adds an additional path, it does not disable opaque tokens).
+# - `mgmt-token-ed25519-legacy`: opt-in Ed25519 signed JWT-style tokens
+#   for legacy clients. Off by default, and when off NO Ed25519 code
+#   from `surface_zenoh::token::ed25519_legacy` SHALL be linked into
+#   the binary (compile-time excluded under
+#   `#[cfg(feature = "mgmt-token-ed25519-legacy")]`).
 bus-zenoh = []
 bus-dds = []
 formal-gate = []
 signed-checkpoints = []
+mgmt-token-mldsa = []
+mgmt-token-ed25519-legacy = []
