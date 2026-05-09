@@ -73,8 +73,8 @@ jobs:
             sudo umount /tmp/f2fs-mnt
           else
             echo "f2fs kernel module unavailable on this runner — using fsck.f2fs format-validation fallback"
-            fsck.f2fs --version
-            sudo fsck.f2fs -a /tmp/test.f2fs.img
+            fsck.f2fs -V
+            sudo fsck.f2fs -a /tmp/test.f2fs.img || sudo fsck.f2fs -f /tmp/test.f2fs.img
             # Optional: dump.f2fs reads the superblock + checkpoint without mount
             command -v dump.f2fs >/dev/null && sudo dump.f2fs -d 1 -i 1 /tmp/test.f2fs.img | head -20 || true
           fi
