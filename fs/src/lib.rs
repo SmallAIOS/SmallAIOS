@@ -91,7 +91,25 @@ pub mod delta;
 ///
 /// Filled by `embedded-filesystem-v1` Phase 6.
 #[cfg(feature = "fs-on-disk-mounts")]
-pub mod cache {}
+pub mod cache;
+
+/// Boot-time mount sequence: GPT → A/B boot config → squashfs A/B
+/// fallback → F2FS `/data/`. Owned by `embedded-filesystem-v1`
+/// Phase 6.
+#[cfg(feature = "fs-on-disk-mounts")]
+pub mod mount;
+
+/// Inference-lockout guard + fail-closed read-path policy. Captured
+/// when both squashfs slots fail signature verification at mount
+/// time. Owned by `embedded-filesystem-v1` Phase 6.
+#[cfg(feature = "fs-on-disk-mounts")]
+pub mod integrity;
+
+/// Default values for the `fs.*` policy.toml field surface
+/// (cache budgets, block-device timeouts, boot watchdog window).
+/// Owned by `embedded-filesystem-v1` Phase 6.
+#[cfg(feature = "fs-on-disk-mounts")]
+pub mod config_defaults;
 
 /// OverlayFS-style merged `/models/` view (upper = F2FS, lower =
 /// squashfs A/B slot), file-based whiteouts, capacity-cap, optional
