@@ -41,11 +41,12 @@
 
 use crate::auth::{
     AuditSink, Role, Session, SessionTable, ShadowProvider, ShadowProviderError, Sweeper,
-    ERRNO_EACCES, ERRNO_EAGAIN, ERRNO_EEXIST, ERRNO_EFAULT, ERRNO_EINVAL, ERRNO_ENOENT,
-    ERRNO_ENOSPC, ERRNO_ENOSYS, FLAG_MUST_CHANGE_PASSWORD,
+    ERRNO_EACCES, ERRNO_EAGAIN, ERRNO_EAUTHEXPIRED, ERRNO_EEXIST, ERRNO_EFAULT, ERRNO_EINVAL,
+    ERRNO_ENOENT, ERRNO_ENOSPC, ERRNO_ENOSYS, FLAG_MUST_CHANGE_PASSWORD,
 };
 use core::sync::atomic::{AtomicU64, Ordering};
 use smallaios_security::argon2id::{argon2id_format_phc, argon2id_hash, Argon2idParams};
+use smallaios_security::totp::{totp_verify, DEFAULT_DIGITS, DEFAULT_PERIOD_SECONDS};
 
 use super::{SyscallArgs, SyscallResult};
 
@@ -59,6 +60,30 @@ const PASSWORD_MAX_LEN: usize = 1024;
 /// Hard cap on username byte length. Matches
 /// [`crate::auth::session_table::MAX_USERNAME_LEN`].
 const USERNAME_MAX_LEN: usize = 64;
+
+/// Length of an RFC 6238 TOTP shared secret in bytes — 20 is the
+/// canonical value (matches the SHA-1 HMAC block size and the
+/// authenticator-app QR-code convention).
+pub const TOTP_SECRET_LEN: usize = 20;
+
+/// Maximum acceptable length of the `factor2` TOTP code field. RFC 6238
+/// recommends 6-digit codes; we accept up to [`smallaios_security::totp::MAX_DIGITS`]
+/// digits and reject anything longer to fail-fast on malformed input.
+const FACTOR2_MAX_LEN: usize = 9;
+
+/// Clock-skew tolerance for TOTP verification (in TOTP steps). A
+/// value of 1 means the verifier accepts the previous, current, and
+/// next 30-second window — RFC 6238 §6's recommended baseline.
+const TOTP_VERIFY_WINDOW_STEPS: u32 = 1;
+
+/// Synthetic 20-byte TOTP secret used for the constant-time-equivalent
+/// dummy verify when the looked-up user is not enrolled or does not
+/// exist. Public bytes — not a credential — they exist solely to keep
+/// the wall-clock budget of a TOTP-required reject indistinguishable
+/// from a TOTP-not-required path.
+//
+// lgtm[rust/hard-coded-cryptographic-value] — synthetic dummy used only for constant-time-equivalent reject; not a real credential
+const DUMMY_TOTP_SECRET: [u8; TOTP_SECRET_LEN] = [0u8; TOTP_SECRET_LEN];
 
 /// Dummy PHC string used by [`sys_auth_login`] when the username lookup
 /// misses. The salt and tag are 16 / 32 zero bytes — *not* a credential
@@ -254,13 +279,20 @@ where
     if password.is_empty() || password.len() > PASSWORD_MAX_LEN {
         return ERRNO_EINVAL;
     }
-    // Phase 3: factor2 reserved for Phase 9 TOTP. Reject any non-empty
-    // value loud-and-early — callers can compile against the real
-    // signature but we never silently accept unverifiable second
-    // factors.
-    if !factor2.is_empty() {
+    // Phase 9: factor2 carries an RFC 6238 TOTP code (ASCII digits).
+    // Length 0 means "not supplied"; 1..=9 ASCII digits is parsed as
+    // the candidate code; anything else is rejected as malformed.
+    if factor2.len() > FACTOR2_MAX_LEN {
         return ERRNO_EINVAL;
     }
+    let factor2_code: Option<u32> = if factor2.is_empty() {
+        None
+    } else {
+        match parse_totp_code(factor2) {
+            Some(c) => Some(c),
+            None => return ERRNO_EINVAL,
+        }
+    };
 
     let user_str = match core::str::from_utf8(user) {
         Ok(s) => s,
@@ -290,12 +322,66 @@ where
         }
     };
 
+    // Phase 9 second-factor gate. We always run an HMAC-SHA1 verify
+    // against *some* secret, even when:
+    //   - the user does not exist, or
+    //   - the password was already wrong, or
+    //   - the user has not enrolled in TOTP,
+    //
+    // so the wall-clock budget on every login attempt looks the same
+    // to a remote attacker. The result of the dummy verify is
+    // discarded; the real check is gated on `ok && totp_required`.
+    let (totp_secret_for_verify, totp_required) = match entry.as_ref() {
+        Some(e) if e.totp_required => match e.totp_secret.as_ref() {
+            Some(s) => (s.as_slice(), true),
+            // Operator marked the user `totp_required = true` but
+            // never finished enrolment. We fail closed (reject the
+            // login) rather than fail open (let them in without a
+            // second factor). The dummy verify keeps the timing
+            // budget consistent with the enrolled-user branch.
+            None => (&DUMMY_TOTP_SECRET[..], true),
+        },
+        _ => (&DUMMY_TOTP_SECRET[..], false),
+    };
+
+    let supplied_code = factor2_code.unwrap_or(0);
+    let totp_now = ctx.now_unix;
+    let totp_match = totp_verify(
+        totp_secret_for_verify,
+        supplied_code,
+        totp_now,
+        DEFAULT_DIGITS,
+        DEFAULT_PERIOD_SECONDS,
+        TOTP_VERIFY_WINDOW_STEPS,
+    );
+
     if !ok {
         return ERRNO_EACCES;
     }
 
     // Safe to unwrap — `ok` is only true when entry is Some.
     let entry = entry.unwrap();
+
+    // Second-factor enforcement runs *after* the password check
+    // succeeds so the password failure path (which already ran a
+    // dummy TOTP verify above) is timing-equivalent.
+    if totp_required {
+        if factor2_code.is_none() {
+            // Spec: missing TOTP on a TOTP-required user → -EAUTHEXPIRED
+            // with reason "TOTP required". The dummy verify above
+            // keeps the timing matched to the wrong-code branch.
+            return ERRNO_EAUTHEXPIRED;
+        }
+        // Reject failed TOTP without enrolment leak via dummy verify:
+        // if the user has no secret, `totp_secret_for_verify` is the
+        // all-zero dummy; `totp_match` will only be true for a
+        // hypothetical attacker who guesses the all-zero-secret code.
+        // We additionally require the entry actually has a stored
+        // secret before accepting.
+        if !totp_match || entry.totp_secret.is_none() {
+            return ERRNO_EACCES;
+        }
+    }
 
     let must_change = entry.flags & FLAG_MUST_CHANGE_PASSWORD != 0;
     let session = match Session::new(
@@ -578,12 +664,51 @@ where
     0
 }
 
-/// `auth_totp_setup(user_ptr, user_len, secret_out_ptr)` -> -ENOSYS in Phase 3.
+/// Parse `factor2` bytes (ASCII digits, 1..=9) into a `u32`. Returns
+/// `None` for any non-digit byte or empty slice. The kernel uses this
+/// before TOTP verification so a malformed code never reaches the
+/// security crate.
+fn parse_totp_code(bytes: &[u8]) -> Option<u32> {
+    if bytes.is_empty() || bytes.len() > FACTOR2_MAX_LEN {
+        return None;
+    }
+    let mut acc: u32 = 0;
+    for &b in bytes {
+        if !b.is_ascii_digit() {
+            return None;
+        }
+        acc = acc.checked_mul(10)?.checked_add((b - b'0') as u32)?;
+    }
+    Some(acc)
+}
+
+/// `auth_totp_setup(user_ptr, user_len, secret_out_ptr)` -> 0 | -errno
 ///
-/// The signature is validated so callers can compile against the real
-/// ABI; the implementation lands in `management-login-v1` Phase 9.
+/// Generates a fresh 20-byte TOTP secret via the kernel CSPRNG,
+/// persists it to the caller's shadow entry via
+/// [`ShadowProvider::write_totp_secret`], and writes the secret bytes
+/// out to `secret_out_ptr` so the operator can render a QR code in
+/// userspace.
+///
+/// Spec: `openspec/changes/management-login-v1/specs/kernel-syscalls/spec.md`
+/// → "auth_totp_setup writes the new shared-secret bytes via
+/// `secret_out_ptr` and updates the shadow record's `totp_secret`
+/// field."
+///
+/// Self-enrolment requires an authenticated session; cross-enrolment
+/// (acting on someone else's account) requires `Role::Root`. The
+/// `totp_required` field is **not** flipped by this syscall — that is
+/// owned by `mgmt::Config::totp.enforced_for_roles`, which the kernel
+/// reads from at login time. The operator can opt into TOTP at any
+/// point by setting that policy field.
+///
+/// # Safety
+///
+/// `secret_out_ptr` must point to at least [`TOTP_SECRET_LEN`] (20)
+/// writable bytes. In unikernel mode the caller and kernel share an
+/// address space; interrupts are masked across the syscall.
 pub fn handle_auth_totp_setup<P, S>(
-    _ctx: &mut AuthCtx<'_, P, S>,
+    ctx: &mut AuthCtx<'_, P, S>,
     user: &[u8],
     secret_out_ptr: usize,
 ) -> SyscallResult
@@ -597,7 +722,69 @@ where
     if secret_out_ptr == 0 {
         return ERRNO_EFAULT;
     }
-    ERRNO_ENOSYS
+
+    // Caller must be authenticated.
+    let id = crate::auth::current_session();
+    if id.is_none() {
+        return ERRNO_EACCES;
+    }
+    let caller = match ctx.table.lookup(id) {
+        Ok(s) => *s,
+        Err(_) => return ERRNO_EACCES,
+    };
+
+    let user_str = match core::str::from_utf8(user) {
+        Ok(s) => s,
+        Err(_) => return ERRNO_EINVAL,
+    };
+
+    // Cross-enrol (target != caller) requires Root.
+    let caller_name = match core::str::from_utf8(caller.username_bytes()) {
+        Ok(s) => s,
+        Err(_) => return ERRNO_EINVAL,
+    };
+    if caller_name != user_str && caller.role != Role::Root {
+        return ERRNO_EACCES;
+    }
+
+    // Refuse to enrol a user that doesn't exist.
+    match ctx.provider.read_user(user_str) {
+        Ok(Some(_)) => {}
+        Ok(None) => return ERRNO_ENOENT,
+        Err(_) => return ERRNO_ENOSYS,
+    };
+
+    // Generate a 20-byte secret via the kernel CSPRNG (the same
+    // function-pointer hook used for password salts). Failure to
+    // pull entropy maps to -ENOSYS so the operator can distinguish
+    // setup-incomplete from a true policy reject.
+    let mut secret = [0u8; TOTP_SECRET_LEN];
+    if (ctx.salt_source)(&mut secret).is_err() {
+        return ERRNO_ENOSYS;
+    }
+
+    // Persist to the shadow before exposing the secret to userspace.
+    // If the provider doesn't yet support TOTP writes (Phase 9 lands
+    // before `embedded-filesystem-v1` Phase 6 finishes), zero the
+    // secret on the kernel stack and bail.
+    if let Err(_e) = ctx.provider.write_totp_secret(user_str, &secret) {
+        secret.fill(0);
+        return ERRNO_ENOSYS;
+    }
+
+    // Copy the secret out. SAFETY: caller has guaranteed
+    // `secret_out_ptr` is valid for [`TOTP_SECRET_LEN`] writable
+    // bytes. The unikernel runs caller + kernel in the same address
+    // space; interrupts are masked across the syscall.
+    //
+    // We then zero the kernel stack copy so a later coredump or
+    // crash dump cannot leak the secret.
+    unsafe {
+        core::ptr::copy_nonoverlapping(secret.as_ptr(), secret_out_ptr as *mut u8, TOTP_SECRET_LEN);
+    }
+    secret.fill(0);
+    let _ = ctx;
+    0
 }
 
 // ─── Stub dispatchers used by the syscall table ──────────────────────────────
@@ -699,6 +886,8 @@ mod tests {
             role,
             flags: 0,
             lockout_until_unix: 0,
+            totp_secret: None,
+            totp_required: false,
         })
     }
 
@@ -778,6 +967,8 @@ mod tests {
             role: Role::Viewer,
             flags: 0,
             lockout_until_unix: 1_700_000_500,
+            totp_secret: None,
+            totp_required: false,
         });
 
         let mut table = SessionTable::new();
@@ -790,7 +981,12 @@ mod tests {
     }
 
     #[test]
-    fn login_factor2_nonempty_returns_einval_phase3() {
+    fn login_factor2_ignored_for_non_enrolled_user() {
+        // Phase 9 spec: when `totp_required = false`, `factor2_*` is
+        // ignored — a syntactically valid code on a non-enrolled
+        // user logs them in normally. (Pre-Phase-9 behaviour was to
+        // reject any non-empty factor2 with -EINVAL; Phase 9
+        // generalises that to "ignored unless required".)
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Viewer, PASSWORD_CORRECT_HORSE);
@@ -800,7 +996,49 @@ mod tests {
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_CORRECT_HORSE, PHASE3_FACTOR2);
+        let r = handle_auth_login(
+            &mut ctx,
+            b"alice",
+            PASSWORD_CORRECT_HORSE,
+            FACTOR2_VALID_CODE,
+        );
+        assert!(r >= 0, "non-enrolled user should ignore factor2, got {r}");
+    }
+
+    #[test]
+    fn login_factor2_malformed_returns_einval() {
+        // Non-digit bytes in factor2 SHALL produce `-EINVAL` even
+        // before the lookup, regardless of enrolment state.
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        seed_user(&provider, "alice", Role::Viewer, PASSWORD_CORRECT_HORSE);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
+
+        let r = handle_auth_login(
+            &mut ctx,
+            b"alice",
+            PASSWORD_CORRECT_HORSE,
+            FACTOR2_MALFORMED,
+        );
+        assert_eq!(r, ERRNO_EINVAL);
+    }
+
+    #[test]
+    fn login_factor2_too_long_returns_einval() {
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        seed_user(&provider, "alice", Role::Viewer, PASSWORD_CORRECT_HORSE);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
+
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_CORRECT_HORSE, FACTOR2_TOO_LONG);
         assert_eq!(r, ERRNO_EINVAL);
     }
 
@@ -867,6 +1105,8 @@ mod tests {
             role: Role::Operator,
             flags: FLAG_MUST_CHANGE_PASSWORD,
             lockout_until_unix: 0,
+            totp_secret: None,
+            totp_required: false,
         });
 
         let mut table = SessionTable::new();
@@ -1099,21 +1339,42 @@ mod tests {
     }
 
     #[test]
-    fn totp_setup_returns_enosys_in_phase3() {
+    fn totp_setup_writes_random_secret_to_shadow_and_out_buffer() {
+        // Phase 9 spec: `auth_totp_setup` generates a 20-byte secret
+        // via the kernel CSPRNG (mocked by `deterministic_salt`),
+        // persists to the shadow, and writes the bytes to the
+        // operator-supplied buffer.
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
+        seed_user(&provider, "alice", Role::Operator, PASSWORD_PW);
+
         let mut table = SessionTable::new();
         let sweeper = Sweeper::new();
         let mut audit = CapturingAuditSink::new();
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
-        let mut secret = [0u8; 32];
+        // Caller must be authenticated.
+        handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, &[]);
+
+        let mut secret = [0u8; TOTP_SECRET_LEN];
         let r = handle_auth_totp_setup(&mut ctx, b"alice", secret.as_mut_ptr() as usize);
-        assert_eq!(r, ERRNO_ENOSYS);
+        assert_eq!(r, 0);
+
+        // Shadow now carries a non-empty secret.
+        let stored = provider
+            .read_user("alice")
+            .unwrap()
+            .unwrap()
+            .totp_secret
+            .expect("totp_secret persisted");
+        assert_eq!(stored.len(), TOTP_SECRET_LEN);
+
+        // Out-buffer matches the persisted secret byte-for-byte.
+        assert_eq!(secret.to_vec(), stored);
     }
 
     #[test]
-    fn totp_setup_validates_args_before_enosys() {
+    fn totp_setup_validates_args() {
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         let mut table = SessionTable::new();
@@ -1122,12 +1383,248 @@ mod tests {
         let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
 
         // Empty username is rejected.
-        let mut secret = [0u8; 32];
+        let mut secret = [0u8; TOTP_SECRET_LEN];
         let r = handle_auth_totp_setup(&mut ctx, &[], secret.as_mut_ptr() as usize);
         assert_eq!(r, ERRNO_EINVAL);
 
         // Null secret pointer is rejected.
         let r = handle_auth_totp_setup(&mut ctx, b"alice", 0);
         assert_eq!(r, ERRNO_EFAULT);
+    }
+
+    #[test]
+    fn totp_setup_requires_authenticated_session() {
+        // No active session ⇒ -EACCES.
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        seed_user(&provider, "alice", Role::Operator, PASSWORD_PW);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
+
+        let mut secret = [0u8; TOTP_SECRET_LEN];
+        let r = handle_auth_totp_setup(&mut ctx, b"alice", secret.as_mut_ptr() as usize);
+        assert_eq!(r, ERRNO_EACCES);
+    }
+
+    #[test]
+    fn totp_setup_self_enrol_succeeds_for_non_root() {
+        // Operator can enrol themselves without root override.
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        seed_user(&provider, "operator-1", Role::Operator, PASSWORD_PW);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
+
+        handle_auth_login(&mut ctx, b"operator-1", PASSWORD_PW, &[]);
+        let mut secret = [0u8; TOTP_SECRET_LEN];
+        let r = handle_auth_totp_setup(&mut ctx, b"operator-1", secret.as_mut_ptr() as usize);
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn totp_setup_cross_enrol_requires_root() {
+        // Operator cannot enrol another user.
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        seed_user(&provider, "operator-1", Role::Operator, PASSWORD_OP_PW);
+        seed_user(&provider, "viewer-1", Role::Viewer, PASSWORD_VIEWER_PW);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
+
+        handle_auth_login(&mut ctx, b"operator-1", PASSWORD_OP_PW, &[]);
+        let mut secret = [0u8; TOTP_SECRET_LEN];
+        let r = handle_auth_totp_setup(&mut ctx, b"viewer-1", secret.as_mut_ptr() as usize);
+        assert_eq!(r, ERRNO_EACCES);
+    }
+
+    #[test]
+    fn totp_setup_root_can_cross_enrol() {
+        // Root may enrol another user on their behalf.
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
+        seed_user(&provider, "viewer-1", Role::Viewer, PASSWORD_VIEWER_PW);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
+
+        handle_auth_login(&mut ctx, b"root-1", PASSWORD_ROOT_PW, &[]);
+        let mut secret = [0u8; TOTP_SECRET_LEN];
+        let r = handle_auth_totp_setup(&mut ctx, b"viewer-1", secret.as_mut_ptr() as usize);
+        assert_eq!(r, 0);
+        let stored = provider.read_user("viewer-1").unwrap().unwrap().totp_secret;
+        assert!(stored.is_some());
+    }
+
+    #[test]
+    fn totp_setup_unknown_user_returns_enoent() {
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 0);
+
+        handle_auth_login(&mut ctx, b"root-1", PASSWORD_ROOT_PW, &[]);
+        let mut secret = [0u8; TOTP_SECRET_LEN];
+        let r = handle_auth_totp_setup(&mut ctx, b"ghost", secret.as_mut_ptr() as usize);
+        assert_eq!(r, ERRNO_ENOENT);
+    }
+
+    // ─── Login factor2 / TOTP path ──────────────────────────────────────
+
+    /// Build a TOTP-enrolled user for the login-factor2 tests. Returns
+    /// `(user_id, secret)`.
+    fn seed_totp_user(
+        provider: &MockShadowProvider,
+        name: &str,
+        password: &[u8],
+        secret: &[u8],
+    ) -> u32 {
+        provider.seed(crate::auth::ShadowProviderEntry {
+            stable_user_id: 0,
+            username: name.into(),
+            phc: make_phc(password),
+            role: Role::Operator,
+            flags: 0,
+            lockout_until_unix: 0,
+            totp_secret: Some(secret.to_vec()),
+            totp_required: true,
+        })
+    }
+
+    #[test]
+    fn login_totp_required_missing_factor2_returns_eauthexpired() {
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        // 20-byte synthetic secret — see security crate test vectors
+        // for full RFC 6238 coverage.
+        // lgtm[rust/hard-coded-cryptographic-value] — synthetic test fixture, not a real credential
+        let secret: alloc::vec::Vec<u8> = (0u8..20).collect();
+        seed_totp_user(&provider, "alice", PASSWORD_PW, &secret);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 1_700_000_000);
+
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, &[]);
+        assert_eq!(r, ERRNO_EAUTHEXPIRED);
+    }
+
+    #[test]
+    fn login_totp_required_wrong_code_returns_eacces() {
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        // lgtm[rust/hard-coded-cryptographic-value] — synthetic test fixture, not a real credential
+        let secret: alloc::vec::Vec<u8> = (0u8..20).collect();
+        seed_totp_user(&provider, "alice", PASSWORD_PW, &secret);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 1_700_000_000);
+
+        // 6 zero digits — astronomically unlikely to match any
+        // 6-digit RFC 6238 code at this timestamp.
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, b"000000");
+        assert_eq!(r, ERRNO_EACCES);
+    }
+
+    #[test]
+    fn login_totp_required_correct_code_succeeds() {
+        // Spec scenario "TOTP enrolled — correct code accepted".
+        // We compute the expected code via the security crate, feed
+        // it back as factor2, and assert a session is returned.
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        // lgtm[rust/hard-coded-cryptographic-value] — synthetic test fixture, not a real credential
+        let secret: alloc::vec::Vec<u8> = (0u8..20).collect();
+        seed_totp_user(&provider, "alice", PASSWORD_PW, &secret);
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let now: u64 = 1_700_000_000;
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, now);
+
+        let code = smallaios_security::totp::totp_generate(
+            &secret,
+            now,
+            DEFAULT_DIGITS,
+            DEFAULT_PERIOD_SECONDS,
+        );
+        // Format as zero-padded 6-digit ASCII.
+        let mut buf = [0u8; 6];
+        let mut n = code;
+        for i in (0..6).rev() {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+        }
+
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, &buf);
+        assert!(r >= 0, "expected session id, got {r}");
+    }
+
+    #[test]
+    fn login_totp_required_user_without_secret_fails_closed() {
+        // Operator marked the user `totp_required = true` but
+        // never finished enrolment (`totp_secret = None`). The
+        // kernel SHALL fail closed (reject), not fail open.
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        provider.seed(crate::auth::ShadowProviderEntry {
+            stable_user_id: 0,
+            username: "alice".into(),
+            phc: make_phc(PASSWORD_PW),
+            role: Role::Operator,
+            flags: 0,
+            lockout_until_unix: 0,
+            totp_secret: None,
+            totp_required: true,
+        });
+
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 1_700_000_000);
+
+        // Even with a syntactically valid factor2, the absence of an
+        // enrolled secret means no code can match.
+        let r = handle_auth_login(&mut ctx, b"alice", PASSWORD_PW, b"000000");
+        // Either EAUTHEXPIRED (factor2 absent) or EACCES (code wrong)
+        // is acceptable; the *one* outcome we MUST forbid is `>= 0`.
+        assert!(r < 0, "fail-closed broke: returned {r}");
+    }
+
+    #[test]
+    fn login_totp_unknown_user_runs_dummy_verify_for_timing() {
+        // Spec: "constant-time-equivalent: timing of user-not-found
+        // indistinguishable from TOTP-wrong". We can't measure
+        // wall-clock here without flakiness, but we *can* assert
+        // the code path always runs `totp_verify` (no panic /
+        // correct rejection) for a missing user.
+        crate::auth::clear_current_session();
+        let provider = MockShadowProvider::new();
+        let mut table = SessionTable::new();
+        let sweeper = Sweeper::new();
+        let mut audit = CapturingAuditSink::new();
+        let mut ctx = make_ctx(&mut table, &provider, &sweeper, &mut audit, 1_700_000_000);
+
+        let r = handle_auth_login(&mut ctx, b"ghost", PASSWORD_PW, b"123456");
+        assert_eq!(r, ERRNO_EACCES);
     }
 }
