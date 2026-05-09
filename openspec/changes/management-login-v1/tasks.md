@@ -108,14 +108,14 @@
 
 ## 9. Phase 9 — TOTP
 
-- [ ] 9.1 `security/src/totp.rs` — RFC 6238 TOTP-SHA1 implementation
-- [ ] 9.2 RFC 6238 test vectors
-- [ ] 9.3 Clock-skew tolerance test (±1 step at default 30-s period)
-- [ ] 9.4 Add `totp_secret` and `totp_required` columns to shadow record (parsers ignore when absent)
-- [ ] 9.5 `totp_setup` syscall (or extension to `auth_create_user`)
-- [ ] 9.6 `auth_login` consumes `factor2_ptr/len` when target user is enrolled
-- [ ] 9.7 `mgmt/policy.toml` `totp.enforced_for_roles = []` knob
-- [ ] 9.8 Tests for enrolled-user-must-supply-code, unenrolled-user-may-omit, invalid-code-rejected
+- [x] 9.1 `security/src/totp.rs` — RFC 6238 TOTP-SHA1 implementation (clean-room SHA-1 + HMAC-SHA1 + dynamic-truncation, ~600 LOC across `sha1.rs`, `hmac_sha1.rs`, `totp.rs`)
+- [x] 9.2 RFC 6238 test vectors (Appendix B all 6 SHA-1 timestamps; RFC 2202 all 7 HMAC-SHA1 vectors; FIPS 180-4 Appendix A SHA-1 KATs in `*_test_vectors.rs`)
+- [x] 9.3 Clock-skew tolerance test (±1 step at default 30-s period; `verify_accepts_one_step_skew_within_window` exercises both +1 and −1)
+- [x] 9.4 `totp_required` field added to shadow record; `totp_secret` already in Phase 2 format. Parser defaults missing field to `false`; serializer omits when `false` so pre-Phase-9 shadows round-trip byte-for-byte.
+- [x] 9.5 `auth_totp_setup` syscall (0x95) — replaces Phase 3's `-ENOSYS` stub; CSPRNG-driven 20-byte secret, persisted via `ShadowProvider::write_totp_secret`, copied to caller-supplied buffer; cross-enrol requires Root.
+- [x] 9.6 `auth_login` factor2 path — empty factor2 on `totp_required = true` user → `-EAUTHEXPIRED`; wrong code → `-EACCES`; valid code → session id. Constant-time-equivalent dummy verify on user-not-found / non-enrolled paths.
+- [x] 9.7 `mgmt::Config::totp.enforced_for_roles: RoleSet` — wired through registry (Live reload), validate.rs (rejects unknown bits), TOML loader (`["root","operator","viewer"]` array form), and Zenoh JSON codec.
+- [x] 9.8 Tests for enrolled-user-must-supply-code, unenrolled-user-may-omit, invalid-code-rejected, malformed-factor2 rejected, fail-closed when secret missing but `totp_required = true`, dummy-verify path on unknown user (kernel/syscall/auth.rs adds 12 new tests; auth/shadow adds 7; mgmt/config + validate + loader + zenoh add 16).
 
 ## 10. Phase 10 — Audit chain + signed checkpoints + denial audit
 

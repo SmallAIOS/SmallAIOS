@@ -193,6 +193,54 @@ pub enum Value {
     String(String),
     /// Set of [`PasswordClass`] flags.
     PasswordClasses(PasswordClassSet),
+    /// Set of [`auth::Role`] flags — Phase 9 TOTP-enforcement roles.
+    ///
+    /// [`auth::Role`]: https://docs.rs/smallaios-auth/latest/smallaios_auth/role/enum.Role.html
+    Roles(RoleSet),
+}
+
+/// Bitmask of [`auth::Role`] values, used by Phase 9's
+/// `mgmt.totp.enforced_for_roles` field.
+///
+/// Mirrors `auth::Role` byte-for-byte: bit 0 = `Root`, bit 1 =
+/// `Operator`, bit 2 = `Viewer`. Empty mask (`0`) means TOTP
+/// enforcement is opt-in (no role is forced into the second-factor
+/// gate). Operators add bits to require TOTP for the listed roles at
+/// `auth_login` time.
+///
+/// [`auth::Role`]: https://docs.rs/smallaios-auth/latest/smallaios_auth/role/enum.Role.html
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoleSet(pub u8);
+
+impl RoleSet {
+    /// Bit position for `Role::Root`.
+    pub const ROOT: u8 = 0b0000_0001;
+    /// Bit position for `Role::Operator`.
+    pub const OPERATOR: u8 = 0b0000_0010;
+    /// Bit position for `Role::Viewer`.
+    pub const VIEWER: u8 = 0b0000_0100;
+    /// Bitwise OR of all known role bits. Useful for masking input.
+    pub const ALL: u8 = Self::ROOT | Self::OPERATOR | Self::VIEWER;
+
+    /// Construct from a raw mask, dropping unknown bits.
+    pub const fn from_mask(mask: u8) -> Self {
+        Self(mask & Self::ALL)
+    }
+
+    /// Returns true if `flag` is set.
+    pub const fn contains(self, flag: u8) -> bool {
+        self.0 & flag == flag
+    }
+
+    /// Number of selected roles (popcount).
+    pub const fn count(self) -> u32 {
+        self.0.count_ones()
+    }
+
+    /// Returns true if no role is selected.
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 /// Bitmask of password character-class requirements.
@@ -237,6 +285,7 @@ impl Value {
             Self::U64(_) => "u64",
             Self::String(_) => "string",
             Self::PasswordClasses(_) => "password_classes",
+            Self::Roles(_) => "roles",
         }
     }
 
@@ -295,6 +344,19 @@ impl Value {
         } else {
             Err(Error::TypeMismatch {
                 expected: "password_classes",
+                got: self.type_tag(),
+            })
+        }
+    }
+
+    /// Try to extract a [`RoleSet`] — used for Phase 9
+    /// `mgmt.totp.enforced_for_roles`.
+    pub fn as_roles(&self) -> Result<RoleSet, Error> {
+        if let Self::Roles(r) = self {
+            Ok(*r)
+        } else {
+            Err(Error::TypeMismatch {
+                expected: "roles",
                 got: self.type_tag(),
             })
         }
