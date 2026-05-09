@@ -26,6 +26,7 @@ members = [
     "mgmt",
     "fs",
     "tools/coverage-probe",
+    "xtask",
 ]
 
 [workspace.package]

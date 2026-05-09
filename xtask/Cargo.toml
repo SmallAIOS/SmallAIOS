@@ -1,0 +1,18 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Developer-ergonomics tasks for the SmallAIOS workspace"
+
+# xtask runs on the host so it is a normal `std` binary crate, not
+# `#![no_std]`. It deliberately depends on no workspace crate so a
+# breakage in `mgmt`/`kernel`/etc. does not block the developer from
+# running the helper.
+
+[[bin]]
+name = "scaffold-config-field"
+path = "src/bin/scaffold_config_field.rs"
+
+[dependencies]
