@@ -56,6 +56,7 @@ use core::fmt;
 use crate::block::BlockError;
 
 pub mod checkpoint;
+pub mod commit_timer;
 pub mod crc;
 pub mod data;
 pub mod dir;
@@ -72,6 +73,7 @@ pub mod write;
 #[cfg(test)]
 pub(crate) mod write_test_vectors;
 
+pub use commit_timer::{CommitTimer, Decision, DEFAULT_COMMIT_WINDOW_SECONDS};
 pub use error::F2fsError;
 pub use mount::{DirIter, F2fs, Inode, InodeKind, Stat};
 pub use superblock::{Superblock, F2FS_SUPER_MAGIC};

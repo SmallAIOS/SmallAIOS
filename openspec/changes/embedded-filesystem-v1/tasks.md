@@ -119,12 +119,12 @@
 
 ## 8. Phase 8 — fsync + checkpoint commit
 
-- [ ] 8.1 `fs/src/f2fs/fsync.rs` — checkpoint commit on `fsync(fd)`
-- [ ] 8.2 5-second background commit timer (cooperative)
-- [ ] 8.3 Power-fail tests: kill-9 mid-write → reboot → verify last fsync'd offset intact
-- [ ] 8.4 TLA+ model `f2fs_checkpoint.tla` — checkpoint commit interleaving invariants
-- [ ] 8.5 First-boot format-on-physical-presence path
-- [ ] 8.6 First-boot `/data/` directory-tree creation with declared modes
+- [x] 8.1 `fs/src/f2fs/fsync.rs` — checkpoint commit on `fsync(fd)` (lives in `fs/src/f2fs/write.rs::fsync`; see Phase 7 + Phase 8 polish)
+- [x] 8.2 5-second background commit timer (cooperative) — `fs/src/f2fs/commit_timer.rs`
+- [x] 8.3 Power-fail tests: kill-9 mid-write → reboot → verify last fsync'd offset intact — `fs/tests/f2fs_fsync_fuzz.rs`
+- [x] 8.4 TLA+ model `f2fs_checkpoint.tla` — checkpoint commit interleaving invariants (Phase 8 expands to 9 invariants; smoke `fs/tests/f2fs_checkpoint_tla_smoke.rs`)
+- [ ] 8.5 First-boot format-on-physical-presence path (DEFERRED — owned by mgmt phase)
+- [ ] 8.6 First-boot `/data/` directory-tree creation with declared modes (DEFERRED — owned by mgmt phase)
 
 ## 9. Phase 9 — F2FS garbage collection
 
@@ -136,16 +136,16 @@
 
 ## 10. Phase 10 — Boot success syscall + interop CI matrix
 
-- [ ] 10.1 Add `boot_success` syscall (`SYS_BOOT_SUCCESS = 0x57`, System category) — Root only, idempotent
-- [ ] 10.2 Watchdog arming + disarming wiring through `boot_success`
-- [ ] 10.3 Audit record `boot_success_committed` on commit
-- [ ] 10.4 End-to-end A/B update test: stage delta → reboot → boot_success → next boot
-- [ ] 10.5 End-to-end rollback test: stage delta → reboot → no boot_success → watchdog → previous slot
-- [ ] 10.6 Update `docs/architecture.md` syscall table to include `SYS_BOOT_SUCCESS = 0x57`
-- [ ] 10.7 Interop CI: full matrix (Ubuntu LTS + Fedora current + macOS via FUSE) for both squashfs and F2FS
-- [ ] 10.8 Image-size regression check: F2FS write path stays within ≤ 200 KB compiled growth budget
-- [ ] 10.9 Boot footprint regression check: total binary ≤ 8.2 MB (vs prior 8.0 MB target)
-- [ ] 10.10 AHCI `BlockDevice` impl (legacy x86-64 SATA) — opportunistic; not a checkpoint blocker
+- [x] 10.1 Add `boot_success` syscall (`SYS_BOOT_SUCCESS = 0x57`, System category) — Root only, idempotent (`kernel/src/syscall/system.rs::sys_boot_success` + `kernel/src/boot_success.rs`)
+- [x] 10.2 Watchdog arming + disarming wiring through `boot_success` (`fs/src/boot_config/watchdog.rs::arm_if_tentative`; per-arch real impl deferred — see KernelWatchdog rustdoc)
+- [x] 10.3 Audit record `boot_success_committed` on commit (`kernel/src/boot_success.rs::audit_capture`)
+- [ ] 10.4 End-to-end A/B update test: stage delta → reboot → boot_success → next boot (DEFERRED — needs full QEMU integration harness)
+- [ ] 10.5 End-to-end rollback test: stage delta → reboot → no boot_success → watchdog → previous slot (DEFERRED — same)
+- [ ] 10.6 Update `docs/architecture.md` syscall table to include `SYS_BOOT_SUCCESS = 0x57` (DEFERRED — docs phase)
+- [x] 10.7 Interop CI: full matrix (Ubuntu LTS + Fedora current + macOS via FUSE) for both squashfs and F2FS — `.github/workflows/fs-interop.yml`
+- [x] 10.8 Image-size regression check: F2FS write path stays within ≤ 200 KB compiled growth budget — `tools/ci/image-size-check.sh`
+- [x] 10.9 Boot footprint regression check: total binary ≤ 8.2 MB (vs prior 8.0 MB target) — same script
+- [ ] 10.10 AHCI `BlockDevice` impl (legacy x86-64 SATA) — opportunistic; not a checkpoint blocker (DEFERRED, marked opportunistic)
 
 ## CHECKPOINT C — Phases 7-10 ship as one PR into develop
 

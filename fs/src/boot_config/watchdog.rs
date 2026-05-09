@@ -127,8 +127,36 @@ impl Watchdog for MockWatchdog {
     }
 }
 
-/// Production stub. Real per-arch integration lands later; until
-/// then, every operation returns [`WatchdogError::NotImplemented`].
+/// Production [`Watchdog`] facade.
+///
+/// Per-arch wiring (Phase 10 deferral plan):
+///
+/// - **x86-64**: Intel TCO (Total Cost of Ownership) watchdog timer or
+///   HPET-backed software watchdog. Spec defers real bringup until the
+///   x86-64 ACPI parser lands; the stub returns
+///   [`WatchdogError::NotImplemented`] so the kernel's `boot_success`
+///   path proceeds without rolling back. **Acceptable** because
+///   x86-64 production targets currently boot under QEMU, where the
+///   spec explicitly accepts a no-op watchdog (see virtio note below).
+///
+/// - **AArch64 (Tegra234, Jetson Orin)**: Tegra234 WDT (`TKE0_WDT0`)
+///   register block at `0x0c2e0000`. The phase-2 BSP work in
+///   `unikernel-orin-bringup-v1` will hand us a stable mapping; until
+///   then the stub returns `NotImplemented`. Real bringup tracked in
+///   `change/orin-watchdog-v1` (out of scope for this PR).
+///
+/// - **AArch64 (generic UEFI)**: ARM Generic Timer + EL1
+///   physical-timer-interrupt fallback. Same deferral.
+///
+/// - **virtio-blk (QEMU)**: no-op. QEMU's default machine has no
+///   watchdog; a software-only impl would defeat the purpose. The
+///   stub's `NotImplemented` return is the correct behaviour for this
+///   environment — the kernel logs the fact and continues.
+///
+/// In all cases, [`super::boot_success`] is robust to a watchdog that
+/// fails to disarm: the on-disk transition is committed first, and the
+/// caller is given a [`super::BootSuccessError::Watchdog`] for
+/// non-fatal logging.
 #[derive(Debug, Default)]
 pub struct KernelWatchdog;
 
@@ -147,6 +175,34 @@ impl Watchdog for KernelWatchdog {
     fn disarm(&mut self) -> Result<(), WatchdogError> {
         Err(WatchdogError::NotImplemented)
     }
+}
+
+/// Watchdog policy helper used by the kernel boot path.
+///
+/// On boot the kernel reads the active boot-config record. If
+/// `tentative=1`, it arms the watchdog with the configured
+/// `fs.boot.watchdog_seconds` (default
+/// [`DEFAULT_WATCHDOG_SECONDS`]). Until [`boot_success`] runs, a
+/// watchdog timeout reboots the box; the bootloader sees the
+/// tentative record on the next boot and rolls back to the previous
+/// slot.
+///
+/// `arm_if_tentative` consolidates the boot-time decision so the
+/// integration tests can exercise it without a real boot path.
+pub fn arm_if_tentative<W: Watchdog + ?Sized>(
+    record: &BootConfigRecord,
+    watchdog: &mut W,
+    seconds: u32,
+) -> Result<bool, WatchdogError> {
+    if !record.tentative {
+        return Ok(false);
+    }
+    if record.boot_success {
+        // Already-committed records do not need the rollback gate.
+        return Ok(false);
+    }
+    watchdog.arm(seconds)?;
+    Ok(true)
 }
 
 /// Confirm successful boot — the moral equivalent of the
@@ -408,5 +464,125 @@ mod tests {
         s.clear();
         write!(s, "{}", WatchdogError::ZeroSeconds).unwrap();
         assert!(s.contains("0 seconds"));
+    }
+
+    // ─── arm_if_tentative ──────────────────────────────────────────────────
+
+    fn record(tentative: bool, success: bool) -> BootConfigRecord {
+        BootConfigRecord {
+            valid: true,
+            active_slot: ActiveSquashfsSlot::A,
+            tentative,
+            generation: 1,
+            boot_success: success,
+            ..BootConfigRecord::new(ActiveSquashfsSlot::A, 1)
+        }
+    }
+
+    #[test]
+    fn arm_if_tentative_arms_when_tentative_unconfirmed() {
+        let mut wd = MockWatchdog::new();
+        let r = record(true, false);
+        let armed = arm_if_tentative(&r, &mut wd, 60).unwrap();
+        assert!(armed);
+        assert!(wd.is_armed());
+        assert_eq!(wd.last_seconds(), 60);
+    }
+
+    #[test]
+    fn arm_if_tentative_no_op_when_not_tentative() {
+        let mut wd = MockWatchdog::new();
+        let r = record(false, false);
+        let armed = arm_if_tentative(&r, &mut wd, 60).unwrap();
+        assert!(!armed);
+        assert!(!wd.is_armed());
+    }
+
+    #[test]
+    fn arm_if_tentative_no_op_when_already_committed() {
+        // tentative=1 but boot_success=1 means a stale record left
+        // over from a successful previous boot — the rollback gate
+        // is already closed, so we do not re-arm.
+        let mut wd = MockWatchdog::new();
+        let r = record(true, true);
+        let armed = arm_if_tentative(&r, &mut wd, 60).unwrap();
+        assert!(!armed);
+        assert!(!wd.is_armed());
+    }
+
+    #[test]
+    fn arm_if_tentative_propagates_zero_seconds() {
+        let mut wd = MockWatchdog::new();
+        let r = record(true, false);
+        let result = arm_if_tentative(&r, &mut wd, 0);
+        assert_eq!(result, Err(WatchdogError::ZeroSeconds));
+        assert!(!wd.is_armed());
+    }
+
+    #[test]
+    fn arm_if_tentative_propagates_kernel_not_implemented() {
+        let mut wd = KernelWatchdog::new();
+        let r = record(true, false);
+        let result = arm_if_tentative(&r, &mut wd, 60);
+        assert_eq!(result, Err(WatchdogError::NotImplemented));
+    }
+
+    // ─── Round-trip arm + boot_success disarms ────────────────────────────
+
+    #[test]
+    fn arm_then_boot_success_disarms() {
+        let mut dev = fresh_partition();
+        seed_record(
+            &mut dev, 5, /*tentative=*/ true, /*success=*/ false,
+        );
+        let mut wd = MockWatchdog::new();
+        let r = record(true, false);
+        assert!(arm_if_tentative(&r, &mut wd, 30).unwrap());
+        assert!(wd.is_armed());
+
+        boot_success(&mut dev, 0, &mut wd).unwrap();
+        assert!(!wd.is_armed());
+        assert_eq!(wd.disarm_count(), 1);
+    }
+
+    #[test]
+    fn boot_success_disarms_even_when_provider_already_committed() {
+        // Spec scenario: the kernel boots, watchdog is armed, but the
+        // record is already `boot_success=1` (e.g., recovery boot).
+        // boot_success() short-circuits but still disarms.
+        let mut dev = fresh_partition();
+        seed_record(
+            &mut dev, 5, /*tentative=*/ false, /*success=*/ true,
+        );
+        let mut wd = MockWatchdog::new();
+        wd.arm(60).unwrap();
+        boot_success(&mut dev, 0, &mut wd).unwrap();
+        assert!(!wd.is_armed());
+    }
+
+    #[test]
+    fn arm_uses_default_window_when_seconds_default() {
+        let mut wd = MockWatchdog::new();
+        let r = record(true, false);
+        arm_if_tentative(&r, &mut wd, DEFAULT_WATCHDOG_SECONDS).unwrap();
+        assert_eq!(wd.last_seconds(), DEFAULT_WATCHDOG_SECONDS);
+    }
+
+    #[test]
+    fn watchdog_arm_count_increments_per_call() {
+        let mut wd = MockWatchdog::new();
+        wd.arm(60).unwrap();
+        wd.arm(60).unwrap();
+        wd.arm(60).unwrap();
+        assert_eq!(wd.arm_count(), 3);
+    }
+
+    #[test]
+    fn watchdog_disarm_idempotent_on_unarmed_mock() {
+        let mut wd = MockWatchdog::new();
+        // Disarming an already-disarmed mock is OK.
+        wd.disarm().unwrap();
+        wd.disarm().unwrap();
+        assert_eq!(wd.disarm_count(), 2);
     }
 }

@@ -381,7 +381,7 @@ fn try_mount_one_slot<D: BlockDevice>(
 /// - `Err(DataUnformatted)` — unformatted AND no presence.
 /// - `Err(DataMountFailed)` — superblock parses but other error.
 fn mount_f2fs_or_signal_format<D: BlockDevice, P: PhysicalPresenceProvider + ?Sized>(
-    device: &D,
+    device: &mut D,
     presence: &P,
     partition_lba: u64,
     size_lbas: u64,
