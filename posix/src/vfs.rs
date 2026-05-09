@@ -433,9 +433,12 @@ pub fn build_default_vfs() -> VfsTree {
 /// renames/etc. under the mount path to the littlefs runtime in
 /// `smallaios-fs`.
 ///
-/// Phase 3 of `embedded-flash-fs-v1` lands the wiring; future on-disk
-/// mounts (squashfs `/models/`, F2FS `/data/`) plug in by adding new
-/// variants here.
+/// Phase 3 of `embedded-flash-fs-v1` landed `LittleFs`. Phase 6 of
+/// `embedded-filesystem-v1` adds `Squashfs` (read-only `/models/`) and
+/// `F2fs` (read/write `/data/`); both are marker variants for the
+/// same reason as `LittleFs` — the concrete runtime handle has a
+/// `'a D` borrow against the underlying [`smallaios_fs::block::BlockDevice`]
+/// owned by the kernel boot sequencer.
 ///
 /// The `InMemory` variant is intentionally the dominant code path (it
 /// holds the existing static tree); boxing it would force every
@@ -454,6 +457,16 @@ pub enum MountedFs {
     /// `LittleFs<'_, D>` handle through (the kernel currently owns it).
     #[cfg(feature = "fs-flash")]
     LittleFs(FlashMount),
+    /// Squashfs-backed read-only `/models/` mount. The marker records
+    /// the active A/B slot + the device LBA range; the kernel keeps
+    /// the [`smallaios_fs::squashfs::Squashfs`] runtime handle.
+    #[cfg(feature = "fs-on-disk-mounts")]
+    Squashfs(SquashfsMount),
+    /// F2FS-backed read/write `/data/` mount. The marker records the
+    /// device LBA range; the kernel keeps the
+    /// [`smallaios_fs::f2fs::F2fs`] runtime handle.
+    #[cfg(feature = "fs-on-disk-mounts")]
+    F2fs(F2fsMount),
 }
 
 /// Marker handle for a `/flash/` mount point.
@@ -474,6 +487,44 @@ pub struct FlashMount {
     /// to this mount slot. v1 toggles this from
     /// [`MountTable::mount_flash`]; future revisions will store the
     /// runtime handle directly.
+    pub bound: bool,
+}
+
+/// Marker handle for the `/models/` squashfs mount.
+///
+/// Phase 6 records only the active A/B slot identifier and partition
+/// LBA / size; the [`smallaios_fs::squashfs::Squashfs`] runtime handle
+/// is owned by the kernel boot sequencer. The marker is what tells
+/// path resolution to send opens under `/models/` to that handle.
+#[cfg(feature = "fs-on-disk-mounts")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SquashfsMount {
+    /// Mount-point absolute path (always `/models` in v1).
+    pub path: &'static str,
+    /// Active squashfs A/B slot byte (0 = A, 1 = B). Mirrors
+    /// `smallaios_fs::boot_config::ActiveSquashfsSlot::as_u8`.
+    pub active_slot: u8,
+    /// Partition starting LBA on the underlying block device.
+    pub partition_lba: u64,
+    /// Partition length in device LBAs.
+    pub size_lbas: u64,
+    /// `true` once the kernel has wired a [`smallaios_fs::squashfs::Squashfs`]
+    /// runtime instance to this slot.
+    pub bound: bool,
+}
+
+/// Marker handle for the `/data/` F2FS mount.
+#[cfg(feature = "fs-on-disk-mounts")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct F2fsMount {
+    /// Mount-point absolute path (always `/data` in v1).
+    pub path: &'static str,
+    /// Partition starting LBA on the underlying block device.
+    pub partition_lba: u64,
+    /// Partition length in device LBAs.
+    pub size_lbas: u64,
+    /// `true` once the kernel has wired a [`smallaios_fs::f2fs::F2fs`]
+    /// runtime instance to this slot.
     pub bound: bool,
 }
 
@@ -542,6 +593,16 @@ pub struct MountTable {
     in_memory: VfsTree,
     #[cfg(feature = "fs-flash")]
     flash: Option<FlashMount>,
+    #[cfg(feature = "fs-on-disk-mounts")]
+    squashfs: Option<SquashfsMount>,
+    #[cfg(feature = "fs-on-disk-mounts")]
+    f2fs: Option<F2fsMount>,
+    /// `true` iff both squashfs A/B slots failed signature verification
+    /// at mount-time. While this flag is set the syscall layer SHALL
+    /// reject `model_load` with `-EROFS` per `fs-integrity`. Login,
+    /// audit, and `/data/` continue to work unchanged.
+    #[cfg(feature = "fs-on-disk-mounts")]
+    models_disabled: bool,
 }
 
 impl Default for MountTable {
@@ -552,12 +613,18 @@ impl Default for MountTable {
 
 impl MountTable {
     /// Build a mount table with the default in-memory tree and no
-    /// `/flash/` slot.
+    /// on-disk slots bound.
     pub fn new() -> Self {
         Self {
             in_memory: build_default_vfs(),
             #[cfg(feature = "fs-flash")]
             flash: None,
+            #[cfg(feature = "fs-on-disk-mounts")]
+            squashfs: None,
+            #[cfg(feature = "fs-on-disk-mounts")]
+            f2fs: None,
+            #[cfg(feature = "fs-on-disk-mounts")]
+            models_disabled: false,
         }
     }
 
