@@ -102,17 +102,28 @@ pub struct DirEntry {
 }
 
 /// Mounted F2FS handle.
+///
+/// The handle holds an `&mut` reference to the underlying [`BlockDevice`]
+/// because Phase 7 added the write path; calling `write_block` on the
+/// trait requires `&mut self`. Read-only callers can still construct the
+/// handle from `&mut device` and only invoke the read API.
 pub struct F2fs<'a, D: BlockDevice + ?Sized> {
-    device: &'a D,
+    pub(crate) device: &'a mut D,
     /// Partition starting LBA on the underlying device.
-    partition_lba: u64,
+    pub(crate) partition_lba: u64,
     /// Total partition size in bytes.
-    partition_size_bytes: u64,
+    pub(crate) partition_size_bytes: u64,
     /// Parsed superblock (winner between primary / secondary).
     pub(crate) sb: Superblock,
     /// Winning checkpoint pack header.
-    #[allow(dead_code)]
     pub(crate) checkpoint: Checkpoint,
+    /// Which checkpoint slot the *winning* pack lives in (0 = CP1, 1 = CP2).
+    /// On commit, the new pack is written to the *other* slot and the
+    /// version is bumped, then this field flips. Phase 7.
+    pub(crate) cp_slot: u8,
+    /// In-memory write-path state: dirty NAT/SIT entries, allocator
+    /// cursors, journaled rename ops, dirty inode + data blocks.
+    pub(crate) write_state: super::write::WriteState,
 }
 
 impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
@@ -121,7 +132,12 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
     ///
     /// `size_lbas` is the partition length in **device** LBAs (i.e.
     /// in `device.block_size_bytes()` units), not in F2FS 4 KiB blocks.
-    pub fn mount(device: &'a D, partition_lba: u64, size_lbas: u64) -> Result<Self, F2fsError> {
+    ///
+    /// The device is borrowed mutably so the write-path API
+    /// (`create`, `write_file`, `fsync`, …) can invoke
+    /// [`BlockDevice::write_block`] later. Read-only callers may still
+    /// construct via `mount` and only invoke the read API.
+    pub fn mount(device: &'a mut D, partition_lba: u64, size_lbas: u64) -> Result<Self, F2fsError> {
         let bs = device.block_size_bytes() as u64;
         let partition_size_bytes = size_lbas.checked_mul(bs).ok_or(F2fsError::SizeOverflow)?;
 
@@ -164,20 +180,46 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
         let mut cp1_block = [0u8; F2FS_BLOCK_SIZE as usize];
         let mut cp2_block = [0u8; F2FS_BLOCK_SIZE as usize];
         read_f2fs_block(
-            device,
+            &*device,
             partition_lba,
             partition_size_bytes,
             cp_blkaddr,
             &mut cp1_block,
         )?;
         read_f2fs_block(
-            device,
+            &*device,
             partition_lba,
             partition_size_bytes,
             cp2_blkaddr,
             &mut cp2_block,
         )?;
         let checkpoint = select_checkpoint(&cp1_block, &cp2_block)?;
+        // Determine which physical slot the winning pack came from so
+        // future commits can write to the *other* slot. We re-parse
+        // each block's version to make the pick.
+        let cp_slot = match (
+            super::checkpoint::Checkpoint::parse(&cp1_block).ok(),
+            super::checkpoint::Checkpoint::parse(&cp2_block).ok(),
+        ) {
+            (Some(c1), Some(c2)) => {
+                if c1.checkpoint_ver == checkpoint.checkpoint_ver
+                    && c1.verify_crc(&cp1_block).is_ok()
+                {
+                    0
+                } else if c2.verify_crc(&cp2_block).is_ok()
+                    && c2.checkpoint_ver == checkpoint.checkpoint_ver
+                {
+                    1
+                } else {
+                    0
+                }
+            }
+            (Some(_), None) => 0,
+            (None, Some(_)) => 1,
+            (None, None) => 0,
+        };
+
+        let write_state = super::write::WriteState::new(&checkpoint);
 
         Ok(Self {
             device,
@@ -185,6 +227,8 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
             partition_size_bytes,
             sb,
             checkpoint,
+            cp_slot,
+            write_state,
         })
     }
 
@@ -199,17 +243,43 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
     }
 
     /// Look up an inode by node-id (NAT lookup → read inode block).
+    ///
+    /// Honors the in-memory write-state cache so callers see freshly
+    /// allocated inodes immediately, before `fsync` flushes the NAT.
     pub fn read_inode_by_nid(&self, nid: u32) -> Result<Inode, F2fsError> {
-        let nat = self.lookup_nat_entry(nid)?;
-        if !nat.is_valid_addr() {
-            return Err(F2fsError::PathNotFound);
+        // Cache hit: serve straight from the in-memory inode block,
+        // which `create` populated and `flush_inode_block` may have
+        // also written through to disk.
+        if let Some(block) = self.write_state.inode_cache.get(&nid) {
+            let f2fs_inode = F2fsInode::parse(&block[..])?;
+            return Ok(Inode {
+                kind: f2fs_inode.kind,
+                inode_number: nid,
+                size: f2fs_inode.size,
+                f2fs: f2fs_inode,
+                inode_block: block.clone(),
+            });
         }
+        // Otherwise consult dirty NAT first, then fall through to the
+        // on-disk NAT pair.
+        let nat_addr = if let Some(pending) = self.write_state.nat_dirty.get(&nid) {
+            if pending.block_addr == 0 || pending.block_addr == u32::MAX {
+                return Err(F2fsError::PathNotFound);
+            }
+            pending.block_addr
+        } else {
+            let nat = self.lookup_nat_entry(nid)?;
+            if !nat.is_valid_addr() {
+                return Err(F2fsError::PathNotFound);
+            }
+            nat.block_addr
+        };
         let mut inode_block = alloc::boxed::Box::new([0u8; F2FS_BLOCK_SIZE as usize]);
         read_f2fs_block(
-            self.device,
+            &*self.device,
             self.partition_lba,
             self.partition_size_bytes,
-            nat.block_addr,
+            nat_addr,
             &mut inode_block,
         )?;
         let f2fs_inode = F2fsInode::parse(&inode_block[..])?;
@@ -397,8 +467,8 @@ mod tests {
     /// any other variant.
     #[test]
     fn mount_zeroed_device_bad_magic() {
-        let dev = crate::block::mock::MockBlockDevice::new(4096, 32);
-        let r = F2fs::mount(&dev, 0, 32);
+        let mut dev = crate::block::mock::MockBlockDevice::new(4096, 32);
+        let r = F2fs::mount(&mut dev, 0, 32);
         assert!(matches!(r, Err(F2fsError::BadMagic)));
     }
 
@@ -407,7 +477,7 @@ mod tests {
     /// we didn't write one — but it must not fail at the SB layer).
     #[test]
     fn mount_with_minimal_superblock_fails_at_checkpoint() {
-        let dev = crate::block::mock::MockBlockDevice::new(4096, 1024);
+        let mut dev = crate::block::mock::MockBlockDevice::new(4096, 1024);
         let mut sb = alloc::vec![0u8; 1024];
         sb[0..4].copy_from_slice(&F2FS_SUPER_MAGIC.to_le_bytes());
         sb[4..6].copy_from_slice(&1u16.to_le_bytes());
@@ -422,7 +492,7 @@ mod tests {
         block0[1024..2048].copy_from_slice(&sb);
         dev.preload(0, &block0);
 
-        let r = F2fs::mount(&dev, 0, 1024);
+        let r = F2fs::mount(&mut dev, 0, 1024);
         // Mount may fail at checkpoint or NAT, but not BadMagic since
         // the magic is now present.
         assert!(!matches!(r, Err(F2fsError::BadMagic)));

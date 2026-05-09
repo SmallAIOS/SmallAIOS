@@ -14,6 +14,11 @@ publish = false
 smallaios-kernel = { path = "../kernel" }
 smallaios-security = { path = "../security" }
 smallaios-mgmt = { path = "../mgmt" }
+# Phase 7 (embedded-filesystem-v1): fs implements `auth::FsWriteBackend`
+# so the kernel's `KernelAtomicWriter` can drive `create → write →
+# fsync → rename` on F2FS without auth depending on fs. Both crates
+# sit at Layer 1 alongside each other.
+smallaios-auth = { path = "../auth" }
 
 [features]
 default = []
