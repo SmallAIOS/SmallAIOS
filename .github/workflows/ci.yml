@@ -533,6 +533,12 @@ jobs:
             if [ "$crate" = "peripheral" ]; then
               flags="--features smallaios-peripheral/full-peripheral"
             fi
+            if [ "$crate" = "kernel" ]; then
+              # Integration tests under kernel (e.g. model_syscall_conformance)
+              # need test-mocks for mock providers and no-global-alloc so the
+              # host allocator is used instead of the static KernelAllocator.
+              flags="--features smallaios-kernel/test-mocks,smallaios-kernel/no-global-alloc"
+            fi
             cargo llvm-cov --lcov --output-path "$outfile" -p "$pkg" $flags
           done
       - name: Upload per-crate coverage to Codecov

@@ -24,24 +24,24 @@
 
 ## 3. Phase 3 — model_add / model_remove syscalls
 
-- [ ] 3.1 Add `model_add` syscall (`ONNX_MODEL_ADD = 0x36`) per `kernel-syscalls`
-- [ ] 3.2 Add `model_remove` syscall (`ONNX_MODEL_REMOVE = 0x37`) per `kernel-syscalls`
-- [ ] 3.3 Hook into existing `min_role` capability dispatch
-- [ ] 3.4 SHA-3-256 fingerprint sidecar writer integrated with `model_add`
-- [ ] 3.5 Optional ML-DSA-65 signature sidecar (always written when payload provides one; validity checked at load time per integrity spec)
-- [ ] 3.6 `model_remove` mode 0/1/2 (delete-upper / hide-lower / unhide)
-- [ ] 3.7 `passwd`-style user-space CLI: `container/src/bin/model.rs` wrapping `model_add` + `model_remove`
-- [ ] 3.8 Tests for ABI conformance and per-mode behavior
+- [x] 3.1 Add `model_add` syscall (`ONNX_MODEL_ADD = 0x36`) per `kernel-syscalls`
+- [x] 3.2 Add `model_remove` syscall (`ONNX_MODEL_REMOVE = 0x37`) per `kernel-syscalls`
+- [x] 3.3 Hook into existing `min_role` capability dispatch
+- [x] 3.4 SHA-3-256 fingerprint sidecar writer integrated with `model_add`
+- [x] 3.5 Optional ML-DSA-65 signature sidecar (always written when payload provides one; validity checked at load time per integrity spec)
+- [x] 3.6 `model_remove` mode 0/1/2 (delete-upper / hide-lower / unhide)
+- [x] 3.7 `passwd`-style user-space CLI: `container/src/bin/model.rs` wrapping `model_add` + `model_remove`
+- [x] 3.8 Tests for ABI conformance and per-mode behavior
 
 ## 4. Phase 4 — RBAC + Zenoh admin verbs
 
-- [ ] 4.1 Operator + Root permitted on `model_add`
-- [ ] 4.2 Root only permitted on `model_remove` (modes 0, 1)
-- [ ] 4.3 `model_remove` mode 2 (unhide) gated on `fs.overlay.allow_operator_unhide`
+- [x] 4.1 Operator + Root permitted on `model_add`
+- [x] 4.2 Root only permitted on `model_remove` (modes 0, 1)
+- [x] 4.3 `model_remove` mode 2 (unhide) gated on `fs.overlay.allow_operator_unhide`
 - [ ] 4.4 Zenoh admin verbs: `smallaios/admin/model/add`, `smallaios/admin/model/remove`
 - [ ] 4.5 Streaming upload over Zenoh queryable for `model_add` payloads
-- [ ] 4.6 Tests across the RBAC matrix (every role × every verb)
-- [ ] 4.7 Audit `DENY:model_add` / `DENY:model_remove` records on RBAC failure
+- [x] 4.6 Tests across the RBAC matrix (every role × every verb)
+- [x] 4.7 Audit `DENY:model_add` / `DENY:model_remove` records on RBAC failure
 
 ## 5. Phase 5 — Integrity layer
 
@@ -54,12 +54,12 @@
 
 ## 6. Phase 6 — Audit + cap enforcement + boot conflict
 
-- [ ] 6.1 Capacity-cap pre-flight on `model_add` (using `expected_size` when provided)
-- [ ] 6.2 Capacity-cap mid-flight (running cumulative bytes vs cap)
-- [ ] 6.3 `-ENOSPC` on cap violation; staged tmp file unlinked
-- [ ] 6.4 Audit `model_add_capacity_exceeded` with declared/actual bytes
-- [ ] 6.5 Boot-time conflict scan: walk upper, check each non-whiteout name against lower
-- [ ] 6.6 One audit record per new conflict per boot (no re-audit if already-audited)
+- [x] 6.1 Capacity-cap pre-flight on `model_add` (using `expected_size` when provided)
+- [x] 6.2 Capacity-cap mid-flight (running cumulative bytes vs cap)
+- [x] 6.3 `-ENOSPC` on cap violation; staged tmp file unlinked
+- [x] 6.4 Audit `model_add_capacity_exceeded` with declared/actual bytes
+- [x] 6.5 Boot-time conflict scan: walk upper, check each non-whiteout name against lower
+- [x] 6.6 One audit record per new conflict per boot (no re-audit if already-audited)
 - [ ] 6.7 `mgmt/policy.toml` fields wired with `#[reload("live")]`
 - [ ] 6.8 First-boot `/data/models-upper/` directory creation
 
