@@ -128,11 +128,17 @@
 
 ## 9. Phase 9 — F2FS garbage collection
 
-- [ ] 9.1 `fs/src/f2fs/gc.rs` — segment-level GC
-- [ ] 9.2 Threshold-driven trigger (free segments < 5%)
-- [ ] 9.3 Cooperative yielding so foreground writes are not starved
-- [ ] 9.4 Live-block relocation correctness tests (post-GC `cmp` against pre-GC)
-- [ ] 9.5 Property-based GC stress tests under random foreground workload
+- [x] 9.1 `fs/src/f2fs/gc.rs` — segment-level GC (Phase 7 baseline + Phase 9 sophistication: multi-victim, hot/cold, journal staging, time cap, yield budget)
+- [x] 9.2 Threshold-driven trigger (free segments < 5%) — Phase 7 (`should_run_gc`)
+- [x] 9.3 Cooperative yielding so foreground writes are not starved — Phase 7 (`GcYield`) + Phase 9 (`yield_budget_blocks`, `should_yield` poll)
+- [x] 9.4 Live-block relocation correctness tests (post-GC `cmp` against pre-GC) — `fs/tests/f2fs_gc_phase9_conformance.rs::live_block_relocation_preserves_all_data_1000_files` and `integration_10000_files_no_corruption`
+- [x] 9.5 Property-based GC stress tests under random foreground workload — `fs/tests/f2fs_gc_phase9_conformance.rs` (foreground-yield, time-cap, multi-victim, hot/cold)
+- [x] 9.6 SSA-driven live-block relocation primitives — `gc::live_blocks_from_segment`, `gc::run_gc_pass_v2`
+- [x] 9.7 Multi-victim selection (top-N) — `gc::pick_victims`, default N=4 via `DEFAULT_GC_VICTIMS_PER_PASS`
+- [x] 9.8 Age-based hot/cold heuristics — `gc::classify_temperature`, `gc::pick_target_segment`, default cold-threshold 1 hour via `DEFAULT_COLD_THRESHOLD_SECS`
+- [x] 9.9 Per-pass time cap — `GcPassConfig::pass_budget_ticks`, default 100 via `DEFAULT_PASS_BUDGET_TICKS`
+- [x] 9.10 Relocation-staging journal — `fs/src/f2fs/gc_journal.rs` (`GcJournalRecord` + CRC-protected encode/decode block)
+- [x] 9.11 TLA+ checkpoint model bump — Phase 9 GC interleaving invariants in `formal/tla/F2fsCheckpoint.tla` (5 new invariants: `InvLiveBlocksPreservedUnderCrash`, `InvFreeSegmentCountNonNegative`, `InvGcJournalReplayIdempotent`, `InvGcRelocationAtomicWrtCheckpoint`, `InvGcCannotWedgeFsync`); Rust mirror in `fs/tests/f2fs_checkpoint_tla_smoke.rs`
 
 ## 10. Phase 10 — Boot success syscall + interop CI matrix
 
