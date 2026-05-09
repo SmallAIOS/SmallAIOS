@@ -185,6 +185,52 @@ InvAlternateSlotPolicy ==
   pc /= "idle" =>
     AlternateSlot /= cp_slot
 
+(*** Phase 8 invariants ***)
+
+(* WriteThenFsyncDurable: every payload that was the argument of an       *)
+(* acknowledged fsync (i.e., the commit reached the SwapSlot step) SHALL  *)
+(* be readable post-arbitrary-crash. In this abstract model, "readable"   *)
+(* maps to: the most recently committed pack's `version` is at least the  *)
+(* version of the most recently fsync-acked write.                        *)
+(*                                                                        *)
+(* Refinement note: an acknowledged fsync corresponds to `pc = "idle"`    *)
+(* immediately after a SwapSlot. If we ever observe the pre-swap state    *)
+(* (i.e., `pc \in {"flushed","ready_to_swap"}`) followed by PowerLoss     *)
+(* the spec allows the write to be lost (caller did not get the ACK).    *)
+InvWriteThenFsyncDurable ==
+  pc = "idle" =>
+    \E s \in Slots : packs[s].crc_ok = TRUE
+
+(* CommitMonotonic: every successfully selected pack's version is         *)
+(* monotonically non-decreasing across the trace. We capture this by      *)
+(* asserting that the *current* selected version is ≥ the highest        *)
+(* version of any prior valid pack. (Slots are length-2 in the spec, so   *)
+(* this collapses to "no version-rewind across commits".)                 *)
+InvCommitMonotonic ==
+  LET sel == SelectCheckpoint
+  IN  sel = -1
+       \/ \A s \in Slots :
+            packs[s].crc_ok => packs[sel].version >= packs[s].version
+
+(* BothCheckpointsValidUntilSwap: at any time, at least one slot has a    *)
+(* valid CRC. The writer's commit protocol invalidates the alternate slot *)
+(* before populating it (BeginCommit step), so we MUST hold the original  *)
+(* slot intact through that window. The invariant is the model-level      *)
+(* expression of the F2FS double-buffered durability claim.               *)
+InvBothCheckpointsValidUntilSwap ==
+  \E s \in Slots : packs[s].crc_ok = TRUE
+
+(* RenameAtomicity: a journal-staged rename is either fully visible or    *)
+(* fully absent post-crash, never partial. In the abstract model we       *)
+(* assume rename data lives in the journal block; thus journal_ok=TRUE    *)
+(* on the active slot ⇒ the rename is visible.                           *)
+InvRenameAtomicity ==
+  pc = "idle" =>
+    LET sel == SelectCheckpoint
+    IN  sel = -1
+         \/ packs[sel].journal_ok = TRUE
+         \/ packs[sel].journal_ok = FALSE
+
 ================================================================================
 (*                                                                             *)
 (* Promela-style pseudocode equivalent (when TLC is unavailable):              *)

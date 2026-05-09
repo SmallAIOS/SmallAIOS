@@ -14,6 +14,7 @@
 extern crate alloc;
 
 pub mod auth;
+pub mod boot_success;
 pub mod hal;
 pub mod mem;
 pub mod safety;
