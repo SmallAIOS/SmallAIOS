@@ -52,9 +52,15 @@ pub mod validate;
 /// notifications. Subscribers pull on their own schedule.
 pub mod notify;
 
+/// Clean-room `#![no_std]` TOML 1.0 (subset) parser and serialiser
+/// used by [`loader_toml`]. The clean-room rule precludes the
+/// upstream `toml` crate at runtime; the dev-only `toml` oracle in
+/// `mgmt/tests/` validates round-trips against this implementation.
+pub mod toml;
+
 /// TOML loader/saver — a `ConfigSurface` impl over `/data/*.toml`.
-/// Filled by `management-login-v1` Phase 6.
-pub mod loader_toml {}
+/// First real surface implementing [`ConfigSurface`].
+pub mod loader_toml;
 
 /// Zenoh admin/telemetry — a `ConfigSurface` impl over the existing
 /// PQC-backed Zenoh transport at `smallaios/admin/**` and

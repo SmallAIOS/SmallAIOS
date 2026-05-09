@@ -351,6 +351,7 @@ test:
         -p smallaios-auth \
         -p smallaios-mgmt \
         -p smallaios-fs \
+        -p xtask \
         -p smallaios-peripheral --features smallaios-peripheral/uart
 
 # Run Metal GPU tests (macOS only)
@@ -375,6 +376,7 @@ clippy:
         -p smallaios-auth \
         -p smallaios-mgmt \
         -p smallaios-fs \
+        -p xtask \
         -p smallaios-peripheral --features smallaios-peripheral/uart \
         -- -D warnings
 

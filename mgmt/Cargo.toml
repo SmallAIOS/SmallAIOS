@@ -14,6 +14,13 @@ smallaios-auth = { path = "../auth" }
 smallaios-security = { path = "../security" }
 smallaios-kernel = { path = "../kernel" }
 
+[dev-dependencies]
+# Dev-only "oracle" used by mgmt/tests/toml_oracle.rs to cross-check
+# our clean-room TOML parser against the upstream `toml` crate. Only
+# pulled in for `cargo test` — production builds (kernel + container)
+# do NOT depend on this crate.
+toml = { version = "0.8", default-features = false, features = ["parse"] }
+
 [features]
 default = []
 # Build-time wiring per `management-login-v1` design:
