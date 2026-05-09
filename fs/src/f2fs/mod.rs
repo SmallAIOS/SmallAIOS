@@ -62,6 +62,9 @@ pub mod data;
 pub mod dir;
 pub mod error;
 pub mod gc;
+pub mod gc_journal;
+#[cfg(test)]
+pub(crate) mod gc_test_vectors;
 pub mod inode;
 pub mod journal;
 pub mod mount;
