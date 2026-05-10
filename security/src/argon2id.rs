@@ -779,7 +779,17 @@ struct ParsedPhc {
 }
 
 fn parse_phc(s: &str) -> Result<ParsedPhc, Error> {
-    // $argon2id$v=19$m=<m>,t=<t>,p=<p>$<salt>$<tag>
+    let (params_str, salt_b64, tag_b64) = split_phc_segments(s)?;
+    let params = parse_phc_params(params_str)?;
+    params.validate()?;
+    let (salt, tag) = decode_phc_blobs(salt_b64, tag_b64)?;
+    Ok(ParsedPhc { params, salt, tag })
+}
+
+/// Split a `$argon2id$v=19$m=...,t=...,p=...$<salt>$<tag>` string into
+/// its three payload segments after validating the variant and version
+/// prefixes. Any extra `$`-segments are rejected.
+fn split_phc_segments(s: &str) -> Result<(&str, &str, &str), Error> {
     let mut parts = s.split('$');
     if parts.next() != Some("") {
         return Err(Error::InvalidPhc);
@@ -787,8 +797,7 @@ fn parse_phc(s: &str) -> Result<ParsedPhc, Error> {
     if parts.next() != Some("argon2id") {
         return Err(Error::UnsupportedVariant);
     }
-    let v_part = parts.next().ok_or(Error::InvalidPhc)?;
-    if v_part != "v=19" {
+    if parts.next().ok_or(Error::InvalidPhc)? != "v=19" {
         return Err(Error::UnsupportedVersion);
     }
     let pp = parts.next().ok_or(Error::InvalidPhc)?;
@@ -797,8 +806,13 @@ fn parse_phc(s: &str) -> Result<ParsedPhc, Error> {
     if parts.next().is_some() {
         return Err(Error::InvalidPhc);
     }
+    Ok((pp, salt_b64, tag_b64))
+}
 
-    // Parse "m=<m>,t=<t>,p=<p>". Allow any field order for PHC compatibility.
+/// Parse the `m=<m>,t=<t>,p=<p>` parameter segment. Field order is not
+/// constrained — any of the three may appear first per PHC v1.0. All
+/// three MUST be present; missing or unknown keys are rejected.
+fn parse_phc_params(pp: &str) -> Result<Argon2idParams, Error> {
     let mut m: Option<u32> = None;
     let mut t: Option<u32> = None;
     let mut p: Option<u32> = None;
@@ -814,14 +828,17 @@ fn parse_phc(s: &str) -> Result<ParsedPhc, Error> {
             _ => return Err(Error::InvalidPhc),
         }
     }
-
-    let params = Argon2idParams {
+    Ok(Argon2idParams {
         m_cost_kib: m.ok_or(Error::InvalidPhc)?,
         t_cost: t.ok_or(Error::InvalidPhc)?,
         p_cost: p.ok_or(Error::InvalidPhc)?,
-    };
-    params.validate()?;
+    })
+}
 
+/// Base64-decode the salt and tag segments and validate their lengths
+/// against the salt minimum (8 bytes) and the tag-length range
+/// (4..=2*BLAKE2B_OUT_MAX).
+fn decode_phc_blobs(salt_b64: &str, tag_b64: &str) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let salt = b64_decode(salt_b64)?;
     let tag = b64_decode(tag_b64)?;
     if salt.len() < 8 {
@@ -830,8 +847,7 @@ fn parse_phc(s: &str) -> Result<ParsedPhc, Error> {
     if !(4..=BLAKE2B_OUT_MAX * 2).contains(&tag.len()) {
         return Err(Error::InvalidTagLength);
     }
-
-    Ok(ParsedPhc { params, salt, tag })
+    Ok((salt, tag))
 }
 
 fn parse_u32(s: &str) -> Option<u32> {
