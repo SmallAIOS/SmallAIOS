@@ -97,10 +97,10 @@ Follow-up to Phase 4 footnote ("Five `ml_kem.rs` / `ml_dsa.rs` production-code f
 
 Each call site already carries a standalone-line `// lgtm[rust/hard-coded-cryptographic-value]` annotation that the Rust analyzer does not honor for this rule on this codebase. Picked option (1) from the Phase 4 footnote: targeted `query-filters` block in `.github/codeql/codeql-config.yml`.
 
-- [x] 10.1 Extended `.github/codeql/codeql-config.yml` `query-filters` to exclude `rust/hard-coded-cryptographic-value` for the two affected production files via `path: { regex: ^(security/src/argon2id\.rs|kernel/src/syscall/auth\.rs)$ }`. (Replaces the earlier `paths:` list form, which is not part of the documented CodeQL query-filter schema.)
-- [x] 10.2 Updated the rationale doc comment in `codeql-config.yml` to enumerate the three pattern classes (RFC 4648 alphabet offsets, `DUMMY_PHC` anti-enumeration constant, CSPRNG-overwritten salt buffers) and to note that each call site retains a standalone `// lgtm[...]` comment as in-source documentation.
-- [x] 10.3 No production code changes — the suppression is purely an analyzer-config change. Branch `change/codeql-prodcode-suppression-v1`.
-- [ ] 10.4 Verification: after merge to `develop`, the 13 currently-open `rust/hard-coded-cryptographic-value` alerts close on the next CodeQL scan. (Tracked in PR description.)
+- [x] 10.1 **Investigated `query-filters` config-file approach** — the documented CodeQL config schema rejects path-based exclusions under `query-filters` (the `path` key matches alert *metadata strings*, not file paths). The `path: { regex: ... }` form fails CodeQL `database init` with `Cannot deserialize value of type java.lang.String from Object value`. Reverted that approach.
+- [x] 10.2 **Pivoted to direct alert dismissal via the GitHub Code Scanning API** — the right tool for "rule X is a false positive on file Y" in CodeQL. `gh api -X PATCH repos/.../code-scanning/alerts/{N}` with `state=dismissed`, `dismissed_reason="false positive"`, and a clear `dismissed_comment` referencing the in-source `// lgtm` annotation. Dismissals persist across re-scans (GitHub keeps them sticky to the alert location).
+- [x] 10.3 **Dismissed the 13 production-code FPs**: alerts #45, #52, #86–91 (RFC 4648 base64 alphabet in `argon2id.rs::b64_decode`) + #135, #136, #144, #149, #150 (`DUMMY_PHC` for constant-time-equivalent reject + `[0u8; 16]` salt buffers in `auth.rs` handlers immediately overwritten by the CSPRNG). Each dismissal cites the in-source standalone-line `// lgtm[rust/hard-coded-cryptographic-value]` comment as documentation.
+- [x] 10.4 Verified open `rust/hard-coded-cryptographic-value` alerts on develop = 0 post-dismissal.
 
 ## 9. Deferrals & accept-as-noise (out of scope for this change)
 
