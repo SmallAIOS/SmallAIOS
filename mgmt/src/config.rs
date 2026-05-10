@@ -173,13 +173,20 @@ pub struct AuditConfig {
     pub keep_archives: u32,
     /// Hard cap on bytes used by the log + archives combined.
     pub max_total_disk_bytes: u64,
-    /// Emit ML-DSA-65 signed checkpoints at every rotation. Off in
-    /// builds without `signed-checkpoints`; configurable when on.
+    /// Emit ML-DSA-65 signed checkpoints. Off in builds without
+    /// `signed-checkpoints`; configurable when on. When `true` the
+    /// kernel signs every [`Self::signed_checkpoint_interval`]-th
+    /// chain head with the kernel-held ML-DSA-65 key.
     pub signed_checkpoints: bool,
+    /// Append a signed-checkpoint record every `N` committed records
+    /// when [`Self::signed_checkpoints`] is `true`. Per
+    /// `management-login-v1` Q24 the default is 1024.
+    pub signed_checkpoint_interval: u32,
 }
 
 impl AuditConfig {
-    /// v1 defaults: 16 MiB / 24 h / 8 archives / 256 MiB total.
+    /// v1 defaults: 16 MiB / 24 h / 8 archives / 256 MiB total /
+    /// signed-checkpoint interval 1024.
     pub const fn v1_defaults() -> Self {
         Self {
             rotate_size_bytes: 16 * 1024 * 1024,
@@ -187,6 +194,7 @@ impl AuditConfig {
             keep_archives: 8,
             max_total_disk_bytes: 256 * 1024 * 1024,
             signed_checkpoints: true,
+            signed_checkpoint_interval: 1024,
         }
     }
 }
@@ -384,6 +392,9 @@ impl Config {
             "audit.keep_archives" => Ok(Value::U32(self.audit.keep_archives)),
             "audit.max_total_disk_bytes" => Ok(Value::U64(self.audit.max_total_disk_bytes)),
             "audit.signed_checkpoints" => Ok(Value::Bool(self.audit.signed_checkpoints)),
+            "audit.signed_checkpoint_interval" => {
+                Ok(Value::U32(self.audit.signed_checkpoint_interval))
+            }
 
             // metrics.*
             "metrics.cpu_interval_ms" => Ok(Value::U32(self.metrics.cpu_interval_ms)),
@@ -461,6 +472,9 @@ impl Config {
             "audit.keep_archives" => self.audit.keep_archives = value.as_u32()?,
             "audit.max_total_disk_bytes" => self.audit.max_total_disk_bytes = value.as_u64()?,
             "audit.signed_checkpoints" => self.audit.signed_checkpoints = value.as_bool()?,
+            "audit.signed_checkpoint_interval" => {
+                self.audit.signed_checkpoint_interval = value.as_u32()?
+            }
 
             "metrics.cpu_interval_ms" => self.metrics.cpu_interval_ms = value.as_u32()?,
             "metrics.memory_interval_ms" => self.metrics.memory_interval_ms = value.as_u32()?,
@@ -642,6 +656,14 @@ pub mod registry {
             // Toggling signed checkpoints alters the on-disk audit
             // format mid-stream, so it's a boot-time field.
             reload: ReloadKind::Boot,
+            scope: SurfaceScope::Universal,
+        },
+        FieldDescriptor {
+            path: "audit.signed_checkpoint_interval",
+            kind: FieldType::U32,
+            // The checkpoint cadence is read fresh on every commit by
+            // the audit ring, so live reload is safe.
+            reload: ReloadKind::Live,
             scope: SurfaceScope::Universal,
         },
         // metrics.*
