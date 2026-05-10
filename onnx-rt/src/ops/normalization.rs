@@ -34,6 +34,44 @@ pub fn op_group_normalization(
     num_groups: i64,
     epsilon: f32,
 ) -> Result<Tensor, OpError> {
+    let layout = validate_group_norm_inputs(x, scale, bias, num_groups)?;
+    let total = x.shape.total_elements();
+    let mut data = allocate_tensor_data(total, DataType::Float);
+
+    for bn in 0..layout.n {
+        for g in 0..layout.groups {
+            let base =
+                bn * layout.c * layout.spatial + g * layout.channels_per_group * layout.spatial;
+            let (mean, inv_std) = group_stats(&x.raw_data, base, layout.group_size, epsilon);
+            apply_group_norm_block(x, scale, bias, &mut data, base, g, &layout, mean, inv_std);
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: x.shape.clone(),
+        name: String::new(),
+        raw_data: data,
+    })
+}
+
+/// Pre-computed NCHW layout sizes for GroupNormalization.
+struct GroupNormLayout {
+    n: usize,
+    c: usize,
+    spatial: usize,
+    groups: usize,
+    channels_per_group: usize,
+    group_size: usize,
+}
+
+/// Validates dtype, rank, group count, and scale/bias shapes; returns the
+/// layout descriptor used by the kernel.
+fn validate_group_norm_inputs(
+    x: &Tensor,
+    scale: &Tensor,
+    bias: Option<&Tensor>,
+    num_groups: i64,
+) -> Result<GroupNormLayout, OpError> {
     require_float(x, "GroupNormalization")?;
     require_float(scale, "GroupNormalization")?;
     if x.shape.dims.len() < 2 {
@@ -68,45 +106,57 @@ pub fn op_group_normalization(
     }
     let groups = num_groups as usize;
     let channels_per_group = c / groups;
-    let group_size = channels_per_group * spatial;
-    let total = x.shape.total_elements();
-    let mut data = allocate_tensor_data(total, DataType::Float);
+    Ok(GroupNormLayout {
+        n,
+        c,
+        spatial,
+        groups,
+        channels_per_group,
+        group_size: channels_per_group * spatial,
+    })
+}
 
-    for bn in 0..n {
-        for g in 0..groups {
-            let base = bn * c * spatial + g * channels_per_group * spatial;
-            // Mean
-            let mut sum = 0.0f32;
-            for i in 0..group_size {
-                sum += read_f32(&x.raw_data, base + i);
-            }
-            let mean = sum / group_size as f32;
-            // Variance
-            let mut var_sum = 0.0f32;
-            for i in 0..group_size {
-                let d = read_f32(&x.raw_data, base + i) - mean;
-                var_sum += d * d;
-            }
-            let inv_std = 1.0 / sqrt_approx(var_sum / group_size as f32 + epsilon);
-            // Apply per-channel scale/bias.
-            for ci in 0..channels_per_group {
-                let c_abs = g * channels_per_group + ci;
-                let s = read_f32(&scale.raw_data, c_abs);
-                let b = bias.map(|bt| read_f32(&bt.raw_data, c_abs)).unwrap_or(0.0);
-                for sp in 0..spatial {
-                    let idx = base + ci * spatial + sp;
-                    let v = read_f32(&x.raw_data, idx);
-                    write_f32(&mut data, idx, s * (v - mean) * inv_std + b);
-                }
-            }
+/// Computes `(mean, 1/sqrt(var + eps))` for a contiguous run of length
+/// `group_size` starting at `base` in the input buffer.
+fn group_stats(raw: &[u8], base: usize, group_size: usize, epsilon: f32) -> (f32, f32) {
+    let mut sum = 0.0f32;
+    for i in 0..group_size {
+        sum += read_f32(raw, base + i);
+    }
+    let mean = sum / group_size as f32;
+    let mut var_sum = 0.0f32;
+    for i in 0..group_size {
+        let d = read_f32(raw, base + i) - mean;
+        var_sum += d * d;
+    }
+    let inv_std = 1.0 / sqrt_approx(var_sum / group_size as f32 + epsilon);
+    (mean, inv_std)
+}
+
+/// Writes the normalized values for one (batch, group) tile, applying the
+/// per-channel `scale` and optional `bias`.
+#[allow(clippy::too_many_arguments)]
+fn apply_group_norm_block(
+    x: &Tensor,
+    scale: &Tensor,
+    bias: Option<&Tensor>,
+    data: &mut [u8],
+    base: usize,
+    g: usize,
+    layout: &GroupNormLayout,
+    mean: f32,
+    inv_std: f32,
+) {
+    for ci in 0..layout.channels_per_group {
+        let c_abs = g * layout.channels_per_group + ci;
+        let s = read_f32(&scale.raw_data, c_abs);
+        let b = bias.map(|bt| read_f32(&bt.raw_data, c_abs)).unwrap_or(0.0);
+        for sp in 0..layout.spatial {
+            let idx = base + ci * layout.spatial + sp;
+            let v = read_f32(&x.raw_data, idx);
+            write_f32(data, idx, s * (v - mean) * inv_std + b);
         }
     }
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: x.shape.clone(),
-        name: String::new(),
-        raw_data: data,
-    })
 }
 
 /// Instance normalization = GroupNormalization with `num_groups == C`.
