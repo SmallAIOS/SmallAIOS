@@ -354,6 +354,92 @@ fn start_dds_dataflow_runner(
     }))
 }
 
+/// Log a warning when a non-loopback CAN device spec falls back to the
+/// in-process mock controller. Loopback is silent because it is the
+/// only spec that maps cleanly to the mock today.
+fn warn_unwired_can_device(device: &CanDeviceSpec) {
+    match device {
+        CanDeviceSpec::Loopback => {}
+        CanDeviceSpec::Mcp2515(path) => {
+            eprintln!(
+                "  WARNING: MCP2515 driver ({}) not wired; using in-process mock",
+                path
+            );
+        }
+        CanDeviceSpec::AxiCan(addr) => {
+            eprintln!(
+                "  WARNING: AXI CAN driver (0x{:x}) not wired; using in-process mock",
+                addr
+            );
+        }
+    }
+}
+
+/// Construct and initialise a [`MockCanController`] in loopback mode.
+/// Returns `None` and logs the error if init or set_mode fails.
+fn init_mock_can_controller() -> Option<MockCanController> {
+    let mut controller = MockCanController::new();
+    if let Err(e) = controller.init() {
+        eprintln!("  CAN controller init failed: {:?}", e);
+        return None;
+    }
+    if let Err(e) = controller.set_mode(CanMode::Loopback) {
+        eprintln!("  CAN controller set_mode failed: {:?}", e);
+        return None;
+    }
+    Some(controller)
+}
+
+/// Run inference on a single decoded CAN topic+payload and transmit
+/// any resulting frames back through the controller.
+fn handle_can_inference(
+    runner: &DataflowRunner,
+    adapter: &mut CanInferenceAdapter,
+    controller: &mut MockCanController,
+    topic: &str,
+    payload: &[u8],
+) {
+    let Ok(output_bytes) = runner.process_message(topic, payload) else {
+        return;
+    };
+    let output_topic = runner.output_topic(topic);
+    for frame in adapter.on_inference_output(&output_topic, &output_bytes) {
+        let _ = controller.transmit(&frame);
+    }
+}
+
+/// Outcome of a single controller receive: continue draining, stop
+/// draining, or terminate the runner loop entirely.
+enum CanReceiveOutcome {
+    Continue,
+    StopDrain,
+}
+
+/// Process a single frame from the controller, dispatching to the
+/// inference path when the adapter accepts it. Returns whether the
+/// drain loop should continue.
+fn process_can_receive(
+    runner: &DataflowRunner,
+    adapter: &mut CanInferenceAdapter,
+    controller: &mut MockCanController,
+    timestamp_us: &mut u64,
+) -> CanReceiveOutcome {
+    match controller.receive() {
+        Ok(Some(frame)) => {
+            if let Some((topic, payload)) = adapter.process_frame(&frame, *timestamp_us) {
+                handle_can_inference(runner, adapter, controller, &topic, &payload);
+            }
+            *timestamp_us = timestamp_us.wrapping_add(100);
+            CanReceiveOutcome::Continue
+        }
+        Ok(None) => CanReceiveOutcome::StopDrain,
+        Err(e) => {
+            eprintln!("  CAN receive error: {:?}", e);
+            CanReceiveOutcome::StopDrain
+        }
+    }
+}
+
 /// Spawn a background thread for the CAN backend. Uses a
 /// [`MockCanController`] for loopback; for MCP2515 and AXI specs we
 /// also fall back to the mock for now, logging a clear warning. Real
@@ -373,31 +459,9 @@ fn start_can_dataflow_runner(
     );
 
     // Always use MockCanController until real drivers are wired in.
-    match device {
-        CanDeviceSpec::Loopback => {}
-        CanDeviceSpec::Mcp2515(ref path) => {
-            eprintln!(
-                "  WARNING: MCP2515 driver ({}) not wired; using in-process mock",
-                path
-            );
-        }
-        CanDeviceSpec::AxiCan(addr) => {
-            eprintln!(
-                "  WARNING: AXI CAN driver (0x{:x}) not wired; using in-process mock",
-                addr
-            );
-        }
-    }
+    warn_unwired_can_device(&device);
 
-    let mut controller = MockCanController::new();
-    if let Err(e) = controller.init() {
-        eprintln!("  CAN controller init failed: {:?}", e);
-        return None;
-    }
-    if let Err(e) = controller.set_mode(CanMode::Loopback) {
-        eprintln!("  CAN controller set_mode failed: {:?}", e);
-        return None;
-    }
+    let mut controller = init_mock_can_controller()?;
 
     // Hard-coded empty routing table — real routing-file loading is a
     // follow-up (see task group 4.2 notes). With no routes, incoming
@@ -410,29 +474,9 @@ fn start_can_dataflow_runner(
         let mut timestamp_us: u64 = 0;
         while !shutdown.load(Ordering::Relaxed) {
             // Drain anything the controller has for us.
-            loop {
-                match controller.receive() {
-                    Ok(Some(frame)) => {
-                        if let Some((topic, payload)) = adapter.process_frame(&frame, timestamp_us)
-                        {
-                            // Try to run inference for the topic's model.
-                            if let Ok(output_bytes) = runner.process_message(&topic, &payload) {
-                                let output_topic = runner.output_topic(&topic);
-                                let frames =
-                                    adapter.on_inference_output(&output_topic, &output_bytes);
-                                for frame in frames {
-                                    let _ = controller.transmit(&frame);
-                                }
-                            }
-                        }
-                        timestamp_us = timestamp_us.wrapping_add(100);
-                    }
-                    Ok(None) => break,
-                    Err(e) => {
-                        eprintln!("  CAN receive error: {:?}", e);
-                        break;
-                    }
-                }
+            while let CanReceiveOutcome::Continue =
+                process_can_receive(&runner, &mut adapter, &mut controller, &mut timestamp_us)
+            {
             }
             std::thread::sleep(Duration::from_millis(5));
         }

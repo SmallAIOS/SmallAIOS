@@ -218,6 +218,54 @@ fn json_to_tensor(name: &str, val: &JsonValue) -> Result<Tensor, String> {
     Ok(tensor)
 }
 
+/// Append a tensor's shape dims as a comma-separated JSON array body
+/// (without the surrounding brackets).
+fn append_shape_dims(dims: &[i64], buf: &mut String) {
+    for (j, d) in dims.iter().enumerate() {
+        if j > 0 {
+            buf.push(',');
+        }
+        buf.push_str(&d.to_string());
+    }
+}
+
+/// Append a float32 tensor's raw little-endian bytes as a
+/// comma-separated JSON array body (without the surrounding brackets).
+/// Non-float tensors append nothing — callers only wire float32 today.
+fn append_float_tensor_data(tensor: &Tensor, buf: &mut String) {
+    if tensor.data_type != DataType::Float {
+        return;
+    }
+    let n = tensor.raw_data.len() / 4;
+    for k in 0..n {
+        if k > 0 {
+            buf.push(',');
+        }
+        let bytes = [
+            tensor.raw_data[k * 4],
+            tensor.raw_data[k * 4 + 1],
+            tensor.raw_data[k * 4 + 2],
+            tensor.raw_data[k * 4 + 3],
+        ];
+        let v = f32::from_le_bytes(bytes);
+        buf.push_str(&format!("{}", v));
+    }
+}
+
+/// Serialise a single `InferenceOutput` as a JSON object entry
+/// (key+value, without leading comma).
+fn append_output_entry(out: &smallaios_onnx_rt::session::InferenceOutput, buf: &mut String) {
+    buf.push('"');
+    buf.push_str(&out.name);
+    buf.push_str("\":{\"shape\":[");
+    append_shape_dims(&out.tensor.shape.dims, buf);
+    buf.push_str("],\"dtype\":\"");
+    buf.push_str(out.tensor.data_type.name());
+    buf.push_str("\",\"data\":[");
+    append_float_tensor_data(&out.tensor, buf);
+    buf.push_str("]}");
+}
+
 /// Serialise a slice of `InferenceOutput` (all assumed float32) into
 /// the JSON wire format.
 fn serialize_outputs(
@@ -229,39 +277,7 @@ fn serialize_outputs(
         if i > 0 {
             buf.push(',');
         }
-        buf.push('"');
-        buf.push_str(&out.name);
-        buf.push_str("\":{\"shape\":[");
-        for (j, d) in out.tensor.shape.dims.iter().enumerate() {
-            if j > 0 {
-                buf.push(',');
-            }
-            buf.push_str(&d.to_string());
-        }
-        buf.push_str("],\"dtype\":\"");
-        buf.push_str(out.tensor.data_type.name());
-        buf.push_str("\",\"data\":[");
-
-        // Serialise the raw_data as little-endian f32 array. Non-float
-        // tensors fall back to an empty array — callers only wire
-        // float32 for now.
-        if out.tensor.data_type == DataType::Float {
-            let n = out.tensor.raw_data.len() / 4;
-            for k in 0..n {
-                if k > 0 {
-                    buf.push(',');
-                }
-                let bytes = [
-                    out.tensor.raw_data[k * 4],
-                    out.tensor.raw_data[k * 4 + 1],
-                    out.tensor.raw_data[k * 4 + 2],
-                    out.tensor.raw_data[k * 4 + 3],
-                ];
-                let v = f32::from_le_bytes(bytes);
-                buf.push_str(&format!("{}", v));
-            }
-        }
-        buf.push_str("]}");
+        append_output_entry(out, &mut buf);
     }
     buf.push_str("},\"timing_us\":");
     buf.push_str(&elapsed_us.to_string());
