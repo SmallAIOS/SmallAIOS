@@ -94,56 +94,73 @@ impl JsonValue {
 // Serializer
 // ---------------------------------------------------------------------------
 
+/// Serialize a JSON number, using integer formatting when the value
+/// is a whole number for cleaner output.
+fn serialize_number(n: f64, buf: &mut String) {
+    if n.fract() == 0.0 && n.is_finite() && n.abs() < (i64::MAX as f64) {
+        buf.push_str(&format!("{}", n as i64));
+    } else {
+        buf.push_str(&format!("{}", n));
+    }
+}
+
+/// Escape and write a single character into a JSON string body.
+fn push_escaped_char(ch: char, buf: &mut String) {
+    match ch {
+        '"' => buf.push_str("\\\""),
+        '\\' => buf.push_str("\\\\"),
+        '\n' => buf.push_str("\\n"),
+        '\r' => buf.push_str("\\r"),
+        '\t' => buf.push_str("\\t"),
+        c if c < '\x20' => buf.push_str(&format!("\\u{:04x}", c as u32)),
+        c => buf.push(c),
+    }
+}
+
+/// Serialize a string value as a quoted, escaped JSON string.
+fn serialize_string(s: &str, buf: &mut String) {
+    buf.push('"');
+    for ch in s.chars() {
+        push_escaped_char(ch, buf);
+    }
+    buf.push('"');
+}
+
+/// Serialize an array of JSON values.
+fn serialize_array(items: &[JsonValue], buf: &mut String) {
+    buf.push('[');
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            buf.push(',');
+        }
+        serialize_value(item, buf);
+    }
+    buf.push(']');
+}
+
+/// Serialize an object's key/value entries.
+fn serialize_object(entries: &[(String, JsonValue)], buf: &mut String) {
+    buf.push('{');
+    for (i, (key, val)) in entries.iter().enumerate() {
+        if i > 0 {
+            buf.push(',');
+        }
+        serialize_string(key, buf);
+        buf.push(':');
+        serialize_value(val, buf);
+    }
+    buf.push('}');
+}
+
 fn serialize_value(value: &JsonValue, buf: &mut String) {
     match value {
         JsonValue::Null => buf.push_str("null"),
         JsonValue::Bool(true) => buf.push_str("true"),
         JsonValue::Bool(false) => buf.push_str("false"),
-        JsonValue::Number(n) => {
-            // Use integer formatting when the value is a whole number for cleaner output.
-            if n.fract() == 0.0 && n.is_finite() && n.abs() < (i64::MAX as f64) {
-                buf.push_str(&format!("{}", *n as i64));
-            } else {
-                buf.push_str(&format!("{}", n));
-            }
-        }
-        JsonValue::String(s) => {
-            buf.push('"');
-            for ch in s.chars() {
-                match ch {
-                    '"' => buf.push_str("\\\""),
-                    '\\' => buf.push_str("\\\\"),
-                    '\n' => buf.push_str("\\n"),
-                    '\r' => buf.push_str("\\r"),
-                    '\t' => buf.push_str("\\t"),
-                    c if c < '\x20' => buf.push_str(&format!("\\u{:04x}", c as u32)),
-                    c => buf.push(c),
-                }
-            }
-            buf.push('"');
-        }
-        JsonValue::Array(items) => {
-            buf.push('[');
-            for (i, item) in items.iter().enumerate() {
-                if i > 0 {
-                    buf.push(',');
-                }
-                serialize_value(item, buf);
-            }
-            buf.push(']');
-        }
-        JsonValue::Object(entries) => {
-            buf.push('{');
-            for (i, (key, val)) in entries.iter().enumerate() {
-                if i > 0 {
-                    buf.push(',');
-                }
-                serialize_value(&JsonValue::String(key.clone()), buf);
-                buf.push(':');
-                serialize_value(val, buf);
-            }
-            buf.push('}');
-        }
+        JsonValue::Number(n) => serialize_number(*n, buf),
+        JsonValue::String(s) => serialize_string(s, buf),
+        JsonValue::Array(items) => serialize_array(items, buf),
+        JsonValue::Object(entries) => serialize_object(entries, buf),
     }
 }
 
@@ -195,53 +212,109 @@ fn parse_bool(input: &str) -> Result<(JsonValue, &str), String> {
     }
 }
 
-fn parse_number(input: &str) -> Result<(JsonValue, &str), String> {
-    let mut end = 0;
-    let bytes = input.as_bytes();
-
-    // Optional leading minus
-    if end < bytes.len() && bytes[end] == b'-' {
-        end += 1;
+/// Consume contiguous ASCII digits starting at `pos`, returning the
+/// new cursor position.
+fn consume_digits(bytes: &[u8], mut pos: usize) -> usize {
+    while pos < bytes.len() && bytes[pos].is_ascii_digit() {
+        pos += 1;
     }
+    pos
+}
 
-    // Integer part
-    if end >= bytes.len() || !bytes[end].is_ascii_digit() {
+/// Consume an optional sign byte (`+` or `-`) at `pos`. Returns the
+/// (possibly unchanged) cursor.
+fn consume_optional_sign(bytes: &[u8], pos: usize) -> usize {
+    if pos < bytes.len() && (bytes[pos] == b'+' || bytes[pos] == b'-') {
+        pos + 1
+    } else {
+        pos
+    }
+}
+
+/// Parse the integer-digit portion of a number, requiring at least one
+/// digit. Returns the cursor after the digits or an error.
+fn parse_integer_digits(bytes: &[u8], pos: usize) -> Result<usize, String> {
+    if pos >= bytes.len() || !bytes[pos].is_ascii_digit() {
         return Err("invalid number".into());
     }
-    while end < bytes.len() && bytes[end].is_ascii_digit() {
-        end += 1;
-    }
+    Ok(consume_digits(bytes, pos))
+}
 
-    // Fractional part
-    if end < bytes.len() && bytes[end] == b'.' {
-        end += 1;
-        if end >= bytes.len() || !bytes[end].is_ascii_digit() {
-            return Err("invalid number: no digits after decimal point".into());
-        }
-        while end < bytes.len() && bytes[end].is_ascii_digit() {
-            end += 1;
-        }
+/// Parse an optional fractional part (`.<digits>`). Returns the new
+/// cursor or an error if a `.` is present but no digits follow.
+fn parse_fraction(bytes: &[u8], pos: usize) -> Result<usize, String> {
+    if pos >= bytes.len() || bytes[pos] != b'.' {
+        return Ok(pos);
     }
+    let after_dot = pos + 1;
+    if after_dot >= bytes.len() || !bytes[after_dot].is_ascii_digit() {
+        return Err("invalid number: no digits after decimal point".into());
+    }
+    Ok(consume_digits(bytes, after_dot))
+}
 
-    // Exponent
-    if end < bytes.len() && (bytes[end] == b'e' || bytes[end] == b'E') {
-        end += 1;
-        if end < bytes.len() && (bytes[end] == b'+' || bytes[end] == b'-') {
-            end += 1;
-        }
-        if end >= bytes.len() || !bytes[end].is_ascii_digit() {
-            return Err("invalid number: no digits in exponent".into());
-        }
-        while end < bytes.len() && bytes[end].is_ascii_digit() {
-            end += 1;
-        }
+/// Parse an optional exponent (`e[+-]?<digits>`). Returns the new
+/// cursor or an error if exponent digits are missing.
+fn parse_exponent(bytes: &[u8], pos: usize) -> Result<usize, String> {
+    if pos >= bytes.len() || (bytes[pos] != b'e' && bytes[pos] != b'E') {
+        return Ok(pos);
     }
+    let after_e = consume_optional_sign(bytes, pos + 1);
+    if after_e >= bytes.len() || !bytes[after_e].is_ascii_digit() {
+        return Err("invalid number: no digits in exponent".into());
+    }
+    Ok(consume_digits(bytes, after_e))
+}
+
+fn parse_number(input: &str) -> Result<(JsonValue, &str), String> {
+    let bytes = input.as_bytes();
+    let after_sign = if !bytes.is_empty() && bytes[0] == b'-' {
+        1
+    } else {
+        0
+    };
+
+    let after_int = parse_integer_digits(bytes, after_sign)?;
+    let after_frac = parse_fraction(bytes, after_int)?;
+    let end = parse_exponent(bytes, after_frac)?;
 
     let num_str = &input[..end];
     let n: f64 = num_str
         .parse()
         .map_err(|e| format!("invalid number {:?}: {}", num_str, e))?;
     Ok((JsonValue::Number(n), &input[end..]))
+}
+
+/// Decode a `\uXXXX` escape sequence starting at `i` (the position of
+/// the `u` byte). Returns the decoded char and the number of bytes
+/// consumed *after* the `u` (always 4 on success).
+fn parse_unicode_escape(input: &str, bytes: &[u8], i: usize) -> Result<char, String> {
+    if i + 4 >= bytes.len() {
+        return Err("incomplete unicode escape".into());
+    }
+    let hex = &input[i + 1..i + 5];
+    let cp =
+        u16::from_str_radix(hex, 16).map_err(|_| format!("invalid unicode escape: \\u{}", hex))?;
+    char::from_u32(cp as u32).ok_or_else(|| format!("invalid unicode codepoint: {}", cp))
+}
+
+/// Decode a single escape sequence starting at `i` (the position of
+/// the escape-introducer byte, e.g. `n` in `\n` or `u` in `\uXXXX`).
+/// Returns the decoded char and the number of bytes consumed *after*
+/// the escape-introducer.
+fn decode_escape(input: &str, bytes: &[u8], i: usize) -> Result<(char, usize), String> {
+    match bytes[i] {
+        b'"' => Ok(('"', 0)),
+        b'\\' => Ok(('\\', 0)),
+        b'/' => Ok(('/', 0)),
+        b'n' => Ok(('\n', 0)),
+        b'r' => Ok(('\r', 0)),
+        b't' => Ok(('\t', 0)),
+        b'b' => Ok(('\x08', 0)),
+        b'f' => Ok(('\x0c', 0)),
+        b'u' => parse_unicode_escape(input, bytes, i).map(|ch| (ch, 4)),
+        other => Err(format!("invalid escape character: {:?}", other as char)),
+    }
 }
 
 fn parse_string(input: &str) -> Result<(String, &str), String> {
@@ -260,31 +333,9 @@ fn parse_string(input: &str) -> Result<(String, &str), String> {
                 if i >= bytes.len() {
                     return Err("unexpected end of string escape".into());
                 }
-                match bytes[i] {
-                    b'"' => result.push('"'),
-                    b'\\' => result.push('\\'),
-                    b'/' => result.push('/'),
-                    b'n' => result.push('\n'),
-                    b'r' => result.push('\r'),
-                    b't' => result.push('\t'),
-                    b'b' => result.push('\x08'),
-                    b'f' => result.push('\x0c'),
-                    b'u' => {
-                        if i + 4 >= bytes.len() {
-                            return Err("incomplete unicode escape".into());
-                        }
-                        let hex = &input[i + 1..i + 5];
-                        let cp = u16::from_str_radix(hex, 16)
-                            .map_err(|_| format!("invalid unicode escape: \\u{}", hex))?;
-                        if let Some(ch) = char::from_u32(cp as u32) {
-                            result.push(ch);
-                        } else {
-                            return Err(format!("invalid unicode codepoint: {}", cp));
-                        }
-                        i += 4;
-                    }
-                    other => return Err(format!("invalid escape character: {:?}", other as char)),
-                }
+                let (ch, extra) = decode_escape(input, bytes, i)?;
+                result.push(ch);
+                i += extra;
             }
             _ => {
                 // Multi-byte UTF-8: find the char boundary
