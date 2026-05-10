@@ -677,6 +677,115 @@ pub fn cast_f32_to_bf16_gpu(
 
 // ── Section 6.12: top-level gpu_gqa ────────────────────────────────
 
+/// Validated rank-4 GQA shape parameters extracted from Q/K/V.
+struct GqaShape {
+    num_q_heads_i64: i64,
+    seq_q_i64: i64,
+    head_dim_i64: i64,
+    num_kv_heads_i64: i64,
+    seq_kv_i64: i64,
+}
+
+/// Reject rank-3 Q/K/V at this entry point — `gpu_gqa_rank3` is the
+/// supported path for the gemma builder's `[1, Sq, H*head_dim]` layout.
+fn reject_rank3_gqa(q: &DeviceTensor, k: &DeviceTensor, v: &DeviceTensor) -> Result<(), CudaError> {
+    if q.shape.len() != 3 || k.shape.len() != 3 || v.shape.len() != 3 {
+        return Ok(());
+    }
+    let q_hidden = q.shape[2];
+    let kv_hidden = k.shape[2];
+    // Validate the q/kv hidden ratio before suggesting the rank-3 entry
+    // point — preserves the original error precedence.
+    if q_hidden == 0 || kv_hidden == 0 || q_hidden % kv_hidden != 0 {
+        let kv_divides = kv_hidden != 0 && q_hidden % kv_hidden == 0;
+        let mha = q_hidden == kv_hidden;
+        if !kv_divides && !mha {
+            return Err(CudaError::RuntimeError {
+                op: "gpu_gqa: rank-3 q/kv hidden ratio is not integer",
+                code: -1,
+            });
+        }
+    }
+    Err(CudaError::RuntimeError {
+        op: "gpu_gqa: rank-3 input requires head-count attributes — use gpu_gqa_rank3",
+        code: -1,
+    })
+}
+
+/// Validate dtype + rank-4 shape for Q/K/V and return the GQA shape descriptor.
+fn validate_gqa_rank4(
+    q: &DeviceTensor,
+    k: &DeviceTensor,
+    v: &DeviceTensor,
+) -> Result<GqaShape, CudaError> {
+    if q.dtype != k.dtype || q.dtype != v.dtype {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: q/k/v dtypes must match",
+            code: -1,
+        });
+    }
+    if q.dtype != DataType::Float && q.dtype != DataType::BFloat16 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: dtype must be Float or BFloat16",
+            code: -1,
+        });
+    }
+    if q.shape.len() != 4 || k.shape.len() != 4 || v.shape.len() != 4 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: q/k/v must each be rank-4 [B, H, S, head_dim]",
+            code: -1,
+        });
+    }
+    if q.shape[0] != 1 || k.shape[0] != 1 || v.shape[0] != 1 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: only batch=1 is supported in v1",
+            code: -1,
+        });
+    }
+    if k.shape != v.shape {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: k and v must share shape",
+            code: -1,
+        });
+    }
+    if v.shape[3] != q.shape[3] {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: head_dim mismatch",
+            code: -1,
+        });
+    }
+    let num_q_heads_i64 = q.shape[1];
+    let num_kv_heads_i64 = k.shape[1];
+    if num_q_heads_i64 <= 0 || num_kv_heads_i64 <= 0 || num_q_heads_i64 % num_kv_heads_i64 != 0 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: num_q_heads must be a positive multiple of num_kv_heads",
+            code: -1,
+        });
+    }
+    Ok(GqaShape {
+        num_q_heads_i64,
+        seq_q_i64: q.shape[2],
+        head_dim_i64: q.shape[3],
+        num_kv_heads_i64,
+        seq_kv_i64: k.shape[2],
+    })
+}
+
+/// Reject attention requests whose F32 scratch buffer exceeds the runtime cap.
+fn check_attention_scratch_cap(runtime: &CudaRuntime, shape: &GqaShape) -> Result<(), CudaError> {
+    let scratch_bytes: usize = (shape.num_q_heads_i64 as usize)
+        .saturating_mul(shape.seq_q_i64 as usize)
+        .saturating_mul(shape.seq_kv_i64 as usize)
+        .saturating_mul(4);
+    if scratch_bytes > runtime.attention_scratch_cap() {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gqa: attention scratch exceeds runtime cap (set_attention_scratch_cap)",
+            code: -1,
+        });
+    }
+    Ok(())
+}
+
 /// Group-query attention on the GPU.
 ///
 /// Composes the cuBLAS strided batched GEMMs and the custom kernels
@@ -718,105 +827,28 @@ pub fn gpu_gqa(
     scale: Option<f32>,
 ) -> Result<DeviceTensor, CudaError> {
     // Rank-3 fallback: the gemma builder emits Q/K/V directly from its
-    // projection Gemms in `[1, Sq, H*head_dim]` layout. Transpose to
-    // the canonical rank-4 head-major form before proceeding. The
-    // `num_heads` for K/V is derived from the two shapes' ratio.
-    if q.shape.len() == 3 && k.shape.len() == 3 && v.shape.len() == 3 {
-        let q_hidden = q.shape[2];
-        let kv_hidden = k.shape[2];
-        if q_hidden == 0 || kv_hidden == 0 || q_hidden % kv_hidden != 0 {
-            // Allow equal-hidden for MHA; for GQA require that q_hidden
-            // is a multiple of kv_hidden so head_dim matches.
-            let kv_divides = kv_hidden != 0 && q_hidden % kv_hidden == 0;
-            let mha = q_hidden == kv_hidden;
-            if !kv_divides && !mha {
-                return Err(CudaError::RuntimeError {
-                    op: "gpu_gqa: rank-3 q/kv hidden ratio is not integer",
-                    code: -1,
-                });
-            }
-        }
-        // Infer head_dim from (q_hidden / num_q_heads) via the
-        // attention-head ratio. For rank-3 we need num_heads to be
-        // supplied by the caller — the dispatcher reads it from the
-        // GQA node attributes. Here we fall back to the simplest case
-        // where num_q_heads can be inferred from shape alone:
-        // kv_hidden must equal num_kv_heads * head_dim and q_hidden
-        // must equal num_q_heads * head_dim, with the same head_dim.
-        // Without the attribute this is ambiguous, so defer to the
-        // `gpu_gqa_rank3` entry point which takes explicit counts.
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: rank-3 input requires head-count attributes — use gpu_gqa_rank3",
-            code: -1,
-        });
-    }
-    if q.dtype != k.dtype || q.dtype != v.dtype {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: q/k/v dtypes must match",
-            code: -1,
-        });
-    }
-    let dt = q.dtype;
-    if dt != DataType::Float && dt != DataType::BFloat16 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: dtype must be Float or BFloat16",
-            code: -1,
-        });
-    }
-    if q.shape.len() != 4 || k.shape.len() != 4 || v.shape.len() != 4 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: q/k/v must each be rank-4 [B, H, S, head_dim]",
-            code: -1,
-        });
-    }
-    if q.shape[0] != 1 || k.shape[0] != 1 || v.shape[0] != 1 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: only batch=1 is supported in v1",
-            code: -1,
-        });
-    }
-    let num_q_heads_i64 = q.shape[1];
-    let seq_q_i64 = q.shape[2];
-    let head_dim_i64 = q.shape[3];
-    let num_kv_heads_i64 = k.shape[1];
-    let seq_kv_i64 = k.shape[2];
+    // projection Gemms in `[1, Sq, H*head_dim]` layout. Defer to the
+    // dedicated rank-3 entry point — it needs explicit head counts.
+    reject_rank3_gqa(q, k, v)?;
 
-    if k.shape != v.shape {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: k and v must share shape",
-            code: -1,
-        });
-    }
-    if v.shape[3] != head_dim_i64 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: head_dim mismatch",
-            code: -1,
-        });
-    }
-    if num_q_heads_i64 <= 0 || num_kv_heads_i64 <= 0 || num_q_heads_i64 % num_kv_heads_i64 != 0 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: num_q_heads must be a positive multiple of num_kv_heads",
-            code: -1,
-        });
-    }
+    let shape = validate_gqa_rank4(q, k, v)?;
+    let dt = q.dtype;
+
+    // §6.13: enforce the attention-scratch cap up front so a
+    // pathological seq_kv doesn't try to allocate hundreds of GiB.
+    check_attention_scratch_cap(runtime, &shape)?;
+
+    let GqaShape {
+        num_q_heads_i64,
+        seq_q_i64,
+        head_dim_i64,
+        num_kv_heads_i64,
+        seq_kv_i64,
+    } = shape;
     let expand_factor = (num_q_heads_i64 / num_kv_heads_i64) as i32;
     let seq_q = seq_q_i64 as i32;
     let seq_kv = seq_kv_i64 as i32;
     let head_dim = head_dim_i64 as i32;
-
-    // §6.13: enforce the attention-scratch cap up front so a
-    // pathological seq_kv doesn't try to allocate hundreds of GiB.
-    let scratch_bytes: usize = (num_q_heads_i64 as usize)
-        .saturating_mul(seq_q_i64 as usize)
-        .saturating_mul(seq_kv_i64 as usize)
-        .saturating_mul(4);
-    let cap = runtime.attention_scratch_cap();
-    if scratch_bytes > cap {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gqa: attention scratch exceeds runtime cap (set_attention_scratch_cap)",
-            code: -1,
-        });
-    }
 
     // 1) Expand KV heads to per-attention-head replicas.
     let k_full = kv_expand_gpu(runtime, k, expand_factor)?;
