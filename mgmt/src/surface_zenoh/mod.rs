@@ -41,9 +41,11 @@
 pub mod admin;
 pub mod errors;
 pub mod json;
+pub mod model_handlers;
 pub mod session;
 pub mod telemetry;
 pub mod token;
+pub mod zenoh_chunks;
 
 #[cfg(test)]
 mod zenoh_test_vectors;
