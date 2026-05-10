@@ -69,10 +69,10 @@ pub mod loader_toml;
 /// flag; Phase 8 lands telemetry publications.
 pub mod surface_zenoh;
 
-/// In-kernel audit ring with SHA-3-256 hash chain and optional
-/// ML-DSA-65 signed checkpoints. Filled by `management-login-v1`
-/// Phase 10.
-pub mod audit {}
+/// In-kernel audit ring with SHA-3-256 hash chain, hybrid rotation,
+/// rate-limited denial audit, and optional ML-DSA-65 signed
+/// checkpoints. Phase 10 of `management-login-v1`.
+pub mod audit;
 
 // ─── Re-exports ──────────────────────────────────────────────────────────────
 
