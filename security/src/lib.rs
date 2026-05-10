@@ -45,5 +45,6 @@ pub mod ot;
 #[cfg(feature = "formal-gate")]
 pub mod policy;
 pub mod sha1;
+pub mod sha2;
 pub mod supply_chain;
 pub mod totp;

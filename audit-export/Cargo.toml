@@ -23,6 +23,9 @@ publish = false
 # phases land their own concrete wiring.
 
 [dependencies]
+# Phase 5 wires SHA-256 + Ed25519 from security/ for the immudb
+# proof verifier.
+smallaios-security = { path = "../security" }
 
 [features]
 default = []

@@ -849,6 +849,9 @@ dependencies = [
 [[package]]
 name = "smallaios-audit-export"
 version = "0.2.1"
+dependencies = [
+ "smallaios-security",
+]
 
 [[package]]
 name = "smallaios-auth"
