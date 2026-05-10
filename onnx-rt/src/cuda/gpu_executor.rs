@@ -297,41 +297,8 @@ pub fn execute_graph_gpu_with_weights_and_cache(
 ) -> Result<Vec<DeviceTensor>, SessionError> {
     let mut value_map: BTreeMap<String, DeviceTensor> = BTreeMap::new();
 
-    // Move user inputs into the value map. We take ownership of the input
-    // DeviceTensors so there is no cloning of device buffers.
-    for (name, dev_t) in input_device_tensors {
-        // DeviceBuffer is not Clone — duplicate via a fresh alloc + D2D
-        // copy. For the Section 5 test cases this is acceptable; callers
-        // wanting true zero-copy ownership transfer should construct the
-        // value map themselves.
-        let cloned = clone_device_tensor(dev_t)
-            .map_err(|e| SessionError::ExecutionFailed(format!("input '{}': {}", name, e)))?;
-        value_map.insert(name.clone(), cloned);
-    }
-
-    // Materialize graph initializers. Prefer the pre-loaded GPU map (from
-    // Session::from_safetensors) when available; otherwise bridge each
-    // proto host -> device as the legacy path does.
-    for init in initializers {
-        if let Some(map) = pre_loaded_weights {
-            if let Some(dev_src) = map.get(&init.name) {
-                let cloned = clone_device_tensor(dev_src).map_err(|e| {
-                    SessionError::ExecutionFailed(format!(
-                        "pre-loaded weight '{}': {}",
-                        init.name, e
-                    ))
-                })?;
-                value_map.insert(init.name.clone(), cloned);
-                continue;
-            }
-        }
-        if let Some(host_t) = tensor_from_proto(init) {
-            let dev_t = DeviceTensor::from_host(&host_t).map_err(|e| {
-                SessionError::ExecutionFailed(format!("initializer '{}': {}", init.name, e))
-            })?;
-            value_map.insert(init.name.clone(), dev_t);
-        }
-    }
+    seed_inputs_into_value_map(&mut value_map, input_device_tensors)?;
+    seed_initializers_into_value_map(&mut value_map, initializers, pre_loaded_weights)?;
 
     // Wrap the cache (if any) in the dispatch context that carries the
     // running layer index across nodes.
@@ -343,55 +310,134 @@ pub fn execute_graph_gpu_with_weights_and_cache(
     // Walk the graph in topological order.
     for node_idx in graph.execution_order() {
         let node = &graph.nodes[node_idx.index()];
-
-        // Resolve input device tensors by name.
-        let input_refs: Vec<Option<&DeviceTensor>> = node
-            .inputs
-            .iter()
-            .map(|name| {
-                if name.is_empty() {
-                    None
-                } else {
-                    value_map.get(name)
-                }
-            })
-            .collect();
-
-        let outputs = dispatch_gpu_node(
-            runtime,
-            &node.op_type,
-            &input_refs,
-            &node.attributes,
-            cache_ctx.as_mut(),
-        )
-        .map_err(|e| SessionError::ExecutionFailed(format!("{}: {}", node.name, e)))?;
-
-        // Store outputs under their declared names. All Section 5 ops
-        // are single-output; pair by index and let any trailing declared
-        // outputs be silently skipped (they stay absent from the map).
-        for (mut dev_t, output_name) in outputs.into_iter().zip(node.outputs.iter()) {
-            if output_name.is_empty() {
-                continue;
-            }
-            dev_t.name = output_name.clone();
-            value_map.insert(output_name.clone(), dev_t);
-        }
+        run_one_node(runtime, node, &mut value_map, cache_ctx.as_mut())?;
     }
 
     // §6.14 / §7.4: commit the per-layer K/V appends from this forward
     // pass with a single advance_position call. Skipped if no GQA op
     // ran (e.g. graph contains no attention nodes).
-    if let Some(ctx) = cache_ctx.as_mut() {
-        if ctx.next_layer_idx > 0 {
-            ctx.cache.advance_position().map_err(|e| {
-                SessionError::ExecutionFailed(format!("kv_cache advance_position: {}", e))
+    finalize_kv_cache(cache_ctx.as_mut())?;
+
+    collect_graph_outputs(&mut value_map, &graph.output_names)
+}
+
+/// Copy each user-supplied input DeviceTensor into the value map via D2D.
+fn seed_inputs_into_value_map(
+    value_map: &mut BTreeMap<String, DeviceTensor>,
+    input_device_tensors: &[(String, DeviceTensor)],
+) -> Result<(), SessionError> {
+    for (name, dev_t) in input_device_tensors {
+        let cloned = clone_device_tensor(dev_t)
+            .map_err(|e| SessionError::ExecutionFailed(format!("input '{}': {}", name, e)))?;
+        value_map.insert(name.clone(), cloned);
+    }
+    Ok(())
+}
+
+/// Materialize graph initializers into the value map.
+///
+/// Prefers the pre-loaded GPU weight map (via D2D clone) when available;
+/// otherwise bridges each `TensorProto` host -> device.
+fn seed_initializers_into_value_map(
+    value_map: &mut BTreeMap<String, DeviceTensor>,
+    initializers: &[TensorProto],
+    pre_loaded_weights: Option<&BTreeMap<String, DeviceTensor>>,
+) -> Result<(), SessionError> {
+    for init in initializers {
+        if let Some(dev_t) = try_clone_preloaded(init, pre_loaded_weights)? {
+            value_map.insert(init.name.clone(), dev_t);
+            continue;
+        }
+        if let Some(host_t) = tensor_from_proto(init) {
+            let dev_t = DeviceTensor::from_host(&host_t).map_err(|e| {
+                SessionError::ExecutionFailed(format!("initializer '{}': {}", init.name, e))
             })?;
+            value_map.insert(init.name.clone(), dev_t);
         }
     }
+    Ok(())
+}
 
-    // Extract graph outputs in declared order.
+/// Return a cloned device tensor from the pre-loaded weight map if the
+/// initializer name has a match. Returns `Ok(None)` when there is no map
+/// or when the name is missing — the caller falls back to host bridging.
+fn try_clone_preloaded(
+    init: &TensorProto,
+    pre_loaded_weights: Option<&BTreeMap<String, DeviceTensor>>,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    let Some(map) = pre_loaded_weights else {
+        return Ok(None);
+    };
+    let Some(dev_src) = map.get(&init.name) else {
+        return Ok(None);
+    };
+    let cloned = clone_device_tensor(dev_src).map_err(|e| {
+        SessionError::ExecutionFailed(format!("pre-loaded weight '{}': {}", init.name, e))
+    })?;
+    Ok(Some(cloned))
+}
+
+/// Dispatch a single graph node and store its outputs in the value map.
+fn run_one_node(
+    runtime: &CudaRuntime,
+    node: &crate::graph::ExecutionNode,
+    value_map: &mut BTreeMap<String, DeviceTensor>,
+    cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>,
+) -> Result<(), SessionError> {
+    let input_refs: Vec<Option<&DeviceTensor>> = node
+        .inputs
+        .iter()
+        .map(|name| {
+            if name.is_empty() {
+                None
+            } else {
+                value_map.get(name)
+            }
+        })
+        .collect();
+
+    let outputs = dispatch_gpu_node(
+        runtime,
+        &node.op_type,
+        &input_refs,
+        &node.attributes,
+        cache_ctx,
+    )
+    .map_err(|e| SessionError::ExecutionFailed(format!("{}: {}", node.name, e)))?;
+
+    // Store outputs under their declared names. All Section 5 ops
+    // are single-output; pair by index and let any trailing declared
+    // outputs be silently skipped (they stay absent from the map).
+    for (mut dev_t, output_name) in outputs.into_iter().zip(node.outputs.iter()) {
+        if output_name.is_empty() {
+            continue;
+        }
+        dev_t.name = output_name.clone();
+        value_map.insert(output_name.clone(), dev_t);
+    }
+    Ok(())
+}
+
+/// Commit per-layer K/V appends accumulated during the forward pass.
+fn finalize_kv_cache(cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>) -> Result<(), SessionError> {
+    let Some(ctx) = cache_ctx else {
+        return Ok(());
+    };
+    if ctx.next_layer_idx == 0 {
+        return Ok(());
+    }
+    ctx.cache
+        .advance_position()
+        .map_err(|e| SessionError::ExecutionFailed(format!("kv_cache advance_position: {}", e)))
+}
+
+/// Extract the declared graph outputs from the value map in declared order.
+fn collect_graph_outputs(
+    value_map: &mut BTreeMap<String, DeviceTensor>,
+    output_names: &[String],
+) -> Result<Vec<DeviceTensor>, SessionError> {
     let mut results = Vec::new();
-    for output_name in &graph.output_names {
+    for output_name in output_names {
         let t = value_map.remove(output_name).ok_or_else(|| {
             SessionError::ExecutionFailed(format!(
                 "GPU executor: output tensor '{}' not produced",
@@ -446,321 +492,481 @@ fn dispatch_gpu_node(
     op_type: &str,
     inputs: &[Option<&DeviceTensor>],
     attrs: &[AttributeProto],
-    mut kv_cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>,
+    kv_cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>,
 ) -> Result<Vec<DeviceTensor>, OpError> {
     match op_type {
-        "MatMul" => {
-            let a = take_input(inputs, 0, "MatMul", "A")?;
-            let b = take_input(inputs, 1, "MatMul", "B")?;
-            let out = gpu_gemm_device(runtime, a, b, false, false, 1.0, 0.0, None)
-                .map_err(|e| OpError::InternalError(format!("CUDA MatMul: {}", e)))?;
-            Ok(vec![out])
-        }
-        "Gemm" => {
-            let a = take_input(inputs, 0, "Gemm", "A")?;
-            let b = take_input(inputs, 1, "Gemm", "B")?;
-            let c_bias = inputs.get(2).and_then(|o| *o);
-
-            let mut trans_a = false;
-            let mut trans_b = false;
-            let mut alpha = 1.0f32;
-            let mut beta = 1.0f32;
-            for attr in attrs {
-                match attr.name.as_str() {
-                    "transA" => trans_a = attr.i != 0,
-                    "transB" => trans_b = attr.i != 0,
-                    "alpha" => alpha = attr.f,
-                    "beta" => beta = if c_bias.is_some() { attr.f } else { 0.0 },
-                    _ => {}
-                }
-            }
-            if c_bias.is_none() {
-                beta = 0.0;
-            }
-            let out = gpu_gemm_device(runtime, a, b, trans_a, trans_b, alpha, beta, c_bias)
-                .map_err(|e| OpError::InternalError(format!("CUDA Gemm: {}", e)))?;
-            Ok(vec![out])
-        }
-        "MatMulInteger" => {
-            let a = take_input(inputs, 0, "MatMulInteger", "A")?;
-            let b = take_input(inputs, 1, "MatMulInteger", "B")?;
-            if a.dtype != DataType::Int8 || b.dtype != DataType::Int8 {
-                return Err(OpError::InternalError(format!(
-                    "GPU executor: MatMulInteger requires Int8 inputs (got {:?}/{:?})",
-                    a.dtype, b.dtype
-                )));
-            }
-            let out = gpu_gemm_int8_device(runtime, a, b)
-                .map_err(|e| OpError::InternalError(format!("CUDA MatMulInteger: {}", e)))?;
-            Ok(vec![out])
-        }
-        "Conv" => {
-            let x = take_input(inputs, 0, "Conv", "X")?;
-            let w = take_input(inputs, 1, "Conv", "W")?;
-            let bias = inputs.get(2).and_then(|o| *o);
-
-            let mut pads: Vec<i32> = vec![0, 0, 0, 0];
-            let mut strides: Vec<i32> = vec![1, 1];
-            let mut dilations: Vec<i32> = vec![1, 1];
-            let mut group: i32 = 1;
-            for attr in attrs {
-                match (attr.name.as_str(), attr.attr_type) {
-                    ("pads", AttributeType::Ints) => {
-                        pads = attr.ints.iter().map(|&v| v as i32).collect()
-                    }
-                    ("strides", AttributeType::Ints) => {
-                        strides = attr.ints.iter().map(|&v| v as i32).collect()
-                    }
-                    ("dilations", AttributeType::Ints) => {
-                        dilations = attr.ints.iter().map(|&v| v as i32).collect()
-                    }
-                    ("group", AttributeType::Int) => group = attr.i as i32,
-                    _ => {}
-                }
-            }
-            let out = gpu_conv2d_device(runtime, x, w, bias, &pads, &strides, &dilations, group)
-                .map_err(|e| OpError::InternalError(format!("CUDA Conv: {}", e)))?;
-            Ok(vec![out])
-        }
-        // ── transformer-gpu-kernels-v1 §7 ─────────────────────────────
-        "Add" => {
-            let a = take_input(inputs, 0, "Add", "A")?;
-            let b = take_input(inputs, 1, "Add", "B")?;
-            let out = crate::cuda::kernels::elementwise::add_gpu(runtime, a, b)
-                .map_err(|e| OpError::InternalError(format!("CUDA Add: {}", e)))?;
-            Ok(vec![out])
-        }
-        "Mul" => {
-            let a = take_input(inputs, 0, "Mul", "A")?;
-            let b = take_input(inputs, 1, "Mul", "B")?;
-            let out = crate::cuda::kernels::elementwise::mul_gpu(runtime, a, b)
-                .map_err(|e| OpError::InternalError(format!("CUDA Mul: {}", e)))?;
-            Ok(vec![out])
-        }
-        "Silu" => {
-            let x = take_input(inputs, 0, "Silu", "X")?;
-            let out = crate::cuda::kernels::elementwise::silu_gpu(runtime, x)
-                .map_err(|e| OpError::InternalError(format!("CUDA Silu: {}", e)))?;
-            Ok(vec![out])
-        }
-        "Gather" => {
-            let data = take_input(inputs, 0, "Gather", "data")?;
-            let indices = take_input(inputs, 1, "Gather", "indices")?;
-            let mut axis: i64 = 0;
-            for a in attrs {
-                if a.name == "axis" {
-                    axis = a.i;
-                }
-            }
-            let out = crate::cuda::kernels::gather::gather_gpu(runtime, data, indices, axis)
-                .map_err(|e| OpError::InternalError(format!("CUDA Gather: {}", e)))?;
-            Ok(vec![out])
-        }
-        "RMSNormalization" => {
-            let x = take_input(inputs, 0, "RMSNormalization", "X")?;
-            let weight = take_input(inputs, 1, "RMSNormalization", "weight")?;
-            let mut eps = 1e-6f32;
-            for a in attrs {
-                if a.name == "epsilon" {
-                    eps = a.f;
-                }
-            }
-            let out = crate::cuda::kernels::rms_norm::rms_norm_gpu(runtime, x, weight, eps)
-                .map_err(|e| OpError::InternalError(format!("CUDA RMSNormalization: {}", e)))?;
-            Ok(vec![out])
-        }
-        "RotaryEmbedding" => {
-            let x = take_input(inputs, 0, "RotaryEmbedding", "X")?;
-            // Two input forms accepted:
-            //   - microsoft: [X, position_ids, cos_cache, sin_cache]
-            //   - gemma-style: [X, cos_cache, sin_cache]
-            // Disambiguate by the *count* of supplied inputs.
-            let (cos_cache, sin_cache, explicit_positions) = if inputs.len() >= 4 {
-                let pos = take_input(inputs, 1, "RotaryEmbedding", "position_ids")?;
-                let cos = take_input(inputs, 2, "RotaryEmbedding", "cos_cache")?;
-                let sin = take_input(inputs, 3, "RotaryEmbedding", "sin_cache")?;
-                (cos, sin, Some(pos))
-            } else {
-                let cos = take_input(inputs, 1, "RotaryEmbedding", "cos_cache")?;
-                let sin = take_input(inputs, 2, "RotaryEmbedding", "sin_cache")?;
-                (cos, sin, None)
-            };
-            let mut interleaved = false;
-            for a in attrs {
-                if a.name == "interleaved" {
-                    interleaved = a.i != 0;
-                }
-            }
-            // Pick the starting position. With explicit position_ids,
-            // read the first i64. Otherwise use the cache's current
-            // committed position (for cache-aware safetensors decode
-            // steps), defaulting to 0 for cacheless / first-token runs.
-            let position: i32 = if let Some(pos) = explicit_positions {
-                let pos_host = pos.to_host().map_err(|e| {
-                    OpError::InternalError(format!("RotaryEmbedding pos D2H: {}", e))
-                })?;
-                if pos_host.raw_data.len() >= 8 {
-                    let bytes: [u8; 8] = pos_host.raw_data[..8].try_into().unwrap_or([0; 8]);
-                    i64::from_le_bytes(bytes) as i32
-                } else {
-                    0
-                }
-            } else {
-                kv_cache_ctx
-                    .as_ref()
-                    .map(|c| c.cache.current_position() as i32)
-                    .unwrap_or(0)
-            };
-            // The rotary kernels read F32 cos/sin tables; the gemma
-            // builder emits BF16 tables (matches the surrounding
-            // weight dtype). Cast on the fly when needed — the tables
-            // are tiny relative to model weights so the per-call cast
-            // is negligible.
-            let cos_f32_owned;
-            let sin_f32_owned;
-            let cos_ref = if cos_cache.dtype == DataType::BFloat16 {
-                cos_f32_owned =
-                    crate::cuda::kernels::attention::cast_bf16_to_f32_gpu(runtime, cos_cache)
-                        .map_err(|e| {
-                            OpError::InternalError(format!(
-                                "RotaryEmbedding cos cast bf16->f32: {}",
-                                e
-                            ))
-                        })?;
-                &cos_f32_owned
-            } else {
-                cos_cache
-            };
-            let sin_ref = if sin_cache.dtype == DataType::BFloat16 {
-                sin_f32_owned =
-                    crate::cuda::kernels::attention::cast_bf16_to_f32_gpu(runtime, sin_cache)
-                        .map_err(|e| {
-                            OpError::InternalError(format!(
-                                "RotaryEmbedding sin cast bf16->f32: {}",
-                                e
-                            ))
-                        })?;
-                &sin_f32_owned
-            } else {
-                sin_cache
-            };
-            // Read num_heads from attrs; required when input is rank-3
-            // (the layout the gemma builder emits directly from its
-            // Q/K/V projection Gemms). The kernel infers head_dim from
-            // `hidden / num_heads` internally.
-            let mut num_heads_attr: Option<i64> = None;
-            for a in attrs {
-                if a.name == "num_heads" {
-                    num_heads_attr = Some(a.i);
-                }
-            }
-            // For rank-3 inputs without an explicit num_heads attribute,
-            // infer it from the cos/sin table's inner dim (head_dim / 2)
-            // and the input tensor's hidden dim.
-            let num_heads_for_rank3: Option<i64> = if x.shape.len() == 3 {
-                match num_heads_attr {
-                    Some(n) => Some(n),
-                    None => {
-                        let head_dim_from_cos = cos_ref.shape.last().copied().unwrap_or(0) * 2;
-                        let hidden = x.shape[2];
-                        if head_dim_from_cos > 0 && hidden % head_dim_from_cos == 0 {
-                            Some(hidden / head_dim_from_cos)
-                        } else {
-                            None
-                        }
-                    }
-                }
-            } else {
-                None
-            };
-            let out = crate::cuda::kernels::rotary::rotary_gpu(
-                runtime,
-                x,
-                cos_ref,
-                sin_ref,
-                position,
-                interleaved,
-                num_heads_for_rank3,
-            )
-            .map_err(|e| OpError::InternalError(format!("CUDA RotaryEmbedding: {}", e)))?;
-            Ok(vec![out])
-        }
-        "GroupQueryAttention" => {
-            let q = take_input(inputs, 0, "GroupQueryAttention", "Q")?;
-            let new_k = take_input(inputs, 1, "GroupQueryAttention", "K")?;
-            let new_v = take_input(inputs, 2, "GroupQueryAttention", "V")?;
-            let mut local_window: i64 = -1;
-            let mut num_heads_attr: i64 = 0;
-            let mut kv_num_heads_attr: i64 = 0;
-            for a in attrs {
-                match a.name.as_str() {
-                    "local_window_size" => local_window = a.i,
-                    "num_heads" => num_heads_attr = a.i,
-                    "kv_num_heads" => kv_num_heads_attr = a.i,
-                    _ => {}
-                }
-            }
-            let window: Option<i32> = if local_window > 0 {
-                Some(local_window as i32)
-            } else {
-                None
-            };
-            // Rank-3 inputs come straight from the gemma Gemm
-            // projections — dispatch through `gpu_gqa_rank3` which
-            // transposes to head-major layout before invoking the
-            // core GQA driver. For cache semantics we currently fall
-            // back to the no-cache path when input is rank-3 (batched
-            // append across Sq>1 tokens is a follow-up).
-            let is_rank3 = q.shape.len() == 3 && new_k.shape.len() == 3 && new_v.shape.len() == 3;
-            let out = if is_rank3 {
-                if num_heads_attr <= 0 || kv_num_heads_attr <= 0 {
-                    return Err(OpError::InternalError(
-                        "GroupQueryAttention rank-3: need num_heads / kv_num_heads attrs".into(),
-                    ));
-                }
-                // Still advance layer counter so subsequent GQA nodes
-                // index the next layer consistently.
-                if let Some(ctx) = kv_cache_ctx.as_mut() {
-                    ctx.next_layer_idx += 1;
-                }
-                crate::cuda::kernels::attention::gpu_gqa_rank3(
-                    runtime,
-                    q,
-                    new_k,
-                    new_v,
-                    num_heads_attr,
-                    kv_num_heads_attr,
-                    window,
-                    None,
-                )
-                .map_err(|e| {
-                    OpError::InternalError(format!("CUDA GroupQueryAttention (rank-3): {}", e))
-                })?
-            } else if let Some(ctx) = kv_cache_ctx {
-                let layer_idx = ctx.next_layer_idx;
-                ctx.next_layer_idx += 1;
-                crate::cuda::kernels::attention::gpu_gqa_with_cache(
-                    runtime, q, new_k, new_v, ctx.cache, layer_idx, window, None,
-                )
-                .map_err(|e| {
-                    OpError::InternalError(format!("CUDA GroupQueryAttention (cache): {}", e))
-                })?
-            } else {
-                crate::cuda::kernels::attention::gpu_gqa(runtime, q, new_k, new_v, window, None)
-                    .map_err(|e| {
-                        OpError::InternalError(format!("CUDA GroupQueryAttention: {}", e))
-                    })?
-            };
-            // The microsoft GQA op declares 3 outputs (attn_out, present_k,
-            // present_v). v1 dispatcher only emits attn_out — present K/V
-            // live inside the persistent GpuKvCache, not in the value map.
-            Ok(vec![out])
-        }
+        "MatMul" => dispatch_matmul(runtime, inputs),
+        "Gemm" => dispatch_gemm(runtime, inputs, attrs),
+        "MatMulInteger" => dispatch_matmul_integer(runtime, inputs),
+        "Conv" => dispatch_conv(runtime, inputs, attrs),
+        "Add" => dispatch_elementwise_binary(runtime, inputs, "Add"),
+        "Mul" => dispatch_elementwise_binary(runtime, inputs, "Mul"),
+        "Silu" => dispatch_silu(runtime, inputs),
+        "Gather" => dispatch_gather(runtime, inputs, attrs),
+        "RMSNormalization" => dispatch_rms_norm(runtime, inputs, attrs),
+        "RotaryEmbedding" => dispatch_rotary_embedding(runtime, inputs, attrs, kv_cache_ctx),
+        "GroupQueryAttention" => dispatch_gqa(runtime, inputs, attrs, kv_cache_ctx),
         other => Err(OpError::InternalError(format!(
             "GPU executor: no GPU implementation for {}",
             other
         ))),
     }
+}
+
+fn dispatch_matmul(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let a = take_input(inputs, 0, "MatMul", "A")?;
+    let b = take_input(inputs, 1, "MatMul", "B")?;
+    let out = gpu_gemm_device(runtime, a, b, false, false, 1.0, 0.0, None)
+        .map_err(|e| OpError::InternalError(format!("CUDA MatMul: {}", e)))?;
+    Ok(vec![out])
+}
+
+/// Parsed Gemm attributes (transA/transB/alpha/beta).
+struct GemmAttrs {
+    trans_a: bool,
+    trans_b: bool,
+    alpha: f32,
+    beta: f32,
+}
+
+fn parse_gemm_attrs(attrs: &[AttributeProto], has_bias: bool) -> GemmAttrs {
+    let mut out = GemmAttrs {
+        trans_a: false,
+        trans_b: false,
+        alpha: 1.0,
+        beta: 1.0,
+    };
+    for attr in attrs {
+        match attr.name.as_str() {
+            "transA" => out.trans_a = attr.i != 0,
+            "transB" => out.trans_b = attr.i != 0,
+            "alpha" => out.alpha = attr.f,
+            "beta" => out.beta = if has_bias { attr.f } else { 0.0 },
+            _ => {}
+        }
+    }
+    if !has_bias {
+        out.beta = 0.0;
+    }
+    out
+}
+
+fn dispatch_gemm(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let a = take_input(inputs, 0, "Gemm", "A")?;
+    let b = take_input(inputs, 1, "Gemm", "B")?;
+    let c_bias = inputs.get(2).and_then(|o| *o);
+    let g = parse_gemm_attrs(attrs, c_bias.is_some());
+    let out = gpu_gemm_device(runtime, a, b, g.trans_a, g.trans_b, g.alpha, g.beta, c_bias)
+        .map_err(|e| OpError::InternalError(format!("CUDA Gemm: {}", e)))?;
+    Ok(vec![out])
+}
+
+fn dispatch_matmul_integer(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let a = take_input(inputs, 0, "MatMulInteger", "A")?;
+    let b = take_input(inputs, 1, "MatMulInteger", "B")?;
+    if a.dtype != DataType::Int8 || b.dtype != DataType::Int8 {
+        return Err(OpError::InternalError(format!(
+            "GPU executor: MatMulInteger requires Int8 inputs (got {:?}/{:?})",
+            a.dtype, b.dtype
+        )));
+    }
+    let out = gpu_gemm_int8_device(runtime, a, b)
+        .map_err(|e| OpError::InternalError(format!("CUDA MatMulInteger: {}", e)))?;
+    Ok(vec![out])
+}
+
+/// Parsed Conv attributes (pads / strides / dilations / group).
+struct ConvAttrs {
+    pads: Vec<i32>,
+    strides: Vec<i32>,
+    dilations: Vec<i32>,
+    group: i32,
+}
+
+fn parse_conv_attrs(attrs: &[AttributeProto]) -> ConvAttrs {
+    let mut out = ConvAttrs {
+        pads: vec![0, 0, 0, 0],
+        strides: vec![1, 1],
+        dilations: vec![1, 1],
+        group: 1,
+    };
+    for attr in attrs {
+        match (attr.name.as_str(), attr.attr_type) {
+            ("pads", AttributeType::Ints) => {
+                out.pads = attr.ints.iter().map(|&v| v as i32).collect()
+            }
+            ("strides", AttributeType::Ints) => {
+                out.strides = attr.ints.iter().map(|&v| v as i32).collect()
+            }
+            ("dilations", AttributeType::Ints) => {
+                out.dilations = attr.ints.iter().map(|&v| v as i32).collect()
+            }
+            ("group", AttributeType::Int) => out.group = attr.i as i32,
+            _ => {}
+        }
+    }
+    out
+}
+
+fn dispatch_conv(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let x = take_input(inputs, 0, "Conv", "X")?;
+    let w = take_input(inputs, 1, "Conv", "W")?;
+    let bias = inputs.get(2).and_then(|o| *o);
+    let c = parse_conv_attrs(attrs);
+    let out = gpu_conv2d_device(
+        runtime,
+        x,
+        w,
+        bias,
+        &c.pads,
+        &c.strides,
+        &c.dilations,
+        c.group,
+    )
+    .map_err(|e| OpError::InternalError(format!("CUDA Conv: {}", e)))?;
+    Ok(vec![out])
+}
+
+fn dispatch_elementwise_binary(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+    op: &str,
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let a = take_input(inputs, 0, op, "A")?;
+    let b = take_input(inputs, 1, op, "B")?;
+    let out = match op {
+        "Add" => crate::cuda::kernels::elementwise::add_gpu(runtime, a, b),
+        "Mul" => crate::cuda::kernels::elementwise::mul_gpu(runtime, a, b),
+        _ => {
+            return Err(OpError::InternalError(format!(
+                "GPU executor: dispatch_elementwise_binary called with unsupported op {}",
+                op
+            )))
+        }
+    }
+    .map_err(|e| OpError::InternalError(format!("CUDA {}: {}", op, e)))?;
+    Ok(vec![out])
+}
+
+fn dispatch_silu(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let x = take_input(inputs, 0, "Silu", "X")?;
+    let out = crate::cuda::kernels::elementwise::silu_gpu(runtime, x)
+        .map_err(|e| OpError::InternalError(format!("CUDA Silu: {}", e)))?;
+    Ok(vec![out])
+}
+
+fn dispatch_gather(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let data = take_input(inputs, 0, "Gather", "data")?;
+    let indices = take_input(inputs, 1, "Gather", "indices")?;
+    let axis = find_int_attr(attrs, "axis").unwrap_or(0);
+    let out = crate::cuda::kernels::gather::gather_gpu(runtime, data, indices, axis)
+        .map_err(|e| OpError::InternalError(format!("CUDA Gather: {}", e)))?;
+    Ok(vec![out])
+}
+
+fn dispatch_rms_norm(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+    attrs: &[AttributeProto],
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let x = take_input(inputs, 0, "RMSNormalization", "X")?;
+    let weight = take_input(inputs, 1, "RMSNormalization", "weight")?;
+    let eps = find_float_attr(attrs, "epsilon").unwrap_or(1e-6);
+    let out = crate::cuda::kernels::rms_norm::rms_norm_gpu(runtime, x, weight, eps)
+        .map_err(|e| OpError::InternalError(format!("CUDA RMSNormalization: {}", e)))?;
+    Ok(vec![out])
+}
+
+/// Find the first int attribute with the given name.
+fn find_int_attr(attrs: &[AttributeProto], name: &str) -> Option<i64> {
+    attrs.iter().find(|a| a.name == name).map(|a| a.i)
+}
+
+/// Find the first float attribute with the given name.
+fn find_float_attr(attrs: &[AttributeProto], name: &str) -> Option<f32> {
+    attrs.iter().find(|a| a.name == name).map(|a| a.f)
+}
+
+/// Find the first bool-style int attribute (`!= 0`) with the given name.
+fn find_bool_attr(attrs: &[AttributeProto], name: &str) -> Option<bool> {
+    find_int_attr(attrs, name).map(|v| v != 0)
+}
+
+/// RotaryEmbedding inputs after disambiguating the two accepted forms:
+///   - microsoft: [X, position_ids, cos_cache, sin_cache]
+///   - gemma-style: [X, cos_cache, sin_cache]
+struct RotaryInputs<'a> {
+    cos_cache: &'a DeviceTensor,
+    sin_cache: &'a DeviceTensor,
+    explicit_positions: Option<&'a DeviceTensor>,
+}
+
+fn resolve_rotary_inputs<'a>(
+    inputs: &'a [Option<&'a DeviceTensor>],
+) -> Result<RotaryInputs<'a>, OpError> {
+    if inputs.len() >= 4 {
+        let pos = take_input(inputs, 1, "RotaryEmbedding", "position_ids")?;
+        let cos = take_input(inputs, 2, "RotaryEmbedding", "cos_cache")?;
+        let sin = take_input(inputs, 3, "RotaryEmbedding", "sin_cache")?;
+        Ok(RotaryInputs {
+            cos_cache: cos,
+            sin_cache: sin,
+            explicit_positions: Some(pos),
+        })
+    } else {
+        let cos = take_input(inputs, 1, "RotaryEmbedding", "cos_cache")?;
+        let sin = take_input(inputs, 2, "RotaryEmbedding", "sin_cache")?;
+        Ok(RotaryInputs {
+            cos_cache: cos,
+            sin_cache: sin,
+            explicit_positions: None,
+        })
+    }
+}
+
+/// Read the first i64 from a host-resident position_ids tensor.
+fn read_first_i64_position(pos: &DeviceTensor) -> Result<i32, OpError> {
+    let pos_host = pos
+        .to_host()
+        .map_err(|e| OpError::InternalError(format!("RotaryEmbedding pos D2H: {}", e)))?;
+    if pos_host.raw_data.len() < 8 {
+        return Ok(0);
+    }
+    let bytes: [u8; 8] = pos_host.raw_data[..8].try_into().unwrap_or([0; 8]);
+    Ok(i64::from_le_bytes(bytes) as i32)
+}
+
+/// Pick the rotary starting position from explicit IDs or the KV cache.
+fn pick_rotary_position(
+    explicit_positions: Option<&DeviceTensor>,
+    kv_cache_ctx: Option<&KvCacheDispatchCtx<'_>>,
+) -> Result<i32, OpError> {
+    if let Some(pos) = explicit_positions {
+        return read_first_i64_position(pos);
+    }
+    Ok(kv_cache_ctx
+        .map(|c| c.cache.current_position() as i32)
+        .unwrap_or(0))
+}
+
+/// Cast a cos/sin table to F32 if it's BF16. Returns either a borrow of
+/// the existing tensor or a newly-allocated F32 DeviceTensor that the
+/// caller must keep alive.
+fn cast_rotary_table_to_f32<'a>(
+    runtime: &CudaRuntime,
+    table: &'a DeviceTensor,
+    owned_slot: &'a mut Option<DeviceTensor>,
+    which: &str,
+) -> Result<&'a DeviceTensor, OpError> {
+    if table.dtype != DataType::BFloat16 {
+        return Ok(table);
+    }
+    let casted =
+        crate::cuda::kernels::attention::cast_bf16_to_f32_gpu(runtime, table).map_err(|e| {
+            OpError::InternalError(format!("RotaryEmbedding {} cast bf16->f32: {}", which, e))
+        })?;
+    *owned_slot = Some(casted);
+    Ok(owned_slot.as_ref().expect("just stored Some"))
+}
+
+/// Compute num_heads for rank-3 rotary inputs.
+fn rotary_num_heads_for_rank3(
+    x: &DeviceTensor,
+    cos_ref: &DeviceTensor,
+    num_heads_attr: Option<i64>,
+) -> Option<i64> {
+    if x.shape.len() != 3 {
+        return None;
+    }
+    if let Some(n) = num_heads_attr {
+        return Some(n);
+    }
+    let head_dim_from_cos = cos_ref.shape.last().copied().unwrap_or(0) * 2;
+    let hidden = x.shape[2];
+    if head_dim_from_cos > 0 && hidden % head_dim_from_cos == 0 {
+        Some(hidden / head_dim_from_cos)
+    } else {
+        None
+    }
+}
+
+fn dispatch_rotary_embedding(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+    attrs: &[AttributeProto],
+    kv_cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>,
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let x = take_input(inputs, 0, "RotaryEmbedding", "X")?;
+    let RotaryInputs {
+        cos_cache,
+        sin_cache,
+        explicit_positions,
+    } = resolve_rotary_inputs(inputs)?;
+    let interleaved = find_bool_attr(attrs, "interleaved").unwrap_or(false);
+    // Borrow the ctx immutably here — pick_rotary_position only reads.
+    let position = pick_rotary_position(explicit_positions, kv_cache_ctx.as_deref())?;
+
+    // The rotary kernels read F32 cos/sin tables; the gemma builder
+    // emits BF16 tables. Cast on the fly when needed.
+    let mut cos_f32_owned: Option<DeviceTensor> = None;
+    let mut sin_f32_owned: Option<DeviceTensor> = None;
+    let cos_ref = cast_rotary_table_to_f32(runtime, cos_cache, &mut cos_f32_owned, "cos")?;
+    let sin_ref = cast_rotary_table_to_f32(runtime, sin_cache, &mut sin_f32_owned, "sin")?;
+
+    let num_heads_attr = find_int_attr(attrs, "num_heads");
+    let num_heads_for_rank3 = rotary_num_heads_for_rank3(x, cos_ref, num_heads_attr);
+
+    let out = crate::cuda::kernels::rotary::rotary_gpu(
+        runtime,
+        x,
+        cos_ref,
+        sin_ref,
+        position,
+        interleaved,
+        num_heads_for_rank3,
+    )
+    .map_err(|e| OpError::InternalError(format!("CUDA RotaryEmbedding: {}", e)))?;
+    Ok(vec![out])
+}
+
+/// Parsed GQA attributes (num_heads / kv_num_heads / local_window_size).
+struct GqaAttrs {
+    num_heads: i64,
+    kv_num_heads: i64,
+    /// Sliding-window size, already converted to the kernel's
+    /// `Option<i32>` (None when the attribute is absent or non-positive).
+    window: Option<i32>,
+}
+
+fn parse_gqa_attrs(attrs: &[AttributeProto]) -> GqaAttrs {
+    let mut num_heads: i64 = 0;
+    let mut kv_num_heads: i64 = 0;
+    let mut local_window: i64 = -1;
+    for a in attrs {
+        match a.name.as_str() {
+            "local_window_size" => local_window = a.i,
+            "num_heads" => num_heads = a.i,
+            "kv_num_heads" => kv_num_heads = a.i,
+            _ => {}
+        }
+    }
+    let window = if local_window > 0 {
+        Some(local_window as i32)
+    } else {
+        None
+    };
+    GqaAttrs {
+        num_heads,
+        kv_num_heads,
+        window,
+    }
+}
+
+fn gqa_rank3(
+    runtime: &CudaRuntime,
+    q: &DeviceTensor,
+    new_k: &DeviceTensor,
+    new_v: &DeviceTensor,
+    a: &GqaAttrs,
+    kv_cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>,
+) -> Result<DeviceTensor, OpError> {
+    if a.num_heads <= 0 || a.kv_num_heads <= 0 {
+        return Err(OpError::InternalError(
+            "GroupQueryAttention rank-3: need num_heads / kv_num_heads attrs".into(),
+        ));
+    }
+    // Still advance layer counter so subsequent GQA nodes
+    // index the next layer consistently.
+    if let Some(ctx) = kv_cache_ctx {
+        ctx.next_layer_idx += 1;
+    }
+    crate::cuda::kernels::attention::gpu_gqa_rank3(
+        runtime,
+        q,
+        new_k,
+        new_v,
+        a.num_heads,
+        a.kv_num_heads,
+        a.window,
+        None,
+    )
+    .map_err(|e| OpError::InternalError(format!("CUDA GroupQueryAttention (rank-3): {}", e)))
+}
+
+fn gqa_with_cache(
+    runtime: &CudaRuntime,
+    q: &DeviceTensor,
+    new_k: &DeviceTensor,
+    new_v: &DeviceTensor,
+    window: Option<i32>,
+    ctx: &mut KvCacheDispatchCtx<'_>,
+) -> Result<DeviceTensor, OpError> {
+    let layer_idx = ctx.next_layer_idx;
+    ctx.next_layer_idx += 1;
+    crate::cuda::kernels::attention::gpu_gqa_with_cache(
+        runtime, q, new_k, new_v, ctx.cache, layer_idx, window, None,
+    )
+    .map_err(|e| OpError::InternalError(format!("CUDA GroupQueryAttention (cache): {}", e)))
+}
+
+fn gqa_cacheless(
+    runtime: &CudaRuntime,
+    q: &DeviceTensor,
+    new_k: &DeviceTensor,
+    new_v: &DeviceTensor,
+    window: Option<i32>,
+) -> Result<DeviceTensor, OpError> {
+    crate::cuda::kernels::attention::gpu_gqa(runtime, q, new_k, new_v, window, None)
+        .map_err(|e| OpError::InternalError(format!("CUDA GroupQueryAttention: {}", e)))
+}
+
+fn dispatch_gqa(
+    runtime: &CudaRuntime,
+    inputs: &[Option<&DeviceTensor>],
+    attrs: &[AttributeProto],
+    kv_cache_ctx: Option<&mut KvCacheDispatchCtx<'_>>,
+) -> Result<Vec<DeviceTensor>, OpError> {
+    let q = take_input(inputs, 0, "GroupQueryAttention", "Q")?;
+    let new_k = take_input(inputs, 1, "GroupQueryAttention", "K")?;
+    let new_v = take_input(inputs, 2, "GroupQueryAttention", "V")?;
+    let a = parse_gqa_attrs(attrs);
+
+    // Rank-3 inputs come straight from the gemma Gemm projections —
+    // dispatch through `gpu_gqa_rank3`. For cache semantics we currently
+    // fall back to the no-cache path when input is rank-3.
+    let is_rank3 = q.shape.len() == 3 && new_k.shape.len() == 3 && new_v.shape.len() == 3;
+    let out = if is_rank3 {
+        gqa_rank3(runtime, q, new_k, new_v, &a, kv_cache_ctx)?
+    } else if let Some(ctx) = kv_cache_ctx {
+        gqa_with_cache(runtime, q, new_k, new_v, a.window, ctx)?
+    } else {
+        gqa_cacheless(runtime, q, new_k, new_v, a.window)?
+    };
+    // The microsoft GQA op declares 3 outputs (attn_out, present_k,
+    // present_v). v1 dispatcher only emits attn_out — present K/V live
+    // inside the persistent GpuKvCache, not in the value map.
+    Ok(vec![out])
 }
 
 fn take_input<'a>(
@@ -786,6 +992,149 @@ fn take_input<'a>(
 
 /// Device-tensor GEMM. Mirrors [`crate::cuda::dispatch::gpu_gemm`] but
 /// reads/writes `DeviceBuffer`s directly — no host transfers.
+/// (m, k) for an A-matrix of dims `[..., M, K]` (or `[..., K, M]` when `trans_a`).
+fn gemm_a_extents(a_dims: &[i64], trans_a: bool) -> (usize, usize) {
+    let last = a_dims.len() - 1;
+    if trans_a {
+        (a_dims[last] as usize, a_dims[last - 1] as usize)
+    } else {
+        (a_dims[last - 1] as usize, a_dims[last] as usize)
+    }
+}
+
+/// (k, n) for a B-matrix of dims `[..., K, N]` (or `[..., N, K]` when `trans_b`).
+fn gemm_b_extents(b_dims: &[i64], trans_b: bool) -> (usize, usize) {
+    let last = b_dims.len() - 1;
+    if trans_b {
+        (b_dims[last] as usize, b_dims[last - 1] as usize)
+    } else {
+        (b_dims[last - 1] as usize, b_dims[last] as usize)
+    }
+}
+
+/// I/O dtype family selected from A and B's element types.
+#[derive(Clone, Copy)]
+struct GemmDtype {
+    elem_size: usize,
+    io_dtype: ffi::cudaDataType_t,
+    out_data_type: DataType,
+    is_bf16: bool,
+}
+
+fn pick_gemm_dtype(a: &DeviceTensor, b: &DeviceTensor) -> Result<GemmDtype, CudaError> {
+    let is_bf16 = a.dtype == DataType::BFloat16 && b.dtype == DataType::BFloat16;
+    let is_f32 = a.dtype == DataType::Float && b.dtype == DataType::Float;
+    if !is_bf16 && !is_f32 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gemm_device: unsupported dtype",
+            code: -3,
+        });
+    }
+    Ok(GemmDtype {
+        elem_size: if is_bf16 { 2 } else { 4 },
+        io_dtype: if is_bf16 {
+            ffi::cudaDataType_t::CUDA_R_16BF
+        } else {
+            ffi::cudaDataType_t::CUDA_R_32F
+        },
+        out_data_type: if is_bf16 {
+            DataType::BFloat16
+        } else {
+            DataType::Float
+        },
+        is_bf16,
+    })
+}
+
+/// Initialize the C buffer with a bias tensor (matching dtype). Returns
+/// `Ok(true)` if the bias was applied directly, `Ok(false)` if the bias
+/// shape was unknown (caller zero-fills and lets beta multiply zeros).
+fn copy_gemm_bias_into_c(
+    c_buf: &DeviceBuffer,
+    bias: &DeviceTensor,
+    dt: &GemmDtype,
+    m: usize,
+    n: usize,
+    c_bytes: usize,
+) -> Result<bool, CudaError> {
+    if bias.dtype != dt.out_data_type {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_gemm_device: bias dtype mismatch",
+            code: -4,
+        });
+    }
+    let bias_elems: usize = bias.shape.iter().map(|&d| d as usize).product();
+    if bias_elems == m * n {
+        // Full C matrix: D2D copy bias -> c_buf.
+        let err = unsafe {
+            ffi::cudaMemcpy(
+                c_buf.as_mut_ptr(),
+                bias.buffer.as_ptr(),
+                c_bytes,
+                ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,
+            )
+        };
+        if err != ffi::CUDA_SUCCESS {
+            return Err(CudaError::CopyFailed {
+                msg: "gpu_gemm_device bias D2D",
+                code: err,
+            });
+        }
+        return Ok(true);
+    }
+    if bias_elems == n {
+        // Row-broadcast: build on host then copy up. Slower but
+        // matches the semantics of the host-Tensor path.
+        let row_bytes = n * dt.elem_size;
+        let mut host_bias_row = vec![0u8; row_bytes];
+        bias.buffer.copy_to_host(&mut host_bias_row)?;
+        let mut host_c = vec![0u8; c_bytes];
+        for row in 0..m {
+            host_c[row * row_bytes..(row + 1) * row_bytes].copy_from_slice(&host_bias_row);
+        }
+        c_buf.copy_from_host(&host_c)?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+/// Initialize C (bias or zeros). Section 5 supports: beta == 0 (most
+/// cases), full-C bias, or row-broadcast bias. Unknown bias shapes fall
+/// back to zeros and rely on beta's multiplication.
+fn init_gemm_c_buffer(
+    c_buf: &DeviceBuffer,
+    c_bias: Option<&DeviceTensor>,
+    dt: &GemmDtype,
+    beta: f32,
+    m: usize,
+    n: usize,
+    c_bytes: usize,
+) -> Result<(), CudaError> {
+    if beta != 0.0 {
+        if let Some(bias) = c_bias {
+            if copy_gemm_bias_into_c(c_buf, bias, dt, m, n, c_bytes)? {
+                return Ok(());
+            }
+        }
+    }
+    // beta == 0 (cuBLAS ignores C), or unknown bias shape: zero-fill.
+    c_buf.copy_from_host(&vec![0u8; c_bytes])
+}
+
+fn gemm_out_shape(a_dims: &[i64], m: usize, n: usize) -> Vec<i64> {
+    // Preserve leading batch dims from `a`. For a rank-3 input
+    // `[B, M, K]` (or `[B, K, M]` when trans_a) we emit rank-3
+    // `[B, M, N]`; rank-2 inputs stay rank-2.
+    if a_dims.len() > 2 {
+        let mut s: Vec<i64> = a_dims[..a_dims.len() - 2].to_vec();
+        s.push(m as i64);
+        s.push(n as i64);
+        s
+    } else {
+        vec![m as i64, n as i64]
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn gpu_gemm_device(
     runtime: &CudaRuntime,
@@ -799,7 +1148,6 @@ pub fn gpu_gemm_device(
 ) -> Result<DeviceTensor, CudaError> {
     let a_dims = &a.shape;
     let b_dims = &b.shape;
-
     if a_dims.len() < 2 || b_dims.len() < 2 {
         return Err(CudaError::RuntimeError {
             op: "gpu_gemm_device: need 2D inputs",
@@ -807,29 +1155,8 @@ pub fn gpu_gemm_device(
         });
     }
 
-    let (m, k_a) = if trans_a {
-        (
-            a_dims[a_dims.len() - 1] as usize,
-            a_dims[a_dims.len() - 2] as usize,
-        )
-    } else {
-        (
-            a_dims[a_dims.len() - 2] as usize,
-            a_dims[a_dims.len() - 1] as usize,
-        )
-    };
-    let (k_b, n) = if trans_b {
-        (
-            b_dims[b_dims.len() - 1] as usize,
-            b_dims[b_dims.len() - 2] as usize,
-        )
-    } else {
-        (
-            b_dims[b_dims.len() - 2] as usize,
-            b_dims[b_dims.len() - 1] as usize,
-        )
-    };
-
+    let (m, k_a) = gemm_a_extents(a_dims, trans_a);
+    let (k_b, n) = gemm_b_extents(b_dims, trans_b);
     if k_a != k_b {
         return Err(CudaError::RuntimeError {
             op: "gpu_gemm_device: k mismatch",
@@ -838,81 +1165,11 @@ pub fn gpu_gemm_device(
     }
     let k = k_a;
 
-    let is_bf16 = a.dtype == DataType::BFloat16 && b.dtype == DataType::BFloat16;
-    let is_f32 = a.dtype == DataType::Float && b.dtype == DataType::Float;
-    if !is_bf16 && !is_f32 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gemm_device: unsupported dtype",
-            code: -3,
-        });
-    }
+    let dt = pick_gemm_dtype(a, b)?;
 
-    let elem_size = if is_bf16 { 2 } else { 4 };
-    let io_dtype = if is_bf16 {
-        ffi::cudaDataType_t::CUDA_R_16BF
-    } else {
-        ffi::cudaDataType_t::CUDA_R_32F
-    };
-    let out_data_type = if is_bf16 {
-        DataType::BFloat16
-    } else {
-        DataType::Float
-    };
-
-    let c_bytes = m * n * elem_size;
+    let c_bytes = m * n * dt.elem_size;
     let c_buf = DeviceBuffer::alloc(c_bytes)?;
-
-    // Initialize C (bias or zeros). For the Section 5 scope we support
-    // only: beta == 0 (most cases) OR bias shape == full C matrix with
-    // matching dtype. Row-broadcast bias is rare for the supported ops
-    // and not exercised by any Gemma-lite test.
-    if beta != 0.0 {
-        if let Some(bias) = c_bias {
-            if bias.dtype != out_data_type {
-                return Err(CudaError::RuntimeError {
-                    op: "gpu_gemm_device: bias dtype mismatch",
-                    code: -4,
-                });
-            }
-            let bias_elems: usize = bias.shape.iter().map(|&d| d as usize).product();
-            if bias_elems == m * n {
-                // Full C matrix: D2D copy bias -> c_buf.
-                let err = unsafe {
-                    ffi::cudaMemcpy(
-                        c_buf.as_mut_ptr(),
-                        bias.buffer.as_ptr(),
-                        c_bytes,
-                        ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,
-                    )
-                };
-                if err != ffi::CUDA_SUCCESS {
-                    return Err(CudaError::CopyFailed {
-                        msg: "gpu_gemm_device bias D2D",
-                        code: err,
-                    });
-                }
-            } else if bias_elems == n {
-                // Row-broadcast: build on host then copy up. Slower but
-                // matches the semantics of the host-Tensor path.
-                let row_bytes = n * elem_size;
-                let mut host_bias_row = vec![0u8; row_bytes];
-                bias.buffer.copy_to_host(&mut host_bias_row)?;
-                let mut host_c = vec![0u8; c_bytes];
-                for row in 0..m {
-                    host_c[row * row_bytes..(row + 1) * row_bytes].copy_from_slice(&host_bias_row);
-                }
-                c_buf.copy_from_host(&host_c)?;
-            } else {
-                // Unknown bias shape: zero-fill and let beta multiply zeros.
-                c_buf.copy_from_host(&vec![0u8; c_bytes])?;
-            }
-        } else {
-            c_buf.copy_from_host(&vec![0u8; c_bytes])?;
-        }
-    } else {
-        // beta == 0: cuBLAS ignores C input, but we still need the buffer.
-        c_buf.copy_from_host(&vec![0u8; c_bytes])?;
-    }
+    init_gemm_c_buffer(&c_buf, c_bias, &dt, beta, m, n, c_bytes)?;
 
     // cuBLAS is column-major; swap A/B + transpose flags. Same trick as
     // the host-Tensor dispatch path.
@@ -931,7 +1188,7 @@ pub fn gpu_gemm_device(
     let ldb = if trans_a { m as i32 } else { k as i32 };
     let ldc = n as i32;
 
-    let compute_type = if is_bf16 {
+    let compute_type = if dt.is_bf16 {
         ffi::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_16BF
     } else {
         runtime.precision.to_cublas_compute_type()
@@ -945,36 +1202,24 @@ pub fn gpu_gemm_device(
         k as i32,
         &alpha as *const f32 as *const core::ffi::c_void,
         &b.buffer,
-        io_dtype,
+        dt.io_dtype,
         lda,
         &a.buffer,
-        io_dtype,
+        dt.io_dtype,
         ldb,
         &beta as *const f32 as *const core::ffi::c_void,
         &c_buf,
-        io_dtype,
+        dt.io_dtype,
         ldc,
         compute_type,
     )?;
 
     super::synchronize()?;
 
-    // Preserve leading batch dims from `a`. For a rank-3 input
-    // `[B, M, K]` (or `[B, K, M]` when trans_a) we emit rank-3
-    // `[B, M, N]`; rank-2 inputs stay rank-2.
-    let out_shape: Vec<i64> = if a_dims.len() > 2 {
-        let mut s: Vec<i64> = a_dims[..a_dims.len() - 2].to_vec();
-        s.push(m as i64);
-        s.push(n as i64);
-        s
-    } else {
-        vec![m as i64, n as i64]
-    };
-
     Ok(DeviceTensor {
         buffer: c_buf,
-        shape: out_shape,
-        dtype: out_data_type,
+        shape: gemm_out_shape(a_dims, m, n),
+        dtype: dt.out_data_type,
         name: String::new(),
     })
 }
@@ -1052,6 +1297,243 @@ pub fn gpu_gemm_int8_device(
 /// `IMPLICIT_PRECOMP_GEMM` for typical shapes, but it returns
 /// `BAD_PARAM` on some Conv shapes when workspace=0; widening the
 /// search restores robustness.
+/// cuDNN/output dtype selection for Conv2d.
+#[derive(Clone, Copy)]
+struct ConvDtype {
+    dnn_dtype: ffi::cudnnDataType_t,
+    elem_size: usize,
+    out_dtype: DataType,
+}
+
+fn pick_conv_dtype(x: &DeviceTensor, w: &DeviceTensor) -> Result<ConvDtype, CudaError> {
+    let is_bf16 = x.dtype == DataType::BFloat16 && w.dtype == DataType::BFloat16;
+    let is_f32 = x.dtype == DataType::Float && w.dtype == DataType::Float;
+    if !is_bf16 && !is_f32 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_conv2d_device: unsupported dtype",
+            code: -2,
+        });
+    }
+    Ok(ConvDtype {
+        dnn_dtype: if is_bf16 {
+            ffi::cudnnDataType_t::CUDNN_DATA_BFLOAT16
+        } else {
+            ffi::cudnnDataType_t::CUDNN_DATA_FLOAT
+        },
+        elem_size: if is_bf16 { 2 } else { 4 },
+        out_dtype: if is_bf16 {
+            DataType::BFloat16
+        } else {
+            DataType::Float
+        },
+    })
+}
+
+/// Layout dims for a single 4-D Conv pass.
+struct ConvDims {
+    n: i32,
+    c_in: i32,
+    h_in: i32,
+    w_in: i32,
+    k: i32,
+    c_w: i32, // c_in / group — filter in-channel count
+    kh: i32,
+    kw: i32,
+}
+
+fn read_conv_dims(x: &DeviceTensor, w: &DeviceTensor, group: i32) -> Result<ConvDims, CudaError> {
+    let d = ConvDims {
+        n: x.shape[0] as i32,
+        c_in: x.shape[1] as i32,
+        h_in: x.shape[2] as i32,
+        w_in: x.shape[3] as i32,
+        k: w.shape[0] as i32,
+        c_w: w.shape[1] as i32,
+        kh: w.shape[2] as i32,
+        kw: w.shape[3] as i32,
+    };
+    if d.c_in != d.c_w * group || d.k % group != 0 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_conv2d_device: input/weight channels do not satisfy c_in == c_w * group, c_out % group == 0",
+            code: -6,
+        });
+    }
+    Ok(d)
+}
+
+/// Conv-2d spatial parameters in (pad_h, pad_w, stride_h, stride_w, dil_h, dil_w) form.
+struct ConvSpatial {
+    pad_h: i32,
+    pad_w: i32,
+    stride_h: i32,
+    stride_w: i32,
+    dil_h: i32,
+    dil_w: i32,
+}
+
+fn read_conv_spatial(pads: &[i32], strides: &[i32], dilations: &[i32]) -> ConvSpatial {
+    let (pad_h, pad_w) = if pads.len() >= 2 {
+        (pads[0], pads[1])
+    } else {
+        (0, 0)
+    };
+    ConvSpatial {
+        pad_h,
+        pad_w,
+        stride_h: strides.first().copied().unwrap_or(1),
+        stride_w: strides.get(1).copied().unwrap_or(1),
+        dil_h: dilations.first().copied().unwrap_or(1),
+        dil_w: dilations.get(1).copied().unwrap_or(1),
+    }
+}
+
+fn conv_output_hw(d: &ConvDims, s: &ConvSpatial) -> Result<(i32, i32), CudaError> {
+    let h_out = (d.h_in + 2 * s.pad_h - s.dil_h * (d.kh - 1) - 1) / s.stride_h + 1;
+    let w_out = (d.w_in + 2 * s.pad_w - s.dil_w * (d.kw - 1) - 1) / s.stride_w + 1;
+    if h_out <= 0 || w_out <= 0 {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_conv2d_device: non-positive output dim",
+            code: -3,
+        });
+    }
+    Ok((h_out, w_out))
+}
+
+/// Bundle of cuDNN descriptors + device buffers needed to invoke
+/// `cudnnConvolutionForward` and to query workspace sizes.
+struct ConvForwardCtx<'a> {
+    runtime: &'a CudaRuntime,
+    x: &'a DeviceTensor,
+    w: &'a DeviceTensor,
+    x_desc: &'a LocalTensorDesc,
+    w_desc: &'a LocalFilterDesc,
+    conv_desc: &'a LocalConvDesc,
+    y_desc: &'a LocalTensorDesc,
+    y_buf: &'a DeviceBuffer,
+}
+
+/// Try one cuDNN forward algo. Returns `Ok(true)` on success, `Ok(false)`
+/// on a non-fatal cuDNN error (caller continues to the next algo). The
+/// `*last_err` slot tracks the most recent cuDNN error code for reporting.
+fn try_conv_algo(
+    ctx: &ConvForwardCtx<'_>,
+    algo: ffi::cudnnConvolutionFwdAlgo_t,
+    last_err: &mut ffi::cudnnStatus_t,
+) -> Result<bool, CudaError> {
+    // Query workspace size for this algo. If query fails we still try
+    // with workspace=0 — the forward call may succeed if it doesn't
+    // actually need a workspace.
+    let mut ws_size: usize = 0;
+    let _ = unsafe {
+        ffi::cudnnGetConvolutionForwardWorkspaceSize(
+            ctx.runtime.cudnn.raw(),
+            ctx.x_desc.desc,
+            ctx.w_desc.desc,
+            ctx.conv_desc.desc,
+            ctx.y_desc.desc,
+            algo,
+            &mut ws_size as *mut usize,
+        )
+    };
+
+    let workspace = if ws_size > 0 {
+        Some(DeviceBuffer::alloc(ws_size)?)
+    } else {
+        None
+    };
+    let ws_ptr = workspace
+        .as_ref()
+        .map(|b| b.as_mut_ptr())
+        .unwrap_or(core::ptr::null_mut());
+
+    let alpha: f32 = 1.0;
+    let beta: f32 = 0.0;
+    let err = unsafe {
+        ffi::cudnnConvolutionForward(
+            ctx.runtime.cudnn.raw(),
+            &alpha as *const f32 as *const core::ffi::c_void,
+            ctx.x_desc.desc,
+            ctx.x.buffer.as_ptr(),
+            ctx.w_desc.desc,
+            ctx.w.buffer.as_ptr(),
+            ctx.conv_desc.desc,
+            algo,
+            ws_ptr,
+            ws_size,
+            &beta as *const f32 as *const core::ffi::c_void,
+            ctx.y_desc.desc,
+            ctx.y_buf.as_mut_ptr(),
+        )
+    };
+    if err == ffi::CUDNN_STATUS_SUCCESS {
+        return Ok(true);
+    }
+    *last_err = err;
+    Ok(false)
+}
+
+/// Run cuDNN forward with a priority-ordered algo fallback list.
+fn run_conv_forward(ctx: &ConvForwardCtx<'_>) -> Result<(), CudaError> {
+    // Algo fallback list: most cuDNN 9.x shapes accept one of these
+    // with an explicitly-allocated workspace.
+    let candidates = [
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM,
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_GEMM,
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM,
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_DIRECT,
+        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD,
+    ];
+    let mut last_err = ffi::CUDNN_STATUS_SUCCESS;
+    for algo in candidates {
+        if try_conv_algo(ctx, algo, &mut last_err)? {
+            return Ok(());
+        }
+    }
+    Err(CudaError::DnnError {
+        op: "cudnnConvolutionForward (device, all algos failed)",
+        code: last_err,
+    })
+}
+
+/// Per-channel bias add via `cudnnAddTensor`: `bias[1, K, 1, 1] + y[N, K, H, W]`.
+fn apply_conv_bias(
+    runtime: &CudaRuntime,
+    x: &DeviceTensor,
+    bias: &DeviceTensor,
+    k: i32,
+    dnn_dtype: ffi::cudnnDataType_t,
+    y_desc: &LocalTensorDesc,
+    y_buf: &DeviceBuffer,
+) -> Result<(), CudaError> {
+    if bias.dtype != x.dtype {
+        return Err(CudaError::RuntimeError {
+            op: "gpu_conv2d_device: bias dtype must match input dtype",
+            code: -7,
+        });
+    }
+    let bias_desc = create_tensor_4d(1, k, 1, 1, dnn_dtype)?;
+    let alpha_b: f32 = 1.0;
+    let beta_y: f32 = 1.0;
+    let err = unsafe {
+        ffi::cudnnAddTensor(
+            runtime.cudnn.raw(),
+            &alpha_b as *const f32 as *const core::ffi::c_void,
+            bias_desc.desc,
+            bias.buffer.as_ptr(),
+            &beta_y as *const f32 as *const core::ffi::c_void,
+            y_desc.desc,
+            y_buf.as_mut_ptr(),
+        )
+    };
+    if err != ffi::CUDNN_STATUS_SUCCESS {
+        return Err(CudaError::DnnError {
+            op: "cudnnAddTensor (Conv bias)",
+            code: err,
+        });
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn gpu_conv2d_device(
     runtime: &CudaRuntime,
@@ -1076,179 +1558,43 @@ pub fn gpu_conv2d_device(
         });
     }
 
-    let is_bf16 = x.dtype == DataType::BFloat16 && w.dtype == DataType::BFloat16;
-    let is_f32 = x.dtype == DataType::Float && w.dtype == DataType::Float;
-    if !is_bf16 && !is_f32 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_conv2d_device: unsupported dtype",
-            code: -2,
-        });
-    }
-    let dnn_dtype = if is_bf16 {
-        ffi::cudnnDataType_t::CUDNN_DATA_BFLOAT16
-    } else {
-        ffi::cudnnDataType_t::CUDNN_DATA_FLOAT
-    };
-    let elem_size: usize = if is_bf16 { 2 } else { 4 };
-    let out_dtype = if is_bf16 {
-        DataType::BFloat16
-    } else {
-        DataType::Float
-    };
-
-    let n = x.shape[0] as i32;
-    let c_in = x.shape[1] as i32;
-    let h_in = x.shape[2] as i32;
-    let w_in = x.shape[3] as i32;
-    let k = w.shape[0] as i32;
-    let c_w = w.shape[1] as i32; // c_in / group — filter in-channel count
-    let kh = w.shape[2] as i32;
-    let kw = w.shape[3] as i32;
-
-    if c_in != c_w * group || k % group != 0 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_conv2d_device: input/weight channels do not satisfy c_in == c_w * group, c_out % group == 0",
-            code: -6,
-        });
-    }
-
-    let (pad_h, pad_w) = if pads.len() >= 2 {
-        (pads[0], pads[1])
-    } else {
-        (0, 0)
-    };
-    let stride_h = strides.first().copied().unwrap_or(1);
-    let stride_w = strides.get(1).copied().unwrap_or(1);
-    let dil_h = dilations.first().copied().unwrap_or(1);
-    let dil_w = dilations.get(1).copied().unwrap_or(1);
-
-    let h_out = (h_in + 2 * pad_h - dil_h * (kh - 1) - 1) / stride_h + 1;
-    let w_out = (w_in + 2 * pad_w - dil_w * (kw - 1) - 1) / stride_w + 1;
-    if h_out <= 0 || w_out <= 0 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_conv2d_device: non-positive output dim",
-            code: -3,
-        });
-    }
+    let dt = pick_conv_dtype(x, w)?;
+    let d = read_conv_dims(x, w, group)?;
+    let s = read_conv_spatial(pads, strides, dilations);
+    let (h_out, w_out) = conv_output_hw(&d, &s)?;
 
     // Descriptors. Filter uses `c_w = c_in / group`, matching ONNX's
     // weight layout `[K, C/group, KH, KW]`.
-    let x_desc = create_tensor_4d(n, c_in, h_in, w_in, dnn_dtype)?;
-    let w_desc = create_filter_4d(k, c_w, kh, kw, dnn_dtype)?;
-    let conv_desc = create_conv_2d(pad_h, pad_w, stride_h, stride_w, dil_h, dil_w, group)?;
-    let y_desc = create_tensor_4d(n, k, h_out, w_out, dnn_dtype)?;
+    let x_desc = create_tensor_4d(d.n, d.c_in, d.h_in, d.w_in, dt.dnn_dtype)?;
+    let w_desc = create_filter_4d(d.k, d.c_w, d.kh, d.kw, dt.dnn_dtype)?;
+    let conv_desc = create_conv_2d(
+        s.pad_h, s.pad_w, s.stride_h, s.stride_w, s.dil_h, s.dil_w, group,
+    )?;
+    let y_desc = create_tensor_4d(d.n, d.k, h_out, w_out, dt.dnn_dtype)?;
 
-    let y_bytes = (n * k * h_out * w_out) as usize * elem_size;
+    let y_bytes = (d.n * d.k * h_out * w_out) as usize * dt.elem_size;
     let y_buf = DeviceBuffer::alloc(y_bytes)?;
 
-    let alpha: f32 = 1.0;
-    let beta: f32 = 0.0;
-    // Algo fallback list: most cuDNN 9.x shapes accept one of these
-    // with an explicitly-allocated workspace. We try in priority
-    // order and stop on first success.
-    let candidates = [
-        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_PRECOMP_GEMM,
-        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_GEMM,
-        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_IMPLICIT_GEMM,
-        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_DIRECT,
-        ffi::cudnnConvolutionFwdAlgo_t::CUDNN_CONVOLUTION_FWD_ALGO_WINOGRAD,
-    ];
+    run_conv_forward(&ConvForwardCtx {
+        runtime,
+        x,
+        w,
+        x_desc: &x_desc,
+        w_desc: &w_desc,
+        conv_desc: &conv_desc,
+        y_desc: &y_desc,
+        y_buf: &y_buf,
+    })?;
 
-    let mut last_err = ffi::CUDNN_STATUS_SUCCESS;
-    let mut succeeded = false;
-    for algo in candidates {
-        // Query workspace size for this algo. If query fails we still
-        // try with workspace=0 — the forward call may succeed if it
-        // doesn't actually need a workspace.
-        let mut ws_size: usize = 0;
-        let _ = unsafe {
-            ffi::cudnnGetConvolutionForwardWorkspaceSize(
-                runtime.cudnn.raw(),
-                x_desc.desc,
-                w_desc.desc,
-                conv_desc.desc,
-                y_desc.desc,
-                algo,
-                &mut ws_size as *mut usize,
-            )
-        };
-
-        let workspace = if ws_size > 0 {
-            Some(DeviceBuffer::alloc(ws_size)?)
-        } else {
-            None
-        };
-        let ws_ptr = workspace
-            .as_ref()
-            .map(|b| b.as_mut_ptr())
-            .unwrap_or(core::ptr::null_mut());
-
-        let err = unsafe {
-            ffi::cudnnConvolutionForward(
-                runtime.cudnn.raw(),
-                &alpha as *const f32 as *const core::ffi::c_void,
-                x_desc.desc,
-                x.buffer.as_ptr(),
-                w_desc.desc,
-                w.buffer.as_ptr(),
-                conv_desc.desc,
-                algo,
-                ws_ptr,
-                ws_size,
-                &beta as *const f32 as *const core::ffi::c_void,
-                y_desc.desc,
-                y_buf.as_mut_ptr(),
-            )
-        };
-        if err == ffi::CUDNN_STATUS_SUCCESS {
-            succeeded = true;
-            break;
-        }
-        last_err = err;
-        // Workspace buffer drops here automatically; try next algo.
-    }
-    if !succeeded {
-        return Err(CudaError::DnnError {
-            op: "cudnnConvolutionForward (device, all algos failed)",
-            code: last_err,
-        });
-    }
-
-    // Per-channel bias add via cudnnAddTensor: `bias[1, K, 1, 1] + y[N, K, H, W]`.
     if let Some(b) = bias {
-        if b.dtype != x.dtype {
-            return Err(CudaError::RuntimeError {
-                op: "gpu_conv2d_device: bias dtype must match input dtype",
-                code: -7,
-            });
-        }
-        let bias_desc = create_tensor_4d(1, k, 1, 1, dnn_dtype)?;
-        let alpha_b: f32 = 1.0;
-        let beta_y: f32 = 1.0;
-        let err = unsafe {
-            ffi::cudnnAddTensor(
-                runtime.cudnn.raw(),
-                &alpha_b as *const f32 as *const core::ffi::c_void,
-                bias_desc.desc,
-                b.buffer.as_ptr(),
-                &beta_y as *const f32 as *const core::ffi::c_void,
-                y_desc.desc,
-                y_buf.as_mut_ptr(),
-            )
-        };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            return Err(CudaError::DnnError {
-                op: "cudnnAddTensor (Conv bias)",
-                code: err,
-            });
-        }
+        apply_conv_bias(runtime, x, b, d.k, dt.dnn_dtype, &y_desc, &y_buf)?;
     }
     super::synchronize()?;
 
     Ok(DeviceTensor {
         buffer: y_buf,
-        shape: vec![n as i64, k as i64, h_out as i64, w_out as i64],
-        dtype: out_dtype,
+        shape: vec![d.n as i64, d.k as i64, h_out as i64, w_out as i64],
+        dtype: dt.out_dtype,
         name: String::new(),
     })
 }
