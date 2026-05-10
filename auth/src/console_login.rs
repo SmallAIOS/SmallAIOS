@@ -351,6 +351,10 @@ pub fn first_boot_setup<S: ConsoleSource, K: ConsoleSink, W: AtomicWriter>(
             last_changed_unix_day: (now_unix / 86_400) as u32,
             totp_secret: None,
             lockout_until_unix: 0,
+            // First-boot root has no TOTP yet; operator can enrol
+            // post-boot via `auth_totp_setup` and the policy gate on
+            // `mgmt.totp.enforced_for_roles`.
+            totp_required: false,
             trailing_unknown_fields: Vec::new(),
         };
         let body = serialize_file(core::slice::from_ref(&entry));
@@ -698,6 +702,7 @@ mod tests {
             last_changed_unix_day: 19_852,
             totp_secret: None,
             lockout_until_unix: 0,
+            totp_required: false,
             trailing_unknown_fields: Vec::new(),
         }
     }

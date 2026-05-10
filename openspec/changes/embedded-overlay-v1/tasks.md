@@ -19,7 +19,7 @@
 - [ ] 2.4 Concurrent-add `-EBUSY` path
 - [ ] 2.5 Aborted-add cleanup (orphan `<name>.tmp` removal on writer-fd close)
 - [ ] 2.6 SPIN model proving no two concurrent adds for the same name both succeed
-- [ ] 2.7 Boot-cleanup pass: on mount, remove any orphan `<name>.tmp` from `/data/models-upper/`
+- [x] 2.7 Boot-cleanup pass: on mount, remove any orphan `<name>.tmp` from `/data/models-upper/` — `fs/src/overlay/boot_cleanup.rs::run_boot_cleanup`; wired into the mount path via `fs/src/mount.rs::sweep_overlay_upper` and the composite `run_overlay_boot_handlers`; integration tests in `fs/tests/integration_overlay_boot.rs`
 - [ ] 2.8 Tests: stage-rename atomicity, per-name lock, concurrent on different names allowed
 
 ## 3. Phase 3 — model_add / model_remove syscalls
@@ -58,10 +58,10 @@
 - [x] 6.2 Capacity-cap mid-flight (running cumulative bytes vs cap)
 - [x] 6.3 `-ENOSPC` on cap violation; staged tmp file unlinked
 - [x] 6.4 Audit `model_add_capacity_exceeded` with declared/actual bytes
-- [x] 6.5 Boot-time conflict scan: walk upper, check each non-whiteout name against lower
-- [x] 6.6 One audit record per new conflict per boot (no re-audit if already-audited)
+- [x] 6.5 Boot-time conflict scan: walk upper, check each non-whiteout name against lower — `fs/src/overlay/conflict_scan.rs::run_boot_conflict_scan`; wired into the mount path via `fs/src/mount.rs::scan_overlay_conflicts` and composed inside `run_overlay_boot_handlers`
+- [x] 6.6 One audit record per new conflict per boot (no re-audit if already-audited) — `ConflictMemo` suppression honored by the integration; covered by `fs/tests/integration_overlay_boot.rs::second_boot_with_memo_filled_suppresses_existing_conflicts` and `boot_handlers_emit_conflict_for_real_f2fs_upper_shadowing_lower`
 - [ ] 6.7 `mgmt/policy.toml` fields wired with `#[reload("live")]`
-- [ ] 6.8 First-boot `/data/models-upper/` directory creation
+- [x] 6.8 First-boot `/data/models-upper/` directory creation — `fs/src/mount.rs::ensure_models_upper_dir` creates `/data/models-upper/` with mode 0700 and emits `data_models_upper_initialized` (audit tag `AUDIT_TAG_MODELS_UPPER_INITIALIZED`); idempotent on subsequent boots; integration tests in `fs/tests/integration_overlay_boot.rs::ensure_models_upper_*`
 
 ## CHECKPOINT — Single PR into `develop` once all 6 phases land
 
@@ -94,5 +94,5 @@ The implementation (PR 2) gating list:
 - [ ] 7.2 Image-size regression check: overlay code stays ≤ 30 KB compiled growth budget
 - [ ] 7.3 Reserved-suffix CI lint to catch accidental introduction of conflicting test fixture names
 - [ ] 7.4 Update SmallAIOS user-space CLI tools to know about `/models/` upper layer (for `model list --include-whiteouts`)
-- [ ] 7.5 First-boot `/data/models-upper/` directory creation tested on a fresh GPT image
+- [x] 7.5 First-boot `/data/models-upper/` directory creation tested on a fresh GPT image — `fs/tests/integration_overlay_boot.rs::ensure_models_upper_creates_dir_on_first_boot`, `ensure_models_upper_uses_mode_0700`, `ensure_models_upper_creates_data_parent_if_missing`, `three_phase_workflow_first_boot_orphan_clean_boot`
 - [ ] 7.6 Round-trip with external `mount -t f2fs`: external reader sees `/data/models-upper/` contents directly (operator-added files visible from a recovery laptop)

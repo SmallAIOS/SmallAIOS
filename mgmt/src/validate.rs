@@ -24,7 +24,7 @@
 //! short, lower-case, no trailing punctuation.
 
 use crate::config::Config;
-use crate::surface::{ConfigPath, Error, PasswordClassSet, Value};
+use crate::surface::{ConfigPath, Error, PasswordClassSet, RoleSet, Value};
 
 // ─── Bounds (named so tests can pin them down) ───────────────────────────────
 
@@ -282,6 +282,20 @@ pub fn validate_field(path: &ConfigPath, value: &Value) -> Result<(), Error> {
             Ok(())
         }
 
+        // totp.* (Phase 9)
+        "totp.enforced_for_roles" => {
+            let r = value.as_roles()?;
+            // Reject unknown bits — defensive, since `from_mask`
+            // already drops them but a hand-constructed `RoleSet(_)`
+            // can carry garbage.
+            if r.0 & !RoleSet::ALL != 0 {
+                return Err(Error::Validation(
+                    "totp.enforced_for_roles contains unknown bits",
+                ));
+            }
+            Ok(())
+        }
+
         _ => Err(Error::NotFound),
     }
 }
@@ -408,6 +422,8 @@ fn apply_value_in_memory(c: &mut Config, path: &ConfigPath, value: &Value) -> Re
 
         "flash.prefer_flash_for_models" => c.flash.prefer_flash_for_models = value.as_bool()?,
         "flash.readback_verify" => c.flash.readback_verify = value.as_bool()?,
+
+        "totp.enforced_for_roles" => c.totp.enforced_for_roles = value.as_roles()?,
 
         _ => return Err(Error::NotFound),
     }
@@ -730,5 +746,32 @@ mod tests {
         let c = Config::default();
         let err = validate_cross_field(&c, &p("nope.nada"), &Value::U32(0)).unwrap_err();
         assert!(matches!(err, Error::NotFound));
+    }
+
+    // ─── Phase 9: TOTP enforcement field ────────────────────────────────
+
+    #[test]
+    fn totp_enforced_for_roles_accepts_empty() {
+        let empty = RoleSet::from_mask(0);
+        validate_field(&p("totp.enforced_for_roles"), &Value::Roles(empty)).unwrap();
+    }
+
+    #[test]
+    fn totp_enforced_for_roles_accepts_all_known_roles() {
+        let all = RoleSet::from_mask(RoleSet::ALL);
+        validate_field(&p("totp.enforced_for_roles"), &Value::Roles(all)).unwrap();
+    }
+
+    #[test]
+    fn totp_enforced_for_roles_rejects_unknown_bits() {
+        let bogus = RoleSet(0x80);
+        let err = validate_field(&p("totp.enforced_for_roles"), &Value::Roles(bogus)).unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn totp_enforced_for_roles_rejects_type_mismatch() {
+        let err = validate_field(&p("totp.enforced_for_roles"), &Value::Bool(true)).unwrap_err();
+        assert!(matches!(err, Error::TypeMismatch { .. }));
     }
 }

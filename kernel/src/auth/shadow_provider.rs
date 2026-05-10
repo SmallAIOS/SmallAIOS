@@ -29,6 +29,7 @@
 
 use super::Role;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
 
 // ─── Errors ──────────────────────────────────────────────────────────────────
@@ -66,11 +67,11 @@ impl fmt::Display for ShadowProviderError {
 
 /// Kernel-local mirror of [`smallaios_auth::shadow::ShadowEntry`].
 ///
-/// Only the fields required by the syscall handlers are mirrored: PHC,
-/// role, flags, and lockout. The `last_changed_unix_day`,
-/// `totp_secret`, and `trailing_unknown_fields` slots are omitted; the
-/// `auth` crate is the source of truth for those and they are not
-/// observed by the kernel.
+/// The fields required by the syscall handlers are mirrored: PHC, role,
+/// flags, lockout, and (since Phase 9) the TOTP enrolment fields. The
+/// `last_changed_unix_day` and `trailing_unknown_fields` slots are
+/// omitted; the `auth` crate is the source of truth for those and they
+/// are not observed by the kernel.
 ///
 /// The [`Self::stable_user_id`] field carries the slot index assigned by
 /// the loader at boot — the kernel uses it as a stable handle that
@@ -92,6 +93,13 @@ pub struct ShadowProviderEntry {
     pub flags: u32,
     /// Lockout deadline (Unix seconds); 0 means not locked out.
     pub lockout_until_unix: u64,
+    /// Optional RFC 6238 TOTP shared secret (decoded bytes). `None`
+    /// means the user has not enrolled. Populated by the loader from
+    /// `smallaios_auth::shadow::ShadowEntry::totp_secret`.
+    pub totp_secret: Option<Vec<u8>>,
+    /// Whether `auth_login` SHALL require a `factor2` TOTP code for
+    /// this user. Mirrors `smallaios_auth::shadow::ShadowEntry::totp_required`.
+    pub totp_required: bool,
 }
 
 // ─── Trait ───────────────────────────────────────────────────────────────────
@@ -126,6 +134,24 @@ pub trait ShadowProvider {
         initial_phc: &str,
         role: Role,
     ) -> Result<u32, ShadowProviderError>;
+
+    /// Persist a freshly-generated TOTP shared secret for `name`.
+    /// Used by `auth_totp_setup` (kernel syscall 0x95). The default
+    /// implementation returns [`ShadowProviderError::NotImplemented`]
+    /// so providers that don't support TOTP enrolment (e.g., the
+    /// `KernelShadowProvider` stub) compile without modification.
+    ///
+    /// Implementations SHALL NOT clear `totp_required`; that bit is
+    /// owned by `mgmt::Config::totp.enforced_for_roles` and toggled
+    /// independently. The intent is "store the secret; the policy
+    /// gate decides when to require it".
+    fn write_totp_secret(
+        &self,
+        _name: &str,
+        _new_secret: &[u8],
+    ) -> Result<(), ShadowProviderError> {
+        Err(ShadowProviderError::NotImplemented)
+    }
 }
 
 // ─── Mock for tests ──────────────────────────────────────────────────────────
@@ -281,8 +307,21 @@ impl ShadowProvider for MockShadowProvider {
             role,
             flags: crate::auth::FLAG_MUST_CHANGE_PASSWORD,
             lockout_until_unix: 0,
+            totp_secret: None,
+            totp_required: false,
         });
         Ok(id)
+    }
+
+    fn write_totp_secret(&self, name: &str, new_secret: &[u8]) -> Result<(), ShadowProviderError> {
+        let mut g = self.inner.borrow_mut();
+        for e in g.entries.iter_mut() {
+            if e.username == name {
+                e.totp_secret = Some(new_secret.to_vec());
+                return Ok(());
+            }
+        }
+        Err(ShadowProviderError::Io("user not found"))
     }
 }
 
@@ -349,6 +388,8 @@ mod tests {
             role: Role::Operator,
             flags: 0,
             lockout_until_unix: 0,
+            totp_secret: None,
+            totp_required: false,
         }
     }
 
