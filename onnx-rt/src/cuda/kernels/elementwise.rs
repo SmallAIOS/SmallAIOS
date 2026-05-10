@@ -199,71 +199,71 @@ extern "C" __global__ void silu_bf16(const __nv_bfloat16* x, __nv_bfloat16* y, i
 /// Result of broadcasting two shapes: `(output_shape, stride_a, stride_b)`.
 type BroadcastLayout = (Vec<i64>, Vec<i32>, Vec<i32>);
 
+/// Compute row-major strides for a shape (used by [`broadcast_shapes`]).
+fn row_major_strides(shape: &[i64]) -> Vec<i64> {
+    let n = shape.len();
+    let mut s = alloc::vec![1i64; n];
+    for i in (0..n.saturating_sub(1)).rev() {
+        s[i] = s[i + 1] * shape[i + 1];
+    }
+    s
+}
+
+/// Combine two broadcast-aligned dims into the output dim or fail.
+fn combine_broadcast_dim(da: i64, db: i64) -> Result<i64, CudaError> {
+    if da == db || da == 1 || db == 1 {
+        Ok(core::cmp::max(da, db))
+    } else {
+        Err(CudaError::RuntimeError {
+            op: "elementwise: incompatible broadcast shapes",
+            code: -1,
+        })
+    }
+}
+
+/// Project an input shape's row-major stride onto the output axis layout.
+///
+/// Padded-in axes (`i < pad`) and original-dim-1 axes broadcast (stride 0);
+/// otherwise pass through the unbroadcast row-major stride.
+fn projected_stride(i: usize, pad: usize, shape: &[i64], base_strides: &[i64]) -> i32 {
+    if i < pad || shape[i - pad] == 1 {
+        0
+    } else {
+        base_strides[i - pad] as i32
+    }
+}
+
 fn broadcast_shapes(a_shape: &[i64], b_shape: &[i64]) -> Result<BroadcastLayout, CudaError> {
     let ndim = core::cmp::max(a_shape.len(), b_shape.len());
-    let mut out_shape: Vec<i64> = Vec::with_capacity(ndim);
     // Right-align: pad the shorter shape on the left with 1s.
     let a_pad = ndim - a_shape.len();
     let b_pad = ndim - b_shape.len();
 
-    let get_a = |i: usize| -> i64 {
-        if i < a_pad {
+    let dim_or_one = |shape: &[i64], pad: usize, i: usize| -> i64 {
+        if i < pad {
             1
         } else {
-            a_shape[i - a_pad]
-        }
-    };
-    let get_b = |i: usize| -> i64 {
-        if i < b_pad {
-            1
-        } else {
-            b_shape[i - b_pad]
+            shape[i - pad]
         }
     };
 
+    let mut out_shape: Vec<i64> = Vec::with_capacity(ndim);
     for i in 0..ndim {
-        let da = get_a(i);
-        let db = get_b(i);
-        if da == db || da == 1 || db == 1 {
-            out_shape.push(core::cmp::max(da, db));
-        } else {
-            return Err(CudaError::RuntimeError {
-                op: "elementwise: incompatible broadcast shapes",
-                code: -1,
-            });
-        }
+        let da = dim_or_one(a_shape, a_pad, i);
+        let db = dim_or_one(b_shape, b_pad, i);
+        out_shape.push(combine_broadcast_dim(da, db)?);
     }
 
     // Compute row-major strides for the original (un-broadcast) input
     // shapes first, then project onto the output's axis layout.
-    fn row_major_strides(shape: &[i64]) -> Vec<i64> {
-        let n = shape.len();
-        let mut s = alloc::vec![1i64; n];
-        for i in (0..n.saturating_sub(1)).rev() {
-            s[i] = s[i + 1] * shape[i + 1];
-        }
-        s
-    }
-
     let a_base = row_major_strides(a_shape);
     let b_base = row_major_strides(b_shape);
 
     let mut stride_a: Vec<i32> = Vec::with_capacity(ndim);
     let mut stride_b: Vec<i32> = Vec::with_capacity(ndim);
     for i in 0..ndim {
-        // For input A: if the padded/original dim was 1 (or padded-in),
-        // its contribution for this output axis is zero (broadcast);
-        // otherwise use its real row-major stride.
-        if i < a_pad || a_shape[i - a_pad] == 1 {
-            stride_a.push(0);
-        } else {
-            stride_a.push(a_base[i - a_pad] as i32);
-        }
-        if i < b_pad || b_shape[i - b_pad] == 1 {
-            stride_b.push(0);
-        } else {
-            stride_b.push(b_base[i - b_pad] as i32);
-        }
+        stride_a.push(projected_stride(i, a_pad, a_shape, &a_base));
+        stride_b.push(projected_stride(i, b_pad, b_shape, &b_base));
     }
 
     Ok((out_shape, stride_a, stride_b))
