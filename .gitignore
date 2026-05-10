@@ -1,6 +1,9 @@
 # Build artifacts
 /target/
 /build/
+# Per-crate target dirs (e.g. fuzz/ has its own workspace and target).
+**/target/
+fuzz/Cargo.lock
 
 # IDE
 .idea/

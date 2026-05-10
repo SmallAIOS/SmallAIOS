@@ -9,15 +9,15 @@
 
 ## 2. HTTP/2 client layer in `net/`
 
-- [ ] 2.1 Add `net/src/http2/mod.rs` module gate; feature-flag `http2` (default off in `net`, default on when pulled by `audit-export`)
-- [ ] 2.2 Implement HTTP/2 frame parser: HEADERS, DATA, SETTINGS, WINDOW_UPDATE, PING, GOAWAY, RST_STREAM (no PUSH_PROMISE / PRIORITY)
-- [ ] 2.3 Implement HPACK static-table-only header encoder/decoder; reject any dynamic-table reference
-- [ ] 2.4 Implement stream state machine (idle → open → half-closed → closed) for client-initiated streams only
-- [ ] 2.5 Implement connection-level flow control with conservative WINDOW_UPDATE strategy (refill on stream close)
-- [ ] 2.6 Implement gRPC framing helper: 5-byte `[compressed: u8, length: u32 be]` prefix + protobuf body
-- [ ] 2.7 Wire TLS 1.3 + optional PQC ciphersuite negotiation via existing `security/` crate; refuse TLS 1.2 and below
-- [ ] 2.8 Unit tests: frame round-trips, static-table HPACK round-trips, flow-control invariants
-- [ ] 2.9 Fuzz target on the HTTP/2 frame parser (`fuzz/fuzz_targets/net_http2_parse.rs`)
+- [x] 2.1 Add `net/src/http2/mod.rs` module gate; feature-flag `http2` (default off in `net`, default on when pulled by `audit-export`) *(audit-export wiring in Phase 4)*
+- [x] 2.2 Implement HTTP/2 frame parser: HEADERS, DATA, SETTINGS, WINDOW_UPDATE, PING, GOAWAY, RST_STREAM (no PUSH_PROMISE / PRIORITY)
+- [x] 2.3 Implement HPACK static-table-only header encoder/decoder; reject any dynamic-table reference
+- [x] 2.4 Implement stream state machine (idle → open → half-closed → closed) for client-initiated streams only
+- [x] 2.5 Implement connection-level flow control with conservative WINDOW_UPDATE strategy (refill on stream close)
+- [x] 2.6 Implement gRPC framing helper: 5-byte `[compressed: u8, length: u32 be]` prefix + protobuf body
+- [ ] 2.7 Wire TLS 1.3 + optional PQC ciphersuite negotiation via existing `security/` crate; refuse TLS 1.2 and below *(deferred to Phase 4 — handshake belongs with the connection driver, not the wire-layer)*
+- [x] 2.8 Unit tests: frame round-trips, static-table HPACK round-trips, flow-control invariants *(37 tests pass)*
+- [x] 2.9 Fuzz target on the HTTP/2 frame parser (`fuzz/fuzz_targets/net_http2_parse.rs`) *(three targets: frame, hpack, grpc)*
 
 ## 3. immudb protobuf schema subset
 

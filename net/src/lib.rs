@@ -31,6 +31,9 @@ pub mod virtio_net;
 #[cfg(feature = "quic")]
 pub mod quic;
 
+#[cfg(feature = "http2")]
+pub mod http2;
+
 #[cfg(feature = "rtl8169")]
 pub mod rtl8169;
 

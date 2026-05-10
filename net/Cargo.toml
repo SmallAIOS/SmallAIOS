@@ -12,6 +12,10 @@ default = ["ipv4", "ipv6", "quic"]
 ipv4 = []
 ipv6 = []
 quic = []
+# HTTP/2 client subset for gRPC unary calls. Off by default in
+# `net`; enabled transitively when the `audit-export` crate
+# pulls `net` with `features = ["http2"]`.
+http2 = []
 rtl8169 = []
 dhcp = []
 static-ip = []
