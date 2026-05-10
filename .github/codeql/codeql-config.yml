@@ -37,22 +37,31 @@ paths-ignore:
 # constants that fire the rule, and the spec/RFC reference proving they
 # are not secret material.
 #
-# - `security/src/argon2id.rs`
-#     The `b64_decode` helper inside `Argon2id::format_phc` contains the
-#     RFC 4648 §5 base64 alphabet (`b'A'..=b'Z'`, `b'a'..=b'z'`,
-#     `b'0'..=b'9'`, `b'+' => 62`, `b'/' => 63`) and an offset constant
-#     stack (26, 52, 62, 63). The alphabet is a public encoding, not a
-#     cryptographic secret. Documentation comments + production code at
-#     lines ~840-915 trigger the rule despite their inline `// lgtm[...]`
-#     suppressions, which the Rust analyzer doesn't honor for this rule.
+# `rust/hard-coded-cryptographic-value` mis-classifies a few patterns
+# in our clean-room cryptographic primitives that are NOT secrets:
 #
-# - `kernel/src/syscall/auth.rs`
-#     The `DUMMY_PHC` constant + per-handler `[0u8; 16]` salt buffers in
-#     `handle_auth_change_password` and `handle_auth_create_user` are
-#     production-code constants used either as a constant-time-equivalent
-#     reject path (DUMMY_PHC: `management-login-v1` Q9 anti-enumeration)
-#     or as fresh-CSPRNG-source buffers (salt: filled by the kernel
-#     CSPRNG immediately after declaration). Neither is a secret.
+# 1. RFC 4648 base64 alphabet offsets in `security/src/argon2id.rs`'s
+#    `b64_decode` helper (alphabet table — public encoding spec, not a key).
+#    Triggers on `b'A'..=b'Z'`, `b'a'..=b'z'`, `b'0'..=b'9'`, `b'+' => 62`,
+#    `b'/' => 63` at lines ~900-910 and the 26/52/62/63 offset stack
+#    above them. Eight alerts total in this file.
+#
+# 2. The `DUMMY_PHC` constant in `kernel/src/syscall/auth.rs` (line ~70)
+#    used for the constant-time-equivalent unknown-user reject path
+#    (`management-login-v1` Q9 anti-enumeration defense-in-depth pattern).
+#    A publicly-documented design constant — never used to grant access.
+#
+# 3. `[0u8; 16]` salt buffer declarations in `kernel/src/syscall/auth.rs`
+#    inside `handle_auth_change_password` (line ~420) and
+#    `handle_auth_create_user` (line ~509). The zero initializer is
+#    overwritten immediately by `(ctx.salt_source)(&mut salt)` — i.e. the
+#    kernel CSPRNG. CodeQL also over-matches the comment blocks adjacent
+#    to those buffers (lines ~429 and ~518). Five alerts total.
+#
+# Each call site has a standalone-line `// lgtm[rust/hard-coded-cryptographic-value]`
+# comment documenting the rationale; this filter is the suppression hook
+# because the inline `// lgtm[...]` form is not honored by the Rust
+# analyzer for this rule on this codebase.
 #
 # Adding a new entry MUST cite (a) the file, (b) the spec/RFC section that
 # governs the constant, and (c) why moving to a `_test_vectors.rs` sibling
@@ -60,6 +69,5 @@ paths-ignore:
 query-filters:
   - exclude:
       id: rust/hard-coded-cryptographic-value
-      paths:
-        - security/src/argon2id.rs
-        - kernel/src/syscall/auth.rs
+      path:
+        regex: ^(security/src/argon2id\.rs|kernel/src/syscall/auth\.rs)$
