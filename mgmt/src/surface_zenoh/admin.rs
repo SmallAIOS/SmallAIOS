@@ -76,6 +76,13 @@ pub enum Verb {
     /// `smallaios/admin/config/changed` — subscribe-only, never
     /// dispatched as a request.
     ConfigChanged,
+    /// `smallaios/admin/model/add` — Phase 4 overlay model upload.
+    ModelAdd,
+    /// `smallaios/admin/model/remove` — Phase 4 overlay model
+    /// remove/hide/unhide.
+    ModelRemove,
+    /// `smallaios/admin/model/list` — Phase 4 overlay model snapshot.
+    ModelList,
 }
 
 impl Verb {
@@ -92,6 +99,9 @@ impl Verb {
             Self::ConfigGet => "config/get",
             Self::ConfigSet => "config/set",
             Self::ConfigChanged => "config/changed",
+            Self::ModelAdd => "model/add",
+            Self::ModelRemove => "model/remove",
+            Self::ModelList => "model/list",
         }
     }
 
@@ -109,6 +119,9 @@ impl Verb {
             "config/get" => Some(Self::ConfigGet),
             "config/set" => Some(Self::ConfigSet),
             "config/changed" => Some(Self::ConfigChanged),
+            "model/add" => Some(Self::ModelAdd),
+            "model/remove" => Some(Self::ModelRemove),
+            "model/list" => Some(Self::ModelList),
             _ => None,
         }
     }
@@ -127,6 +140,13 @@ impl Verb {
             Self::ConfigGet => Some(MinRoleGate::Operator),
             Self::ConfigSet => Some(MinRoleGate::Root),
             Self::ConfigChanged => Some(MinRoleGate::Authenticated),
+            // Phase 4 overlay verbs: the dispatcher gate is Operator+;
+            // the kernel-side syscall handlers re-check the per-mode
+            // RBAC matrix (Root for delete/hide; Operator-iff-policy
+            // for unhide).
+            Self::ModelAdd => Some(MinRoleGate::Operator),
+            Self::ModelRemove => Some(MinRoleGate::Operator),
+            Self::ModelList => Some(MinRoleGate::Operator),
         }
     }
 }
@@ -385,6 +405,17 @@ where
             Verb::ConfigChanged => Response::err(
                 ERRNO_EINVAL,
                 "config/changed is subscribe-only, not request/response",
+            ),
+            // Phase 4 overlay verbs are routed via the separate
+            // `model_handlers::dispatch` entry point so the Phase 7
+            // dispatcher remains unchanged in behavior. A direct call
+            // through the Phase 7 dispatcher reports ENOSYS to make
+            // misuse loud — the wire path is the
+            // `OverlayAdminDispatcher::dispatch` wrapper.
+            Verb::ModelAdd | Verb::ModelRemove | Verb::ModelList => Response::err(
+                smallaios_kernel::auth::ERRNO_ENOSYS,
+                "Overlay model verbs route via OverlayAdminDispatcher; \
+                 the Phase 7 AdminDispatcher does not handle them directly",
             ),
         };
         self.sessions.leave_call(&token);
