@@ -250,6 +250,10 @@ pub fn run_recovery<R: Rng, W: AtomicWriter, K: ConsoleSink>(
         last_changed_unix_day: (now_unix / 86_400) as u32,
         totp_secret: None,
         lockout_until_unix: 0,
+        // Recovery accounts opt out of TOTP — the operator MUST be
+        // able to re-enrol their authenticator after recovery, so we
+        // don't gate the immediate post-recovery login.
+        totp_required: false,
         trailing_unknown_fields: Vec::new(),
     };
     let body = serialize_file(core::slice::from_ref(&entry));

@@ -64,8 +64,10 @@ pub mod loader_toml;
 
 /// Zenoh admin/telemetry — a `ConfigSurface` impl over the existing
 /// PQC-backed Zenoh transport at `smallaios/admin/**` and
-/// `smallaios/metrics/**`. Filled by `management-login-v1` Phases 7 + 8.
-pub mod surface_zenoh {}
+/// `smallaios/metrics/**`. Phase 7 lands the admin keyspace, the
+/// bearer-token wrapper, per-identity caps, and the in-flight live
+/// flag; Phase 8 lands telemetry publications.
+pub mod surface_zenoh;
 
 /// In-kernel audit ring with SHA-3-256 hash chain and optional
 /// ML-DSA-65 signed checkpoints. Filled by `management-login-v1`
