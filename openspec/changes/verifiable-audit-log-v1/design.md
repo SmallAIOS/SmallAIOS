@@ -62,6 +62,8 @@ to spec deltas, tasks, and implementation crates.
   the local SHA-3-256 chain head and the remote
   immudb signed state. `console-monitor-v1` displays
   both side-by-side.
+- **Immudb is optional in two independent layers.**
+  See D10 below.
 
 **Non-Goals (deferred to follow-on changes):**
 - On-box Merkle tree (Option B from the proposal) —
@@ -222,6 +224,87 @@ The design records this trade so a future reader does
 not re-litigate it from scratch.
 
 Open Question 8 from the proposal: **resolved as above**.
+
+### D10. Immudb is optional in two independent layers
+
+The `audit-export` crate, the `immudb` client wire layer, and
+every line of code involved in shipping records off-box can
+be removed from a SmallAIOS image at **compile time** and,
+separately, the runtime exporter can be turned off without
+rebuilding.
+
+**Layer 1 — Cargo feature (compile-time).** The integration
+crate (`container/`) gains a non-default cargo feature
+`audit-export`. When it is **not** enabled:
+
+- `audit-export/` is not in the dependency graph of the
+  binary being built. No HTTP/2 code is linked, no
+  immudb protobuf code is linked, no Ed25519 verifier
+  code is linked.
+- `net::http2` is also unreachable (it's gated by its own
+  `http2` feature, which is enabled transitively by
+  `audit-export`).
+- Image size delta: zero relative to a build that never
+  knew the feature existed. Verified by the
+  `container-size-check` job and by `tasks.md` task 1.6.
+
+**Layer 2 — TOML runtime config.** Even on an image built
+**with** the feature enabled, the default `immudb.toml`
+ships `[exporter] enabled = false`. In that state:
+
+- The exporter never registers as a tap on the audit ring
+  (per `audit-export-pipeline` spec, "exporter disabled =
+  zero overhead" scenario).
+- No file under `/data/audit_export/` is read except for
+  the existence-check on the directory itself; the
+  keyfile and `last_state.bin` are not opened.
+- Zero CPU, zero allocations beyond static crate layout,
+  zero network sockets.
+
+**Default posture.** Containers and unikernel images ship
+with the `audit-export` cargo feature **off** by default;
+operators who want the verifiable-log feature enable both
+layers (`--features audit-export` at build time **and**
+`enabled = true` in the TOML at runtime). This matches the
+`telemetry-otel-export-v1` opt-in pattern and the
+"first-party, no embedded endpoint" stance of D9.
+
+**Operationally:**
+
+| Build feature | TOML `enabled` | Behavior                            |
+|---------------|----------------|-------------------------------------|
+| off (default) | (irrelevant)   | No exporter code linked. Zero cost. |
+| on            | `false`        | Code linked, exporter idle. Near-zero cost. |
+| on            | `true`         | Active export to the configured endpoint. |
+
+The CI matrix runs both `--no-default-features` (Layer 1
+off) and `--features audit-export` (Layer 1 on, Layer 2
+default off + Layer 2 enabled) to guarantee both paths
+stay green.
+
+### D11. Upstream proto vendoring + pin-check
+
+The vendored `audit-export/vendor/schema.proto` reproduces
+only the message subset that `audit-export/src/immudb/
+schema.rs` translates. The pin file
+`audit-export/vendor/IMMUDB_SCHEMA_SHA` is the single
+source of truth for the upstream commit; CI verifies that
+the vendored proto matches the SHA's content in
+`codenotary/immudb`. The hand-written Rust translation is
+the authority for what bytes go on the wire, but every
+field tag in `schema.rs` must match a tag in the
+vendored proto — a CI pin-check enforces this.
+
+The v0.2.1 vendoring is pinned at immudb **v1.11.0**
+(commit `f07d3ac01c068e3d6e760afaaf1f1db20b36d0bc`).
+
+A regression test
+`upstream_proto_field_tags_pinned` in
+`audit-export/src/immudb/schema.rs` explicitly encodes
+the upstream field-tag layout of `Signature` and
+`TxEntry`, two messages whose internal layout is easy
+to get wrong (the human-readable names do not match
+their tag order).
 
 ### D9. This is operator data, not project telemetry
 

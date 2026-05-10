@@ -106,3 +106,6 @@
 - [ ] 12.3 Add nightly E2E job using the immudb sidecar; surface failures as Slack/email (existing convention)
 - [ ] 12.4 Coverage gate: ensure `audit-export` lands in `cargo-llvm-cov` workspace report; expect ≥85 % line coverage on first pass
 - [ ] 12.5 Update `tasks.md`-derived test count target: 4,143 → ≥4,310 after `management-login-v1` and `telemetry-otel-export-v1` land first
+- [ ] 12.6 Add CI matrix entry `container --no-default-features` (audit-export cargo feature off) to prove zero-overhead-when-disabled per D10 Layer 1
+- [ ] 12.7 Add CI matrix entry `container --features audit-export` with default TOML (`enabled = false`) to prove zero-runtime-overhead per D10 Layer 2
+- [ ] 12.8 Add pin-check job: verify `audit-export/vendor/schema.proto` content matches the SHA in `audit-export/vendor/IMMUDB_SCHEMA_SHA` from `codenotary/immudb` (fails the build on drift)

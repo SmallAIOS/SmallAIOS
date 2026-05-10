@@ -179,11 +179,16 @@ impl VerifiableSetRequest {
 
 // ===== Signature =====
 
-/// `Signature { bytes signature = 1; bytes publicKey = 2; }`.
+/// `Signature { bytes publicKey = 1; bytes signature = 2; }`.
+///
+/// Note the field-tag order matches the upstream proto: `publicKey`
+/// is tag 1, `signature` is tag 2. (Be careful — the field order
+/// reads "backwards" relative to the human-friendly name of the
+/// struct.)
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Signature {
-    pub signature: Vec<u8>,
     pub public_key: Vec<u8>,
+    pub signature: Vec<u8>,
 }
 
 impl Signature {
@@ -194,10 +199,10 @@ impl Signature {
             let (tag, wt) = decode_key(input, &mut cur)?;
             match (tag, wt) {
                 (1, WireType::Len) => {
-                    out.signature = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?.to_vec()
+                    out.public_key = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?.to_vec()
                 }
                 (2, WireType::Len) => {
-                    out.public_key = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?.to_vec()
+                    out.signature = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?.to_vec()
                 }
                 _ => skip_field(input, &mut cur, wt)?,
             }
@@ -294,14 +299,17 @@ impl TxHeader {
 
 // ===== TxEntry =====
 
-/// `TxEntry { bytes key = 1; KVMetadata metadata = 2; int32 vLen = 3; bytes hValue = 4; uint64 tx = 5; }`.
+/// `TxEntry { bytes key = 1; bytes hValue = 2; int32 vLen = 3; KVMetadata metadata = 4; bytes value = 5; }`.
+///
+/// Field tag order matches the upstream proto. Note tag 2 is
+/// `hValue` (the value digest), not `metadata`; metadata is tag 4.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct TxEntry {
     pub key: Vec<u8>,
-    pub metadata: Option<KVMetadata>,
-    pub v_len: i32,
     pub h_value: Vec<u8>,
-    pub tx: u64,
+    pub v_len: i32,
+    pub metadata: Option<KVMetadata>,
+    pub value: Vec<u8>,
 }
 
 impl TxEntry {
@@ -315,14 +323,16 @@ impl TxEntry {
                     out.key = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?.to_vec()
                 }
                 (2, WireType::Len) => {
-                    let body = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?;
-                    out.metadata = Some(KVMetadata::decode(body)?);
+                    out.h_value = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?.to_vec()
                 }
                 (3, WireType::Varint) => out.v_len = decode_varint(input, &mut cur)? as i32,
                 (4, WireType::Len) => {
-                    out.h_value = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?.to_vec()
+                    let body = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?;
+                    out.metadata = Some(KVMetadata::decode(body)?);
                 }
-                (5, WireType::Varint) => out.tx = decode_varint(input, &mut cur)?,
+                (5, WireType::Len) => {
+                    out.value = decode_len_delim(input, &mut cur, DEFAULT_FIELD_CAP)?.to_vec()
+                }
                 _ => skip_field(input, &mut cur, wt)?,
             }
         }
@@ -615,9 +625,12 @@ mod tests {
 
     #[test]
     fn immutable_state_decode_full() {
-        // Manually construct: db="t", txId=7, txHash=[1,2,3], signature{sig=[4,5]}
+        // Manually construct ImmutableState{db="t", txId=7, txHash=[1,2,3],
+        // signature{publicKey=[10,11], signature=[4,5]}}.
         let mut sig_body = Vec::new();
-        encode_key(1, WireType::Len, &mut sig_body);
+        encode_key(1, WireType::Len, &mut sig_body); // publicKey
+        encode_len_delim(&[10u8, 11], &mut sig_body);
+        encode_key(2, WireType::Len, &mut sig_body); // signature
         encode_len_delim(&[4u8, 5], &mut sig_body);
         let mut buf = Vec::new();
         encode_key(1, WireType::Len, &mut buf);
@@ -633,7 +646,45 @@ mod tests {
         assert_eq!(st.tx_id, 7);
         assert_eq!(st.tx_hash, alloc::vec![1, 2, 3]);
         let sig = st.signature.unwrap();
+        assert_eq!(sig.public_key, alloc::vec![10, 11]);
         assert_eq!(sig.signature, alloc::vec![4, 5]);
+    }
+
+    /// Regression test for the v0.2.1 vendoring round-trip: the
+    /// tag numbers in this test are read out of the *upstream*
+    /// `audit-export/vendor/schema.proto`. If you ever re-vendor
+    /// from a new immudb release, re-verify these constants
+    /// against the new file before bumping `IMMUDB_SCHEMA_SHA`.
+    #[test]
+    fn upstream_proto_field_tags_pinned() {
+        // Signature: publicKey = 1, signature = 2 (NOT the other way).
+        let mut sig_body = Vec::new();
+        encode_key(1, WireType::Len, &mut sig_body);
+        encode_len_delim(b"PUB", &mut sig_body);
+        encode_key(2, WireType::Len, &mut sig_body);
+        encode_len_delim(b"SIG", &mut sig_body);
+        let s = Signature::decode(&sig_body).unwrap();
+        assert_eq!(s.public_key, b"PUB");
+        assert_eq!(s.signature, b"SIG");
+
+        // TxEntry: key=1, hValue=2, vLen=3, metadata=4, value=5.
+        let mut tx_entry = Vec::new();
+        encode_key(1, WireType::Len, &mut tx_entry);
+        encode_len_delim(b"K", &mut tx_entry);
+        encode_key(2, WireType::Len, &mut tx_entry);
+        encode_len_delim(b"H", &mut tx_entry);
+        encode_key(3, WireType::Varint, &mut tx_entry);
+        encode_varint(42, &mut tx_entry);
+        encode_key(4, WireType::Len, &mut tx_entry);
+        encode_len_delim(&[], &mut tx_entry); // empty metadata
+        encode_key(5, WireType::Len, &mut tx_entry);
+        encode_len_delim(b"V", &mut tx_entry);
+        let e = TxEntry::decode(&tx_entry).unwrap();
+        assert_eq!(e.key, b"K");
+        assert_eq!(e.h_value, b"H");
+        assert_eq!(e.v_len, 42);
+        assert!(e.metadata.is_some());
+        assert_eq!(e.value, b"V");
     }
 
     #[test]
@@ -714,14 +765,18 @@ mod tests {
     #[test]
     fn verifiable_tx_decode_nested() {
         // Build a minimal VerifiableTx with just a Signature subfield.
+        // Signature: publicKey (tag 1) = "PK", signature (tag 2) = [1,2,3].
         let mut sig_body = Vec::new();
         encode_key(1, WireType::Len, &mut sig_body);
+        encode_len_delim(b"PK", &mut sig_body);
+        encode_key(2, WireType::Len, &mut sig_body);
         encode_len_delim(&[1u8, 2, 3], &mut sig_body);
         let mut buf = Vec::new();
         encode_key(3, WireType::Len, &mut buf);
         encode_len_delim(&sig_body, &mut buf);
         let vt = VerifiableTx::decode(&buf).unwrap();
         let s = vt.signature.unwrap();
+        assert_eq!(s.public_key, b"PK");
         assert_eq!(s.signature, alloc::vec![1, 2, 3]);
     }
 
