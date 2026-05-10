@@ -50,6 +50,7 @@ keep_archives = 8
 max_total_disk_bytes = 268435456
 rotate_age_hours = 24
 rotate_size_bytes = 16777216
+signed_checkpoint_interval = 1024
 signed_checkpoints = true
 
 [metrics]
