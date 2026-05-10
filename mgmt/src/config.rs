@@ -86,7 +86,13 @@ impl Config {
     /// Conservative v1 defaults appropriate for a fresh first-boot.
     /// Concrete numbers come from the management-login-v1 design
     /// document; values inside per-namespace defaults below.
-    pub const fn v1_defaults() -> Self {
+    ///
+    /// Not `const fn` because [`OverlayConfig`] carries an owned
+    /// [`alloc::string::String`] for `public_key_path` since
+    /// `embedded-overlay-v1` Phase 5. Every other namespace default
+    /// remains pure-`Copy` and is callable from `const` contexts via
+    /// the `*Config::v1_defaults` constructors.
+    pub fn v1_defaults() -> Self {
         Self {
             idle: IdleConfig::v1_defaults(),
             password: PasswordPolicy::v1_defaults(),
@@ -290,7 +296,11 @@ impl MgmtConfig {
 // ─── Overlay policy ──────────────────────────────────────────────────────────
 
 /// Overlay (`/data/overlay`) tunables, owned by `embedded-overlay-v1`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `OverlayConfig` is no longer `Copy` because it carries an owned
+/// [`alloc::string::String`] for [`Self::public_key_path`]. The
+/// `Config` walker uses `Clone` (already required for `Config`).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OverlayConfig {
     /// Overlay upper-layer hard cap, in bytes.
     pub upper_max_bytes: u64,
@@ -298,15 +308,26 @@ pub struct OverlayConfig {
     pub require_signed: bool,
     /// Allow `Operator` to un-hide kernel-hidden paths.
     pub allow_operator_unhide: bool,
+    /// Filesystem path to the operator-deployed model-signing public
+    /// key (an [`smallaios_security::crypto::ml_dsa::ML_DSA_65_PK_LEN`]-
+    /// byte ML-DSA-65 public key). Default points at
+    /// `/data/mgmt/keys/overlay-pubkey.pub`. Empty string means "no
+    /// trust anchor configured" — when [`Self::require_signed`] is
+    /// `true` and this is empty, every `model_load` SHALL fail closed
+    /// with `-EAUTH` and a configuration-error message rather than
+    /// silently allowing unsigned (defense in depth).
+    pub public_key_path: alloc::string::String,
 }
 
 impl OverlayConfig {
-    /// v1 defaults: 256 MiB / require signed / Operator may un-hide.
-    pub const fn v1_defaults() -> Self {
+    /// v1 defaults: 256 MiB / require signed / Operator may un-hide /
+    /// pubkey at `/data/mgmt/keys/overlay-pubkey.pub`.
+    pub fn v1_defaults() -> Self {
         Self {
             upper_max_bytes: 256 * 1024 * 1024,
             require_signed: true,
             allow_operator_unhide: true,
+            public_key_path: alloc::string::String::from("/data/mgmt/keys/overlay-pubkey.pub"),
         }
     }
 }
@@ -420,6 +441,7 @@ impl Config {
             "overlay.upper_max_bytes" => Ok(Value::U64(self.overlay.upper_max_bytes)),
             "overlay.require_signed" => Ok(Value::Bool(self.overlay.require_signed)),
             "overlay.allow_operator_unhide" => Ok(Value::Bool(self.overlay.allow_operator_unhide)),
+            "overlay.public_key_path" => Ok(Value::String(self.overlay.public_key_path.clone())),
 
             // flash.*
             "flash.prefer_flash_for_models" => Ok(Value::Bool(self.flash.prefer_flash_for_models)),
@@ -501,6 +523,9 @@ impl Config {
             "overlay.require_signed" => self.overlay.require_signed = value.as_bool()?,
             "overlay.allow_operator_unhide" => {
                 self.overlay.allow_operator_unhide = value.as_bool()?
+            }
+            "overlay.public_key_path" => {
+                self.overlay.public_key_path = alloc::string::ToString::to_string(value.as_str()?)
             }
 
             "flash.prefer_flash_for_models" => {
@@ -772,6 +797,15 @@ pub mod registry {
         FieldDescriptor {
             path: "overlay.allow_operator_unhide",
             kind: FieldType::Bool,
+            reload: ReloadKind::Live,
+            scope: SurfaceScope::Universal,
+        },
+        FieldDescriptor {
+            path: "overlay.public_key_path",
+            kind: FieldType::String,
+            // Loading the trust anchor file is done at every
+            // model_load, so the operator can rotate the key without
+            // a reboot.
             reload: ReloadKind::Live,
             scope: SurfaceScope::Universal,
         },
@@ -1086,5 +1120,68 @@ mod tests {
         let bogus = crate::surface::RoleSet(0x80);
         let err = c.write_path(&p, Value::Roles(bogus)).unwrap_err();
         assert!(matches!(err, crate::surface::Error::Validation(_)));
+    }
+
+    // ─── embedded-overlay-v1 Phase 5: overlay.public_key_path ────────────
+
+    #[test]
+    fn overlay_public_key_path_default_value() {
+        let c = Config::default();
+        assert_eq!(
+            c.overlay.public_key_path,
+            "/data/mgmt/keys/overlay-pubkey.pub"
+        );
+    }
+
+    #[test]
+    fn overlay_public_key_path_round_trips_via_read_path() {
+        let c = Config::default();
+        let p = ConfigPath::new("overlay.public_key_path").unwrap();
+        match c.read_path(&p).unwrap() {
+            Value::String(s) => {
+                assert_eq!(s, "/data/mgmt/keys/overlay-pubkey.pub");
+            }
+            other => panic!("unexpected value: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn overlay_public_key_path_round_trips_via_write_path() {
+        let mut c = Config::default();
+        let p = ConfigPath::new("overlay.public_key_path").unwrap();
+        c.write_path(&p, Value::String("/etc/keys/k.pub".into()))
+            .unwrap();
+        assert_eq!(c.overlay.public_key_path, "/etc/keys/k.pub");
+    }
+
+    #[test]
+    fn overlay_public_key_path_in_registry_with_string_kind() {
+        let f = registry::lookup("overlay.public_key_path").expect("registered");
+        assert_eq!(f.kind, FieldType::String);
+        assert_eq!(f.reload, ReloadKind::Live);
+        assert_eq!(f.scope, SurfaceScope::Universal);
+    }
+
+    #[test]
+    fn overlay_public_key_path_rejects_relative_path_at_write() {
+        let mut c = Config::default();
+        let p = ConfigPath::new("overlay.public_key_path").unwrap();
+        let err = c
+            .write_path(&p, Value::String("relative".into()))
+            .unwrap_err();
+        assert!(matches!(err, crate::surface::Error::Validation(_)));
+        // In-memory state unchanged.
+        assert_eq!(
+            c.overlay.public_key_path,
+            "/data/mgmt/keys/overlay-pubkey.pub"
+        );
+    }
+
+    #[test]
+    fn overlay_public_key_path_rejects_type_mismatch() {
+        let mut c = Config::default();
+        let p = ConfigPath::new("overlay.public_key_path").unwrap();
+        let err = c.write_path(&p, Value::U32(0)).unwrap_err();
+        assert!(matches!(err, crate::surface::Error::TypeMismatch { .. }));
     }
 }
