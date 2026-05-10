@@ -28,12 +28,12 @@
 
 ## 4. immudb gRPC client
 
-- [ ] 4.1 Implement `currentState` unary RPC (`/immudb.schema.ImmuService/CurrentState`)
-- [ ] 4.2 Implement `verifiableSet` unary RPC (`/immudb.schema.ImmuService/VerifiableSet`)
-- [ ] 4.3 Map gRPC status codes to retry classes (retry: 4/8/14; halt-with-audit: 7/16; decode-fail: anything else)
-- [ ] 4.4 Implement bearer-token injection into request `authorization` header from `/data/audit_export/immudb.token`
-- [ ] 4.5 Persist server reply state via stage-and-rename to `/data/audit_export/last_state.bin`
-- [ ] 4.6 Unit test: state persist failure prevents batch ack (records remain in buffer)
+- [x] 4.1 Implement `currentState` unary RPC (`/immudb.schema.ImmuService/CurrentState`)
+- [x] 4.2 Implement `verifiableSet` unary RPC (`/immudb.schema.ImmuService/VerifiableSet`)
+- [x] 4.3 Map gRPC status codes to retry classes (retry: 4/8/14; halt-with-audit: 7/16; decode-fail: anything else)
+- [x] 4.4 Implement bearer-token injection into request `authorization` header from `/data/audit_export/immudb.token`
+- [x] 4.5 Persist server reply state via stage-and-rename to `/data/audit_export/last_state.bin` *(StateStore trait + PersistedState codec; stage-and-rename is the container-side impl in Phase 7)*
+- [x] 4.6 Unit test: state persist failure prevents batch ack (records remain in buffer) *(`state_persist_io_failure_propagates` test in `client.rs`)*
 
 ## 5. Verifier (inclusion + dual + signed state)
 

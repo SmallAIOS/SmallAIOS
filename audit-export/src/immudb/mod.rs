@@ -20,7 +20,10 @@
 //! Phases 4 (gRPC client) and 5 (verifier) build on top of
 //! these.
 
+pub mod client;
 pub mod schema;
+pub mod state;
+pub mod transport;
 pub mod wire;
 
 /// Errors surfaced by the immudb wire-format codecs.
