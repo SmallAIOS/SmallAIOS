@@ -273,53 +273,14 @@ where
     P: ShadowProvider + ?Sized,
     S: AuditSink + ?Sized,
 {
-    if user.is_empty() || user.len() > USERNAME_MAX_LEN {
-        return ERRNO_EINVAL;
-    }
-    if password.is_empty() || password.len() > PASSWORD_MAX_LEN {
-        return ERRNO_EINVAL;
-    }
-    // Phase 9: factor2 carries an RFC 6238 TOTP code (ASCII digits).
-    // Length 0 means "not supplied"; 1..=9 ASCII digits is parsed as
-    // the candidate code; anything else is rejected as malformed.
-    if factor2.len() > FACTOR2_MAX_LEN {
-        return ERRNO_EINVAL;
-    }
-    let factor2_code: Option<u32> = if factor2.is_empty() {
-        None
-    } else {
-        match parse_totp_code(factor2) {
-            Some(c) => Some(c),
-            None => return ERRNO_EINVAL,
-        }
+    let (user_str, factor2_code) = match validate_login_inputs(user, password, factor2) {
+        Ok(v) => v,
+        Err(e) => return e,
     };
 
-    let user_str = match core::str::from_utf8(user) {
-        Ok(s) => s,
-        Err(_) => return ERRNO_EINVAL,
-    };
-
-    let entry = match ctx.provider.read_user(user_str) {
-        Ok(opt) => opt,
-        Err(ShadowProviderError::PermissionTooLax(_)) => return ERRNO_EACCES,
-        Err(_) => return ERRNO_ENOSYS,
-    };
-
-    let (entry, ok) = match entry {
-        Some(e) => {
-            if e.lockout_until_unix > ctx.now_unix {
-                return ERRNO_EAGAIN;
-            }
-            let ok =
-                smallaios_security::argon2id::argon2id_verify(password, &e.phc).unwrap_or(false);
-            (Some(e), ok)
-        }
-        None => {
-            // Constant-time-equivalent reject: run the same Argon2id
-            // budget against a synthetic PHC. Discard the result.
-            let _ = smallaios_security::argon2id::argon2id_verify(password, DUMMY_PHC);
-            (None, false)
-        }
+    let (entry, ok) = match verify_password_with_dummy(ctx, user_str, password) {
+        Ok(v) => v,
+        Err(e) => return e,
     };
 
     // Phase 9 second-factor gate. We always run an HMAC-SHA1 verify
@@ -331,25 +292,12 @@ where
     // so the wall-clock budget on every login attempt looks the same
     // to a remote attacker. The result of the dummy verify is
     // discarded; the real check is gated on `ok && totp_required`.
-    let (totp_secret_for_verify, totp_required) = match entry.as_ref() {
-        Some(e) if e.totp_required => match e.totp_secret.as_ref() {
-            Some(s) => (s.as_slice(), true),
-            // Operator marked the user `totp_required = true` but
-            // never finished enrolment. We fail closed (reject the
-            // login) rather than fail open (let them in without a
-            // second factor). The dummy verify keeps the timing
-            // budget consistent with the enrolled-user branch.
-            None => (&DUMMY_TOTP_SECRET[..], true),
-        },
-        _ => (&DUMMY_TOTP_SECRET[..], false),
-    };
+    let (totp_secret_for_verify, totp_required) = select_totp_secret(entry.as_ref());
 
-    let supplied_code = factor2_code.unwrap_or(0);
-    let totp_now = ctx.now_unix;
     let totp_match = totp_verify(
         totp_secret_for_verify,
-        supplied_code,
-        totp_now,
+        factor2_code.unwrap_or(0),
+        ctx.now_unix,
         DEFAULT_DIGITS,
         DEFAULT_PERIOD_SECONDS,
         TOTP_VERIFY_WINDOW_STEPS,
@@ -365,24 +313,131 @@ where
     // Second-factor enforcement runs *after* the password check
     // succeeds so the password failure path (which already ran a
     // dummy TOTP verify above) is timing-equivalent.
-    if totp_required {
-        if factor2_code.is_none() {
-            // Spec: missing TOTP on a TOTP-required user → -EAUTHEXPIRED
-            // with reason "TOTP required". The dummy verify above
-            // keeps the timing matched to the wrong-code branch.
-            return ERRNO_EAUTHEXPIRED;
-        }
-        // Reject failed TOTP without enrolment leak via dummy verify:
-        // if the user has no secret, `totp_secret_for_verify` is the
-        // all-zero dummy; `totp_match` will only be true for a
-        // hypothetical attacker who guesses the all-zero-secret code.
-        // We additionally require the entry actually has a stored
-        // secret before accepting.
-        if !totp_match || entry.totp_secret.is_none() {
-            return ERRNO_EACCES;
-        }
+    if let Some(e) = enforce_totp(totp_required, factor2_code, totp_match, &entry) {
+        return e;
     }
 
+    finalize_login_session(ctx, &entry)
+}
+
+/// Validate the byte-slice inputs of `auth_login` and parse the optional
+/// TOTP code. Returns `(user_str, factor2_code)` on success or `-errno` on
+/// any rejection. Mirrors the exact length/UTF-8/parse rules the original
+/// inline code used so reject orderings are byte-for-byte identical.
+fn validate_login_inputs<'a>(
+    user: &'a [u8],
+    password: &[u8],
+    factor2: &[u8],
+) -> Result<(&'a str, Option<u32>), SyscallResult> {
+    if user.is_empty() || user.len() > USERNAME_MAX_LEN {
+        return Err(ERRNO_EINVAL);
+    }
+    if password.is_empty() || password.len() > PASSWORD_MAX_LEN {
+        return Err(ERRNO_EINVAL);
+    }
+    // Phase 9: factor2 carries an RFC 6238 TOTP code (ASCII digits).
+    // Length 0 means "not supplied"; 1..=9 ASCII digits is parsed as
+    // the candidate code; anything else is rejected as malformed.
+    if factor2.len() > FACTOR2_MAX_LEN {
+        return Err(ERRNO_EINVAL);
+    }
+    let factor2_code: Option<u32> = if factor2.is_empty() {
+        None
+    } else {
+        Some(parse_totp_code(factor2).ok_or(ERRNO_EINVAL)?)
+    };
+    let user_str = core::str::from_utf8(user).map_err(|_| ERRNO_EINVAL)?;
+    Ok((user_str, factor2_code))
+}
+
+/// Look up the shadow entry and run an Argon2id verify, falling back to
+/// the dummy PHC verify on a missing user so the timing budget matches.
+/// Returns `Ok((entry, password_ok))` or `-errno` on a fatal lookup error
+/// / lockout. Order of operations is preserved: lockout check happens
+/// before the verify, and the dummy verify always runs on the missing
+/// branch.
+fn verify_password_with_dummy<P, S>(
+    ctx: &AuthCtx<'_, P, S>,
+    user_str: &str,
+    password: &[u8],
+) -> Result<(Option<crate::auth::ShadowProviderEntry>, bool), SyscallResult>
+where
+    P: ShadowProvider + ?Sized,
+    S: AuditSink + ?Sized,
+{
+    let entry = match ctx.provider.read_user(user_str) {
+        Ok(opt) => opt,
+        Err(ShadowProviderError::PermissionTooLax(_)) => return Err(ERRNO_EACCES),
+        Err(_) => return Err(ERRNO_ENOSYS),
+    };
+
+    match entry {
+        Some(e) => {
+            if e.lockout_until_unix > ctx.now_unix {
+                return Err(ERRNO_EAGAIN);
+            }
+            let ok =
+                smallaios_security::argon2id::argon2id_verify(password, &e.phc).unwrap_or(false);
+            Ok((Some(e), ok))
+        }
+        None => {
+            // Constant-time-equivalent reject: run the same Argon2id
+            // budget against a synthetic PHC. Discard the result.
+            let _ = smallaios_security::argon2id::argon2id_verify(password, DUMMY_PHC);
+            Ok((None, false))
+        }
+    }
+}
+
+/// Pick the TOTP secret slice and `totp_required` flag for the verify
+/// that always runs (so timing is uniform). When the user does not exist
+/// or has not enrolled, the dummy all-zero secret is returned. When the
+/// operator marked `totp_required = true` but the user never finished
+/// enrolment, the dummy secret is returned with `required = true` so the
+/// later enforcement step will reject.
+fn select_totp_secret(entry: Option<&crate::auth::ShadowProviderEntry>) -> (&[u8], bool) {
+    match entry {
+        Some(e) if e.totp_required => match e.totp_secret.as_ref() {
+            Some(s) => (s.as_slice(), true),
+            None => (&DUMMY_TOTP_SECRET[..], true),
+        },
+        _ => (&DUMMY_TOTP_SECRET[..], false),
+    }
+}
+
+/// Apply the second-factor policy: if TOTP is required, the caller must
+/// have supplied a code, the verify must match, and the entry must have
+/// a stored secret. Returns `Some(-errno)` on rejection, `None` to
+/// continue. Order matches the original inline checks exactly.
+fn enforce_totp(
+    totp_required: bool,
+    factor2_code: Option<u32>,
+    totp_match: bool,
+    entry: &crate::auth::ShadowProviderEntry,
+) -> Option<SyscallResult> {
+    if !totp_required {
+        return None;
+    }
+    if factor2_code.is_none() {
+        // Spec: missing TOTP on a TOTP-required user → -EAUTHEXPIRED.
+        return Some(ERRNO_EAUTHEXPIRED);
+    }
+    if !totp_match || entry.totp_secret.is_none() {
+        return Some(ERRNO_EACCES);
+    }
+    None
+}
+
+/// Build the Session, acquire a slot in the table, and install it as
+/// the current session. Returns the session id (cast) or `-errno`.
+fn finalize_login_session<P, S>(
+    ctx: &mut AuthCtx<'_, P, S>,
+    entry: &crate::auth::ShadowProviderEntry,
+) -> SyscallResult
+where
+    P: ShadowProvider + ?Sized,
+    S: AuditSink + ?Sized,
+{
     let must_change = entry.flags & FLAG_MUST_CHANGE_PASSWORD != 0;
     let session = match Session::new(
         entry.stable_user_id,
@@ -454,74 +509,25 @@ where
         Err(_) => return ERRNO_EACCES,
     };
 
-    let (target_name, is_cross_rotate) = if target_user.is_empty() {
-        // Self-rotate: lookup own username from session.
-        let n = caller_session.username_bytes();
-        let s = match core::str::from_utf8(n) {
-            Ok(s) => s,
-            Err(_) => return ERRNO_EINVAL,
+    let (target_name, is_cross_rotate) =
+        match resolve_change_password_target(&caller_session, target_user) {
+            Ok(v) => v,
+            Err(e) => return e,
         };
-        (alloc::string::String::from(s), false)
-    } else {
-        if target_user.len() > USERNAME_MAX_LEN {
-            return ERRNO_EINVAL;
-        }
-        let s = match core::str::from_utf8(target_user) {
-            Ok(s) => s,
-            Err(_) => return ERRNO_EINVAL,
-        };
-        // Cross-rotate requires Root.
-        if caller_session.role != Role::Root {
-            return ERRNO_EACCES;
-        }
-        (alloc::string::String::from(s), true)
+
+    if let Some(e) = verify_old_or_check_target(ctx, old_password, &target_name, is_cross_rotate) {
+        return e;
+    }
+
+    let new_phc = match generate_new_phc(ctx, new_password) {
+        Ok(s) => s,
+        Err(e) => return e,
     };
 
-    // Self-rotate must verify the old password. Cross-rotate skips
-    // (root override).
-    if !is_cross_rotate {
-        if old_password.is_empty() || old_password.len() > PASSWORD_MAX_LEN {
-            return ERRNO_EINVAL;
-        }
-        let entry = match ctx.provider.read_user(&target_name) {
-            Ok(Some(e)) => e,
-            Ok(None) => return ERRNO_ENOENT,
-            Err(_) => return ERRNO_ENOSYS,
-        };
-        let ok = smallaios_security::argon2id::argon2id_verify(old_password, &entry.phc)
-            .unwrap_or(false);
-        if !ok {
-            return ERRNO_EACCES;
-        }
-    } else if ctx
-        .provider
-        .read_user(&target_name)
-        .map(|o| o.is_none())
-        .unwrap_or(true)
-    {
-        return ERRNO_ENOENT;
-    }
-
-    // Hash the new password. Salt is 16 bytes from kernel CSPRNG.
-    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
-    let mut salt = [0u8; 16];
-    if (ctx.salt_source)(&mut salt).is_err() {
-        return ERRNO_ENOSYS;
-    }
-
-    // The Phase 6 mgmt loader will replace this with a per-tier
-    // lookup based on the running platform's RAM. For now every new
-    // PHC uses the default-tier parameters, which keep verification
-    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
-    // self-describing per `auth_shadow_v1` Q3.
-    let params = Argon2idParams::default_tier();
-
-    let tag = argon2id_hash(new_password, &salt, params);
-    let new_phc = argon2id_format_phc(&salt, &tag, params);
-
-    if let Err(_e) = ctx
+    if ctx
         .provider
         .write_password(&target_name, &new_phc, !is_cross_rotate)
+        .is_err()
     {
         // The provider wasn't ready (KernelShadowProvider until F2FS RW
         // lands). Audit and return -ENOSYS so callers can detect this
@@ -529,23 +535,124 @@ where
         return ERRNO_ENOSYS;
     }
 
+    apply_post_write_session_effects(ctx, &target_name, id, is_cross_rotate);
+    0
+}
+
+/// Resolve the target username and whether this is a cross-rotate.
+/// Self-rotate (target empty) uses the caller's own session name.
+/// Cross-rotate requires `Role::Root`. Returns `(name, is_cross_rotate)`
+/// or `-errno` matching the original inline checks.
+fn resolve_change_password_target(
+    caller_session: &Session,
+    target_user: &[u8],
+) -> Result<(alloc::string::String, bool), SyscallResult> {
+    if target_user.is_empty() {
+        // Self-rotate: lookup own username from session.
+        let n = caller_session.username_bytes();
+        let s = core::str::from_utf8(n).map_err(|_| ERRNO_EINVAL)?;
+        return Ok((alloc::string::String::from(s), false));
+    }
+    if target_user.len() > USERNAME_MAX_LEN {
+        return Err(ERRNO_EINVAL);
+    }
+    let s = core::str::from_utf8(target_user).map_err(|_| ERRNO_EINVAL)?;
+    // Cross-rotate requires Root.
+    if caller_session.role != Role::Root {
+        return Err(ERRNO_EACCES);
+    }
+    Ok((alloc::string::String::from(s), true))
+}
+
+/// Self-rotate must verify the old password. Cross-rotate (root
+/// override) only confirms the target exists. Returns `Some(-errno)` on
+/// rejection or `None` to continue. Order of operations preserved.
+fn verify_old_or_check_target<P, S>(
+    ctx: &AuthCtx<'_, P, S>,
+    old_password: &[u8],
+    target_name: &str,
+    is_cross_rotate: bool,
+) -> Option<SyscallResult>
+where
+    P: ShadowProvider + ?Sized,
+    S: AuditSink + ?Sized,
+{
+    if !is_cross_rotate {
+        if old_password.is_empty() || old_password.len() > PASSWORD_MAX_LEN {
+            return Some(ERRNO_EINVAL);
+        }
+        let entry = match ctx.provider.read_user(target_name) {
+            Ok(Some(e)) => e,
+            Ok(None) => return Some(ERRNO_ENOENT),
+            Err(_) => return Some(ERRNO_ENOSYS),
+        };
+        let ok = smallaios_security::argon2id::argon2id_verify(old_password, &entry.phc)
+            .unwrap_or(false);
+        if !ok {
+            return Some(ERRNO_EACCES);
+        }
+        return None;
+    }
+    if ctx
+        .provider
+        .read_user(target_name)
+        .map(|o| o.is_none())
+        .unwrap_or(true)
+    {
+        return Some(ERRNO_ENOENT);
+    }
+    None
+}
+
+/// Generate a fresh salt + Argon2id PHC string for `password`.
+/// Returns the PHC string or `-ENOSYS` on salt-source failure.
+///
+/// The Phase 6 mgmt loader will replace this with a per-tier lookup
+/// based on the running platform's RAM. For now every new PHC uses the
+/// default-tier parameters per `auth_shadow_v1` Q3.
+fn generate_new_phc<P, S>(
+    ctx: &mut AuthCtx<'_, P, S>,
+    password: &[u8],
+) -> Result<alloc::string::String, SyscallResult>
+where
+    P: ShadowProvider + ?Sized,
+    S: AuditSink + ?Sized,
+{
+    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / spec-mandated constant
+    let mut salt = [0u8; 16];
+    if (ctx.salt_source)(&mut salt).is_err() {
+        return Err(ERRNO_ENOSYS);
+    }
+    // lgtm[rust/hard-coded-cryptographic-value] - test fixture / no-op constant; CodeQL false-positive
+    let params = Argon2idParams::default_tier();
+    let tag = argon2id_hash(password, &salt, params);
+    Ok(argon2id_format_phc(&salt, &tag, params))
+}
+
+/// After a successful `write_password`, propagate the effect to live
+/// sessions: cross-rotate forces logout of every other session for
+/// `target_name`; self-rotate clears `must_change_password` on the
+/// caller's live session. Lookup happens *after* the write so a write
+/// failure does not destroy live sessions.
+fn apply_post_write_session_effects<P, S>(
+    ctx: &mut AuthCtx<'_, P, S>,
+    target_name: &str,
+    caller_id: crate::auth::SessionId,
+    is_cross_rotate: bool,
+) where
+    P: ShadowProvider + ?Sized,
+    S: AuditSink + ?Sized,
+{
     if is_cross_rotate {
         // Force logout of every other session for the target user.
-        // We do this *after* the write succeeds so a write failure
-        // does not destroy live sessions. Look up target user_id first.
-        if let Ok(Some(entry)) = ctx.provider.read_user(&target_name) {
+        if let Ok(Some(entry)) = ctx.provider.read_user(target_name) {
             let _ = ctx.table.invalidate_user(entry.stable_user_id);
         }
-    } else {
+    } else if let Ok(s) = ctx.table.lookup_mut(caller_id) {
         // Self-rotate: clear `must_change_password` on the live
         // session so subsequent syscalls are no longer gated.
-        if let Ok(s) = ctx.table.lookup_mut(id) {
-            s.must_change_password = false;
-        }
+        s.must_change_password = false;
     }
-
-    let _ = ctx; // suppress unused-but-required lint
-    0
 }
 
 /// `auth_create_user(user_ptr, user_len, role, initial_pass_ptr, initial_pass_len)` -> 0 | -errno
