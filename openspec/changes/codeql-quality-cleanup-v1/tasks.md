@@ -88,6 +88,20 @@ For each remaining finding from the Phase 1 inventory not addressed by Phases 2/
 - [ ] 8.5 **One-week soak:** monitor daily CodeQL runs on `develop` for 7 days post-merge. If no recurrence of `rust/hard-coded-cryptographic-value` on affected paths, the suppression strategy is validated. If recurrence happens, open a follow-up change to revise the strategy.
 - [ ] 8.6 After the soak, run `/opsx:archive codeql-quality-cleanup-v1` to archive this change and update main specs with the deltas from `specs/codeql-suppression-policy/spec.md` and `specs/documentation/spec.md`.
 
+## 10. Phase 10 — Query-filter the production-code irreducible false positives
+
+Follow-up to Phase 4 footnote ("Five `ml_kem.rs` / `ml_dsa.rs` production-code findings will likely re-fire"). The May 2026 CodeQL scan on `develop` re-fired 13 `rust/hard-coded-cryptographic-value` alerts — but on a different set of files than expected:
+
+- `security/src/argon2id.rs` — 8 alerts at lines 900, 902, 904, 906, 908, 910 (the RFC 4648 base64 alphabet inside `b64_decode`).
+- `kernel/src/syscall/auth.rs` — 5 alerts at lines 70 (`DUMMY_PHC` constant), 420 + 509 (`[0u8; 16]` salt buffers passed to the kernel CSPRNG), and 429 + 518 (adjacent comment blocks the analyzer is over-matching).
+
+Each call site already carries a standalone-line `// lgtm[rust/hard-coded-cryptographic-value]` annotation that the Rust analyzer does not honor for this rule on this codebase. Picked option (1) from the Phase 4 footnote: targeted `query-filters` block in `.github/codeql/codeql-config.yml`.
+
+- [x] 10.1 **Investigated `query-filters` config-file approach** — the documented CodeQL config schema rejects path-based exclusions under `query-filters` (the `path` key matches alert *metadata strings*, not file paths). The `path: { regex: ... }` form fails CodeQL `database init` with `Cannot deserialize value of type java.lang.String from Object value`. Reverted that approach.
+- [x] 10.2 **Pivoted to direct alert dismissal via the GitHub Code Scanning API** — the right tool for "rule X is a false positive on file Y" in CodeQL. `gh api -X PATCH repos/.../code-scanning/alerts/{N}` with `state=dismissed`, `dismissed_reason="false positive"`, and a clear `dismissed_comment` referencing the in-source `// lgtm` annotation. Dismissals persist across re-scans (GitHub keeps them sticky to the alert location).
+- [x] 10.3 **Dismissed the 13 production-code FPs**: alerts #45, #52, #86–91 (RFC 4648 base64 alphabet in `argon2id.rs::b64_decode`) + #135, #136, #144, #149, #150 (`DUMMY_PHC` for constant-time-equivalent reject + `[0u8; 16]` salt buffers in `auth.rs` handlers immediately overwritten by the CSPRNG). Each dismissal cites the in-source standalone-line `// lgtm[rust/hard-coded-cryptographic-value]` comment as documentation.
+- [x] 10.4 Verified open `rust/hard-coded-cryptographic-value` alerts on develop = 0 post-dismissal.
+
 ## 9. Deferrals & accept-as-noise (out of scope for this change)
 
 These items came out of Phase 1 triage but are intentionally not addressed in this change. Recorded here so they don't get lost when this change archives.
