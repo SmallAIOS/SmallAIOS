@@ -720,24 +720,7 @@ impl Session {
     /// graph traversal setup -- operator dispatch will be wired in a
     /// later phase when the full operator table is complete.
     pub fn run(&self, inputs: &[InferenceInput]) -> Result<Vec<InferenceOutput>, SessionError> {
-        if !self.is_initialized {
-            return Err(SessionError::ExecutionFailed(String::from(
-                "session not initialized",
-            )));
-        }
-
-        if inputs.is_empty() {
-            return Err(SessionError::InvalidInput(String::from(
-                "no inputs provided",
-            )));
-        }
-
-        // Validate that each input name matches a known model input.
-        for input in inputs {
-            if !self.input_names.contains(&input.name) {
-                return Err(SessionError::InvalidInput(input.name.clone()));
-            }
-        }
+        self.validate_run_preconditions(inputs)?;
 
         let graph = self
             .graph
@@ -745,121 +728,7 @@ impl Session {
             .ok_or_else(|| SessionError::ExecutionFailed(String::from("no execution graph")))?;
 
         match self.kind {
-            SessionKind::Onnx => {
-                // Build input pairs for the executor
-                let input_pairs: Vec<(String, Tensor)> = inputs
-                    .iter()
-                    .map(|i| (i.name.clone(), i.tensor.clone()))
-                    .collect();
-
-                // Get initializers from the model (stored during initialize)
-                let initializers = &self.initializers;
-
-                // Route to the hybrid executor when the user opts in via
-                // `SessionConfig::gpu_residency = GpuResidency::Hybrid`
-                // and a CUDA runtime is attached.
-                #[cfg(feature = "cuda")]
-                if matches!(self.config.gpu_residency, GpuResidency::Hybrid) {
-                    use alloc::collections::BTreeMap;
-                    use alloc::sync::Arc;
-                    if let Some(rt) = self.cuda_runtime.as_deref() {
-                        // Re-bind the Session's device on the calling
-                        // thread before any CUDA op. cudaSetDevice is
-                        // per-thread; HTTP worker pools enter with no
-                        // current device, and the Send/Sync safety
-                        // contract for our cached handles depends on
-                        // this rebind. See `crate::cuda::graph` module
-                        // docs for the full safety story.
-                        crate::cuda::set_device(rt.device.device_id).map_err(|e| {
-                            SessionError::ExecutionFailed(alloc::format!(
-                                "cudaSetDevice({}): {}",
-                                rt.device.device_id,
-                                e
-                            ))
-                        })?;
-                        // Lazy-populate the device-resident initializer
-                        // cache on first hybrid run. Skips re-decoding
-                        // every TensorProto and re-uploading every
-                        // initializer to device on each inference.
-                        let cache = {
-                            let mut slot = self.device_initializer_cache.lock().map_err(|_| {
-                                SessionError::ExecutionFailed(String::from(
-                                    "device_initializer_cache mutex poisoned",
-                                ))
-                            })?;
-                            if slot.is_none() {
-                                let mut map: BTreeMap<
-                                    String,
-                                    Arc<crate::cuda::gpu_executor::DeviceTensor>,
-                                > = BTreeMap::new();
-                                for init in initializers {
-                                    if let Some(host) = crate::executor::tensor_from_proto(init) {
-                                        let dev =
-                                            crate::cuda::gpu_executor::DeviceTensor::from_host(
-                                                &host,
-                                            )
-                                            .map_err(
-                                                |e| {
-                                                    SessionError::ExecutionFailed(alloc::format!(
-                                                        "device cache init: {}",
-                                                        e
-                                                    ))
-                                                },
-                                            )?;
-                                        map.insert(init.name.clone(), Arc::new(dev));
-                                    }
-                                }
-                                *slot = Some(Arc::new(map));
-                            }
-                            slot.as_ref().unwrap().clone()
-                        };
-                        let mut cache_slot = self.cuda_graph_cache.lock().map_err(|_| {
-                            SessionError::ExecutionFailed(String::from(
-                                "cuda_graph_cache mutex poisoned",
-                            ))
-                        })?;
-                        // Lazily allocate the multi-stream pool (no-op
-                        // on SingleStream config). Errors propagate as
-                        // SessionError::InvalidConfig before any
-                        // inference work happens.
-                        self.ensure_stream_pool()?;
-                        let pool_slot = self.stream_pool.lock().map_err(|_| {
-                            SessionError::ExecutionFailed(String::from(
-                                "stream_pool mutex poisoned",
-                            ))
-                        })?;
-                        return crate::executor_hybrid::execute_graph_hybrid_with_capture(
-                            graph,
-                            &input_pairs,
-                            initializers,
-                            rt,
-                            Some(&cache),
-                            &mut cache_slot,
-                            self.config.cuda_graph,
-                            pool_slot.as_ref(),
-                        );
-                    }
-                }
-
-                #[cfg(all(feature = "metal", target_os = "macos"))]
-                let mut metal_guard = self.metal_dispatcher.borrow_mut();
-
-                crate::executor::execute_graph(
-                    graph,
-                    &input_pairs,
-                    initializers,
-                    None,
-                    None,
-                    &crate::profile::OperatorBudget::DEFAULT,
-                    &crate::profile::NullTimeSource,
-                    #[cfg(feature = "gpu")]
-                    self.gpu_backend.as_ref(),
-                    #[cfg(feature = "cuda")]
-                    self.cuda_runtime.as_deref(),
-                    #[cfg(all(feature = "metal", target_os = "macos"))]
-                    metal_guard.as_mut(),
-                )
-            }
+            SessionKind::Onnx => self.run_onnx(graph, inputs),
             SessionKind::Safetensors => {
                 #[cfg(feature = "cuda")]
                 {
@@ -874,6 +743,171 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Validate that the session is initialized and the input slice is
+    /// non-empty with names matching the model. Pulled out of
+    /// [`Session::run`] so its main body stays linear.
+    fn validate_run_preconditions(&self, inputs: &[InferenceInput]) -> Result<(), SessionError> {
+        if !self.is_initialized {
+            return Err(SessionError::ExecutionFailed(String::from(
+                "session not initialized",
+            )));
+        }
+        if inputs.is_empty() {
+            return Err(SessionError::InvalidInput(String::from(
+                "no inputs provided",
+            )));
+        }
+        for input in inputs {
+            if !self.input_names.contains(&input.name) {
+                return Err(SessionError::InvalidInput(input.name.clone()));
+            }
+        }
+        Ok(())
+    }
+
+    /// ONNX inference dispatch: tries the hybrid CUDA path when
+    /// configured, otherwise falls back to the regular CPU/GPU
+    /// executor.
+    fn run_onnx(
+        &self,
+        graph: &ExecutionGraph,
+        inputs: &[InferenceInput],
+    ) -> Result<Vec<InferenceOutput>, SessionError> {
+        let input_pairs: Vec<(String, Tensor)> = inputs
+            .iter()
+            .map(|i| (i.name.clone(), i.tensor.clone()))
+            .collect();
+        let initializers = &self.initializers;
+
+        // Route to the hybrid executor when the user opts in via
+        // `SessionConfig::gpu_residency = GpuResidency::Hybrid` and a
+        // CUDA runtime is attached.
+        #[cfg(feature = "cuda")]
+        if let Some(outputs) = self.try_run_hybrid_cuda(graph, &input_pairs, initializers)? {
+            return Ok(outputs);
+        }
+
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        let mut metal_guard = self.metal_dispatcher.borrow_mut();
+
+        crate::executor::execute_graph(
+            graph,
+            &input_pairs,
+            initializers,
+            None,
+            None,
+            &crate::profile::OperatorBudget::DEFAULT,
+            &crate::profile::NullTimeSource,
+            #[cfg(feature = "gpu")]
+            self.gpu_backend.as_ref(),
+            #[cfg(feature = "cuda")]
+            self.cuda_runtime.as_deref(),
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            metal_guard.as_mut(),
+        )
+    }
+
+    /// Try the hybrid CUDA dispatch path.
+    ///
+    /// Returns `Ok(Some(outputs))` when the hybrid executor handled the
+    /// inference, `Ok(None)` when the caller should fall through to the
+    /// non-CUDA path (no hybrid residency configured, or no CUDA
+    /// runtime attached), or `Err(e)` for hard CUDA failures.
+    #[cfg(feature = "cuda")]
+    fn try_run_hybrid_cuda(
+        &self,
+        graph: &ExecutionGraph,
+        input_pairs: &[(String, Tensor)],
+        initializers: &[crate::onnx_types::TensorProto],
+    ) -> Result<Option<Vec<InferenceOutput>>, SessionError> {
+        if !matches!(self.config.gpu_residency, GpuResidency::Hybrid) {
+            return Ok(None);
+        }
+        let rt = match self.cuda_runtime.as_deref() {
+            Some(rt) => rt,
+            None => return Ok(None),
+        };
+
+        // Re-bind the Session's device on the calling thread before any
+        // CUDA op. cudaSetDevice is per-thread; HTTP worker pools enter
+        // with no current device, and the Send/Sync safety contract for
+        // our cached handles depends on this rebind. See
+        // `crate::cuda::graph` module docs for the full safety story.
+        crate::cuda::set_device(rt.device.device_id).map_err(|e| {
+            SessionError::ExecutionFailed(alloc::format!(
+                "cudaSetDevice({}): {}",
+                rt.device.device_id,
+                e
+            ))
+        })?;
+
+        let cache = self.populate_device_initializer_cache(initializers)?;
+
+        let mut cache_slot = self.cuda_graph_cache.lock().map_err(|_| {
+            SessionError::ExecutionFailed(String::from("cuda_graph_cache mutex poisoned"))
+        })?;
+        // Lazily allocate the multi-stream pool (no-op on SingleStream
+        // config). Errors propagate as SessionError::InvalidConfig
+        // before any inference work happens.
+        self.ensure_stream_pool()?;
+        let pool_slot = self.stream_pool.lock().map_err(|_| {
+            SessionError::ExecutionFailed(String::from("stream_pool mutex poisoned"))
+        })?;
+        let outputs = crate::executor_hybrid::execute_graph_hybrid_with_capture(
+            graph,
+            input_pairs,
+            initializers,
+            rt,
+            Some(&cache),
+            &mut cache_slot,
+            self.config.cuda_graph,
+            pool_slot.as_ref(),
+        )?;
+        Ok(Some(outputs))
+    }
+
+    /// Lazy-populate the device-resident initializer cache on the
+    /// first hybrid run. Skips re-decoding every TensorProto and
+    /// re-uploading every initializer to device on each inference.
+    #[cfg(feature = "cuda")]
+    fn populate_device_initializer_cache(
+        &self,
+        initializers: &[crate::onnx_types::TensorProto],
+    ) -> Result<
+        alloc::sync::Arc<
+            alloc::collections::BTreeMap<
+                String,
+                alloc::sync::Arc<crate::cuda::gpu_executor::DeviceTensor>,
+            >,
+        >,
+        SessionError,
+    > {
+        use alloc::collections::BTreeMap;
+        use alloc::sync::Arc;
+
+        let mut slot = self.device_initializer_cache.lock().map_err(|_| {
+            SessionError::ExecutionFailed(String::from("device_initializer_cache mutex poisoned"))
+        })?;
+        if slot.is_none() {
+            let mut map: BTreeMap<String, Arc<crate::cuda::gpu_executor::DeviceTensor>> =
+                BTreeMap::new();
+            for init in initializers {
+                if let Some(host) = crate::executor::tensor_from_proto(init) {
+                    let dev =
+                        crate::cuda::gpu_executor::DeviceTensor::from_host(&host).map_err(|e| {
+                            SessionError::ExecutionFailed(alloc::format!(
+                                "device cache init: {}",
+                                e
+                            ))
+                        })?;
+                    map.insert(init.name.clone(), Arc::new(dev));
+                }
+            }
+            *slot = Some(Arc::new(map));
+        }
+        Ok(slot.as_ref().unwrap().clone())
     }
 
     /// GPU-resident run path for safetensors-backed sessions.

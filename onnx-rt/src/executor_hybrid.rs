@@ -178,6 +178,195 @@ fn cuda_err_to_session(node_name: &str, e: cuda::CudaError) -> SessionError {
     SessionError::ExecutionFailed(format!("{}: {}", node_name, e))
 }
 
+/// Parsed Gemm attribute bundle (`transA`, `transB`, `alpha`, `beta`).
+struct GemmAttrs {
+    trans_a: bool,
+    trans_b: bool,
+    alpha: f32,
+    beta: f32,
+}
+
+impl GemmAttrs {
+    fn parse(attrs: &[AttributeProto]) -> Self {
+        let mut g = GemmAttrs {
+            trans_a: false,
+            trans_b: false,
+            alpha: 1.0,
+            beta: 1.0,
+        };
+        for a in attrs {
+            match a.name.as_str() {
+                "transA" => g.trans_a = a.i != 0,
+                "transB" => g.trans_b = a.i != 0,
+                "alpha" => g.alpha = a.f,
+                "beta" => g.beta = a.f,
+                _ => {}
+            }
+        }
+        g
+    }
+}
+
+/// Extract the optional `(min, max)` clip bounds from `Clip` attributes.
+/// Returns `None` if either bound is absent — the caller must fall back
+/// to the CPU dispatch path because opset < 11 always uses attributes.
+fn parse_clip_bounds(attrs: &[AttributeProto]) -> Option<(f32, f32)> {
+    let mut min = None;
+    let mut max = None;
+    for a in attrs {
+        if a.name == "min" {
+            min = Some(a.f);
+        }
+        if a.name == "max" {
+            max = Some(a.f);
+        }
+    }
+    match (min, max) {
+        (Some(mn), Some(mx)) => Some((mn, mx)),
+        _ => None,
+    }
+}
+
+/// GPU dispatch for `Conv`. Returns `Ok(None)` if the input arity is wrong.
+fn gpu_dispatch_conv(
+    rt: &CudaRuntime,
+    attrs: &[AttributeProto],
+    inputs: &[Arc<DeviceTensor>],
+    node_name: &str,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    if inputs.len() < 2 {
+        return Ok(None);
+    }
+    let conv_attrs =
+        ConvAttrs::from_attributes(attrs).map_err(|e| op_err_to_session(node_name, e))?;
+    let bias = inputs.get(2).map(|d| d.as_ref());
+    cuda::gpu_executor::gpu_conv2d_device(
+        rt,
+        &inputs[0],
+        &inputs[1],
+        bias,
+        &conv_attrs.pads[..2],
+        &conv_attrs.strides,
+        &conv_attrs.dilations,
+        conv_attrs.group,
+    )
+    .map(Some)
+    .map_err(|e| cuda_err_to_session(node_name, e))
+}
+
+/// GPU dispatch for `Gemm`. Returns `Ok(None)` if input arity is wrong.
+fn gpu_dispatch_gemm(
+    rt: &CudaRuntime,
+    attrs: &[AttributeProto],
+    inputs: &[Arc<DeviceTensor>],
+    node_name: &str,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    if inputs.len() < 2 {
+        return Ok(None);
+    }
+    let g = GemmAttrs::parse(attrs);
+    let bias = inputs.get(2).map(|d| d.as_ref());
+    cuda::gpu_executor::gpu_gemm_device(
+        rt, &inputs[0], &inputs[1], g.trans_a, g.trans_b, g.alpha, g.beta, bias,
+    )
+    .map(Some)
+    .map_err(|e| cuda_err_to_session(node_name, e))
+}
+
+/// GPU dispatch for `MatMul`. Returns `Ok(None)` if input arity is wrong.
+fn gpu_dispatch_matmul(
+    rt: &CudaRuntime,
+    inputs: &[Arc<DeviceTensor>],
+    node_name: &str,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    if inputs.len() != 2 {
+        return Ok(None);
+    }
+    cuda::gpu_executor::gpu_gemm_device(rt, &inputs[0], &inputs[1], false, false, 1.0, 0.0, None)
+        .map(Some)
+        .map_err(|e| cuda_err_to_session(node_name, e))
+}
+
+/// GPU dispatch for `BatchNormalization`. Returns `Ok(None)` if input
+/// arity is wrong.
+fn gpu_dispatch_batchnorm(
+    rt: &CudaRuntime,
+    attrs: &[AttributeProto],
+    inputs: &[Arc<DeviceTensor>],
+    node_name: &str,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    if inputs.len() != 5 {
+        return Ok(None);
+    }
+    let bn = BatchNormAttrs::from_attributes(attrs).map_err(|e| op_err_to_session(node_name, e))?;
+    gpu_batchnorm(
+        rt, &inputs[0], &inputs[1], &inputs[2], &inputs[3], &inputs[4], bn.epsilon,
+    )
+    .map(Some)
+    .map_err(|e| cuda_err_to_session(node_name, e))
+}
+
+/// GPU dispatch for `Relu`. Returns `Ok(None)` if input arity is wrong.
+fn gpu_dispatch_relu(
+    rt: &CudaRuntime,
+    inputs: &[Arc<DeviceTensor>],
+    node_name: &str,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    if inputs.len() != 1 {
+        return Ok(None);
+    }
+    gpu_relu(rt, &inputs[0])
+        .map(Some)
+        .map_err(|e| cuda_err_to_session(node_name, e))
+}
+
+/// GPU dispatch for `Clip`. Falls back to CPU when the opset >= 11
+/// input form is used (min/max not in attributes).
+fn gpu_dispatch_clip(
+    rt: &CudaRuntime,
+    attrs: &[AttributeProto],
+    inputs: &[Arc<DeviceTensor>],
+    node_name: &str,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    // Clip in opset >= 11 takes min/max as inputs (idx 1, 2);
+    // here all three inputs would already be on device, but
+    // min/max are scalars so easier to require the attribute
+    // form. Fall back to CPU otherwise.
+    let (mn, mx) = match parse_clip_bounds(attrs) {
+        Some(b) => b,
+        None => return Ok(None),
+    };
+    gpu_clip(rt, &inputs[0], mn, mx)
+        .map(Some)
+        .map_err(|e| cuda_err_to_session(node_name, e))
+}
+
+/// GPU dispatch for `MaxPool`. Returns the result tensor or a parse error.
+fn gpu_dispatch_maxpool(
+    rt: &CudaRuntime,
+    attrs: &[AttributeProto],
+    inputs: &[Arc<DeviceTensor>],
+    node_name: &str,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    let p = PoolAttrs::from_attributes(attrs, true).map_err(|e| op_err_to_session(node_name, e))?;
+    gpu_maxpool(rt, &inputs[0], &p)
+        .map(Some)
+        .map_err(|e| cuda_err_to_session(node_name, e))
+}
+
+/// GPU dispatch for `AveragePool`. Returns the result tensor or a parse error.
+fn gpu_dispatch_averagepool(
+    rt: &CudaRuntime,
+    attrs: &[AttributeProto],
+    inputs: &[Arc<DeviceTensor>],
+    node_name: &str,
+) -> Result<Option<DeviceTensor>, SessionError> {
+    let p = PoolAttrs::from_attributes(attrs, true).map_err(|e| op_err_to_session(node_name, e))?;
+    gpu_averagepool(rt, &inputs[0], &p)
+        .map(Some)
+        .map_err(|e| cuda_err_to_session(node_name, e))
+}
+
 /// Try to dispatch a single op on GPU. Returns `Some(out_dt)` on
 /// success, `Ok(None)` if the op shape/dtype isn't GPU-supportable
 /// (fallback expected), or `Err` for hard failures.
@@ -189,126 +378,23 @@ fn try_gpu_dispatch(
     inputs: &[Arc<DeviceTensor>],
     node_name: &str,
 ) -> Result<Option<DeviceTensor>, SessionError> {
-    let result = match op_type {
-        "Conv" => {
-            if inputs.len() < 2 {
-                return Ok(None);
-            }
-            let conv_attrs =
-                ConvAttrs::from_attributes(attrs).map_err(|e| op_err_to_session(node_name, e))?;
-            let bias = inputs.get(2).map(|d| d.as_ref());
-            cuda::gpu_executor::gpu_conv2d_device(
-                rt,
-                &inputs[0],
-                &inputs[1],
-                bias,
-                &conv_attrs.pads[..2],
-                &conv_attrs.strides,
-                &conv_attrs.dilations,
-                conv_attrs.group,
-            )
-            .map(Some)
-            .map_err(|e| cuda_err_to_session(node_name, e))?
-        }
-        "Gemm" => {
-            if inputs.len() < 2 {
-                return Ok(None);
-            }
-            let mut trans_a = false;
-            let mut trans_b = false;
-            let mut alpha = 1.0f32;
-            let mut beta = 1.0f32;
-            for a in attrs {
-                match a.name.as_str() {
-                    "transA" => trans_a = a.i != 0,
-                    "transB" => trans_b = a.i != 0,
-                    "alpha" => alpha = a.f,
-                    "beta" => beta = a.f,
-                    _ => {}
-                }
-            }
-            let bias = inputs.get(2).map(|d| d.as_ref());
-            cuda::gpu_executor::gpu_gemm_device(
-                rt, &inputs[0], &inputs[1], trans_a, trans_b, alpha, beta, bias,
-            )
-            .map(Some)
-            .map_err(|e| cuda_err_to_session(node_name, e))?
-        }
-        "MatMul" => {
-            if inputs.len() != 2 {
-                return Ok(None);
-            }
-            cuda::gpu_executor::gpu_gemm_device(
-                rt, &inputs[0], &inputs[1], false, false, 1.0, 0.0, None,
-            )
-            .map(Some)
-            .map_err(|e| cuda_err_to_session(node_name, e))?
-        }
-        "BatchNormalization" => {
-            if inputs.len() != 5 {
-                return Ok(None);
-            }
-            let bn = BatchNormAttrs::from_attributes(attrs)
-                .map_err(|e| op_err_to_session(node_name, e))?;
-            gpu_batchnorm(
-                rt, &inputs[0], &inputs[1], &inputs[2], &inputs[3], &inputs[4], bn.epsilon,
-            )
-            .map(Some)
-            .map_err(|e| cuda_err_to_session(node_name, e))?
-        }
-        "Relu" => {
-            if inputs.len() != 1 {
-                return Ok(None);
-            }
-            gpu_relu(rt, &inputs[0])
-                .map(Some)
-                .map_err(|e| cuda_err_to_session(node_name, e))?
-        }
-        "Clip" => {
-            // Clip in opset >= 11 takes min/max as inputs (idx 1, 2);
-            // here all three inputs would already be on device, but
-            // min/max are scalars so easier to require the attribute
-            // form. Fall back to CPU otherwise.
-            let mut min = None;
-            let mut max = None;
-            for a in attrs {
-                if a.name == "min" {
-                    min = Some(a.f);
-                }
-                if a.name == "max" {
-                    max = Some(a.f);
-                }
-            }
-            match (min, max) {
-                (Some(mn), Some(mx)) => gpu_clip(rt, &inputs[0], mn, mx)
-                    .map(Some)
-                    .map_err(|e| cuda_err_to_session(node_name, e))?,
-                _ => return Ok(None),
-            }
-        }
-        "MaxPool" => {
-            let p = PoolAttrs::from_attributes(attrs, true)
-                .map_err(|e| op_err_to_session(node_name, e))?;
-            gpu_maxpool(rt, &inputs[0], &p)
-                .map(Some)
-                .map_err(|e| cuda_err_to_session(node_name, e))?
-        }
-        "AveragePool" => {
-            let p = PoolAttrs::from_attributes(attrs, true)
-                .map_err(|e| op_err_to_session(node_name, e))?;
-            gpu_averagepool(rt, &inputs[0], &p)
-                .map(Some)
-                .map_err(|e| cuda_err_to_session(node_name, e))?
-        }
+    match op_type {
+        "Conv" => gpu_dispatch_conv(rt, attrs, inputs, node_name),
+        "Gemm" => gpu_dispatch_gemm(rt, attrs, inputs, node_name),
+        "MatMul" => gpu_dispatch_matmul(rt, inputs, node_name),
+        "BatchNormalization" => gpu_dispatch_batchnorm(rt, attrs, inputs, node_name),
+        "Relu" => gpu_dispatch_relu(rt, inputs, node_name),
+        "Clip" => gpu_dispatch_clip(rt, attrs, inputs, node_name),
+        "MaxPool" => gpu_dispatch_maxpool(rt, attrs, inputs, node_name),
+        "AveragePool" => gpu_dispatch_averagepool(rt, attrs, inputs, node_name),
         "GlobalAveragePool" => gpu_globalaveragepool(rt, &inputs[0])
             .map(Some)
-            .map_err(|e| cuda_err_to_session(node_name, e))?,
+            .map_err(|e| cuda_err_to_session(node_name, e)),
         "Add" => gpu_add(rt, &inputs[0], &inputs[1])
             .map(Some)
-            .map_err(|e| cuda_err_to_session(node_name, e))?,
-        _ => None,
-    };
-    Ok(result)
+            .map_err(|e| cuda_err_to_session(node_name, e)),
+        _ => Ok(None),
+    }
 }
 
 /// Hybrid CPU/GPU execution. Mirrors `executor::execute_graph`'s
@@ -363,6 +449,185 @@ fn build_initial_value_map(
     value_map
 }
 
+/// Determine whether a node is eligible for GPU dispatch given the
+/// dtype of its first non-empty input. Returns `false` when the input
+/// has no recorded dtype yet.
+fn is_node_gpu_eligible(
+    node: &crate::graph::ExecutionNode,
+    value_map: &BTreeMap<String, ValueLocation>,
+) -> bool {
+    let first_input_dtype = node
+        .inputs
+        .iter()
+        .find(|n| !n.is_empty())
+        .and_then(|n| value_map.get(n).map(|v| v.dtype()));
+    match first_input_dtype {
+        Some(dt) => gpu_op_supported(&node.op_type, dt),
+        None => false,
+    }
+}
+
+/// Pull every non-empty input of `node` to device. Returns `true` when
+/// every input could be materialized on the device, `false` if any
+/// input failed (caller falls through to CPU dispatch).
+fn materialize_inputs_on_device(
+    node: &crate::graph::ExecutionNode,
+    value_map: &mut BTreeMap<String, ValueLocation>,
+    runtime: &CudaRuntime,
+) -> bool {
+    for name in &node.inputs {
+        if name.is_empty() {
+            continue;
+        }
+        if ensure_device(value_map, name, runtime).is_err() {
+            return false;
+        }
+    }
+    true
+}
+
+/// Collect device-resident `DeviceTensor` references for every
+/// non-empty input. Assumes [`materialize_inputs_on_device`] just
+/// returned `true`; any missing entry is treated as a hard error.
+fn collect_device_inputs(
+    node: &crate::graph::ExecutionNode,
+    value_map: &BTreeMap<String, ValueLocation>,
+) -> Result<Vec<Arc<DeviceTensor>>, SessionError> {
+    let mut device_inputs: Vec<Arc<DeviceTensor>> = Vec::new();
+    for name in &node.inputs {
+        if name.is_empty() {
+            continue;
+        }
+        device_inputs.push(require_device(value_map, name)?);
+    }
+    Ok(device_inputs)
+}
+
+/// Insert the GPU result tensor into the value map under the node's
+/// (single) output name. No-op when the output name is empty.
+fn store_gpu_output(
+    node: &crate::graph::ExecutionNode,
+    out_dt: DeviceTensor,
+    value_map: &mut BTreeMap<String, ValueLocation>,
+) {
+    if let Some(name) = node.outputs.first() {
+        if !name.is_empty() {
+            value_map.insert(name.clone(), ValueLocation::Device(Arc::new(out_dt)));
+        }
+    }
+}
+
+/// Attempt to run `node` on the GPU. Returns `Ok(true)` when the GPU
+/// path produced and stored a single-output result, `Ok(false)` when
+/// the caller must fall back to CPU dispatch (ineligible op,
+/// materialization failure, multi-output op, or `try_gpu_dispatch`
+/// returning `None`).
+fn try_run_node_on_gpu(
+    node: &crate::graph::ExecutionNode,
+    value_map: &mut BTreeMap<String, ValueLocation>,
+    runtime: &CudaRuntime,
+) -> Result<bool, SessionError> {
+    if !is_node_gpu_eligible(node, value_map) {
+        return Ok(false);
+    }
+    if !materialize_inputs_on_device(node, value_map, runtime) {
+        return Ok(false);
+    }
+    let device_inputs = collect_device_inputs(node, value_map)?;
+
+    #[cfg(feature = "gpu-profile")]
+    let _op_start = std::time::Instant::now();
+    let dispatched = try_gpu_dispatch(
+        runtime,
+        &node.op_type,
+        &node.attributes,
+        &device_inputs,
+        &node.name,
+    )?;
+    #[cfg(feature = "gpu-profile")]
+    if dispatched.is_some() {
+        crate::cuda::profile::record_op(&node.op_type, _op_start);
+    }
+
+    // GPU dispatchers currently produce a single output tensor. ONNX
+    // permits multi-output ops (e.g. `MaxPool` with an indices output);
+    // for those we fall through to the CPU executor which can populate
+    // every output name. Single-output ops take the device-resident
+    // fast path.
+    match dispatched {
+        Some(out_dt) if node.outputs.len() <= 1 => {
+            store_gpu_output(node, out_dt, value_map);
+            Ok(true)
+        }
+        // Multi-output op: discard the partial GPU result and fall
+        // through to the CPU dispatch path so every named output gets
+        // populated. Or `None`: fall through to CPU dispatch.
+        Some(_) | None => Ok(false),
+    }
+}
+
+/// Build the per-input `Option<&Tensor>` slice the CPU dispatcher
+/// expects. `None` for empty input names or values that are
+/// (unexpectedly) on device after [`ensure_host`].
+fn build_host_inputs<'a>(
+    node: &crate::graph::ExecutionNode,
+    value_map: &'a BTreeMap<String, ValueLocation>,
+) -> Vec<Option<&'a Tensor>> {
+    node.inputs
+        .iter()
+        .map(|n| {
+            if n.is_empty() {
+                None
+            } else {
+                match value_map.get(n) {
+                    Some(ValueLocation::Host(t)) => Some(t),
+                    _ => None,
+                }
+            }
+        })
+        .collect()
+}
+
+/// CPU fallback: pull device-resident inputs back to host, dispatch
+/// through the CPU executor, and store every non-empty output name as
+/// a host tensor.
+fn run_node_on_cpu(
+    node: &crate::graph::ExecutionNode,
+    value_map: &mut BTreeMap<String, ValueLocation>,
+    runtime: &CudaRuntime,
+) -> Result<(), SessionError> {
+    // Bring all device-resident inputs back to host first.
+    for name in &node.inputs {
+        if !name.is_empty() {
+            ensure_host(value_map, name)?;
+        }
+    }
+    let inputs_host = build_host_inputs(node, value_map);
+
+    let outputs = executor::dispatch_node_with_domain(
+        &node.op_type,
+        &node.domain,
+        &inputs_host,
+        &node.attributes,
+        node.outputs.len(),
+        #[cfg(feature = "gpu")]
+        None,
+        Some(runtime),
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        None,
+    )
+    .map_err(|e| SessionError::ExecutionFailed(format!("{}: {}", node.name, e)))?;
+
+    for (i, output_name) in node.outputs.iter().enumerate() {
+        if !output_name.is_empty() {
+            if let Some(t) = outputs.get(i) {
+                value_map.insert(output_name.clone(), ValueLocation::Host(t.clone()));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Run the per-op dispatch loop against a pre-seeded `value_map`.
 /// Splits the residency-tracking core out of [`execute_graph_hybrid`]
 /// so the CUDA Graph capture path can wrap exactly the same op
@@ -375,126 +640,8 @@ fn run_op_loop(
 ) -> Result<(), SessionError> {
     for node_idx in graph.execution_order() {
         let node = &graph.nodes[node_idx.index()];
-
-        // Decide GPU vs CPU dispatch based on op type + dtype of the
-        // first input tensor (proxy for op dtype).
-        let first_input_dtype = node
-            .inputs
-            .iter()
-            .find(|n| !n.is_empty())
-            .and_then(|n| value_map.get(n).map(|v| v.dtype()));
-
-        let gpu_eligible = match first_input_dtype {
-            Some(dt) => gpu_op_supported(&node.op_type, dt),
-            None => false,
-        };
-
-        let mut handled_on_gpu = false;
-
-        if gpu_eligible {
-            // Pull all inputs to device. If any input materialization
-            // fails, fall through to CPU.
-            let mut all_ok = true;
-            for name in &node.inputs {
-                if name.is_empty() {
-                    continue;
-                }
-                if ensure_device(value_map, name, runtime).is_err() {
-                    all_ok = false;
-                    break;
-                }
-            }
-            if all_ok {
-                let mut device_inputs: Vec<Arc<DeviceTensor>> = Vec::new();
-                for name in &node.inputs {
-                    if name.is_empty() {
-                        continue;
-                    }
-                    device_inputs.push(require_device(value_map, name)?);
-                }
-                #[cfg(feature = "gpu-profile")]
-                let _op_start = std::time::Instant::now();
-                let dispatched = try_gpu_dispatch(
-                    runtime,
-                    &node.op_type,
-                    &node.attributes,
-                    &device_inputs,
-                    &node.name,
-                )?;
-                #[cfg(feature = "gpu-profile")]
-                if dispatched.is_some() {
-                    crate::cuda::profile::record_op(&node.op_type, _op_start);
-                }
-                match dispatched {
-                    // GPU dispatchers currently produce a single output
-                    // tensor. ONNX permits multi-output ops (e.g.
-                    // `MaxPool` with an indices output); for those we
-                    // fall through to the CPU executor which can
-                    // populate every output name. Single-output ops
-                    // take the device-resident fast path.
-                    Some(out_dt) if node.outputs.len() <= 1 => {
-                        if let Some(name) = node.outputs.first() {
-                            if !name.is_empty() {
-                                value_map
-                                    .insert(name.clone(), ValueLocation::Device(Arc::new(out_dt)));
-                            }
-                        }
-                        handled_on_gpu = true;
-                    }
-                    Some(_) => {
-                        // Multi-output op: discard the partial GPU result
-                        // and fall through to the CPU dispatch path so
-                        // every named output gets populated.
-                    }
-                    None => {
-                        // Fall through to CPU dispatch.
-                    }
-                }
-            }
-        }
-
-        if !handled_on_gpu {
-            // Bring all device-resident inputs back to host first.
-            for name in &node.inputs {
-                if !name.is_empty() {
-                    ensure_host(value_map, name)?;
-                }
-            }
-            let inputs_host: Vec<Option<&Tensor>> = node
-                .inputs
-                .iter()
-                .map(|n| {
-                    if n.is_empty() {
-                        None
-                    } else {
-                        match value_map.get(n) {
-                            Some(ValueLocation::Host(t)) => Some(t),
-                            _ => None,
-                        }
-                    }
-                })
-                .collect();
-
-            let outputs = executor::dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &inputs_host,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                None,
-                Some(runtime),
-                #[cfg(all(feature = "metal", target_os = "macos"))]
-                None,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(format!("{}: {}", node.name, e)))?;
-            for (i, output_name) in node.outputs.iter().enumerate() {
-                if !output_name.is_empty() {
-                    if let Some(t) = outputs.get(i) {
-                        value_map.insert(output_name.clone(), ValueLocation::Host(t.clone()));
-                    }
-                }
-            }
+        if !try_run_node_on_gpu(node, value_map, runtime)? {
+            run_node_on_cpu(node, value_map, runtime)?;
         }
     }
 
