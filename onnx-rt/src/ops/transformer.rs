@@ -38,50 +38,10 @@ pub fn op_split(
     num_outputs: Option<usize>,
 ) -> Result<Vec<Tensor>, OpError> {
     require_float(input, "Split")?;
-    let ndim = input.shape.dims.len() as i64;
-    let axis = if axis < 0 { axis + ndim } else { axis };
-    if axis < 0 || axis >= ndim {
-        return Err(OpError::InvalidAttribute(String::from(
-            "Split: axis out of range",
-        )));
-    }
-    let axis = axis as usize;
+    let axis = normalize_split_axis(input, axis)?;
     let axis_dim = input.shape.dims[axis];
+    let sizes = resolve_split_sizes(split_sizes, num_outputs, axis_dim)?;
 
-    let sizes: Vec<i64> = match split_sizes {
-        Some(s) => s.to_vec(),
-        None => {
-            // Equal-split path: we need to know how many outputs the node
-            // declares. ONNX derives this from the node's output arity.
-            let n = num_outputs.ok_or_else(|| {
-                OpError::InvalidAttribute(String::from(
-                    "Split: equal-split path requires explicit num_outputs",
-                ))
-            })?;
-            if n == 0 {
-                return Err(OpError::InvalidAttribute(String::from(
-                    "Split: num_outputs must be > 0",
-                )));
-            }
-            if axis_dim < 0 || !(axis_dim as usize).is_multiple_of(n) {
-                return Err(OpError::InvalidAttribute(String::from(
-                    "Split: axis dim not divisible by num_outputs",
-                )));
-            }
-            let each = axis_dim / (n as i64);
-            alloc::vec![each; n]
-        }
-    };
-    let sum: i64 = sizes.iter().sum();
-    if sum != axis_dim {
-        return Err(OpError::ShapeMismatch(alloc::format!(
-            "Split sizes sum {} != axis dim {}",
-            sum,
-            axis_dim
-        )));
-    }
-
-    // Compute outer/inner sizes around axis.
     let outer: usize = input.shape.dims[..axis]
         .iter()
         .map(|&d| d as usize)
@@ -98,28 +58,108 @@ pub fn op_split(
     let mut axis_offset = 0usize;
     for &size in &sizes {
         let size_us = size as usize;
-        let mut new_dims = input.shape.dims.clone();
-        new_dims[axis] = size;
-        let total = outer * size_us * inner;
-        let mut data = allocate_tensor_data(total, DataType::Float);
-        for o in 0..outer {
-            for s in 0..size_us {
-                for i in 0..inner {
-                    let src_idx = o * axis_dim_us * inner + (axis_offset + s) * inner + i;
-                    let dst_idx = o * size_us * inner + s * inner + i;
-                    write_f32(&mut data, dst_idx, read_f32(&input.raw_data, src_idx));
-                }
-            }
-        }
-        outputs.push(Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(new_dims),
-            name: String::new(),
-            raw_data: data,
-        });
+        outputs.push(build_split_chunk(
+            input,
+            axis,
+            size,
+            axis_offset,
+            axis_dim_us,
+            outer,
+            inner,
+        ));
         axis_offset += size_us;
     }
     Ok(outputs)
+}
+
+/// Normalizes a negative axis into the valid range `[0, ndim)`.
+fn normalize_split_axis(input: &Tensor, axis: i64) -> Result<usize, OpError> {
+    let ndim = input.shape.dims.len() as i64;
+    let axis = if axis < 0 { axis + ndim } else { axis };
+    if axis < 0 || axis >= ndim {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Split: axis out of range",
+        )));
+    }
+    Ok(axis as usize)
+}
+
+/// Picks the per-output split sizes: either the explicit attribute or
+/// equal partitions derived from `num_outputs`. Validates that the sum
+/// matches the input's axis dim.
+fn resolve_split_sizes(
+    split_sizes: Option<&[i64]>,
+    num_outputs: Option<usize>,
+    axis_dim: i64,
+) -> Result<Vec<i64>, OpError> {
+    let sizes: Vec<i64> = match split_sizes {
+        Some(s) => s.to_vec(),
+        None => equal_split_sizes(num_outputs, axis_dim)?,
+    };
+    let sum: i64 = sizes.iter().sum();
+    if sum != axis_dim {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "Split sizes sum {} != axis dim {}",
+            sum,
+            axis_dim
+        )));
+    }
+    Ok(sizes)
+}
+
+/// Equal-split derivation: ONNX takes `num_outputs` from the node's
+/// declared output arity; the axis dim must be evenly divisible.
+fn equal_split_sizes(num_outputs: Option<usize>, axis_dim: i64) -> Result<Vec<i64>, OpError> {
+    let n = num_outputs.ok_or_else(|| {
+        OpError::InvalidAttribute(String::from(
+            "Split: equal-split path requires explicit num_outputs",
+        ))
+    })?;
+    if n == 0 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Split: num_outputs must be > 0",
+        )));
+    }
+    if axis_dim < 0 || !(axis_dim as usize).is_multiple_of(n) {
+        return Err(OpError::InvalidAttribute(String::from(
+            "Split: axis dim not divisible by num_outputs",
+        )));
+    }
+    let each = axis_dim / (n as i64);
+    Ok(alloc::vec![each; n])
+}
+
+/// Builds a single output tensor for a `[axis_offset .. axis_offset + size]`
+/// slice along `axis`.
+fn build_split_chunk(
+    input: &Tensor,
+    axis: usize,
+    size: i64,
+    axis_offset: usize,
+    axis_dim_us: usize,
+    outer: usize,
+    inner: usize,
+) -> Tensor {
+    let size_us = size as usize;
+    let mut new_dims = input.shape.dims.clone();
+    new_dims[axis] = size;
+    let total = outer * size_us * inner;
+    let mut data = allocate_tensor_data(total, DataType::Float);
+    for o in 0..outer {
+        for s in 0..size_us {
+            for i in 0..inner {
+                let src_idx = o * axis_dim_us * inner + (axis_offset + s) * inner + i;
+                let dst_idx = o * size_us * inner + s * inner + i;
+                write_f32(&mut data, dst_idx, read_f32(&input.raw_data, src_idx));
+            }
+        }
+    }
+    Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(new_dims),
+        name: String::new(),
+        raw_data: data,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -245,51 +285,19 @@ pub fn op_one_hot(
     values: &Tensor,
     axis: i64,
 ) -> Result<Tensor, OpError> {
-    if values.data_type != DataType::Float || values.shape.total_elements() != 2 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "OneHot values must be Float tensor of length 2",
-        )));
-    }
+    let (off_value, on_value) = decode_one_hot_values(values)?;
     if depth <= 0 {
         return Err(OpError::InvalidAttribute(String::from(
             "OneHot depth must be > 0",
         )));
     }
-    let off_value = read_f32(&values.raw_data, 0);
-    let on_value = read_f32(&values.raw_data, 1);
-
-    // Decode indices as i64. Accept Int64 only for simplicity.
-    let n_indices = indices.shape.total_elements();
-    let idx_vals: Vec<i64> = match indices.data_type {
-        DataType::Int64 => (0..n_indices)
-            .map(|i| read_i64(&indices.raw_data, i))
-            .collect(),
-        DataType::Int32 => (0..n_indices)
-            .map(|i| crate::byte_io::read_i32(&indices.raw_data, i) as i64)
-            .collect(),
-        _ => {
-            return Err(OpError::ShapeMismatch(String::from(
-                "OneHot indices must be Int32 or Int64",
-            )));
-        }
-    };
-
-    // Build output shape: insert depth at axis position.
-    let in_dims = &indices.shape.dims;
-    let in_rank = in_dims.len() as i64;
-    let axis_norm = if axis < 0 { axis + in_rank + 1 } else { axis };
-    if axis_norm < 0 || axis_norm > in_rank {
-        return Err(OpError::InvalidAttribute(String::from(
-            "OneHot axis out of range",
-        )));
-    }
-    let axis_pos = axis_norm as usize;
-    let mut out_dims = in_dims.clone();
+    let idx_vals = decode_one_hot_indices(indices)?;
+    let axis_pos = normalize_one_hot_axis(indices.shape.dims.len() as i64, axis)?;
+    let mut out_dims = indices.shape.dims.clone();
     out_dims.insert(axis_pos, depth);
     let total = product(&out_dims);
     let mut data = allocate_tensor_data(total, DataType::Float);
 
-    // Outer/inner sizes around axis_pos in the output.
     let outer: usize = out_dims[..axis_pos]
         .iter()
         .map(|&d| d as usize)
@@ -301,15 +309,74 @@ pub fn op_one_hot(
         .product::<usize>()
         .max(1);
     let depth_us = depth as usize;
-    // Fill with off_value first.
-    for i in 0..total {
-        write_f32(&mut data, i, off_value);
+
+    fill_constant(&mut data, total, off_value);
+    scatter_one_hot_hits(&mut data, &idx_vals, outer, inner, depth_us, on_value);
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(out_dims),
+        name: String::new(),
+        raw_data: data,
+    })
+}
+
+/// Validates and unpacks the `(off_value, on_value)` pair.
+fn decode_one_hot_values(values: &Tensor) -> Result<(f32, f32), OpError> {
+    if values.data_type != DataType::Float || values.shape.total_elements() != 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "OneHot values must be Float tensor of length 2",
+        )));
     }
-    // For each index, set on_value at the right position.
+    Ok((read_f32(&values.raw_data, 0), read_f32(&values.raw_data, 1)))
+}
+
+/// Decodes the indices tensor (Int32 or Int64) into an i64 vec.
+fn decode_one_hot_indices(indices: &Tensor) -> Result<Vec<i64>, OpError> {
+    let n_indices = indices.shape.total_elements();
+    match indices.data_type {
+        DataType::Int64 => Ok((0..n_indices)
+            .map(|i| read_i64(&indices.raw_data, i))
+            .collect()),
+        DataType::Int32 => Ok((0..n_indices)
+            .map(|i| crate::byte_io::read_i32(&indices.raw_data, i) as i64)
+            .collect()),
+        _ => Err(OpError::ShapeMismatch(String::from(
+            "OneHot indices must be Int32 or Int64",
+        ))),
+    }
+}
+
+/// Normalizes a (possibly-negative) `axis` for OneHot, where the new axis
+/// is inserted into the indices' rank+1.
+fn normalize_one_hot_axis(in_rank: i64, axis: i64) -> Result<usize, OpError> {
+    let axis_norm = if axis < 0 { axis + in_rank + 1 } else { axis };
+    if axis_norm < 0 || axis_norm > in_rank {
+        return Err(OpError::InvalidAttribute(String::from(
+            "OneHot axis out of range",
+        )));
+    }
+    Ok(axis_norm as usize)
+}
+
+/// Fills the first `total` cells of `data` with the f32 constant `value`.
+fn fill_constant(data: &mut [u8], total: usize, value: f32) {
+    for i in 0..total {
+        write_f32(data, i, value);
+    }
+}
+
+/// For each flattened indices cell, writes `on_value` at the corresponding
+/// output position when the index is in `[0, depth)`.
+fn scatter_one_hot_hits(
+    data: &mut [u8],
+    idx_vals: &[i64],
+    outer: usize,
+    inner: usize,
+    depth_us: usize,
+    on_value: f32,
+) {
     for o in 0..outer {
         for i in 0..inner {
-            // The index for this (outer, inner) cell is at position o*inner + i
-            // in the flattened indices tensor.
             let idx_flat = o * inner + i;
             if idx_flat >= idx_vals.len() {
                 continue;
@@ -317,16 +384,10 @@ pub fn op_one_hot(
             let idx = idx_vals[idx_flat];
             if idx >= 0 && (idx as usize) < depth_us {
                 let dst = o * depth_us * inner + (idx as usize) * inner + i;
-                write_f32(&mut data, dst, on_value);
+                write_f32(data, dst, on_value);
             }
         }
     }
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: TensorShape::new(out_dims),
-        name: String::new(),
-        raw_data: data,
-    })
 }
 
 // ---------------------------------------------------------------------------
@@ -430,6 +491,38 @@ fn einsum_qkt(q: &Tensor, k: &Tensor) -> Result<Tensor, OpError> {
     // bhij,bhkj->bhik : Q is (b,h,i,j), K is (b,h,k,j), out is (b,h,i,k)
     require_float(q, "Einsum")?;
     require_float(k, "Einsum")?;
+    let (b, h, i_dim, j_dim, k_dim) = validate_qkt_shapes(q, k)?;
+    let total = b * h * i_dim * k_dim;
+    let mut data = allocate_tensor_data(total, DataType::Float);
+    for bb in 0..b {
+        for hh in 0..h {
+            einsum_qkt_head(
+                &q.raw_data,
+                &k.raw_data,
+                &mut data,
+                bb,
+                hh,
+                h,
+                i_dim,
+                j_dim,
+                k_dim,
+            );
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(alloc::vec![b as i64, h as i64, i_dim as i64, k_dim as i64]),
+        name: String::new(),
+        raw_data: data,
+    })
+}
+
+/// Validates the `bhij,bhkj->bhik` rank-4 input shapes and returns
+/// `(b, h, i, j, k)`.
+fn validate_qkt_shapes(
+    q: &Tensor,
+    k: &Tensor,
+) -> Result<(usize, usize, usize, usize, usize), OpError> {
     if q.shape.dims.len() != 4 || k.shape.dims.len() != 4 {
         return Err(OpError::ShapeMismatch(
             "Einsum bhij requires 4D".to_string(),
@@ -446,31 +539,35 @@ fn einsum_qkt(q: &Tensor, k: &Tensor) -> Result<Tensor, OpError> {
         return Err(OpError::ShapeMismatch("Einsum dim mismatch".to_string()));
     }
     let k_dim = k.shape.dims[2] as usize;
-    let total = b * h * i_dim * k_dim;
-    let mut data = allocate_tensor_data(total, DataType::Float);
-    for bb in 0..b {
-        for hh in 0..h {
-            let q_off = ((bb * h) + hh) * i_dim * j_dim;
-            let k_off = ((bb * h) + hh) * k_dim * j_dim;
-            let o_off = ((bb * h) + hh) * i_dim * k_dim;
-            for ii in 0..i_dim {
-                for kk in 0..k_dim {
-                    let mut sum = 0.0f32;
-                    for jj in 0..j_dim {
-                        sum += read_f32(&q.raw_data, q_off + ii * j_dim + jj)
-                            * read_f32(&k.raw_data, k_off + kk * j_dim + jj);
-                    }
-                    write_f32(&mut data, o_off + ii * k_dim + kk, sum);
-                }
+    Ok((b, h, i_dim, j_dim, k_dim))
+}
+
+/// Contracts a single `(batch, head)` slice of Q·Kᵀ into the output buffer.
+#[allow(clippy::too_many_arguments)]
+fn einsum_qkt_head(
+    q_raw: &[u8],
+    k_raw: &[u8],
+    out: &mut [u8],
+    bb: usize,
+    hh: usize,
+    h: usize,
+    i_dim: usize,
+    j_dim: usize,
+    k_dim: usize,
+) {
+    let q_off = ((bb * h) + hh) * i_dim * j_dim;
+    let k_off = ((bb * h) + hh) * k_dim * j_dim;
+    let o_off = ((bb * h) + hh) * i_dim * k_dim;
+    for ii in 0..i_dim {
+        for kk in 0..k_dim {
+            let mut sum = 0.0f32;
+            for jj in 0..j_dim {
+                sum += read_f32(q_raw, q_off + ii * j_dim + jj)
+                    * read_f32(k_raw, k_off + kk * j_dim + jj);
             }
+            write_f32(out, o_off + ii * k_dim + kk, sum);
         }
     }
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: TensorShape::new(alloc::vec![b as i64, h as i64, i_dim as i64, k_dim as i64]),
-        name: String::new(),
-        raw_data: data,
-    })
 }
 
 #[cfg(test)]

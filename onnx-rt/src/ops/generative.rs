@@ -283,12 +283,7 @@ fn random_fill<F: FnMut(&mut XorShift32) -> f32>(
     }
     let total: usize = shape.iter().map(|&d| d as usize).product();
     let mut data = allocate_tensor_data(total, DataType::Float);
-    let seed_u32 = if seed == 0.0 {
-        0x1234_5678
-    } else {
-        seed.to_bits() ^ 0xA5A5_A5A5
-    };
-    let mut rng = XorShift32::new(seed_u32);
+    let mut rng = XorShift32::new(seeded_rng_state(seed, 0x1234_5678, 0xA5A5_A5A5));
     for i in 0..total {
         write_f32(&mut data, i, gen(&mut rng));
     }
@@ -300,6 +295,18 @@ fn random_fill<F: FnMut(&mut XorShift32) -> f32>(
     })
 }
 
+/// Derives a 32-bit seed: if the ONNX seed attribute is exactly 0.0 we
+/// fall back to `default_seed` (each random op uses a distinct constant);
+/// otherwise we XOR the raw bits of the seed with `xor_mask` so different
+/// ops with the same input seed produce independent streams.
+fn seeded_rng_state(seed: f32, default_seed: u32, xor_mask: u32) -> u32 {
+    if seed == 0.0 {
+        default_seed
+    } else {
+        seed.to_bits() ^ xor_mask
+    }
+}
+
 /// Bernoulli op: draws an i64 sample in {0, 1} per element where the input
 /// tensor encodes per-element success probability in [0, 1]. Output dtype is
 /// Float (ONNX permits several output dtypes; we pick Float for consistency
@@ -308,12 +315,7 @@ pub fn op_bernoulli(input: &Tensor, seed: f32) -> Result<Tensor, OpError> {
     require_float(input, "Bernoulli")?;
     let n = input.shape.total_elements();
     let mut data = allocate_tensor_data(n, DataType::Float);
-    let seed_u32 = if seed == 0.0 {
-        0xDEAD_BEEF
-    } else {
-        seed.to_bits() ^ 0x5A5A_5A5A
-    };
-    let mut rng = XorShift32::new(seed_u32);
+    let mut rng = XorShift32::new(seeded_rng_state(seed, 0xDEAD_BEEF, 0x5A5A_5A5A));
     for i in 0..n {
         let p = read_f32(&input.raw_data, i).clamp(0.0, 1.0);
         let u = rng.next_f32_unit();
@@ -350,33 +352,12 @@ pub fn op_multinomial(input: &Tensor, sample_size: i64, seed: f32) -> Result<Ten
     let samples = sample_size as usize;
     let out_total = batch * samples;
     let mut data = allocate_tensor_data(out_total, DataType::Int64);
-    let seed_u32 = if seed == 0.0 {
-        0xCAFE_BABE
-    } else {
-        seed.to_bits() ^ 0x3333_3333
-    };
-    let mut rng = XorShift32::new(seed_u32);
+    let mut rng = XorShift32::new(seeded_rng_state(seed, 0xCAFE_BABE, 0x3333_3333));
 
     for b in 0..batch {
         for s in 0..samples {
-            // Argmax over logit_c - ln(-ln(U_c)) for U_c ~ Uniform(0,1].
-            let mut best = i64::MIN;
-            let mut best_score = f32::NEG_INFINITY;
-            for c in 0..classes {
-                let logit = read_f32(&input.raw_data, b * classes + c);
-                let mut u = rng.next_f32_unit();
-                if u <= 1e-7 {
-                    u = 1e-7;
-                }
-                // Gumbel noise: -ln(-ln(u))
-                let gumbel = -libm_ln(-libm_ln(u));
-                let score = logit + gumbel;
-                if score > best_score {
-                    best_score = score;
-                    best = c as i64;
-                }
-            }
-            write_i64(&mut data, b * samples + s, best);
+            let pick = gumbel_max_argmax(&input.raw_data, b * classes, classes, &mut rng);
+            write_i64(&mut data, b * samples + s, pick);
         }
     }
     Ok(Tensor {
@@ -385,6 +366,28 @@ pub fn op_multinomial(input: &Tensor, sample_size: i64, seed: f32) -> Result<Ten
         name: String::new(),
         raw_data: data,
     })
+}
+
+/// Picks a class index via Gumbel-max sampling over `classes` logits
+/// stored contiguously at `raw[row_off..row_off + classes]`.
+fn gumbel_max_argmax(raw: &[u8], row_off: usize, classes: usize, rng: &mut XorShift32) -> i64 {
+    let mut best = i64::MIN;
+    let mut best_score = f32::NEG_INFINITY;
+    for c in 0..classes {
+        let logit = read_f32(raw, row_off + c);
+        let mut u = rng.next_f32_unit();
+        if u <= 1e-7 {
+            u = 1e-7;
+        }
+        // Gumbel noise: -ln(-ln(u))
+        let gumbel = -libm_ln(-libm_ln(u));
+        let score = logit + gumbel;
+        if score > best_score {
+            best_score = score;
+            best = c as i64;
+        }
+    }
+    best
 }
 
 // ---------------------------------------------------------------------------
@@ -399,19 +402,51 @@ fn rms_normalization_bf16(
     axis: i64,
     epsilon: f32,
 ) -> Result<Tensor, OpError> {
-    // Scale may be Float or BFloat16 — widen both to f32 up front.
-    let scale_f32: Vec<f32> = match scale.data_type {
-        DataType::BFloat16 => bf16_to_f32(&scale.raw_data),
-        DataType::Float => (0..scale.shape.total_elements())
+    let scale_f32 = widen_rms_scale_to_f32(scale)?;
+    let axis = resolve_rms_axis(input, axis)?;
+    let (outer, norm_size, total) = rms_layout_sizes(input, axis)?;
+
+    let scale_n = scale_f32.len();
+    if scale_n != 1 && scale_n != norm_size {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RMSNormalization: scale must match normalized region",
+        )));
+    }
+
+    let input_f32 = bf16_to_f32(&input.raw_data);
+    if input_f32.len() < total {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RMSNormalization: BF16 input buffer smaller than shape",
+        )));
+    }
+
+    let out_f32 = apply_rms_norm(&input_f32, &scale_f32, outer, norm_size, epsilon);
+    Ok(Tensor {
+        data_type: DataType::BFloat16,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data: f32_to_bf16(&out_f32),
+    })
+}
+
+/// Widens an RMSNormalization scale tensor (BF16 or Float) to a flat
+/// `Vec<f32>`. Errors on unsupported dtypes.
+fn widen_rms_scale_to_f32(scale: &Tensor) -> Result<Vec<f32>, OpError> {
+    match scale.data_type {
+        DataType::BFloat16 => Ok(bf16_to_f32(&scale.raw_data)),
+        DataType::Float => Ok((0..scale.shape.total_elements())
             .map(|i| read_f32(&scale.raw_data, i))
-            .collect(),
-        _ => {
-            return Err(OpError::InternalError(alloc::format!(
-                "RMSNormalization does not support {} scale",
-                scale.data_type
-            )));
-        }
-    };
+            .collect()),
+        _ => Err(OpError::InternalError(alloc::format!(
+            "RMSNormalization does not support {} scale",
+            scale.data_type
+        ))),
+    }
+}
+
+/// Normalizes a potentially-negative axis into the valid `[0, ndim)` range
+/// for the given input tensor.
+fn resolve_rms_axis(input: &Tensor, axis: i64) -> Result<usize, OpError> {
     let ndim = input.shape.ndim() as i64;
     if ndim == 0 {
         return Err(OpError::ShapeMismatch(String::from(
@@ -424,7 +459,11 @@ fn rms_normalization_bf16(
             "RMSNormalization: axis out of range",
         )));
     }
-    let axis = axis as usize;
+    Ok(axis as usize)
+}
+
+/// Returns `(outer, norm_size, total)` for the RMSNorm row layout.
+fn rms_layout_sizes(input: &Tensor, axis: usize) -> Result<(usize, usize, usize), OpError> {
     let dims = &input.shape.dims;
     let norm_size: usize = dims[axis..].iter().map(|&d| d as usize).product();
     if norm_size == 0 {
@@ -437,20 +476,20 @@ fn rms_normalization_bf16(
         .map(|&d| d as usize)
         .product::<usize>()
         .max(1);
-    let total = outer * norm_size;
+    Ok((outer, norm_size, outer * norm_size))
+}
+
+/// Core RMSNorm transform: for each of `outer` rows of length `norm_size`,
+/// computes `x / sqrt(mean(x^2) + eps) * scale`.
+fn apply_rms_norm(
+    input_f32: &[f32],
+    scale_f32: &[f32],
+    outer: usize,
+    norm_size: usize,
+    epsilon: f32,
+) -> Vec<f32> {
     let scale_n = scale_f32.len();
-    if scale_n != 1 && scale_n != norm_size {
-        return Err(OpError::ShapeMismatch(String::from(
-            "RMSNormalization: scale must match normalized region",
-        )));
-    }
-    let input_f32 = bf16_to_f32(&input.raw_data);
-    if input_f32.len() < total {
-        return Err(OpError::ShapeMismatch(String::from(
-            "RMSNormalization: BF16 input buffer smaller than shape",
-        )));
-    }
-    let mut out_f32 = alloc::vec![0.0f32; total];
+    let mut out_f32 = alloc::vec![0.0f32; outer * norm_size];
     for o in 0..outer {
         let base = o * norm_size;
         let mut ss = 0.0f32;
@@ -469,12 +508,7 @@ fn rms_normalization_bf16(
             out_f32[base + i] = v * rms_inv * s;
         }
     }
-    Ok(Tensor {
-        data_type: DataType::BFloat16,
-        shape: input.shape.clone(),
-        name: String::new(),
-        raw_data: f32_to_bf16(&out_f32),
-    })
+    out_f32
 }
 
 /// RMS normalization (LLaMA/Mistral): `y = x / sqrt(mean(x^2) + eps) * scale`
@@ -766,47 +800,68 @@ fn reduce_fold<Fold: Fn(f32, f32) -> f32, Fin: Fn(f32, usize) -> f32>(
     let out_dims = reduction_out_dims(&input.shape.dims, &resolved, keepdims);
     let out_shape = TensorShape::new(out_dims);
     let total_out = out_shape.total_elements();
-    let mut acc = alloc::vec![init; total_out];
-    let in_total = input.shape.total_elements();
     let out_strides = compute_strides(&out_shape.dims);
-
-    // Per-output-cell count, used for mean-style finalizers.
-    let mut count_per_out = alloc::vec![0usize; total_out];
-
-    let mut in_coord = alloc::vec![0usize; ndim];
-    for i in 0..in_total {
-        if i > 0 {
-            next_coord(&mut in_coord, &input.shape.dims);
-        }
-        let mut out_idx = 0usize;
-        let mut od = 0usize;
-        for d in 0..ndim {
-            if resolved.contains(&d) {
-                if keepdims {
-                    od += 1;
-                }
-            } else {
-                if od < out_strides.len() {
-                    out_idx += in_coord[d] * out_strides[od];
-                }
-                od += 1;
-            }
-        }
-        let v = read_f32(&input.raw_data, i);
-        acc[out_idx] = combine(acc[out_idx], v);
-        count_per_out[out_idx] += 1;
-    }
-
-    let mut raw = allocate_tensor_data(total_out, DataType::Float);
-    for i in 0..total_out {
-        write_f32(&mut raw, i, finalize(acc[i], count_per_out[i]));
-    }
+    let (acc, count_per_out) = reduce_accumulate(
+        input,
+        ndim,
+        &resolved,
+        keepdims,
+        &out_strides,
+        total_out,
+        init,
+        combine,
+    );
+    let raw = reduce_finalize_buffer(&acc, &count_per_out, total_out, finalize);
     Ok(Tensor {
         data_type: DataType::Float,
         shape: out_shape,
         name: String::new(),
         raw_data: raw,
     })
+}
+
+/// Single forward pass over `input` projecting each element into the
+/// output index space and applying `combine` to accumulate.
+#[allow(clippy::too_many_arguments)]
+fn reduce_accumulate<Fold: Fn(f32, f32) -> f32>(
+    input: &Tensor,
+    ndim: usize,
+    resolved: &[usize],
+    keepdims: bool,
+    out_strides: &[usize],
+    total_out: usize,
+    init: f32,
+    combine: Fold,
+) -> (Vec<f32>, Vec<usize>) {
+    let mut acc = alloc::vec![init; total_out];
+    let mut count_per_out = alloc::vec![0usize; total_out];
+    let in_total = input.shape.total_elements();
+    let mut in_coord = alloc::vec![0usize; ndim];
+    for i in 0..in_total {
+        if i > 0 {
+            next_coord(&mut in_coord, &input.shape.dims);
+        }
+        let out_idx = project_out_index(&in_coord, ndim, resolved, keepdims, out_strides);
+        let v = read_f32(&input.raw_data, i);
+        acc[out_idx] = combine(acc[out_idx], v);
+        count_per_out[out_idx] += 1;
+    }
+    (acc, count_per_out)
+}
+
+/// Applies the finalizer to every accumulator cell and packs the result
+/// into a fresh Float buffer.
+fn reduce_finalize_buffer<Fin: Fn(f32, usize) -> f32>(
+    acc: &[f32],
+    count_per_out: &[usize],
+    total_out: usize,
+    finalize: Fin,
+) -> Vec<u8> {
+    let mut raw = allocate_tensor_data(total_out, DataType::Float);
+    for i in 0..total_out {
+        write_f32(&mut raw, i, finalize(acc[i], count_per_out[i]));
+    }
+    raw
 }
 
 /// `ReduceL1`: sum of absolute values.
@@ -1049,7 +1104,16 @@ pub(crate) fn gemm_i8(
     a_zp: i32,
     b_zp: i32,
 ) -> Vec<i32> {
-    // Precompute row and column sums for the zero-point correction.
+    let row_a_sum = i8_row_sums(a, m, k);
+    let col_b_sum = i8_col_sums(b, k, n);
+    let mut c = alloc::vec![0i32; m * n];
+    gemm_i8_blocked_kernel(a, b, m, k, n, &mut c);
+    apply_zero_point_correction(&mut c, m, n, k, a_zp, b_zp, &row_a_sum, &col_b_sum);
+    c
+}
+
+/// Row sums of an `m x k` row-major i8 matrix, as i32.
+fn i8_row_sums(a: &[i8], m: usize, k: usize) -> Vec<i32> {
     let mut row_a_sum = alloc::vec![0i32; m];
     for i in 0..m {
         let mut s = 0i32;
@@ -1058,6 +1122,11 @@ pub(crate) fn gemm_i8(
         }
         row_a_sum[i] = s;
     }
+    row_a_sum
+}
+
+/// Column sums of a `k x n` row-major i8 matrix, as i32.
+fn i8_col_sums(b: &[i8], k: usize, n: usize) -> Vec<i32> {
     let mut col_b_sum = alloc::vec![0i32; n];
     for j in 0..n {
         let mut s = 0i32;
@@ -1066,11 +1135,12 @@ pub(crate) fn gemm_i8(
         }
         col_b_sum[j] = s;
     }
-    let k_i32 = k as i32;
-    let zp_const = k_i32 * a_zp * b_zp;
+    col_b_sum
+}
 
-    let mut c = alloc::vec![0i32; m * n];
-    // Cache-blocked kernel. Block sizes match the f32 gemm helper.
+/// Cache-blocked i32-accumulator multiply: `c += a * b`.
+fn gemm_i8_blocked_kernel(a: &[i8], b: &[i8], m: usize, k: usize, n: usize, c: &mut [i32]) {
+    // Block sizes match the f32 gemm helper.
     const BM: usize = 64;
     const BN: usize = 64;
     const BK: usize = 64;
@@ -1080,26 +1150,54 @@ pub(crate) fn gemm_i8(
             let j_end = (j0 + BN).min(n);
             for k0 in (0..k).step_by(BK) {
                 let k_end = (k0 + BK).min(k);
-                for i in i0..i_end {
-                    for j in j0..j_end {
-                        let mut acc = c[i * n + j];
-                        for kk in k0..k_end {
-                            acc += (a[i * k + kk] as i32) * (b[kk * n + j] as i32);
-                        }
-                        c[i * n + j] = acc;
-                    }
-                }
+                gemm_i8_inner_block(a, b, c, k, n, i0..i_end, j0..j_end, k0..k_end);
             }
         }
     }
-    // Zero-point correction: subtract a_zp*col_b_sum[j] + b_zp*row_a_sum[i]
-    // then add K*a_zp*b_zp.
+}
+
+/// Innermost triple-loop multiply-accumulate over a single block.
+#[allow(clippy::too_many_arguments)]
+fn gemm_i8_inner_block(
+    a: &[i8],
+    b: &[i8],
+    c: &mut [i32],
+    k: usize,
+    n: usize,
+    i_range: core::ops::Range<usize>,
+    j_range: core::ops::Range<usize>,
+    k_range: core::ops::Range<usize>,
+) {
+    for i in i_range {
+        for j in j_range.clone() {
+            let mut acc = c[i * n + j];
+            for kk in k_range.clone() {
+                acc += (a[i * k + kk] as i32) * (b[kk * n + j] as i32);
+            }
+            c[i * n + j] = acc;
+        }
+    }
+}
+
+/// Folds in the per-element zero-point correction:
+/// `c[i,j] += k*a_zp*b_zp - a_zp*col_b_sum[j] - b_zp*row_a_sum[i]`.
+#[allow(clippy::too_many_arguments)]
+fn apply_zero_point_correction(
+    c: &mut [i32],
+    m: usize,
+    n: usize,
+    k: usize,
+    a_zp: i32,
+    b_zp: i32,
+    row_a_sum: &[i32],
+    col_b_sum: &[i32],
+) {
+    let zp_const = (k as i32) * a_zp * b_zp;
     for i in 0..m {
         for j in 0..n {
             c[i * n + j] += zp_const - a_zp * col_b_sum[j] - b_zp * row_a_sum[i];
         }
     }
-    c
 }
 
 /// `MatMulInteger`: 2D i8 x i8 matrix multiply returning an i32 tensor.
