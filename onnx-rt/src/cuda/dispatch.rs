@@ -15,6 +15,114 @@ use super::memory::DeviceBuffer;
 use super::{CudaError, CudaRuntime};
 use crate::tensor::{f32_to_bf16, DataType, Tensor, TensorShape};
 
+/// Output dtype selection for [`gpu_gemm`].
+struct GemmDtype {
+    is_bf16: bool,
+    elem_size: usize,
+    io_dtype: ffi::cudaDataType_t,
+    out_data_type: DataType,
+}
+
+impl GemmDtype {
+    fn pick(a: &Tensor, b: &Tensor) -> Self {
+        let is_bf16 = a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16;
+        if is_bf16 {
+            Self {
+                is_bf16,
+                elem_size: 2,
+                io_dtype: ffi::cudaDataType_t::CUDA_R_16BF,
+                out_data_type: DataType::BFloat16,
+            }
+        } else {
+            Self {
+                is_bf16,
+                elem_size: 4,
+                io_dtype: ffi::cudaDataType_t::CUDA_R_32F,
+                out_data_type: DataType::Float,
+            }
+        }
+    }
+}
+
+/// Extract the trailing `[M, K]` (or transposed) dims from a Gemm input.
+fn gemm_mk_dims(dims: &[i64], transpose: bool) -> (usize, usize) {
+    let last = dims.len() - 1;
+    if transpose {
+        (dims[last] as usize, dims[last - 1] as usize)
+    } else {
+        (dims[last - 1] as usize, dims[last] as usize)
+    }
+}
+
+/// Re-encode a bias byte slice into the cuBLAS output dtype.
+///
+/// For BF16 output: F32 bias is converted; BF16 bias is passed through;
+/// anything else is an error. For F32 output the bias is returned as-is
+/// (since the executor only routes F32/BF16 to this path).
+fn encode_bias_for_output(bias: &Tensor, is_bf16: bool) -> Result<alloc::vec::Vec<u8>, CudaError> {
+    if !is_bf16 {
+        return Ok(bias.raw_data.clone());
+    }
+    match bias.data_type {
+        DataType::BFloat16 => Ok(bias.raw_data.clone()),
+        DataType::Float => {
+            let f32_vals: alloc::vec::Vec<f32> = bias
+                .raw_data
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            Ok(f32_to_bf16(&f32_vals))
+        }
+        _ => Err(CudaError::RuntimeError {
+            op: "gpu_gemm: unsupported bias dtype for BF16 output",
+            code: -3,
+        }),
+    }
+}
+
+/// Initialise the cuBLAS C buffer to either a (broadcast) bias or zeros.
+///
+/// Mirrors the original semantics:
+/// - `beta == 0` or no bias → zero-fill.
+/// - bias is `[N]` (row vector) → broadcast across `M` rows.
+/// - bias byte length matches `c_bytes` → copy as-is.
+/// - any other mismatch → zero-fill (silent fallback).
+#[allow(clippy::too_many_arguments)]
+fn init_c_buffer(
+    c_buf: &DeviceBuffer,
+    c_bias: Option<&Tensor>,
+    beta: f32,
+    m: usize,
+    n: usize,
+    c_bytes: usize,
+    elem_size: usize,
+    is_bf16: bool,
+) -> Result<(), CudaError> {
+    if beta == 0.0 {
+        return c_buf.copy_from_host(&vec![0u8; c_bytes]);
+    }
+    let Some(bias) = c_bias else {
+        return c_buf.copy_from_host(&vec![0u8; c_bytes]);
+    };
+
+    let bias_bytes = encode_bias_for_output(bias, is_bf16)?;
+    let bias_elements = bias.shape.total_elements();
+    if bias_elements == n {
+        // Row-broadcast bias vector to full C matrix.
+        let row_bytes = n * elem_size;
+        let mut c_data = vec![0u8; c_bytes];
+        for row in 0..m {
+            let dst_start = row * row_bytes;
+            c_data[dst_start..dst_start + row_bytes].copy_from_slice(&bias_bytes[..row_bytes]);
+        }
+        c_buf.copy_from_host(&c_data)
+    } else if bias_bytes.len() == c_bytes {
+        c_buf.copy_from_host(&bias_bytes)
+    } else {
+        c_buf.copy_from_host(&vec![0u8; c_bytes])
+    }
+}
+
 /// Execute a MatMul/Gemm on GPU via cuBLAS, returning the result tensor.
 ///
 /// Handles 2D matrix multiply: C[M,N] = alpha * op(A)[M,K] * op(B)[K,N] + beta * C_bias.
@@ -40,28 +148,8 @@ pub fn gpu_gemm(
         });
     }
 
-    let (m, k_a) = if trans_a {
-        (
-            a_dims[a_dims.len() - 1] as usize,
-            a_dims[a_dims.len() - 2] as usize,
-        )
-    } else {
-        (
-            a_dims[a_dims.len() - 2] as usize,
-            a_dims[a_dims.len() - 1] as usize,
-        )
-    };
-    let (k_b, n) = if trans_b {
-        (
-            b_dims[b_dims.len() - 1] as usize,
-            b_dims[b_dims.len() - 2] as usize,
-        )
-    } else {
-        (
-            b_dims[b_dims.len() - 2] as usize,
-            b_dims[b_dims.len() - 1] as usize,
-        )
-    };
+    let (m, k_a) = gemm_mk_dims(a_dims, trans_a);
+    let (k_b, n) = gemm_mk_dims(b_dims, trans_b);
 
     if k_a != k_b {
         return Err(CudaError::RuntimeError {
@@ -75,22 +163,11 @@ pub fn gpu_gemm(
     // CUBLAS_COMPUTE_32F_FAST_16BF. Falls back to f32 path for all other
     // (and mixed) input combinations — the executor routes non-f32/non-BF16
     // combinations to the CPU before reaching this function.
-    let is_bf16 = a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16;
-    let elem_size = if is_bf16 { 2 } else { 4 };
-    let io_dtype = if is_bf16 {
-        ffi::cudaDataType_t::CUDA_R_16BF
-    } else {
-        ffi::cudaDataType_t::CUDA_R_32F
-    };
-    let out_data_type = if is_bf16 {
-        DataType::BFloat16
-    } else {
-        DataType::Float
-    };
+    let dtype = GemmDtype::pick(a, b);
 
     let a_bytes = a.raw_data.len();
     let b_bytes = b.raw_data.len();
-    let c_bytes = m * n * elem_size;
+    let c_bytes = m * n * dtype.elem_size;
 
     let a_buf = DeviceBuffer::alloc(a_bytes)?;
     let b_buf = DeviceBuffer::alloc(b_bytes)?;
@@ -102,53 +179,16 @@ pub fn gpu_gemm(
     // Initialize C with bias or zeros. For BF16 dispatch the bias must be
     // materialized in BF16 inside the output buffer before the cuBLAS call
     // — convert from f32 if necessary so callers can pass either dtype.
-    if beta != 0.0 {
-        if let Some(bias) = c_bias {
-            // Produce a BF16-or-f32 byte vector matching the output dtype.
-            let bias_bytes_in_out_dtype: alloc::vec::Vec<u8> = if is_bf16 {
-                match bias.data_type {
-                    DataType::BFloat16 => bias.raw_data.clone(),
-                    DataType::Float => {
-                        let f32_vals: alloc::vec::Vec<f32> = bias
-                            .raw_data
-                            .chunks_exact(4)
-                            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                            .collect();
-                        f32_to_bf16(&f32_vals)
-                    }
-                    _ => {
-                        return Err(CudaError::RuntimeError {
-                            op: "gpu_gemm: unsupported bias dtype for BF16 output",
-                            code: -3,
-                        });
-                    }
-                }
-            } else {
-                bias.raw_data.clone()
-            };
-
-            let bias_elements = bias.shape.total_elements();
-            if bias_elements == n {
-                // Row-broadcast bias vector to full C matrix.
-                let row_bytes = n * elem_size;
-                let mut c_data = vec![0u8; c_bytes];
-                for row in 0..m {
-                    let dst_start = row * row_bytes;
-                    c_data[dst_start..dst_start + row_bytes]
-                        .copy_from_slice(&bias_bytes_in_out_dtype[..row_bytes]);
-                }
-                c_buf.copy_from_host(&c_data)?;
-            } else if bias_bytes_in_out_dtype.len() == c_bytes {
-                c_buf.copy_from_host(&bias_bytes_in_out_dtype)?;
-            } else {
-                c_buf.copy_from_host(&vec![0u8; c_bytes])?;
-            }
-        } else {
-            c_buf.copy_from_host(&vec![0u8; c_bytes])?;
-        }
-    } else {
-        c_buf.copy_from_host(&vec![0u8; c_bytes])?;
-    }
+    init_c_buffer(
+        &c_buf,
+        c_bias,
+        beta,
+        m,
+        n,
+        c_bytes,
+        dtype.elem_size,
+        dtype.is_bf16,
+    )?;
 
     // cuBLAS uses column-major. For row-major ONNX tensors:
     //   C_row = alpha * op(A) * op(B) + beta * C
@@ -174,7 +214,7 @@ pub fn gpu_gemm(
     // For BF16 inputs we hard-pin the compute type to 32F_FAST_16BF (f32
     // accumulation, BF16 tensor cores) regardless of runtime.precision, since
     // BF16 inputs cannot be computed in a non-BF16 tensor-core mode anyway.
-    let compute_type = if is_bf16 {
+    let compute_type = if dtype.is_bf16 {
         ffi::cublasComputeType_t::CUBLAS_COMPUTE_32F_FAST_16BF
     } else {
         runtime.precision.to_cublas_compute_type()
@@ -187,14 +227,14 @@ pub fn gpu_gemm(
         k as i32,
         &alpha as *const f32 as *const core::ffi::c_void,
         &b_buf,
-        io_dtype,
+        dtype.io_dtype,
         lda,
         &a_buf,
-        io_dtype,
+        dtype.io_dtype,
         ldb,
         &beta as *const f32 as *const core::ffi::c_void,
         &c_buf,
-        io_dtype,
+        dtype.io_dtype,
         ldc,
         compute_type,
     )?;
@@ -205,7 +245,7 @@ pub fn gpu_gemm(
     c_buf.copy_to_host(&mut result_bytes)?;
 
     Ok(Tensor {
-        data_type: out_data_type,
+        data_type: dtype.out_data_type,
         shape: TensorShape::new(vec![m as i64, n as i64]),
         name: String::new(),
         raw_data: result_bytes,
@@ -487,6 +527,80 @@ pub fn gpu_gemm_fp8(
 ///
 /// The call synchronizes on the default stream before returning so
 /// callers can chain it with non-cuBLAS kernels safely.
+/// Map a Float/BFloat16 `DataType` to its cuBLAS dtype + element size.
+///
+/// `op` is embedded into the error message so the dispatcher's two callers
+/// (`a/b dtype` and `out_dtype`) get distinct labels.
+fn map_gemm_dtype(
+    dt: DataType,
+    op: &'static str,
+) -> Result<(ffi::cudaDataType_t, usize), CudaError> {
+    match dt {
+        DataType::BFloat16 => Ok((ffi::cudaDataType_t::CUDA_R_16BF, 2)),
+        DataType::Float => Ok((ffi::cudaDataType_t::CUDA_R_32F, 4)),
+        _ => Err(CudaError::RuntimeError { op, code: -1 }),
+    }
+}
+
+/// Validated batched-GEMM shape parameters.
+struct BatchedGemmShape {
+    batch_i64: i64,
+    m_i64: i64,
+    n_i64: i64,
+    k_i64: i64,
+}
+
+impl BatchedGemmShape {
+    fn validate(
+        a: &super::gpu_executor::DeviceTensor,
+        b: &super::gpu_executor::DeviceTensor,
+        trans_a: bool,
+        trans_b: bool,
+    ) -> Result<Self, CudaError> {
+        if a.shape.len() != 3 || b.shape.len() != 3 {
+            return Err(CudaError::RuntimeError {
+                op: "gpu_gemm_strided_batched_ex: both inputs must be rank-3",
+                code: -1,
+            });
+        }
+        let batch_i64 = a.shape[0];
+        if b.shape[0] != batch_i64 {
+            return Err(CudaError::RuntimeError {
+                op: "gpu_gemm_strided_batched_ex: batch dimensions differ",
+                code: -1,
+            });
+        }
+        let (m_i64, k_a_i64) = if trans_a {
+            (a.shape[2], a.shape[1])
+        } else {
+            (a.shape[1], a.shape[2])
+        };
+        let (k_b_i64, n_i64) = if trans_b {
+            (b.shape[2], b.shape[1])
+        } else {
+            (b.shape[1], b.shape[2])
+        };
+        if k_a_i64 != k_b_i64 {
+            return Err(CudaError::RuntimeError {
+                op: "gpu_gemm_strided_batched_ex: K dimensions differ",
+                code: -1,
+            });
+        }
+        if batch_i64 < 0 || m_i64 < 0 || n_i64 < 0 || k_a_i64 < 0 {
+            return Err(CudaError::RuntimeError {
+                op: "gpu_gemm_strided_batched_ex: negative dimension",
+                code: -1,
+            });
+        }
+        Ok(Self {
+            batch_i64,
+            m_i64,
+            n_i64,
+            k_i64: k_a_i64,
+        })
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn gpu_gemm_strided_batched_ex(
     runtime: &CudaRuntime,
@@ -502,61 +616,19 @@ pub fn gpu_gemm_strided_batched_ex(
             code: -1,
         });
     }
-    let (a_cuda, _a_elem_size) = match a.dtype {
-        DataType::BFloat16 => (ffi::cudaDataType_t::CUDA_R_16BF, 2usize),
-        DataType::Float => (ffi::cudaDataType_t::CUDA_R_32F, 4usize),
-        _ => {
-            return Err(CudaError::RuntimeError {
-                op: "gpu_gemm_strided_batched_ex: a/b must be Float or BFloat16",
-                code: -1,
-            });
-        }
-    };
-    let (c_cuda, c_elem_size) = match out_dtype {
-        DataType::BFloat16 => (ffi::cudaDataType_t::CUDA_R_16BF, 2usize),
-        DataType::Float => (ffi::cudaDataType_t::CUDA_R_32F, 4usize),
-        _ => {
-            return Err(CudaError::RuntimeError {
-                op: "gpu_gemm_strided_batched_ex: out_dtype must be Float or BFloat16",
-                code: -1,
-            });
-        }
-    };
-    if a.shape.len() != 3 || b.shape.len() != 3 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gemm_strided_batched_ex: both inputs must be rank-3",
-            code: -1,
-        });
-    }
-    let batch_i64 = a.shape[0];
-    if b.shape[0] != batch_i64 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gemm_strided_batched_ex: batch dimensions differ",
-            code: -1,
-        });
-    }
-    let (m_i64, k_a_i64) = if trans_a {
-        (a.shape[2], a.shape[1])
-    } else {
-        (a.shape[1], a.shape[2])
-    };
-    let (k_b_i64, n_i64) = if trans_b {
-        (b.shape[2], b.shape[1])
-    } else {
-        (b.shape[1], b.shape[2])
-    };
-    if k_a_i64 != k_b_i64 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gemm_strided_batched_ex: K dimensions differ",
-            code: -1,
-        });
-    }
-    if batch_i64 < 0 || m_i64 < 0 || n_i64 < 0 || k_a_i64 < 0 {
-        return Err(CudaError::RuntimeError {
-            op: "gpu_gemm_strided_batched_ex: negative dimension",
-            code: -1,
-        });
-    }
+    let (a_cuda, _a_elem_size) = map_gemm_dtype(
+        a.dtype,
+        "gpu_gemm_strided_batched_ex: a/b must be Float or BFloat16",
+    )?;
+    let (c_cuda, c_elem_size) = map_gemm_dtype(
+        out_dtype,
+        "gpu_gemm_strided_batched_ex: out_dtype must be Float or BFloat16",
+    )?;
+    let shape = BatchedGemmShape::validate(a, b, trans_a, trans_b)?;
+    let batch_i64 = shape.batch_i64;
+    let m_i64 = shape.m_i64;
+    let n_i64 = shape.n_i64;
+    let k_a_i64 = shape.k_i64;
 
     let batch = batch_i64 as i32;
     let m = m_i64 as i32;

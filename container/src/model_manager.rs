@@ -74,83 +74,18 @@ impl ModelManager {
 
         let mut count = 0;
         for entry in dir.flatten() {
-            let path = entry.path();
-
-            // ONNX file path.
-            if path.extension().map(|e| e == "onnx").unwrap_or(false) {
-                let name = path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let file_size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-
-                // Real ONNX files start with a protobuf varint field tag;
-                // field 1 (ir_version) wire-type 0 => tag byte 0x08.
-                let (loaded, error) = match fs::read(&path) {
-                    Ok(data) => {
-                        if data.len() >= 8 && data[0] == 0x08 {
-                            (true, None)
-                        } else {
-                            (false, Some("invalid ONNX magic byte".to_string()))
-                        }
-                    }
-                    Err(e) => (false, Some(format!("read error: {}", e))),
-                };
-
-                if loaded {
+            if let Some(info) = build_onnx_model_info(&entry) {
+                if info.loaded {
                     count += 1;
                 }
-                println!(
-                    "  Model '{}': {} bytes [onnx] {}",
-                    name,
-                    file_size,
-                    if loaded { "OK" } else { "FAILED" }
-                );
-
-                self.models.insert(
-                    name.clone(),
-                    ModelInfo {
-                        name,
-                        file_path: path.to_string_lossy().to_string(),
-                        file_size,
-                        loaded,
-                        error,
-                        kind: ModelKind::Onnx,
-                    },
-                );
+                self.models.insert(info.name.clone(), info);
                 continue;
             }
-
-            // Safetensors model directory path.
-            if path.is_dir() && is_safetensors_dir(&path) {
-                let name = path
-                    .file_name()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                let (total_size, error) = safetensors_total_size(&path);
-                let loaded = error.is_none();
-                if loaded {
+            if let Some(info) = build_safetensors_model_info(&entry) {
+                if info.loaded {
                     count += 1;
                 }
-                println!(
-                    "  Model '{}': {} bytes [safetensors] {}",
-                    name,
-                    total_size,
-                    if loaded { "OK" } else { "FAILED" }
-                );
-                self.models.insert(
-                    name.clone(),
-                    ModelInfo {
-                        name,
-                        file_path: path.to_string_lossy().to_string(),
-                        file_size: total_size,
-                        loaded,
-                        error,
-                        kind: ModelKind::Safetensors,
-                    },
-                );
+                self.models.insert(info.name.clone(), info);
             }
         }
         count
@@ -170,6 +105,78 @@ impl ModelManager {
     pub fn model_count(&self) -> usize {
         self.models.values().filter(|m| m.loaded).count()
     }
+}
+
+/// Validate an ONNX file's protobuf header bytes. Real ONNX files
+/// start with field 1 (ir_version, wire-type 0) => tag byte 0x08, and
+/// have at least 8 bytes total.
+fn validate_onnx_header(path: &std::path::Path) -> (bool, Option<String>) {
+    match fs::read(path) {
+        Ok(data) if data.len() >= 8 && data[0] == 0x08 => (true, None),
+        Ok(_) => (false, Some("invalid ONNX magic byte".to_string())),
+        Err(e) => (false, Some(format!("read error: {}", e))),
+    }
+}
+
+/// Build a [`ModelInfo`] from a directory entry that is a `.onnx`
+/// file. Returns `None` if the entry is not an ONNX file.
+fn build_onnx_model_info(entry: &fs::DirEntry) -> Option<ModelInfo> {
+    let path = entry.path();
+    if !path.extension().map(|e| e == "onnx").unwrap_or(false) {
+        return None;
+    }
+    let name = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let file_size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+    let (loaded, error) = validate_onnx_header(&path);
+    println!(
+        "  Model '{}': {} bytes [onnx] {}",
+        name,
+        file_size,
+        if loaded { "OK" } else { "FAILED" }
+    );
+    Some(ModelInfo {
+        name,
+        file_path: path.to_string_lossy().to_string(),
+        file_size,
+        loaded,
+        error,
+        kind: ModelKind::Onnx,
+    })
+}
+
+/// Build a [`ModelInfo`] from a directory entry that is a safetensors
+/// model directory. Returns `None` if the entry is not such a
+/// directory.
+fn build_safetensors_model_info(entry: &fs::DirEntry) -> Option<ModelInfo> {
+    let path = entry.path();
+    if !path.is_dir() || !is_safetensors_dir(&path) {
+        return None;
+    }
+    let name = path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let (total_size, error) = safetensors_total_size(&path);
+    let loaded = error.is_none();
+    println!(
+        "  Model '{}': {} bytes [safetensors] {}",
+        name,
+        total_size,
+        if loaded { "OK" } else { "FAILED" }
+    );
+    Some(ModelInfo {
+        name,
+        file_path: path.to_string_lossy().to_string(),
+        file_size: total_size,
+        loaded,
+        error,
+        kind: ModelKind::Safetensors,
+    })
 }
 
 /// Returns `true` if `path` looks like a HuggingFace safetensors model
