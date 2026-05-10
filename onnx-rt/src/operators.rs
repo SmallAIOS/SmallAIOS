@@ -1857,64 +1857,87 @@ impl ConvAttrs {
     pub fn from_attributes(attrs: &[AttributeProto]) -> Result<Self, OpError> {
         let mut out = Self::default();
         for attr in attrs {
-            match attr.name.as_str() {
-                "strides" => {
-                    if attr.ints.len() != 2 {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Conv: strides must be length 2 (got {})",
-                            attr.ints.len()
-                        )));
-                    }
-                    out.strides = [attr.ints[0] as i32, attr.ints[1] as i32];
-                }
-                "pads" => {
-                    if attr.ints.len() != 4 {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Conv: pads must be length 4 (got {})",
-                            attr.ints.len()
-                        )));
-                    }
-                    out.pads = [
-                        attr.ints[0] as i32,
-                        attr.ints[1] as i32,
-                        attr.ints[2] as i32,
-                        attr.ints[3] as i32,
-                    ];
-                }
-                "dilations" => {
-                    if attr.ints.len() != 2 {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Conv: dilations must be length 2 (got {})",
-                            attr.ints.len()
-                        )));
-                    }
-                    out.dilations = [attr.ints[0] as i32, attr.ints[1] as i32];
-                }
-                "group" => {
-                    if attr.i < 1 {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Conv: group must be >= 1 (got {})",
-                            attr.i
-                        )));
-                    }
-                    out.group = attr.i as i32;
-                }
-                "auto_pad" => {
-                    let val = core::str::from_utf8(&attr.s).unwrap_or("<invalid utf8>");
-                    if val != "NOTSET" && !val.is_empty() {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Conv: unsupported auto_pad value '{}' (only NOTSET + explicit pads supported)",
-                            val
-                        )));
-                    }
-                }
-                // `kernel_shape` is informational — weight tensor shape is authoritative.
-                // Any other attribute we don't consume is silently ignored.
-                _ => {}
-            }
+            Self::apply_attribute(&mut out, attr)?;
         }
         Ok(out)
     }
+
+    /// Apply a single attribute to the in-progress `ConvAttrs`.
+    ///
+    /// Unknown attributes (including the informational `kernel_shape`) are
+    /// silently ignored — the weight tensor shape is authoritative.
+    fn apply_attribute(out: &mut Self, attr: &AttributeProto) -> Result<(), OpError> {
+        match attr.name.as_str() {
+            "strides" => out.strides = parse_pair_i32("Conv", "strides", &attr.ints)?,
+            "pads" => out.pads = parse_quad_i32("Conv", "pads", &attr.ints)?,
+            "dilations" => out.dilations = parse_pair_i32("Conv", "dilations", &attr.ints)?,
+            "group" => out.group = parse_group("Conv", attr.i)?,
+            "auto_pad" => validate_auto_pad_notset("Conv", &attr.s)?,
+            _ => {}
+        }
+        Ok(())
+    }
+}
+
+/// Parse a `[i32; 2]` attribute, rejecting wrong lengths.
+fn parse_pair_i32(op: &str, name: &str, ints: &[i64]) -> Result<[i32; 2], OpError> {
+    if ints.len() != 2 {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "{}: {} must be length 2 (got {})",
+            op,
+            name,
+            ints.len()
+        )));
+    }
+    Ok([ints[0] as i32, ints[1] as i32])
+}
+
+/// Parse a `[i32; 4]` attribute, rejecting wrong lengths.
+fn parse_quad_i32(op: &str, name: &str, ints: &[i64]) -> Result<[i32; 4], OpError> {
+    if ints.len() != 4 {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "{}: {} must be length 4 (got {})",
+            op,
+            name,
+            ints.len()
+        )));
+    }
+    Ok([
+        ints[0] as i32,
+        ints[1] as i32,
+        ints[2] as i32,
+        ints[3] as i32,
+    ])
+}
+
+/// Parse a `group` attribute, rejecting values `< 1`.
+fn parse_group(op: &str, value: i64) -> Result<i32, OpError> {
+    if value < 1 {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "{}: group must be >= 1 (got {})",
+            op,
+            value
+        )));
+    }
+    Ok(value as i32)
+}
+
+/// Ensure an `auto_pad` attribute is either empty or `"NOTSET"`. The
+/// `Conv` variant appends the legacy "only NOTSET + explicit pads
+/// supported" hint to preserve its original error string.
+fn validate_auto_pad_notset(op: &str, raw: &[u8]) -> Result<(), OpError> {
+    let val = core::str::from_utf8(raw).unwrap_or("<invalid utf8>");
+    if val == "NOTSET" || val.is_empty() {
+        return Ok(());
+    }
+    Err(OpError::InvalidAttribute(if op == "Conv" {
+        alloc::format!(
+            "Conv: unsupported auto_pad value '{}' (only NOTSET + explicit pads supported)",
+            val
+        )
+    } else {
+        alloc::format!("{}: unsupported auto_pad value '{}'", op, val)
+    }))
 }
 
 /// Parsed BatchNormalization attributes with ONNX defaults.
@@ -1981,52 +2004,7 @@ impl PoolAttrs {
     ) -> Result<Self, OpError> {
         let mut out = Self::default();
         for attr in attrs {
-            match attr.name.as_str() {
-                "kernel_shape" => {
-                    if attr.ints.len() != 2 {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Pool: kernel_shape must be length 2 (got {})",
-                            attr.ints.len()
-                        )));
-                    }
-                    out.kernel_shape = [attr.ints[0] as i32, attr.ints[1] as i32];
-                }
-                "strides" => {
-                    if attr.ints.len() != 2 {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Pool: strides must be length 2 (got {})",
-                            attr.ints.len()
-                        )));
-                    }
-                    out.strides = [attr.ints[0] as i32, attr.ints[1] as i32];
-                }
-                "pads" => {
-                    if attr.ints.len() != 4 {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Pool: pads must be length 4 (got {})",
-                            attr.ints.len()
-                        )));
-                    }
-                    out.pads = [
-                        attr.ints[0] as i32,
-                        attr.ints[1] as i32,
-                        attr.ints[2] as i32,
-                        attr.ints[3] as i32,
-                    ];
-                }
-                "ceil_mode" => out.ceil_mode = attr.i != 0,
-                "count_include_pad" => out.count_include_pad = attr.i != 0,
-                "auto_pad" => {
-                    let val = core::str::from_utf8(&attr.s).unwrap_or("<invalid utf8>");
-                    if val != "NOTSET" && !val.is_empty() {
-                        return Err(OpError::InvalidAttribute(alloc::format!(
-                            "Pool: unsupported auto_pad value '{}'",
-                            val
-                        )));
-                    }
-                }
-                _ => {}
-            }
+            Self::apply_attribute(&mut out, attr)?;
         }
         if require_kernel && out.kernel_shape == [0, 0] {
             return Err(OpError::InvalidAttribute(String::from(
@@ -2040,6 +2018,22 @@ impl PoolAttrs {
             // was used as subsample — ONNX spec says default = 1 for all.)
         }
         Ok(out)
+    }
+
+    /// Apply a single attribute to the in-progress `PoolAttrs`.
+    fn apply_attribute(out: &mut Self, attr: &AttributeProto) -> Result<(), OpError> {
+        match attr.name.as_str() {
+            "kernel_shape" => {
+                out.kernel_shape = parse_pair_i32("Pool", "kernel_shape", &attr.ints)?
+            }
+            "strides" => out.strides = parse_pair_i32("Pool", "strides", &attr.ints)?,
+            "pads" => out.pads = parse_quad_i32("Pool", "pads", &attr.ints)?,
+            "ceil_mode" => out.ceil_mode = attr.i != 0,
+            "count_include_pad" => out.count_include_pad = attr.i != 0,
+            "auto_pad" => validate_auto_pad_notset("Pool", &attr.s)?,
+            _ => {}
+        }
+        Ok(())
     }
 }
 
@@ -2461,6 +2455,27 @@ pub fn op_gemm(
     trans_a: bool,
     trans_b: bool,
 ) -> Result<Tensor, OpError> {
+    validate_gemm_inputs(a, b)?;
+    let (m, n, k) = gemm_dims(a, b, trans_a, trans_b)?;
+
+    let a_buf = pack_gemm_a(a, m, k, trans_a);
+    let b_buf = pack_gemm_b(b, k, n, trans_b);
+
+    let mut c_buf = alloc::vec![0.0f32; m * n];
+    crate::gemm::gemm_f32(m, n, k, &a_buf, &b_buf, &mut c_buf);
+
+    let raw_data = apply_alpha_beta_c(&c_buf, c, alpha, beta, m, n);
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(Vec::from([m as i64, n as i64])),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Validate that both Gemm operands are 2-D float32 tensors.
+fn validate_gemm_inputs(a: &Tensor, b: &Tensor) -> Result<(), OpError> {
     if a.data_type != DataType::Float || b.data_type != DataType::Float {
         return Err(OpError::InvalidAttribute(String::from(
             "Gemm only supports float32",
@@ -2471,6 +2486,16 @@ pub fn op_gemm(
             "Gemm requires 2D inputs",
         )));
     }
+    Ok(())
+}
+
+/// Resolve `(m, n, k)` from the Gemm operands honoring transpose flags.
+fn gemm_dims(
+    a: &Tensor,
+    b: &Tensor,
+    trans_a: bool,
+    trans_b: bool,
+) -> Result<(usize, usize, usize), OpError> {
     let (m, k_a) = if trans_a {
         (a.shape.dims[1] as usize, a.shape.dims[0] as usize)
     } else {
@@ -2486,9 +2511,11 @@ pub fn op_gemm(
             "Gemm inner dimensions mismatch",
         )));
     }
-    let k = k_a;
+    Ok((m, n, k_a))
+}
 
-    // Build contiguous A and B (handling transpose via index remapping)
+/// Materialize Gemm operand `A` as a row-major `[M, K]` buffer.
+fn pack_gemm_a(a: &Tensor, m: usize, k: usize, trans_a: bool) -> Vec<f32> {
     let mut a_buf = alloc::vec![0.0f32; m * k];
     for i in 0..m {
         for j in 0..k {
@@ -2496,6 +2523,11 @@ pub fn op_gemm(
             a_buf[i * k + j] = read_f32(&a.raw_data, idx);
         }
     }
+    a_buf
+}
+
+/// Materialize Gemm operand `B` as a row-major `[K, N]` buffer.
+fn pack_gemm_b(b: &Tensor, k: usize, n: usize, trans_b: bool) -> Vec<f32> {
     let mut b_buf = alloc::vec![0.0f32; k * n];
     for i in 0..k {
         for j in 0..n {
@@ -2503,38 +2535,48 @@ pub fn op_gemm(
             b_buf[i * n + j] = read_f32(&b.raw_data, idx);
         }
     }
+    b_buf
+}
 
-    let mut c_buf = alloc::vec![0.0f32; m * n];
-    crate::gemm::gemm_f32(m, n, k, &a_buf, &b_buf, &mut c_buf);
-
-    // Apply alpha and add beta * C
+/// Scale the `M*K x K*N` product by `alpha` and fold in `beta * C` (with
+/// 1-D bias broadcast). Returns the packed raw-bytes output buffer.
+fn apply_alpha_beta_c(
+    c_buf: &[f32],
+    c: Option<&Tensor>,
+    alpha: f32,
+    beta: f32,
+    m: usize,
+    n: usize,
+) -> Vec<u8> {
     let mut raw_data = allocate_tensor_data(m * n, DataType::Float);
     for i in 0..m {
         for j in 0..n {
-            let mut val = alpha * c_buf[i * n + j];
-            if let Some(c_tensor) = c {
-                if beta != 0.0 {
-                    // C can be [M, N] or [N] (bias broadcast)
-                    let c_idx = if c_tensor.shape.ndim() == 1 {
-                        j
-                    } else {
-                        i * n + j
-                    };
-                    if c_idx < c_tensor.shape.total_elements() {
-                        val += beta * read_f32(&c_tensor.raw_data, c_idx);
-                    }
-                }
-            }
+            let val = alpha * c_buf[i * n + j] + gemm_bias_contribution(c, beta, i, j, n);
             write_f32(&mut raw_data, i * n + j, val);
         }
     }
+    raw_data
+}
 
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: TensorShape::new(Vec::from([m as i64, n as i64])),
-        name: String::new(),
-        raw_data,
-    })
+/// Read the optional `beta * C` term at `(i, j)` for the Gemm output,
+/// supporting `[M, N]` matrices and `[N]` bias-broadcast vectors.
+fn gemm_bias_contribution(c: Option<&Tensor>, beta: f32, i: usize, j: usize, n: usize) -> f32 {
+    let Some(c_tensor) = c else {
+        return 0.0;
+    };
+    if beta == 0.0 {
+        return 0.0;
+    }
+    let c_idx = if c_tensor.shape.ndim() == 1 {
+        j
+    } else {
+        i * n + j
+    };
+    if c_idx < c_tensor.shape.total_elements() {
+        beta * read_f32(&c_tensor.raw_data, c_idx)
+    } else {
+        0.0
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2918,44 +2960,9 @@ pub fn op_cast(input: &Tensor, to: DataType) -> Result<Tensor, OpError> {
 /// `input[..o_axis_prefix, indices[o_idx_slice], ..o_axis_suffix]`.
 pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, OpError> {
     let elem_size = input.data_type.element_size();
-    if elem_size == 0 {
-        return Err(OpError::InvalidAttribute(alloc::format!(
-            "Gather: unsupported variable-width input dtype {:?}",
-            input.data_type
-        )));
-    }
-    if !matches!(indices.data_type, DataType::Int32 | DataType::Int64) {
-        return Err(OpError::InvalidAttribute(alloc::format!(
-            "Gather: indices must be Int32 or Int64 (got {:?})",
-            indices.data_type
-        )));
-    }
+    validate_gather_inputs(input, indices, elem_size)?;
     let ndim = input.shape.ndim();
-    if ndim == 0 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "Gather: input must have at least 1 dimension",
-        )));
-    }
-    let resolved_axis = if axis < 0 {
-        let r = ndim as i64 + axis;
-        if r < 0 || r >= ndim as i64 {
-            return Err(OpError::InvalidAttribute(alloc::format!(
-                "Gather: axis {} out of range for rank {}",
-                axis,
-                ndim
-            )));
-        }
-        r as usize
-    } else {
-        if axis >= ndim as i64 {
-            return Err(OpError::InvalidAttribute(alloc::format!(
-                "Gather: axis {} out of range for rank {}",
-                axis,
-                ndim
-            )));
-        }
-        axis as usize
-    };
+    let resolved_axis = resolve_gather_axis(axis, ndim)?;
 
     let axis_size = input.shape.dims[resolved_axis] as usize;
 
@@ -2983,44 +2990,13 @@ pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, 
     let total_elems = outer_count * num_indices * slice_size;
     let mut raw_data = alloc::vec![0u8; total_elems * elem_size];
 
-    // Read index i (supporting Int32 or Int64) and resolve to usize,
-    // wrapping negative indices per the ONNX spec.
-    let read_index = |i: usize| -> Result<usize, OpError> {
-        let raw = if indices.data_type == DataType::Int64 {
-            read_i64(&indices.raw_data, i)
-        } else {
-            // Int32
-            let offset = i * 4;
-            if offset + 4 > indices.raw_data.len() {
-                return Err(OpError::ShapeMismatch(String::from(
-                    "Gather: indices buffer too small",
-                )));
-            }
-            i32::from_le_bytes([
-                indices.raw_data[offset],
-                indices.raw_data[offset + 1],
-                indices.raw_data[offset + 2],
-                indices.raw_data[offset + 3],
-            ]) as i64
-        };
-        let wrapped = if raw < 0 { raw + axis_size as i64 } else { raw };
-        if wrapped < 0 || wrapped >= axis_size as i64 {
-            return Err(OpError::ShapeMismatch(alloc::format!(
-                "Gather: index {} out of bounds for axis size {}",
-                raw,
-                axis_size
-            )));
-        }
-        Ok(wrapped as usize)
-    };
-
     let slice_bytes = slice_size * elem_size;
     let input_outer_stride = axis_size * slice_bytes;
     let out_outer_stride = num_indices * slice_bytes;
 
     for outer in 0..outer_count {
         for i in 0..num_indices {
-            let idx = read_index(i)?;
+            let idx = read_gather_index(indices, i, axis_size)?;
             let src_start = outer * input_outer_stride + idx * slice_bytes;
             let dst_start = outer * out_outer_stride + i * slice_bytes;
             raw_data[dst_start..dst_start + slice_bytes]
@@ -3034,6 +3010,80 @@ pub fn op_gather(input: &Tensor, indices: &Tensor, axis: i64) -> Result<Tensor, 
         name: String::new(),
         raw_data,
     })
+}
+
+/// Validate Gather inputs: dtype must be fixed-width, indices must be
+/// integer, and input must have at least one dimension.
+fn validate_gather_inputs(
+    input: &Tensor,
+    indices: &Tensor,
+    elem_size: usize,
+) -> Result<(), OpError> {
+    if elem_size == 0 {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "Gather: unsupported variable-width input dtype {:?}",
+            input.data_type
+        )));
+    }
+    if !matches!(indices.data_type, DataType::Int32 | DataType::Int64) {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "Gather: indices must be Int32 or Int64 (got {:?})",
+            indices.data_type
+        )));
+    }
+    if input.shape.ndim() == 0 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Gather: input must have at least 1 dimension",
+        )));
+    }
+    Ok(())
+}
+
+/// Resolve a (possibly negative) Gather `axis` against the input rank.
+fn resolve_gather_axis(axis: i64, ndim: usize) -> Result<usize, OpError> {
+    let resolved = if axis < 0 { ndim as i64 + axis } else { axis };
+    if resolved < 0 || resolved >= ndim as i64 {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "Gather: axis {} out of range for rank {}",
+            axis,
+            ndim
+        )));
+    }
+    Ok(resolved as usize)
+}
+
+/// Read index `i` from the Int32/Int64 indices tensor, wrap negative
+/// values per ONNX spec, and bounds-check against `axis_size`.
+fn read_gather_index(indices: &Tensor, i: usize, axis_size: usize) -> Result<usize, OpError> {
+    let raw = read_gather_raw_index(indices, i)?;
+    let wrapped = if raw < 0 { raw + axis_size as i64 } else { raw };
+    if wrapped < 0 || wrapped >= axis_size as i64 {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "Gather: index {} out of bounds for axis size {}",
+            raw,
+            axis_size
+        )));
+    }
+    Ok(wrapped as usize)
+}
+
+/// Decode a single index value from the Int32 or Int64 indices buffer.
+fn read_gather_raw_index(indices: &Tensor, i: usize) -> Result<i64, OpError> {
+    if indices.data_type == DataType::Int64 {
+        return Ok(read_i64(&indices.raw_data, i));
+    }
+    let offset = i * 4;
+    if offset + 4 > indices.raw_data.len() {
+        return Err(OpError::ShapeMismatch(String::from(
+            "Gather: indices buffer too small",
+        )));
+    }
+    Ok(i32::from_le_bytes([
+        indices.raw_data[offset],
+        indices.raw_data[offset + 1],
+        indices.raw_data[offset + 2],
+        indices.raw_data[offset + 3],
+    ]) as i64)
 }
 
 /// Extract sub-tensor with starts, ends, axes, steps.
@@ -3050,62 +3100,10 @@ pub fn op_slice(
         )));
     }
     let ndim = input.shape.ndim();
-    let mut actual_starts = alloc::vec![0i64; ndim];
-    let mut actual_ends: Vec<i64> = input.shape.dims.clone();
-    let mut actual_steps = alloc::vec![1i64; ndim];
+    let (actual_starts, actual_ends, actual_steps) =
+        resolve_slice_ranges(input, starts, ends, axes, steps, ndim);
 
-    let axes_vec: Vec<usize> = match axes {
-        Some(ax) => ax
-            .iter()
-            .map(|&a| {
-                if a < 0 {
-                    (ndim as i64 + a) as usize
-                } else {
-                    a as usize
-                }
-            })
-            .collect(),
-        None => (0..starts.len()).collect(),
-    };
-
-    for (i, &ax) in axes_vec.iter().enumerate() {
-        if ax >= ndim {
-            continue;
-        }
-        let dim = input.shape.dims[ax];
-        let mut s = if i < starts.len() { starts[i] } else { 0 };
-        let mut e = if i < ends.len() { ends[i] } else { dim };
-        let step = if let Some(st) = steps {
-            if i < st.len() {
-                st[i]
-            } else {
-                1
-            }
-        } else {
-            1
-        };
-        if s < 0 {
-            s += dim;
-        }
-        if e < 0 {
-            e += dim;
-        }
-        s = s.clamp(0, dim);
-        e = e.clamp(0, dim);
-        actual_starts[ax] = s;
-        actual_ends[ax] = e;
-        actual_steps[ax] = step;
-    }
-
-    let out_dims: Vec<i64> = (0..ndim)
-        .map(|d| {
-            let s = actual_starts[d];
-            let e = actual_ends[d];
-            let step = actual_steps[d];
-            ((e - s + step - 1) / step).max(0)
-        })
-        .collect();
-    let out_shape = TensorShape::new(out_dims);
+    let out_shape = slice_output_shape(&actual_starts, &actual_ends, &actual_steps, ndim);
     let total = out_shape.total_elements();
     let mut raw_data = allocate_tensor_data(total, DataType::Float);
 
@@ -3128,6 +3126,91 @@ pub fn op_slice(
         name: String::new(),
         raw_data,
     })
+}
+
+/// Resolve the per-axis `(start, end, step)` ranges for `op_slice`,
+/// applying negative-index wrapping and clamping to the input dims.
+fn resolve_slice_ranges(
+    input: &Tensor,
+    starts: &[i64],
+    ends: &[i64],
+    axes: Option<&[i64]>,
+    steps: Option<&[i64]>,
+    ndim: usize,
+) -> (Vec<i64>, Vec<i64>, Vec<i64>) {
+    let mut actual_starts = alloc::vec![0i64; ndim];
+    let mut actual_ends: Vec<i64> = input.shape.dims.clone();
+    let mut actual_steps = alloc::vec![1i64; ndim];
+
+    let axes_vec = slice_axes(axes, ndim, starts.len());
+
+    for (i, &ax) in axes_vec.iter().enumerate() {
+        if ax >= ndim {
+            continue;
+        }
+        let dim = input.shape.dims[ax];
+        let (s, e) = clamp_slice_range(starts, ends, i, dim);
+        actual_starts[ax] = s;
+        actual_ends[ax] = e;
+        actual_steps[ax] = step_at(steps, i);
+    }
+    (actual_starts, actual_ends, actual_steps)
+}
+
+/// Normalize the optional `axes` parameter, defaulting to `0..starts.len()`.
+fn slice_axes(axes: Option<&[i64]>, ndim: usize, starts_len: usize) -> Vec<usize> {
+    match axes {
+        Some(ax) => ax
+            .iter()
+            .map(|&a| {
+                if a < 0 {
+                    (ndim as i64 + a) as usize
+                } else {
+                    a as usize
+                }
+            })
+            .collect(),
+        None => (0..starts_len).collect(),
+    }
+}
+
+/// Resolve and clamp `(start, end)` for axis index `i` against `dim`.
+fn clamp_slice_range(starts: &[i64], ends: &[i64], i: usize, dim: i64) -> (i64, i64) {
+    let mut s = if i < starts.len() { starts[i] } else { 0 };
+    let mut e = if i < ends.len() { ends[i] } else { dim };
+    if s < 0 {
+        s += dim;
+    }
+    if e < 0 {
+        e += dim;
+    }
+    (s.clamp(0, dim), e.clamp(0, dim))
+}
+
+/// Resolve the step for axis index `i`, defaulting to `1`.
+fn step_at(steps: Option<&[i64]>, i: usize) -> i64 {
+    match steps {
+        Some(st) if i < st.len() => st[i],
+        _ => 1,
+    }
+}
+
+/// Compute the output shape after slicing.
+fn slice_output_shape(
+    actual_starts: &[i64],
+    actual_ends: &[i64],
+    actual_steps: &[i64],
+    ndim: usize,
+) -> TensorShape {
+    let out_dims: Vec<i64> = (0..ndim)
+        .map(|d| {
+            let s = actual_starts[d];
+            let e = actual_ends[d];
+            let step = actual_steps[d];
+            ((e - s + step - 1) / step).max(0)
+        })
+        .collect();
+    TensorShape::new(out_dims)
 }
 
 /// Pad tensor with constant value.
@@ -3352,48 +3435,15 @@ pub fn op_maxpool(
     strides: Option<&[i64]>,
     pads: Option<&[i64]>,
 ) -> Result<Tensor, OpError> {
-    if input.data_type != DataType::Float || input.shape.ndim() != 4 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "MaxPool requires 4D float input",
-        )));
-    }
-    let (n, c, h, w) = (
-        input.shape.dims[0] as usize,
-        input.shape.dims[1] as usize,
-        input.shape.dims[2] as usize,
-        input.shape.dims[3] as usize,
-    );
-    let kh = kernel_shape[0] as usize;
-    let kw = kernel_shape[1] as usize;
-    let sh = strides.map(|s| s[0] as usize).unwrap_or(kh);
-    let sw = strides.map(|s| s[1] as usize).unwrap_or(kw);
-    let (pt, pl, pb, pr) = match pads {
-        Some(p) if p.len() >= 4 => (p[0] as usize, p[1] as usize, p[2] as usize, p[3] as usize),
-        _ => (0, 0, 0, 0),
-    };
-    let oh = (h + pt + pb - kh) / sh + 1;
-    let ow = (w + pl + pr - kw) / sw + 1;
-    let out_shape = TensorShape::new(Vec::from([n as i64, c as i64, oh as i64, ow as i64]));
+    let geom = PoolGeom::from_inputs("MaxPool", input, kernel_shape, strides, pads)?;
+    let out_shape = geom.out_shape();
     let mut raw_data = allocate_tensor_data(out_shape.total_elements(), DataType::Float);
-    for bn in 0..n {
-        for ch in 0..c {
-            for oi in 0..oh {
-                for oj in 0..ow {
-                    let mut max_val = f32::NEG_INFINITY;
-                    for ki in 0..kh {
-                        for kj in 0..kw {
-                            let hi = oi * sh + ki;
-                            let wi = oj * sw + kj;
-                            if hi >= pt && hi < h + pt && wi >= pl && wi < w + pl {
-                                let idx = bn * c * h * w + ch * h * w + (hi - pt) * w + (wi - pl);
-                                let v = read_f32(&input.raw_data, idx);
-                                if v > max_val {
-                                    max_val = v;
-                                }
-                            }
-                        }
-                    }
-                    let out_idx = bn * c * oh * ow + ch * oh * ow + oi * ow + oj;
+    for bn in 0..geom.n {
+        for ch in 0..geom.c {
+            for oi in 0..geom.oh {
+                for oj in 0..geom.ow {
+                    let max_val = pool_reduce_max(&geom, input, bn, ch, oi, oj);
+                    let out_idx = geom.out_index(bn, ch, oi, oj);
                     write_f32(&mut raw_data, out_idx, max_val);
                 }
             }
@@ -3407,6 +3457,29 @@ pub fn op_maxpool(
     })
 }
 
+/// Maximum activation over a single pooling window.
+fn pool_reduce_max(
+    geom: &PoolGeom,
+    input: &Tensor,
+    bn: usize,
+    ch: usize,
+    oi: usize,
+    oj: usize,
+) -> f32 {
+    let mut max_val = f32::NEG_INFINITY;
+    for ki in 0..geom.kh {
+        for kj in 0..geom.kw {
+            if let Some(idx) = geom.input_index(bn, ch, oi, oj, ki, kj) {
+                let v = read_f32(&input.raw_data, idx);
+                if v > max_val {
+                    max_val = v;
+                }
+            }
+        }
+    }
+    max_val
+}
+
 /// Average pooling over NCHW input.
 pub fn op_averagepool(
     input: &Tensor,
@@ -3414,52 +3487,16 @@ pub fn op_averagepool(
     strides: Option<&[i64]>,
     pads: Option<&[i64]>,
 ) -> Result<Tensor, OpError> {
-    if input.data_type != DataType::Float || input.shape.ndim() != 4 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "AvgPool requires 4D float input",
-        )));
-    }
-    let (n, c, h, w) = (
-        input.shape.dims[0] as usize,
-        input.shape.dims[1] as usize,
-        input.shape.dims[2] as usize,
-        input.shape.dims[3] as usize,
-    );
-    let kh = kernel_shape[0] as usize;
-    let kw = kernel_shape[1] as usize;
-    let sh = strides.map(|s| s[0] as usize).unwrap_or(kh);
-    let sw = strides.map(|s| s[1] as usize).unwrap_or(kw);
-    let (pt, pl, pb, pr) = match pads {
-        Some(p) if p.len() >= 4 => (p[0] as usize, p[1] as usize, p[2] as usize, p[3] as usize),
-        _ => (0, 0, 0, 0),
-    };
-    let oh = (h + pt + pb - kh) / sh + 1;
-    let ow = (w + pl + pr - kw) / sw + 1;
-    let out_shape = TensorShape::new(Vec::from([n as i64, c as i64, oh as i64, ow as i64]));
+    let geom = PoolGeom::from_inputs("AvgPool", input, kernel_shape, strides, pads)?;
+    let out_shape = geom.out_shape();
     let mut raw_data = allocate_tensor_data(out_shape.total_elements(), DataType::Float);
-    for bn in 0..n {
-        for ch in 0..c {
-            for oi in 0..oh {
-                for oj in 0..ow {
-                    let mut sum = 0.0f32;
-                    let mut count = 0u32;
-                    for ki in 0..kh {
-                        for kj in 0..kw {
-                            let hi = oi * sh + ki;
-                            let wi = oj * sw + kj;
-                            if hi >= pt && hi < h + pt && wi >= pl && wi < w + pl {
-                                let idx = bn * c * h * w + ch * h * w + (hi - pt) * w + (wi - pl);
-                                sum += read_f32(&input.raw_data, idx);
-                                count += 1;
-                            }
-                        }
-                    }
-                    let out_idx = bn * c * oh * ow + ch * oh * ow + oi * ow + oj;
-                    write_f32(
-                        &mut raw_data,
-                        out_idx,
-                        if count > 0 { sum / count as f32 } else { 0.0 },
-                    );
+    for bn in 0..geom.n {
+        for ch in 0..geom.c {
+            for oi in 0..geom.oh {
+                for oj in 0..geom.ow {
+                    let avg = pool_reduce_avg(&geom, input, bn, ch, oi, oj);
+                    let out_idx = geom.out_index(bn, ch, oi, oj);
+                    write_f32(&mut raw_data, out_idx, avg);
                 }
             }
         }
@@ -3470,6 +3507,132 @@ pub fn op_averagepool(
         name: String::new(),
         raw_data,
     })
+}
+
+/// Mean activation over a single pooling window (zero if window empty).
+fn pool_reduce_avg(
+    geom: &PoolGeom,
+    input: &Tensor,
+    bn: usize,
+    ch: usize,
+    oi: usize,
+    oj: usize,
+) -> f32 {
+    let mut sum = 0.0f32;
+    let mut count = 0u32;
+    for ki in 0..geom.kh {
+        for kj in 0..geom.kw {
+            if let Some(idx) = geom.input_index(bn, ch, oi, oj, ki, kj) {
+                sum += read_f32(&input.raw_data, idx);
+                count += 1;
+            }
+        }
+    }
+    if count > 0 {
+        sum / count as f32
+    } else {
+        0.0
+    }
+}
+
+/// Shared 2-D pool geometry: NCHW dims, kernel, stride, pads, output dims.
+struct PoolGeom {
+    n: usize,
+    c: usize,
+    h: usize,
+    w: usize,
+    kh: usize,
+    kw: usize,
+    sh: usize,
+    sw: usize,
+    pt: usize,
+    pl: usize,
+    oh: usize,
+    ow: usize,
+}
+
+impl PoolGeom {
+    /// Validate inputs and build the geometry for a 2-D pool over NCHW.
+    fn from_inputs(
+        op: &str,
+        input: &Tensor,
+        kernel_shape: &[i64],
+        strides: Option<&[i64]>,
+        pads: Option<&[i64]>,
+    ) -> Result<Self, OpError> {
+        if input.data_type != DataType::Float || input.shape.ndim() != 4 {
+            return Err(OpError::ShapeMismatch(alloc::format!(
+                "{} requires 4D float input",
+                op
+            )));
+        }
+        let n = input.shape.dims[0] as usize;
+        let c = input.shape.dims[1] as usize;
+        let h = input.shape.dims[2] as usize;
+        let w = input.shape.dims[3] as usize;
+        let kh = kernel_shape[0] as usize;
+        let kw = kernel_shape[1] as usize;
+        let sh = strides.map(|s| s[0] as usize).unwrap_or(kh);
+        let sw = strides.map(|s| s[1] as usize).unwrap_or(kw);
+        let (pt, pl, pb, pr) = match pads {
+            Some(p) if p.len() >= 4 => (p[0] as usize, p[1] as usize, p[2] as usize, p[3] as usize),
+            _ => (0, 0, 0, 0),
+        };
+        let oh = (h + pt + pb - kh) / sh + 1;
+        let ow = (w + pl + pr - kw) / sw + 1;
+        Ok(Self {
+            n,
+            c,
+            h,
+            w,
+            kh,
+            kw,
+            sh,
+            sw,
+            pt,
+            pl,
+            oh,
+            ow,
+        })
+    }
+
+    fn out_shape(&self) -> TensorShape {
+        TensorShape::new(Vec::from([
+            self.n as i64,
+            self.c as i64,
+            self.oh as i64,
+            self.ow as i64,
+        ]))
+    }
+
+    fn out_index(&self, bn: usize, ch: usize, oi: usize, oj: usize) -> usize {
+        bn * self.c * self.oh * self.ow + ch * self.oh * self.ow + oi * self.ow + oj
+    }
+
+    /// Map a pool window position to a linear input index, or `None` when
+    /// the position lies in the (zero-) padded region.
+    fn input_index(
+        &self,
+        bn: usize,
+        ch: usize,
+        oi: usize,
+        oj: usize,
+        ki: usize,
+        kj: usize,
+    ) -> Option<usize> {
+        let hi = oi * self.sh + ki;
+        let wi = oj * self.sw + kj;
+        if hi >= self.pt && hi < self.h + self.pt && wi >= self.pl && wi < self.w + self.pl {
+            Some(
+                bn * self.c * self.h * self.w
+                    + ch * self.h * self.w
+                    + (hi - self.pt) * self.w
+                    + (wi - self.pl),
+            )
+        } else {
+            None
+        }
+    }
 }
 
 /// Global average pooling: NCHW → NC11.
@@ -3530,38 +3693,8 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
         )));
     }
     let ndim = input.shape.ndim();
-    let resolved: Vec<usize> = if axes.is_empty() {
-        (0..ndim).collect()
-    } else {
-        axes.iter()
-            .map(|&a| {
-                if a < 0 {
-                    (ndim as i64 + a) as usize
-                } else {
-                    a as usize
-                }
-            })
-            .collect()
-    };
-
-    let out_dims: Vec<i64> = (0..ndim)
-        .filter_map(|d| {
-            if resolved.contains(&d) {
-                if keepdims {
-                    Some(1)
-                } else {
-                    None
-                }
-            } else {
-                Some(input.shape.dims[d])
-            }
-        })
-        .collect();
-    let out_shape = TensorShape::new(if out_dims.is_empty() {
-        Vec::from([1i64])
-    } else {
-        out_dims
-    });
+    let resolved = resolve_reduce_axes(axes, ndim);
+    let out_shape = reduce_output_shape(input, &resolved, ndim, keepdims);
     let total_out = out_shape.total_elements();
     let mut raw_data = allocate_tensor_data(total_out, DataType::Float);
 
@@ -3572,22 +3705,7 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
         if i > 0 {
             next_coord(&mut in_coord, &input.shape.dims);
         }
-        // Compute output index by dropping reduced dimensions
-        let mut out_idx = 0usize;
-        let mut od = 0usize;
-        #[allow(clippy::needless_range_loop)]
-        for d in 0..ndim {
-            if resolved.contains(&d) {
-                if keepdims {
-                    od += 1;
-                }
-            } else {
-                if od < out_strides.len() {
-                    out_idx += in_coord[d] * out_strides[od];
-                }
-                od += 1;
-            }
-        }
+        let out_idx = reduce_output_index(&in_coord, &resolved, &out_strides, ndim, keepdims);
         let prev = read_f32(&raw_data, out_idx);
         write_f32(&mut raw_data, out_idx, prev + read_f32(&input.raw_data, i));
     }
@@ -3597,6 +3715,74 @@ pub fn op_reduce_sum(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Ten
         name: String::new(),
         raw_data,
     })
+}
+
+/// Resolve a possibly negative or empty axes list into concrete indices.
+/// An empty list reduces over all axes.
+fn resolve_reduce_axes(axes: &[i64], ndim: usize) -> Vec<usize> {
+    if axes.is_empty() {
+        return (0..ndim).collect();
+    }
+    axes.iter()
+        .map(|&a| {
+            if a < 0 {
+                (ndim as i64 + a) as usize
+            } else {
+                a as usize
+            }
+        })
+        .collect()
+}
+
+/// Compute the output shape after reduction, honoring `keepdims`. An
+/// all-axes reduction with `keepdims=false` collapses to `[1]`.
+fn reduce_output_shape(
+    input: &Tensor,
+    resolved: &[usize],
+    ndim: usize,
+    keepdims: bool,
+) -> TensorShape {
+    let out_dims: Vec<i64> = (0..ndim)
+        .filter_map(|d| {
+            if resolved.contains(&d) {
+                keepdims.then_some(1)
+            } else {
+                Some(input.shape.dims[d])
+            }
+        })
+        .collect();
+    TensorShape::new(if out_dims.is_empty() {
+        Vec::from([1i64])
+    } else {
+        out_dims
+    })
+}
+
+/// Map an input coord to a reduced-output linear index by skipping
+/// reduced dimensions (or keeping a placeholder when `keepdims`).
+fn reduce_output_index(
+    in_coord: &[usize],
+    resolved: &[usize],
+    out_strides: &[usize],
+    ndim: usize,
+    keepdims: bool,
+) -> usize {
+    let mut out_idx = 0usize;
+    let mut od = 0usize;
+    #[allow(clippy::needless_range_loop)]
+    for d in 0..ndim {
+        if resolved.contains(&d) {
+            if keepdims {
+                od += 1;
+            }
+            continue;
+        }
+        if od < out_strides.len() {
+            out_idx += in_coord[d] * out_strides[od];
+        }
+        od += 1;
+    }
+    out_idx
 }
 
 // ---------------------------------------------------------------------------
@@ -3740,96 +3926,185 @@ pub fn op_conv_parallel(
         return op_conv(input, weight, bias, attrs);
     }
 
-    let n = input.shape.dims[0] as usize;
-    let c_in = input.shape.dims[1] as usize;
-    let h = input.shape.dims[2] as usize;
-    let w = input.shape.dims[3] as usize;
+    let geom = ConvParallelGeom::from_default_attrs(input, weight);
 
-    let c_out = weight.shape.dims[0] as usize;
-    let kh = weight.shape.dims[2] as usize;
-    let kw = weight.shape.dims[3] as usize;
-
-    let oh = h - kh + 1;
-    let ow = w - kw + 1;
-
-    // Check threshold
-    if pool.num_threads() <= 1 || c_out * oh * ow <= threshold {
+    if pool.num_threads() <= 1 || geom.c_out * geom.oh * geom.ow <= threshold {
         return op_conv(input, weight, bias, attrs);
     }
 
-    let out_total = n * c_out * oh * ow;
+    let results = conv_parallel_compute(pool, input, weight, bias, attrs, &geom);
+    let raw_data = conv_parallel_assemble(results, &geom);
+
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(Vec::from([
+            geom.n as i64,
+            geom.c_out as i64,
+            geom.oh as i64,
+            geom.ow as i64,
+        ])),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Shape constants for the default-attrs `op_conv_parallel` fast path.
+struct ConvParallelGeom {
+    n: usize,
+    c_in: usize,
+    h: usize,
+    w: usize,
+    c_out: usize,
+    kh: usize,
+    kw: usize,
+    oh: usize,
+    ow: usize,
+}
+
+impl ConvParallelGeom {
+    fn from_default_attrs(input: &Tensor, weight: &Tensor) -> Self {
+        let n = input.shape.dims[0] as usize;
+        let c_in = input.shape.dims[1] as usize;
+        let h = input.shape.dims[2] as usize;
+        let w = input.shape.dims[3] as usize;
+        let c_out = weight.shape.dims[0] as usize;
+        let kh = weight.shape.dims[2] as usize;
+        let kw = weight.shape.dims[3] as usize;
+        let oh = h - kh + 1;
+        let ow = w - kw + 1;
+        Self {
+            n,
+            c_in,
+            h,
+            w,
+            c_out,
+            kh,
+            kw,
+            oh,
+            ow,
+        }
+    }
+}
+
+/// Compute each parallel chunk: `(start_co, ch_count, chunk_data_f32_bytes)`.
+fn conv_parallel_compute(
+    pool: &CorePool,
+    input: &Tensor,
+    weight: &Tensor,
+    bias: Option<&Tensor>,
+    attrs: &ConvAttrs,
+    geom: &ConvParallelGeom,
+) -> Vec<(usize, usize, Vec<u8>)> {
     let dims = ConvDims {
-        c_in,
-        c_in_per_group: c_in,
-        h,
-        w,
-        kh,
-        kw,
+        c_in: geom.c_in,
+        c_in_per_group: geom.c_in,
+        h: geom.h,
+        w: geom.w,
+        kh: geom.kh,
+        kw: geom.kw,
     };
     let input_data = &input.raw_data;
     let weight_data = &weight.raw_data;
+    let (n, oh, ow) = (geom.n, geom.oh, geom.ow);
 
-    // Split output channels across threads. Default-attrs fast path, so
-    // `ci_base = 0` for all output channels (single group).
-    let results = pool.parallel_for(0..c_out, |ch_range| {
+    pool.parallel_for(0..geom.c_out, |ch_range| {
         let ch_count = ch_range.end - ch_range.start;
-        let chunk_size = n * ch_count * oh * ow;
-        let mut chunk_data = allocate_tensor_data(chunk_size, DataType::Float);
-
+        let mut chunk_data = allocate_tensor_data(n * ch_count * oh * ow, DataType::Float);
         for batch in 0..n {
             for (local_co, global_co) in ch_range.clone().enumerate() {
-                for oy in 0..oh {
-                    for ox in 0..ow {
-                        let mut sum = convolve_at(
-                            input_data,
-                            weight_data,
-                            batch,
-                            global_co,
-                            0,
-                            oy,
-                            ox,
-                            &dims,
-                            attrs,
-                        );
-                        if let Some(b) = bias {
-                            sum += read_f32(&b.raw_data, global_co);
-                        }
-                        let local_idx =
-                            batch * ch_count * oh * ow + local_co * oh * ow + oy * ow + ox;
-                        write_f32(&mut chunk_data, local_idx, sum);
-                    }
-                }
+                conv_parallel_fill_channel(
+                    &mut chunk_data,
+                    input_data,
+                    weight_data,
+                    bias,
+                    attrs,
+                    &dims,
+                    batch,
+                    global_co,
+                    local_co,
+                    ch_count,
+                    oh,
+                    ow,
+                );
             }
         }
         (ch_range.start, ch_count, chunk_data)
-    });
+    })
+}
 
-    // Assemble output
+/// Fill one `(batch, local_co)` plane of the per-thread output chunk.
+#[allow(clippy::too_many_arguments)]
+fn conv_parallel_fill_channel(
+    chunk_data: &mut [u8],
+    input_data: &[u8],
+    weight_data: &[u8],
+    bias: Option<&Tensor>,
+    attrs: &ConvAttrs,
+    dims: &ConvDims,
+    batch: usize,
+    global_co: usize,
+    local_co: usize,
+    ch_count: usize,
+    oh: usize,
+    ow: usize,
+) {
+    for oy in 0..oh {
+        for ox in 0..ow {
+            let mut sum = convolve_at(
+                input_data,
+                weight_data,
+                batch,
+                global_co,
+                0,
+                oy,
+                ox,
+                dims,
+                attrs,
+            );
+            if let Some(b) = bias {
+                sum += read_f32(&b.raw_data, global_co);
+            }
+            let local_idx = batch * ch_count * oh * ow + local_co * oh * ow + oy * ow + ox;
+            write_f32(chunk_data, local_idx, sum);
+        }
+    }
+}
+
+/// Stitch per-thread channel chunks into the final NCHW output buffer.
+fn conv_parallel_assemble(
+    results: Vec<(usize, usize, Vec<u8>)>,
+    geom: &ConvParallelGeom,
+) -> Vec<u8> {
+    let out_total = geom.n * geom.c_out * geom.oh * geom.ow;
     let mut raw_data = allocate_tensor_data(out_total, DataType::Float);
     for (start_co, ch_count, chunk_data) in results {
-        // Copy each batch's channel data to the correct position
-        for batch in 0..n {
-            for local_co in 0..ch_count {
-                let global_co = start_co + local_co;
-                for oy in 0..oh {
-                    for ox in 0..ow {
-                        let src_idx =
-                            batch * ch_count * oh * ow + local_co * oh * ow + oy * ow + ox;
-                        let dst_idx = batch * c_out * oh * ow + global_co * oh * ow + oy * ow + ox;
-                        let val = read_f32(&chunk_data, src_idx);
-                        write_f32(&mut raw_data, dst_idx, val);
-                    }
+        conv_parallel_copy_chunk(&mut raw_data, &chunk_data, start_co, ch_count, geom);
+    }
+    raw_data
+}
+
+/// Copy one parallel chunk back into its NCHW destination slot.
+fn conv_parallel_copy_chunk(
+    raw_data: &mut [u8],
+    chunk_data: &[u8],
+    start_co: usize,
+    ch_count: usize,
+    geom: &ConvParallelGeom,
+) {
+    let (n, c_out, oh, ow) = (geom.n, geom.c_out, geom.oh, geom.ow);
+    for batch in 0..n {
+        for local_co in 0..ch_count {
+            let global_co = start_co + local_co;
+            for oy in 0..oh {
+                for ox in 0..ow {
+                    let src_idx = batch * ch_count * oh * ow + local_co * oh * ow + oy * ow + ox;
+                    let dst_idx = batch * c_out * oh * ow + global_co * oh * ow + oy * ow + ox;
+                    let val = read_f32(chunk_data, src_idx);
+                    write_f32(raw_data, dst_idx, val);
                 }
             }
         }
     }
-
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: TensorShape::new(Vec::from([n as i64, c_out as i64, oh as i64, ow as i64])),
-        name: String::new(),
-        raw_data,
-    })
 }
 
 /// Parallel reduce sum: partial sums per chunk, then merge.
@@ -3928,135 +4203,193 @@ pub fn op_softmax_parallel(
         )));
     }
     let total = input.shape.total_elements();
-    // For multi-dimensional or small tensors, use sequential
     if pool.num_threads() <= 1 || total <= threshold {
         return op_softmax(input, axis);
     }
 
-    // Simple case: 1D or last-axis softmax on flat data
     let ndim = input.shape.ndim();
     if ndim == 0 {
-        let mut raw_data = alloc::vec![0u8; 4];
-        write_f32(&mut raw_data, 0, 1.0);
-        return Ok(Tensor {
-            data_type: DataType::Float,
-            shape: input.shape.clone(),
-            name: String::new(),
-            raw_data,
-        });
+        return softmax_parallel_scalar(input);
     }
 
-    let resolved_axis = if axis < 0 {
-        (ndim as i64 + axis) as usize
-    } else {
-        axis as usize
-    };
-
-    // For non-last-axis softmax, fall back to sequential (complex strided access)
+    let resolved_axis = resolve_softmax_axis(axis, ndim);
     if resolved_axis != ndim - 1 || ndim > 2 {
+        // For non-last-axis softmax, fall back to sequential
         return op_softmax(input, axis);
     }
 
+    if ndim == 1 {
+        softmax_parallel_1d(pool, input, total)
+    } else {
+        softmax_parallel_2d(pool, input, total)
+    }
+}
+
+/// Resolve a (possibly negative) softmax `axis` against the input rank.
+fn resolve_softmax_axis(axis: i64, ndim: usize) -> usize {
+    if axis < 0 {
+        (ndim as i64 + axis) as usize
+    } else {
+        axis as usize
+    }
+}
+
+/// Softmax of a 0-D tensor: identity-with-value `1.0`.
+fn softmax_parallel_scalar(input: &Tensor) -> Result<Tensor, OpError> {
+    let mut raw_data = alloc::vec![0u8; 4];
+    write_f32(&mut raw_data, 0, 1.0);
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Three-pass parallel softmax over a 1-D tensor.
+fn softmax_parallel_1d(pool: &CorePool, input: &Tensor, total: usize) -> Result<Tensor, OpError> {
+    let input_data = &input.raw_data;
+    let global_max = softmax_parallel_max(pool, input_data, total);
+    let partial_results = softmax_parallel_exp(pool, input_data, total, global_max);
+    let global_sum: f32 = partial_results.iter().map(|(_, _, s)| s).sum();
+
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
+    for (start, chunk, _) in partial_results {
+        let count = chunk.len() / 4;
+        for i in 0..count {
+            let v = read_f32(&chunk, i);
+            write_f32(&mut raw_data, start + i, v / global_sum);
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
+
+/// Parallel max-reduction pass for `softmax_parallel_1d`.
+fn softmax_parallel_max(pool: &CorePool, input_data: &[u8], total: usize) -> f32 {
+    let partial_maxes = pool.parallel_for(0..total, |range| {
+        let mut max_val = f32::NEG_INFINITY;
+        for i in range {
+            let v = read_f32(input_data, i);
+            if v > max_val {
+                max_val = v;
+            }
+        }
+        max_val
+    });
+    partial_maxes
+        .iter()
+        .copied()
+        .fold(f32::NEG_INFINITY, f32::max)
+}
+
+/// Parallel `exp(x - max)` pass with per-chunk partial sums.
+fn softmax_parallel_exp(
+    pool: &CorePool,
+    input_data: &[u8],
+    total: usize,
+    global_max: f32,
+) -> Vec<(usize, Vec<u8>, f32)> {
+    pool.parallel_for(0..total, |range| {
+        let mut local_data = allocate_tensor_data(range.len(), DataType::Float);
+        let mut local_sum = 0.0f32;
+        for (local_i, global_i) in range.clone().enumerate() {
+            let v = read_f32(input_data, global_i);
+            let exp_v = expf_approx(v - global_max);
+            write_f32(&mut local_data, local_i, exp_v);
+            local_sum += exp_v;
+        }
+        (range.start, local_data, local_sum)
+    })
+}
+
+/// Row-parallel softmax over a `[num_rows, row_len]` tensor.
+fn softmax_parallel_2d(pool: &CorePool, input: &Tensor, total: usize) -> Result<Tensor, OpError> {
+    let num_rows = input.shape.dims[0] as usize;
+    let row_len = input.shape.dims[1] as usize;
     let input_data = &input.raw_data;
 
-    if ndim == 1 {
-        // Single vector softmax — parallelize the 3 passes
-        // Pass 1: parallel max
-        let partial_maxes = pool.parallel_for(0..total, |range| {
-            let mut max_val = f32::NEG_INFINITY;
-            for i in range {
-                let v = read_f32(input_data, i);
-                if v > max_val {
-                    max_val = v;
-                }
-            }
-            max_val
-        });
-        let global_max = partial_maxes
-            .iter()
-            .copied()
-            .fold(f32::NEG_INFINITY, f32::max);
-
-        // Pass 2: parallel exp + partial sum
-        let partial_results = pool.parallel_for(0..total, |range| {
-            let mut local_data = allocate_tensor_data(range.len(), DataType::Float);
-            let mut local_sum = 0.0f32;
-            for (local_i, global_i) in range.clone().enumerate() {
-                let v = read_f32(input_data, global_i);
-                let exp_v = expf_approx(v - global_max);
-                write_f32(&mut local_data, local_i, exp_v);
-                local_sum += exp_v;
-            }
-            (range.start, local_data, local_sum)
-        });
-
-        let global_sum: f32 = partial_results.iter().map(|(_, _, s)| s).sum();
-
-        // Pass 3: normalize (assemble and divide)
-        let mut raw_data = allocate_tensor_data(total, DataType::Float);
-        for (start, chunk, _) in partial_results {
-            let count = chunk.len() / 4;
-            for i in 0..count {
-                let v = read_f32(&chunk, i);
-                write_f32(&mut raw_data, start + i, v / global_sum);
-            }
+    let results = pool.parallel_for(0..num_rows, |row_range| {
+        let mut chunk_data = allocate_tensor_data(row_range.len() * row_len, DataType::Float);
+        for (local_r, global_r) in row_range.clone().enumerate() {
+            softmax_row(input_data, &mut chunk_data, global_r, local_r, row_len);
         }
+        (row_range.start, chunk_data)
+    });
 
-        Ok(Tensor {
-            data_type: DataType::Float,
-            shape: input.shape.clone(),
-            name: String::new(),
-            raw_data,
-        })
-    } else {
-        // ndim == 2, axis == 1: each row is independent softmax
-        let num_rows = input.shape.dims[0] as usize;
-        let row_len = input.shape.dims[1] as usize;
+    let mut raw_data = allocate_tensor_data(total, DataType::Float);
+    for (start_row, chunk) in results {
+        let offset = start_row * row_len * 4;
+        raw_data[offset..offset + chunk.len()].copy_from_slice(&chunk);
+    }
 
-        let results = pool.parallel_for(0..num_rows, |row_range| {
-            let mut chunk_data = allocate_tensor_data(row_range.len() * row_len, DataType::Float);
-            for (local_r, global_r) in row_range.clone().enumerate() {
-                let base = global_r * row_len;
-                let out_base = local_r * row_len;
-                // Find max
-                let mut max_val = f32::NEG_INFINITY;
-                for j in 0..row_len {
-                    let v = read_f32(input_data, base + j);
-                    if v > max_val {
-                        max_val = v;
-                    }
-                }
-                // Exp + sum
-                let mut sum = 0.0f32;
-                for j in 0..row_len {
-                    let v = read_f32(input_data, base + j);
-                    let exp_v = expf_approx(v - max_val);
-                    write_f32(&mut chunk_data, out_base + j, exp_v);
-                    sum += exp_v;
-                }
-                // Normalize
-                if sum > 0.0 {
-                    for j in 0..row_len {
-                        let v = read_f32(&chunk_data, out_base + j);
-                        write_f32(&mut chunk_data, out_base + j, v / sum);
-                    }
-                }
-            }
-            (row_range.start, chunk_data)
-        });
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data,
+    })
+}
 
-        let mut raw_data = allocate_tensor_data(total, DataType::Float);
-        for (start_row, chunk) in results {
-            let offset = start_row * row_len * 4;
-            raw_data[offset..offset + chunk.len()].copy_from_slice(&chunk);
+/// Compute softmax for a single row, writing the normalized values into
+/// `chunk_data` at the per-thread output base offset.
+fn softmax_row(
+    input_data: &[u8],
+    chunk_data: &mut [u8],
+    global_r: usize,
+    local_r: usize,
+    row_len: usize,
+) {
+    let base = global_r * row_len;
+    let out_base = local_r * row_len;
+    let max_val = softmax_row_max(input_data, base, row_len);
+    let sum = softmax_row_exp_into(input_data, chunk_data, base, out_base, row_len, max_val);
+    if sum > 0.0 {
+        softmax_row_normalize(chunk_data, out_base, row_len, sum);
+    }
+}
+
+/// Max across one input row.
+fn softmax_row_max(input_data: &[u8], base: usize, row_len: usize) -> f32 {
+    let mut max_val = f32::NEG_INFINITY;
+    for j in 0..row_len {
+        let v = read_f32(input_data, base + j);
+        if v > max_val {
+            max_val = v;
         }
+    }
+    max_val
+}
 
-        Ok(Tensor {
-            data_type: DataType::Float,
-            shape: input.shape.clone(),
-            name: String::new(),
-            raw_data,
-        })
+/// Compute `exp(x - max)` per row element, write into `chunk_data`,
+/// return the row sum.
+fn softmax_row_exp_into(
+    input_data: &[u8],
+    chunk_data: &mut [u8],
+    base: usize,
+    out_base: usize,
+    row_len: usize,
+    max_val: f32,
+) -> f32 {
+    let mut sum = 0.0f32;
+    for j in 0..row_len {
+        let v = read_f32(input_data, base + j);
+        let exp_v = expf_approx(v - max_val);
+        write_f32(chunk_data, out_base + j, exp_v);
+        sum += exp_v;
+    }
+    sum
+}
+
+/// Divide every element of one row by its sum (in place in `chunk_data`).
+fn softmax_row_normalize(chunk_data: &mut [u8], out_base: usize, row_len: usize, sum: f32) {
+    for j in 0..row_len {
+        let v = read_f32(chunk_data, out_base + j);
+        write_f32(chunk_data, out_base + j, v / sum);
     }
 }
 
