@@ -8,13 +8,26 @@
 //! ## Canonical record format
 //!
 //! ```text
-//! username:$argon2id$v=19$m=<m>,t=<t>,p=<p>$<base64-salt>$<base64-tag>:role=<root|operator|viewer>:flags=<u32>:last_changed=<unix-day>:totp_secret=<base32-or-empty>:lockout_until=<unix-or-zero>
+//! username:$argon2id$v=19$m=<m>,t=<t>,p=<p>$<base64-salt>$<base64-tag>:role=<root|operator|viewer>:flags=<u32>:last_changed=<unix-day>:totp_secret=<base32-or-empty>:lockout_until=<unix-or-zero>[:totp_required=<true|false>]
 //! ```
+//!
+//! ## TOTP enrolment fields (Phase 9)
+//!
+//! `totp_secret` — base32-encoded RFC 4648 §6 secret (no padding); empty
+//! when the user has not enrolled in TOTP. Always present after
+//! `last_changed=`.
+//!
+//! `totp_required` — boolean (`true` / `false`); when `true`, the
+//! `auth_login` syscall MUST receive a valid TOTP code as its `factor2`
+//! argument. Defaults to `false` when absent so old shadows from
+//! Phase 2/3 round-trip unchanged. Always serialised when serialising
+//! a fresh shadow.
 //!
 //! ## Forward-compatibility rule
 //!
 //! Parsers SHALL ignore unknown trailing fields. Any additional `key=value`
-//! field after `lockout_until=` is preserved verbatim in
+//! field after `lockout_until=` (other than the recognised
+//! `totp_required`) is preserved verbatim in
 //! [`ShadowEntry::trailing_unknown_fields`] and round-tripped on rewrite,
 //! so a future feature flag (e.g. `mfa_kind=fido2`) does not break older
 //! readers.
@@ -122,10 +135,15 @@ pub struct ShadowEntry {
     pub totp_secret: Option<Vec<u8>>,
     /// Lockout deadline as Unix seconds (`0` ⇒ not locked out).
     pub lockout_until_unix: u64,
+    /// Whether the kernel `auth_login` syscall SHALL require a TOTP
+    /// `factor2` for this user. Persisted as `totp_required=true|false`
+    /// in the shadow record; defaults to `false` for forward
+    /// compatibility with older shadows that pre-date Phase 9.
+    pub totp_required: bool,
     /// Forward-compat: any `key=value` field appearing after
-    /// `lockout_until=` is preserved verbatim and rewritten on
-    /// serialization. Each entry is the raw `key=value` string (no
-    /// surrounding colons).
+    /// `lockout_until=` and not recognised as `totp_required` is
+    /// preserved verbatim and rewritten on serialization. Each entry
+    /// is the raw `key=value` string (no surrounding colons).
     pub trailing_unknown_fields: Vec<String>,
 }
 
@@ -184,6 +202,7 @@ pub fn parse_record(line: &str) -> Result<ShadowEntry, ShadowError> {
     let mut last_changed: Option<u32> = None;
     let mut totp_secret: Option<Option<Vec<u8>>> = None;
     let mut lockout_until: Option<u64> = None;
+    let mut totp_required: Option<bool> = None;
     let mut trailing: Vec<String> = Vec::new();
 
     for kv in parts {
@@ -225,6 +244,16 @@ pub fn parse_record(line: &str) -> Result<ShadowEntry, ShadowError> {
                 lockout_until =
                     Some(parse_u64(v).ok_or(ShadowError::InvalidInteger("lockout_until"))?);
             }
+            "totp_required" => {
+                if totp_required.is_some() {
+                    return Err(ShadowError::DuplicateField("totp_required"));
+                }
+                totp_required = Some(match v {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(ShadowError::InvalidInteger("totp_required")),
+                });
+            }
             _ => {
                 // Forward-compat: preserve verbatim.
                 trailing.push(kv.to_string());
@@ -240,6 +269,10 @@ pub fn parse_record(line: &str) -> Result<ShadowEntry, ShadowError> {
         last_changed_unix_day: last_changed.ok_or(ShadowError::MissingField("last_changed"))?,
         totp_secret: totp_secret.ok_or(ShadowError::MissingField("totp_secret"))?,
         lockout_until_unix: lockout_until.ok_or(ShadowError::MissingField("lockout_until"))?,
+        // `totp_required` is forward-compat: pre-Phase-9 shadows omit
+        // it. When absent we default to `false` (no TOTP gate); when
+        // present we honour the parsed value.
+        totp_required: totp_required.unwrap_or(false),
         trailing_unknown_fields: trailing,
     })
 }
@@ -278,6 +311,14 @@ pub fn serialize_record(entry: &ShadowEntry) -> String {
     }
     out.push_str(":lockout_until=");
     push_u64(&mut out, entry.lockout_until_unix);
+    // `totp_required` is asymmetric to keep pre-Phase-9 shadows
+    // byte-for-byte round-trippable: parser defaults missing field to
+    // `false`, serializer omits when `false` and emits
+    // `totp_required=true` only when set. New writers that want TOTP
+    // gating still emit the field; old shadows stay clean.
+    if entry.totp_required {
+        out.push_str(":totp_required=true");
+    }
     for extra in &entry.trailing_unknown_fields {
         out.push(':');
         out.push_str(extra);
@@ -456,6 +497,7 @@ mod tests {
             last_changed_unix_day: 19_852,
             totp_secret: None,
             lockout_until_unix: 0,
+            totp_required: false,
             trailing_unknown_fields: Vec::new(),
         }
     }
@@ -686,5 +728,116 @@ mod tests {
     #[test]
     fn empty_record_rejected() {
         assert_eq!(parse_record(""), Err(ShadowError::EmptyRecord));
+    }
+
+    // ─── Phase 9: TOTP enrolment fields ─────────────────────────────────
+
+    #[test]
+    fn totp_required_round_trips_true() {
+        // Spec: phase-9 enrolment flag SHALL serialize as
+        // `totp_required=true` after `lockout_until=`. Verify a fresh
+        // entry with `totp_required=true` reserialises and reparses
+        // exactly.
+        // lgtm[rust/hard-coded-cryptographic-value] — synthetic 20-byte fixture, not a real credential
+        let secret: Vec<u8> = (0u8..20).collect();
+        let mut entry = sample_entry();
+        entry.totp_secret = Some(secret);
+        entry.totp_required = true;
+
+        let line = serialize_record(&entry);
+        assert!(
+            line.ends_with(":totp_required=true"),
+            "expected line to end with totp_required=true, got: {line}"
+        );
+
+        let parsed = parse_record(&line).unwrap();
+        assert!(parsed.totp_required);
+        assert_eq!(parsed, entry);
+    }
+
+    #[test]
+    fn totp_required_false_omitted_for_pre_phase9_compat() {
+        // Spec: when `totp_required = false`, the serializer SHALL
+        // omit the field so pre-Phase-9 shadows remain byte-for-byte
+        // round-trippable. Verify the line lacks the field but the
+        // parsed value comes back as `false`.
+        let entry = sample_entry();
+        let line = serialize_record(&entry);
+        assert!(
+            !line.contains("totp_required"),
+            "false totp_required must be omitted; line was: {line}"
+        );
+        let parsed = parse_record(&line).unwrap();
+        assert!(!parsed.totp_required);
+    }
+
+    #[test]
+    fn pre_phase9_shadow_parses_with_default_totp_required() {
+        // A literal pre-Phase-9 shadow line (no `totp_required=`)
+        // SHALL parse with `totp_required = false`. Forward-compat
+        // requirement.
+        let line = alloc::format!(
+            "alice:{}:role=operator:flags=0:last_changed=19852:totp_secret=:lockout_until=0",
+            SAMPLE_PHC
+        );
+        let parsed = parse_record(&line).unwrap();
+        assert!(!parsed.totp_required);
+        assert_eq!(parsed.username, "alice");
+    }
+
+    #[test]
+    fn totp_required_explicit_false_round_trips() {
+        // A shadow that explicitly carries `totp_required=false`
+        // SHALL parse cleanly. The serializer omits it on rewrite,
+        // so this is a one-way forward-compat path.
+        let line = alloc::format!(
+            "bob:{}:role=viewer:flags=0:last_changed=19852:totp_secret=:lockout_until=0:totp_required=false",
+            SAMPLE_PHC
+        );
+        let parsed = parse_record(&line).unwrap();
+        assert!(!parsed.totp_required);
+    }
+
+    #[test]
+    fn totp_required_invalid_value_rejected() {
+        let line = alloc::format!(
+            "carol:{}:role=viewer:flags=0:last_changed=19852:totp_secret=:lockout_until=0:totp_required=yes",
+            SAMPLE_PHC
+        );
+        assert_eq!(
+            parse_record(&line),
+            Err(ShadowError::InvalidInteger("totp_required"))
+        );
+    }
+
+    #[test]
+    fn totp_required_duplicate_field_rejected() {
+        let line = alloc::format!(
+            "dave:{}:role=viewer:flags=0:last_changed=19852:totp_secret=:lockout_until=0:totp_required=true:totp_required=false",
+            SAMPLE_PHC
+        );
+        assert_eq!(
+            parse_record(&line),
+            Err(ShadowError::DuplicateField("totp_required"))
+        );
+    }
+
+    #[test]
+    fn totp_required_with_trailing_unknown_fields() {
+        // Verify `totp_required=true` serialises before any preserved
+        // unknown trailing fields, so order is stable.
+        let mut entry = sample_entry();
+        entry.totp_required = true;
+        entry.trailing_unknown_fields = alloc::vec![alloc::string::String::from("mfa_kind=fido2")];
+        let line = serialize_record(&entry);
+        // The known field comes first, then the unknown.
+        let totp_idx = line.find(":totp_required=true").unwrap();
+        let mfa_idx = line.find(":mfa_kind=fido2").unwrap();
+        assert!(totp_idx < mfa_idx);
+
+        let parsed = parse_record(&line).unwrap();
+        assert!(parsed.totp_required);
+        assert_eq!(parsed.trailing_unknown_fields, ["mfa_kind=fido2"]);
+        assert_eq!(parsed, entry);
     }
 }

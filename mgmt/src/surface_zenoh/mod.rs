@@ -9,8 +9,8 @@
 //!
 //! Phase 7 lands the admin keyspace, the bearer-token wrapper, the
 //! per-identity / total session caps, and the in-flight live flag.
-//! Phase 8 will land telemetry publications under
-//! `smallaios/metrics/**`.
+//! Phase 8 lands telemetry publications under
+//! `smallaios/metrics/**` (see [`telemetry`]).
 //!
 //! ## Module map
 //!
@@ -22,6 +22,9 @@
 //! - [`token`] — opaque + ML-DSA-65 / Ed25519-legacy token modes.
 //! - [`admin`] — verb dispatcher and bearer-token wrapper.
 //! - [`errors`] — POSIX errno table shared with the syscall surface.
+//! - [`telemetry`] — periodic + event-driven publishers under
+//!   `smallaios/metrics/**` with per-key cadence + adaptive
+//!   thresholds.
 //!
 //! ## ZenohSurface
 //!
@@ -39,6 +42,7 @@ pub mod admin;
 pub mod errors;
 pub mod json;
 pub mod session;
+pub mod telemetry;
 pub mod token;
 
 #[cfg(test)]
@@ -218,6 +222,7 @@ pub fn value_to_json(v: Value) -> JsonValue {
         Value::U64(n) => JsonValue::from(n),
         Value::String(s) => JsonValue::String(s),
         Value::PasswordClasses(p) => JsonValue::from(u64::from(p.0)),
+        Value::Roles(r) => JsonValue::from(u64::from(r.0)),
     }
 }
 
@@ -251,6 +256,13 @@ pub fn json_to_typed(value: &JsonValue, current: &Value) -> Option<Value> {
             Some(Value::PasswordClasses(
                 crate::surface::PasswordClassSet::from_mask(n as u8),
             ))
+        }
+        Value::Roles(_) => {
+            let n = value.as_int()?;
+            if !(0..=255).contains(&n) {
+                return None;
+            }
+            Some(Value::Roles(crate::surface::RoleSet::from_mask(n as u8)))
         }
     }
 }
@@ -374,6 +386,28 @@ mod tests {
             json_to_typed(&JsonValue::string("y"), &cur),
             Some(Value::String("y".to_string()))
         );
+        // Phase 9 Roles bitmask — single role bit.
+        let cur = Value::Roles(crate::surface::RoleSet::from_mask(0));
+        assert_eq!(
+            json_to_typed(&JsonValue::Int(crate::surface::RoleSet::ROOT as i64), &cur,),
+            Some(Value::Roles(crate::surface::RoleSet::from_mask(
+                crate::surface::RoleSet::ROOT
+            )))
+        );
+        // Roles rejects out-of-range values.
+        assert_eq!(json_to_typed(&JsonValue::Int(-1), &cur), None);
+        assert_eq!(json_to_typed(&JsonValue::Int(256), &cur), None);
+    }
+
+    #[test]
+    fn value_to_json_round_trips_roles_bitmask() {
+        // Spec Phase 9: `totp.enforced_for_roles` round-trips
+        // through the JSON wire codec as a `u8`-valued integer.
+        let mask = crate::surface::RoleSet::ROOT | crate::surface::RoleSet::OPERATOR;
+        let v = Value::Roles(crate::surface::RoleSet::from_mask(mask));
+        let j = value_to_json(v.clone());
+        let back = json_to_typed(&j, &v).unwrap();
+        assert_eq!(back, v);
     }
 
     #[test]

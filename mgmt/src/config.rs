@@ -43,7 +43,7 @@
 //! proc-macro crate. A future phase MAY add the proc-macro and
 //! generate the registry from it; the public surface SHALL NOT change.
 
-use crate::surface::{ConfigPath, PasswordClassSet, ReloadKind, SurfaceScope, Value};
+use crate::surface::{ConfigPath, PasswordClassSet, ReloadKind, RoleSet, SurfaceScope, Value};
 
 // ─── Top-level Config ────────────────────────────────────────────────────────
 
@@ -72,6 +72,8 @@ pub struct Config {
     pub overlay: OverlayConfig,
     /// Flash (`/flash` vs `/data`) routing knobs.
     pub flash: FlashConfig,
+    /// TOTP (RFC 6238) second-factor enforcement policy. Phase 9.
+    pub totp: TotpConfig,
 }
 
 impl Default for Config {
@@ -94,6 +96,7 @@ impl Config {
             mgmt: MgmtConfig::v1_defaults(),
             overlay: OverlayConfig::v1_defaults(),
             flash: FlashConfig::v1_defaults(),
+            totp: TotpConfig::v1_defaults(),
         }
     }
 }
@@ -170,13 +173,20 @@ pub struct AuditConfig {
     pub keep_archives: u32,
     /// Hard cap on bytes used by the log + archives combined.
     pub max_total_disk_bytes: u64,
-    /// Emit ML-DSA-65 signed checkpoints at every rotation. Off in
-    /// builds without `signed-checkpoints`; configurable when on.
+    /// Emit ML-DSA-65 signed checkpoints. Off in builds without
+    /// `signed-checkpoints`; configurable when on. When `true` the
+    /// kernel signs every [`Self::signed_checkpoint_interval`]-th
+    /// chain head with the kernel-held ML-DSA-65 key.
     pub signed_checkpoints: bool,
+    /// Append a signed-checkpoint record every `N` committed records
+    /// when [`Self::signed_checkpoints`] is `true`. Per
+    /// `management-login-v1` Q24 the default is 1024.
+    pub signed_checkpoint_interval: u32,
 }
 
 impl AuditConfig {
-    /// v1 defaults: 16 MiB / 24 h / 8 archives / 256 MiB total.
+    /// v1 defaults: 16 MiB / 24 h / 8 archives / 256 MiB total /
+    /// signed-checkpoint interval 1024.
     pub const fn v1_defaults() -> Self {
         Self {
             rotate_size_bytes: 16 * 1024 * 1024,
@@ -184,6 +194,7 @@ impl AuditConfig {
             keep_archives: 8,
             max_total_disk_bytes: 256 * 1024 * 1024,
             signed_checkpoints: true,
+            signed_checkpoint_interval: 1024,
         }
     }
 }
@@ -324,6 +335,38 @@ impl FlashConfig {
     }
 }
 
+// ─── TOTP policy (Phase 9) ──────────────────────────────────────────────────
+
+/// TOTP (RFC 6238) second-factor enforcement policy.
+///
+/// `enforced_for_roles` is a [`RoleSet`] bitmask: when a role's bit is
+/// set, every user holding that role MUST present a valid TOTP code as
+/// `factor2` to `auth_login` and (Phase 10) every privileged
+/// `auth_change_password`. The kernel reads this field through the
+/// universal-exposure registry; it is reload-kind `Live`, so an
+/// operator can dial enforcement up or down without rebooting.
+///
+/// Defaults: empty set (TOTP is opt-in per user via
+/// `auth_totp_setup` + the shadow `totp_required=true` field). The
+/// operator opts roles in by setting the bitmask in
+/// `mgmt/policy.toml`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TotpConfig {
+    /// Bitmask of [`RoleSet`] flags whose users MUST present a TOTP
+    /// code at login. Empty (0) ⇒ TOTP enforcement is opt-in per
+    /// user via the shadow record.
+    pub enforced_for_roles: RoleSet,
+}
+
+impl TotpConfig {
+    /// v1 defaults: empty (opt-in via shadow).
+    pub const fn v1_defaults() -> Self {
+        Self {
+            enforced_for_roles: RoleSet::from_mask(0),
+        }
+    }
+}
+
 // ─── Path → field projection ─────────────────────────────────────────────────
 
 impl Config {
@@ -349,6 +392,9 @@ impl Config {
             "audit.keep_archives" => Ok(Value::U32(self.audit.keep_archives)),
             "audit.max_total_disk_bytes" => Ok(Value::U64(self.audit.max_total_disk_bytes)),
             "audit.signed_checkpoints" => Ok(Value::Bool(self.audit.signed_checkpoints)),
+            "audit.signed_checkpoint_interval" => {
+                Ok(Value::U32(self.audit.signed_checkpoint_interval))
+            }
 
             // metrics.*
             "metrics.cpu_interval_ms" => Ok(Value::U32(self.metrics.cpu_interval_ms)),
@@ -378,6 +424,9 @@ impl Config {
             // flash.*
             "flash.prefer_flash_for_models" => Ok(Value::Bool(self.flash.prefer_flash_for_models)),
             "flash.readback_verify" => Ok(Value::Bool(self.flash.readback_verify)),
+
+            // totp.* (Phase 9)
+            "totp.enforced_for_roles" => Ok(Value::Roles(self.totp.enforced_for_roles)),
 
             _ => Err(crate::surface::Error::NotFound),
         }
@@ -423,6 +472,9 @@ impl Config {
             "audit.keep_archives" => self.audit.keep_archives = value.as_u32()?,
             "audit.max_total_disk_bytes" => self.audit.max_total_disk_bytes = value.as_u64()?,
             "audit.signed_checkpoints" => self.audit.signed_checkpoints = value.as_bool()?,
+            "audit.signed_checkpoint_interval" => {
+                self.audit.signed_checkpoint_interval = value.as_u32()?
+            }
 
             "metrics.cpu_interval_ms" => self.metrics.cpu_interval_ms = value.as_u32()?,
             "metrics.memory_interval_ms" => self.metrics.memory_interval_ms = value.as_u32()?,
@@ -456,6 +508,8 @@ impl Config {
             }
             "flash.readback_verify" => self.flash.readback_verify = value.as_bool()?,
 
+            "totp.enforced_for_roles" => self.totp.enforced_for_roles = value.as_roles()?,
+
             _ => return Err(crate::surface::Error::NotFound),
         }
         Ok(())
@@ -488,6 +542,8 @@ pub mod registry {
         String,
         /// `Value::PasswordClasses`.
         PasswordClasses,
+        /// `Value::Roles` — bitmask of [`crate::surface::RoleSet`].
+        Roles,
     }
 
     impl FieldType {
@@ -499,6 +555,7 @@ pub mod registry {
                 Self::U64 => "u64",
                 Self::String => "string",
                 Self::PasswordClasses => "password_classes",
+                Self::Roles => "roles",
             }
         }
     }
@@ -599,6 +656,14 @@ pub mod registry {
             // Toggling signed checkpoints alters the on-disk audit
             // format mid-stream, so it's a boot-time field.
             reload: ReloadKind::Boot,
+            scope: SurfaceScope::Universal,
+        },
+        FieldDescriptor {
+            path: "audit.signed_checkpoint_interval",
+            kind: FieldType::U32,
+            // The checkpoint cadence is read fresh on every commit by
+            // the audit ring, so live reload is safe.
+            reload: ReloadKind::Live,
             scope: SurfaceScope::Universal,
         },
         // metrics.*
@@ -720,6 +785,15 @@ pub mod registry {
         FieldDescriptor {
             path: "flash.readback_verify",
             kind: FieldType::Bool,
+            reload: ReloadKind::Live,
+            scope: SurfaceScope::Universal,
+        },
+        // totp.* (Phase 9)
+        FieldDescriptor {
+            path: "totp.enforced_for_roles",
+            kind: FieldType::Roles,
+            // The kernel reads this on every login attempt, so a
+            // change takes effect on the next login without a reboot.
             reload: ReloadKind::Live,
             scope: SurfaceScope::Universal,
         },
@@ -962,5 +1036,55 @@ mod tests {
         );
         c.write_path(&p, Value::PasswordClasses(new_set)).unwrap();
         assert_eq!(c.read_path(&p), Ok(Value::PasswordClasses(new_set)));
+    }
+
+    // ─── Phase 9: TOTP enforcement field ────────────────────────────────
+
+    #[test]
+    fn totp_default_is_empty_role_set() {
+        let c = Config::default();
+        let v = c
+            .read_path(&ConfigPath::new("totp.enforced_for_roles").unwrap())
+            .unwrap();
+        assert_eq!(v, Value::Roles(crate::surface::RoleSet::from_mask(0)));
+    }
+
+    #[test]
+    fn totp_enforced_for_roles_round_trip() {
+        // Spec: every role bit can be flipped on/off independently.
+        let mut c = Config::default();
+        let p = ConfigPath::new("totp.enforced_for_roles").unwrap();
+        let mask = crate::surface::RoleSet::ROOT | crate::surface::RoleSet::OPERATOR;
+        let new_set = crate::surface::RoleSet::from_mask(mask);
+        c.write_path(&p, Value::Roles(new_set)).unwrap();
+        assert_eq!(c.read_path(&p), Ok(Value::Roles(new_set)));
+    }
+
+    #[test]
+    fn totp_field_is_registered_with_live_reload() {
+        // The kernel reads `totp.enforced_for_roles` on every login,
+        // so the registry SHALL declare it `Live` (no reboot needed).
+        let f = registry::lookup("totp.enforced_for_roles").expect("registered");
+        assert_eq!(f.kind, FieldType::Roles);
+        assert_eq!(f.reload, ReloadKind::Live);
+        assert_eq!(f.scope, SurfaceScope::Universal);
+    }
+
+    #[test]
+    fn totp_field_rejects_type_mismatch_on_write() {
+        let mut c = Config::default();
+        let p = ConfigPath::new("totp.enforced_for_roles").unwrap();
+        let err = c.write_path(&p, Value::U32(7)).unwrap_err();
+        assert!(matches!(err, crate::surface::Error::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn totp_field_rejects_unknown_role_bits() {
+        let mut c = Config::default();
+        let p = ConfigPath::new("totp.enforced_for_roles").unwrap();
+        // Hand-crafted set with an unknown bit (bit 7).
+        let bogus = crate::surface::RoleSet(0x80);
+        let err = c.write_path(&p, Value::Roles(bogus)).unwrap_err();
+        assert!(matches!(err, crate::surface::Error::Validation(_)));
     }
 }

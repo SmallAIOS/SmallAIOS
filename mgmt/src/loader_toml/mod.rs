@@ -56,7 +56,7 @@ use crate::config::Config;
 use crate::notify::{BroadcastTx, NotifyEvent, Subscriber};
 use crate::surface::{
     AuditIdentity, ConfigPath, ConfigSurface, Error as SurfaceError, PasswordClassSet, ReloadKind,
-    SurfaceKind, Value,
+    RoleSet, SurfaceKind, Value,
 };
 use crate::toml::{parse as toml_parse, serialize as toml_serialize, TomlTable, TomlValue};
 use crate::validate;
@@ -814,6 +814,23 @@ fn toml_to_config_value(
             }
             Ok(Value::PasswordClasses(PasswordClassSet::from_mask(mask)))
         }
+        (TomlValue::Array(items), FieldType::Roles) => {
+            // Phase 9 totp.enforced_for_roles. Same pattern as
+            // password classes: an array of role-name strings.
+            let mut mask: u8 = 0;
+            for item in items {
+                let s = item
+                    .as_str()
+                    .map_err(|_| LoaderError::Validation("role must be string"))?;
+                mask |= match s {
+                    "root" => RoleSet::ROOT,
+                    "operator" => RoleSet::OPERATOR,
+                    "viewer" => RoleSet::VIEWER,
+                    _ => return Err(LoaderError::Validation("unknown role name")),
+                };
+            }
+            Ok(Value::Roles(RoleSet::from_mask(mask)))
+        }
         (other, expected) => Err(LoaderError::TypeMismatch {
             path: path.to_string(),
             expected: expected.as_value_tag(),
@@ -850,6 +867,21 @@ fn config_value_to_toml(value: &Value) -> Option<TomlValue> {
             }
             if p.contains(PasswordClassSet::SYMBOL) {
                 items.push(TomlValue::String("symbol".to_string()));
+            }
+            Some(TomlValue::Array(items))
+        }
+        Value::Roles(r) => {
+            // Roles serialise as a TOML array of role-name strings,
+            // mirroring the `Value::PasswordClasses` shape.
+            let mut items = Vec::new();
+            if r.contains(RoleSet::ROOT) {
+                items.push(TomlValue::String("root".to_string()));
+            }
+            if r.contains(RoleSet::OPERATOR) {
+                items.push(TomlValue::String("operator".to_string()));
+            }
+            if r.contains(RoleSet::VIEWER) {
+                items.push(TomlValue::String("viewer".to_string()));
             }
             Some(TomlValue::Array(items))
         }
@@ -1317,6 +1349,82 @@ mod tests {
             }
             _ => panic!("expected password classes"),
         }
+    }
+
+    // ─── Phase 9: TOTP enforced_for_roles ────────────────────────────────
+
+    #[test]
+    fn config_value_to_toml_round_trip_for_totp_roles() {
+        // Default is empty role set → empty TOML array.
+        let cfg = Config::v1_defaults();
+        let v = cfg
+            .read_path(&ConfigPath::new("totp.enforced_for_roles").unwrap())
+            .unwrap();
+        match config_value_to_toml(&v).unwrap() {
+            TomlValue::Array(items) => assert!(items.is_empty()),
+            _ => panic!("expected array"),
+        }
+    }
+
+    #[test]
+    fn toml_to_config_value_totp_roles_parses_role_names() {
+        let toml_v = TomlValue::Array(alloc::vec![
+            TomlValue::String("root".to_string()),
+            TomlValue::String("operator".to_string()),
+        ]);
+        let v = toml_to_config_value(&toml_v, FieldType::Roles, "totp.enforced_for_roles").unwrap();
+        match v {
+            Value::Roles(r) => {
+                assert!(r.contains(RoleSet::ROOT));
+                assert!(r.contains(RoleSet::OPERATOR));
+                assert!(!r.contains(RoleSet::VIEWER));
+            }
+            _ => panic!("expected roles"),
+        }
+    }
+
+    #[test]
+    fn toml_to_config_value_totp_roles_rejects_unknown_name() {
+        let toml_v = TomlValue::Array(alloc::vec![TomlValue::String("admin".to_string())]);
+        let err =
+            toml_to_config_value(&toml_v, FieldType::Roles, "totp.enforced_for_roles").unwrap_err();
+        assert!(matches!(err, LoaderError::Validation(_)));
+    }
+
+    #[test]
+    fn totp_roles_round_trip_through_loader_in_memory() {
+        // End-to-end: write a TOML body containing
+        // `totp.enforced_for_roles = ["root","operator"]`, load into
+        // a `Config`, read the field back, confirm the bits.
+        let toml_body = "[totp]\nenforced_for_roles = [\"root\",\"operator\"]\n";
+        let mut cfg = Config::v1_defaults();
+        let parsed = toml_parse(toml_body).expect("parse totp body");
+        apply_table_to_config(&parsed, "", &mut cfg).unwrap();
+        let v = cfg
+            .read_path(&ConfigPath::new("totp.enforced_for_roles").unwrap())
+            .unwrap();
+        let r = match v {
+            Value::Roles(r) => r,
+            _ => panic!("expected roles"),
+        };
+        assert!(r.contains(RoleSet::ROOT));
+        assert!(r.contains(RoleSet::OPERATOR));
+        assert!(!r.contains(RoleSet::VIEWER));
+
+        // And the reverse direction: serialise back to TOML and the
+        // resulting tree must contain a `totp.enforced_for_roles`
+        // array of two role names.
+        let toml_back = config_value_to_toml(&v).unwrap();
+        let names: Vec<String> = match toml_back {
+            TomlValue::Array(items) => items
+                .iter()
+                .map(|i| i.as_str().unwrap().to_string())
+                .collect(),
+            _ => panic!("expected array"),
+        };
+        assert!(names.contains(&"root".to_string()));
+        assert!(names.contains(&"operator".to_string()));
+        assert_eq!(names.len(), 2);
     }
 
     #[test]

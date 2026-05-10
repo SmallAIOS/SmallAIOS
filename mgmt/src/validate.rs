@@ -24,7 +24,7 @@
 //! short, lower-case, no trailing punctuation.
 
 use crate::config::Config;
-use crate::surface::{ConfigPath, Error, PasswordClassSet, Value};
+use crate::surface::{ConfigPath, Error, PasswordClassSet, RoleSet, Value};
 
 // ─── Bounds (named so tests can pin them down) ───────────────────────────────
 
@@ -70,6 +70,14 @@ pub const AUDIT_ROTATE_MIN_BYTES: u64 = 64 * 1024;
 /// Maximum number of retained audit archives. The on-disk audit ring
 /// is bounded; this caps the bookkeeping vector.
 pub const AUDIT_MAX_KEEP_ARCHIVES: u32 = 256;
+
+/// Minimum `audit.signed_checkpoint_interval`. Below this, the
+/// signed-checkpoint commit cost dominates the audit pipeline.
+pub const AUDIT_MIN_CHECKPOINT_INTERVAL: u32 = 16;
+/// Maximum `audit.signed_checkpoint_interval`. Above this, a
+/// long-running system risks never reaching a checkpoint, defeating
+/// off-box tamper-detection.
+pub const AUDIT_MAX_CHECKPOINT_INTERVAL: u32 = 1_048_576;
 
 /// Minimum `mgmt.zenoh_per_identity_max` — at least one session.
 pub const ZENOH_PER_IDENTITY_MIN: u32 = 1;
@@ -180,6 +188,15 @@ pub fn validate_field(path: &ConfigPath, value: &Value) -> Result<(), Error> {
             let _ = value.as_bool()?;
             Ok(())
         }
+        "audit.signed_checkpoint_interval" => {
+            let n = value.as_u32()?;
+            check_range_u32(
+                n,
+                AUDIT_MIN_CHECKPOINT_INTERVAL,
+                AUDIT_MAX_CHECKPOINT_INTERVAL,
+                "audit.signed_checkpoint_interval out of range",
+            )
+        }
 
         // metrics.*
         "metrics.cpu_interval_ms"
@@ -279,6 +296,20 @@ pub fn validate_field(path: &ConfigPath, value: &Value) -> Result<(), Error> {
         // flash.*
         "flash.prefer_flash_for_models" | "flash.readback_verify" => {
             let _ = value.as_bool()?;
+            Ok(())
+        }
+
+        // totp.* (Phase 9)
+        "totp.enforced_for_roles" => {
+            let r = value.as_roles()?;
+            // Reject unknown bits — defensive, since `from_mask`
+            // already drops them but a hand-constructed `RoleSet(_)`
+            // can carry garbage.
+            if r.0 & !RoleSet::ALL != 0 {
+                return Err(Error::Validation(
+                    "totp.enforced_for_roles contains unknown bits",
+                ));
+            }
             Ok(())
         }
 
@@ -384,6 +415,9 @@ fn apply_value_in_memory(c: &mut Config, path: &ConfigPath, value: &Value) -> Re
         "audit.keep_archives" => c.audit.keep_archives = value.as_u32()?,
         "audit.max_total_disk_bytes" => c.audit.max_total_disk_bytes = value.as_u64()?,
         "audit.signed_checkpoints" => c.audit.signed_checkpoints = value.as_bool()?,
+        "audit.signed_checkpoint_interval" => {
+            c.audit.signed_checkpoint_interval = value.as_u32()?
+        }
 
         "metrics.cpu_interval_ms" => c.metrics.cpu_interval_ms = value.as_u32()?,
         "metrics.memory_interval_ms" => c.metrics.memory_interval_ms = value.as_u32()?,
@@ -408,6 +442,8 @@ fn apply_value_in_memory(c: &mut Config, path: &ConfigPath, value: &Value) -> Re
 
         "flash.prefer_flash_for_models" => c.flash.prefer_flash_for_models = value.as_bool()?,
         "flash.readback_verify" => c.flash.readback_verify = value.as_bool()?,
+
+        "totp.enforced_for_roles" => c.totp.enforced_for_roles = value.as_roles()?,
 
         _ => return Err(Error::NotFound),
     }
@@ -730,5 +766,32 @@ mod tests {
         let c = Config::default();
         let err = validate_cross_field(&c, &p("nope.nada"), &Value::U32(0)).unwrap_err();
         assert!(matches!(err, Error::NotFound));
+    }
+
+    // ─── Phase 9: TOTP enforcement field ────────────────────────────────
+
+    #[test]
+    fn totp_enforced_for_roles_accepts_empty() {
+        let empty = RoleSet::from_mask(0);
+        validate_field(&p("totp.enforced_for_roles"), &Value::Roles(empty)).unwrap();
+    }
+
+    #[test]
+    fn totp_enforced_for_roles_accepts_all_known_roles() {
+        let all = RoleSet::from_mask(RoleSet::ALL);
+        validate_field(&p("totp.enforced_for_roles"), &Value::Roles(all)).unwrap();
+    }
+
+    #[test]
+    fn totp_enforced_for_roles_rejects_unknown_bits() {
+        let bogus = RoleSet(0x80);
+        let err = validate_field(&p("totp.enforced_for_roles"), &Value::Roles(bogus)).unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn totp_enforced_for_roles_rejects_type_mismatch() {
+        let err = validate_field(&p("totp.enforced_for_roles"), &Value::Bool(true)).unwrap_err();
+        assert!(matches!(err, Error::TypeMismatch { .. }));
     }
 }
