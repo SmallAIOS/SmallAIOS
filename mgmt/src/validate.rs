@@ -71,6 +71,14 @@ pub const AUDIT_ROTATE_MIN_BYTES: u64 = 64 * 1024;
 /// is bounded; this caps the bookkeeping vector.
 pub const AUDIT_MAX_KEEP_ARCHIVES: u32 = 256;
 
+/// Minimum `audit.signed_checkpoint_interval`. Below this, the
+/// signed-checkpoint commit cost dominates the audit pipeline.
+pub const AUDIT_MIN_CHECKPOINT_INTERVAL: u32 = 16;
+/// Maximum `audit.signed_checkpoint_interval`. Above this, a
+/// long-running system risks never reaching a checkpoint, defeating
+/// off-box tamper-detection.
+pub const AUDIT_MAX_CHECKPOINT_INTERVAL: u32 = 1_048_576;
+
 /// Minimum `mgmt.zenoh_per_identity_max` — at least one session.
 pub const ZENOH_PER_IDENTITY_MIN: u32 = 1;
 /// Maximum `mgmt.zenoh_total_max` — caps in-kernel session table.
@@ -179,6 +187,15 @@ pub fn validate_field(path: &ConfigPath, value: &Value) -> Result<(), Error> {
         "audit.signed_checkpoints" => {
             let _ = value.as_bool()?;
             Ok(())
+        }
+        "audit.signed_checkpoint_interval" => {
+            let n = value.as_u32()?;
+            check_range_u32(
+                n,
+                AUDIT_MIN_CHECKPOINT_INTERVAL,
+                AUDIT_MAX_CHECKPOINT_INTERVAL,
+                "audit.signed_checkpoint_interval out of range",
+            )
         }
 
         // metrics.*
@@ -398,6 +415,9 @@ fn apply_value_in_memory(c: &mut Config, path: &ConfigPath, value: &Value) -> Re
         "audit.keep_archives" => c.audit.keep_archives = value.as_u32()?,
         "audit.max_total_disk_bytes" => c.audit.max_total_disk_bytes = value.as_u64()?,
         "audit.signed_checkpoints" => c.audit.signed_checkpoints = value.as_bool()?,
+        "audit.signed_checkpoint_interval" => {
+            c.audit.signed_checkpoint_interval = value.as_u32()?
+        }
 
         "metrics.cpu_interval_ms" => c.metrics.cpu_interval_ms = value.as_u32()?,
         "metrics.memory_interval_ms" => c.metrics.memory_interval_ms = value.as_u32()?,
