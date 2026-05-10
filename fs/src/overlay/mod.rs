@@ -89,8 +89,8 @@ pub use conflict_scan::{
 pub use f2fs_upper::{F2fsUpperLayer, DEFAULT_UPPER_BASE};
 pub use integrity::{
     decode_hex, encode_hex, encode_sidecar_bytes, hash_bytes, sha3_sidecar_path, sig_sidecar_path,
-    signature_present, verify_fingerprint, verify_signature, IntegrityError, SHA3_SIDECAR_SUFFIX,
-    SIG_SIDECAR_SUFFIX,
+    signature_present, verify_fingerprint, verify_load, verify_signature, verify_signed,
+    IntegrityError, LoadVerifyOutcome, SHA3_SIDECAR_SUFFIX, SIG_SIDECAR_SUFFIX,
 };
 pub use kernel_adapter::{KernelOverlayAdapter, OVERLAY_UPPER_BASE};
 pub use lookup::{lookup, LookupResult};

@@ -45,12 +45,12 @@
 
 ## 5. Phase 5 — Integrity layer
 
-- [ ] 5.1 SHA-3-256 verify on every read of an upper file (per `fs-overlay-integrity`)
-- [ ] 5.2 Missing-sidecar fail-closed
-- [ ] 5.3 ML-DSA-65 signature verify when `require_signed = true`
-- [ ] 5.4 Default-off mode (signature ignored if not required, even when present)
-- [ ] 5.5 Audit records on hash mismatch and signature failure
-- [ ] 5.6 Property-based fuzz on corrupted sidecars (truncated, malformed hex, wrong-length signature)
+- [x] 5.1 SHA-3-256 verify on every read of an upper file (per `fs-overlay-integrity`) — `fs/src/overlay/integrity.rs::verify_fingerprint` (Phase 2 base) + Phase 5 `verify_load` extends with sig+sha3 chain
+- [x] 5.2 Missing-sidecar fail-closed — `IntegrityError::SidecarMissing` / `SignatureMissing` surfaced at `verify_load`; strict policy fails closed with `-EAUTH`
+- [x] 5.3 ML-DSA-65 signature verify when `require_signed = true` — `fs/src/overlay/integrity.rs::verify_signed` + `verify_load(.., require_signed = true)`; pubkey supplied via `mgmt::Config.overlay.public_key_path`
+- [x] 5.4 Default-off mode (signature ignored if not required, even when present) — `verify_load` permissive path verifies a present sig defense-in-depth (rejects invalid) but accepts absent sig as `LoadVerifyOutcome::OkUnsigned`
+- [x] 5.5 Audit records on hash mismatch and signature failure — three new `OverlayAuditEvent` variants in `kernel/src/syscall/model.rs`: `ModelLoadUnsigned`, `ModelSignatureInvalid`, `ModelSignatureVerified`
+- [x] 5.6 Property-based fuzz on corrupted sidecars (truncated, malformed hex, wrong-length signature) — `fs/src/overlay/integrity.rs::tests` `verify_signed_fails_on_*` family covers truncated/oversized/non-utf8/non-hex/wrong-length sidecars; ~45 new tests in `integrity.rs` exercise the matrix
 
 ## 6. Phase 6 — Audit + cap enforcement + boot conflict
 

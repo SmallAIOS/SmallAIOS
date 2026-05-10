@@ -292,6 +292,43 @@ pub fn validate_field(path: &ConfigPath, value: &Value) -> Result<(), Error> {
             let _ = value.as_bool()?;
             Ok(())
         }
+        "overlay.public_key_path" => {
+            let s = value.as_str()?;
+            // Empty string is allowed at the field level — it means
+            // "no trust anchor configured". Strict-policy + empty pubkey
+            // is enforced at runtime by `verify_load`, not here, because
+            // the cross-field validator below (`overlay_pubkey_required_when_strict`)
+            // catches the false-flip case at config-write time.
+            if s.is_empty() {
+                return Ok(());
+            }
+            // Per-field rules:
+            //  - leading slash (absolute path)
+            //  - no embedded NUL
+            //  - no parent traversal (`..`)
+            //  - reasonable length (≤ 4096 bytes)
+            if !s.starts_with('/') {
+                return Err(Error::Validation(
+                    "overlay.public_key_path must be an absolute path",
+                ));
+            }
+            if s.as_bytes().contains(&0) {
+                return Err(Error::Validation(
+                    "overlay.public_key_path must not contain NUL",
+                ));
+            }
+            if s.split('/').any(|seg| seg == "..") {
+                return Err(Error::Validation(
+                    "overlay.public_key_path must not contain parent-traversal segments",
+                ));
+            }
+            if s.len() > 4096 {
+                return Err(Error::Validation(
+                    "overlay.public_key_path too long (max 4096 bytes)",
+                ));
+            }
+            Ok(())
+        }
 
         // flash.*
         "flash.prefer_flash_for_models" | "flash.readback_verify" => {
@@ -391,6 +428,19 @@ pub fn validate_all(c: &Config) -> Result<(), Error> {
         ));
     }
 
+    // Overlay invariants — embedded-overlay-v1 Phase 5: strict signature
+    // policy demands a configured trust anchor. We catch the false-flip
+    // case (`require_signed = true` while `public_key_path` is empty)
+    // at config-write time so the operator gets a clear "you must
+    // configure a key first" message rather than the runtime
+    // `IntegrityError::SignatureMalformed` surfaced by `verify_load`
+    // on the next `model_load`.
+    if c.overlay.require_signed && c.overlay.public_key_path.is_empty() {
+        return Err(Error::Validation(
+            "overlay.require_signed=true requires overlay.public_key_path to be set",
+        ));
+    }
+
     Ok(())
 }
 
@@ -439,6 +489,9 @@ fn apply_value_in_memory(c: &mut Config, path: &ConfigPath, value: &Value) -> Re
         "overlay.upper_max_bytes" => c.overlay.upper_max_bytes = value.as_u64()?,
         "overlay.require_signed" => c.overlay.require_signed = value.as_bool()?,
         "overlay.allow_operator_unhide" => c.overlay.allow_operator_unhide = value.as_bool()?,
+        "overlay.public_key_path" => {
+            c.overlay.public_key_path = alloc::string::ToString::to_string(value.as_str()?)
+        }
 
         "flash.prefer_flash_for_models" => c.flash.prefer_flash_for_models = value.as_bool()?,
         "flash.readback_verify" => c.flash.readback_verify = value.as_bool()?,
@@ -793,5 +846,134 @@ mod tests {
     fn totp_enforced_for_roles_rejects_type_mismatch() {
         let err = validate_field(&p("totp.enforced_for_roles"), &Value::Bool(true)).unwrap_err();
         assert!(matches!(err, Error::TypeMismatch { .. }));
+    }
+
+    // ─── embedded-overlay-v1 Phase 5: overlay.public_key_path ────────────
+
+    #[test]
+    fn overlay_public_key_path_default_is_absolute() {
+        let c = Config::default();
+        assert_eq!(
+            c.overlay.public_key_path,
+            "/data/mgmt/keys/overlay-pubkey.pub"
+        );
+    }
+
+    #[test]
+    fn overlay_public_key_path_accepts_absolute() {
+        validate_field(
+            &p("overlay.public_key_path"),
+            &Value::String("/data/mgmt/keys/overlay-pubkey.pub".into()),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn overlay_public_key_path_accepts_empty_at_field_level() {
+        // Empty path is valid per-field; the cross-field validator
+        // catches `require_signed=true` + empty.
+        validate_field(&p("overlay.public_key_path"), &Value::String("".into())).unwrap();
+    }
+
+    #[test]
+    fn overlay_public_key_path_rejects_relative() {
+        let err = validate_field(
+            &p("overlay.public_key_path"),
+            &Value::String("relative/path".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn overlay_public_key_path_rejects_parent_traversal() {
+        let err = validate_field(
+            &p("overlay.public_key_path"),
+            &Value::String("/foo/../bar".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn overlay_public_key_path_rejects_nul_byte() {
+        let err = validate_field(
+            &p("overlay.public_key_path"),
+            &Value::String("/foo\0bar".into()),
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn overlay_public_key_path_rejects_too_long() {
+        let mut huge = alloc::string::String::with_capacity(5000);
+        huge.push('/');
+        for _ in 0..5000 {
+            huge.push('a');
+        }
+        let err = validate_field(&p("overlay.public_key_path"), &Value::String(huge)).unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn overlay_public_key_path_rejects_type_mismatch() {
+        let err = validate_field(&p("overlay.public_key_path"), &Value::U32(42)).unwrap_err();
+        assert!(matches!(err, Error::TypeMismatch { .. }));
+    }
+
+    #[test]
+    fn overlay_strict_with_empty_pubkey_path_rejected_cross_field() {
+        let mut c = Config::default();
+        c.overlay.require_signed = true;
+        c.overlay.public_key_path.clear();
+        let err = validate_all(&c).unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn overlay_permissive_with_empty_pubkey_path_accepted_cross_field() {
+        let mut c = Config::default();
+        c.overlay.require_signed = false;
+        c.overlay.public_key_path.clear();
+        // Permissive policy + no pubkey — the runtime will refuse to
+        // verify any signature it stumbles upon, but no policy gate
+        // fires at config-write time.
+        validate_all(&c).unwrap();
+    }
+
+    #[test]
+    fn overlay_flip_to_strict_with_empty_pubkey_blocked() {
+        // Operator already has require_signed=false + empty pubkey;
+        // tries to flip require_signed=true. Cross-field validator
+        // SHALL block before the live reload completes.
+        let mut c = Config::default();
+        c.overlay.require_signed = false;
+        c.overlay.public_key_path.clear();
+        validate_all(&c).unwrap();
+        let err =
+            validate_cross_field(&c, &p("overlay.require_signed"), &Value::Bool(true)).unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
+    }
+
+    #[test]
+    fn overlay_flip_to_strict_with_pubkey_set_succeeds() {
+        let mut c = Config::default();
+        c.overlay.require_signed = false;
+        c.overlay.public_key_path = "/data/mgmt/keys/overlay-pubkey.pub".into();
+        validate_cross_field(&c, &p("overlay.require_signed"), &Value::Bool(true)).unwrap();
+    }
+
+    #[test]
+    fn overlay_clear_pubkey_path_when_strict_blocked() {
+        // Currently strict + pubkey set; try to clear pubkey →
+        // cross-field validator blocks.
+        let mut c = Config::default();
+        c.overlay.require_signed = true;
+        c.overlay.public_key_path = "/data/mgmt/keys/overlay-pubkey.pub".into();
+        let err =
+            validate_cross_field(&c, &p("overlay.public_key_path"), &Value::String("".into()))
+                .unwrap_err();
+        assert!(matches!(err, Error::Validation(_)));
     }
 }

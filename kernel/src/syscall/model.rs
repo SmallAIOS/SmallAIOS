@@ -246,6 +246,39 @@ pub enum OverlayAuditEvent {
         /// `expected_size` sent to the syscall.
         declared: u64,
     },
+    /// `model_load_unsigned` — strict signature policy
+    /// (`fs.overlay.require_signed = true`) was in force at load time
+    /// but the model in question had no `<name>.sig` sidecar. The
+    /// load fails closed with `-EAUTH`. Spec:
+    /// `embedded-overlay-v1` `fs-overlay-integrity` Phase 5.
+    ModelLoadUnsigned {
+        /// User id (or `0xFFFF_FFFF` for unauthenticated).
+        who: u32,
+        /// Model name attempted.
+        name: String,
+    },
+    /// `model_signature_invalid` — a `<name>.sig` sidecar exists but
+    /// failed ML-DSA-65 verification (defense in depth: emitted in
+    /// permissive mode too whenever a sidecar fails to verify, since
+    /// presenting an invalid signature should never silently succeed).
+    /// Surfaces as `-EAUTH` to the syscall ABI.
+    ModelSignatureInvalid {
+        /// User id.
+        who: u32,
+        /// Model name attempted.
+        name: String,
+    },
+    /// `model_signature_verified` — strict signature policy passed:
+    /// `<name>.sig` was present and ML-DSA-65 verified against the
+    /// configured trust anchor. INFO-level forensic record so
+    /// auditors can confirm positive coverage; emitted only when
+    /// strict policy is active to keep the permissive path quiet.
+    ModelSignatureVerified {
+        /// User id.
+        who: u32,
+        /// Model name loaded.
+        name: String,
+    },
 }
 
 /// Audit-sink trait — production wires this to the global audit ring,
@@ -1265,6 +1298,73 @@ mod tests {
     fn dispatch_unwired_returns_enosys() {
         assert_eq!(dispatch_model_add_unwired(), ERRNO_ENOSYS);
         assert_eq!(dispatch_model_remove_unwired(), ERRNO_ENOSYS);
+    }
+
+    // ─── Phase 5: signature audit variants (additive) ───────────────────────
+
+    #[test]
+    fn audit_variant_model_load_unsigned_round_trips() {
+        let mut sink = CapturingOverlayAuditSink::new();
+        sink.append(OverlayAuditEvent::ModelLoadUnsigned {
+            who: 7,
+            name: "foo.onnx".to_string(),
+        });
+        assert_eq!(sink.len(), 1);
+        assert!(matches!(
+            sink.events[0],
+            OverlayAuditEvent::ModelLoadUnsigned { who, ref name }
+                if who == 7 && name == "foo.onnx"
+        ));
+    }
+
+    #[test]
+    fn audit_variant_model_signature_invalid_round_trips() {
+        let mut sink = CapturingOverlayAuditSink::new();
+        sink.append(OverlayAuditEvent::ModelSignatureInvalid {
+            who: 9,
+            name: "bar.onnx".to_string(),
+        });
+        assert!(matches!(
+            sink.events[0],
+            OverlayAuditEvent::ModelSignatureInvalid { who, ref name }
+                if who == 9 && name == "bar.onnx"
+        ));
+    }
+
+    #[test]
+    fn audit_variant_model_signature_verified_round_trips() {
+        let mut sink = CapturingOverlayAuditSink::new();
+        sink.append(OverlayAuditEvent::ModelSignatureVerified {
+            who: 11,
+            name: "baz.onnx".to_string(),
+        });
+        assert!(matches!(
+            sink.events[0],
+            OverlayAuditEvent::ModelSignatureVerified { who, ref name }
+                if who == 11 && name == "baz.onnx"
+        ));
+    }
+
+    #[test]
+    fn audit_signature_variants_are_distinct() {
+        // Defense-in-depth: the three new variants must not collapse
+        // into one (an event-stream consumer matches on the variant
+        // tag to dispatch to the right severity / sink).
+        let unsigned = OverlayAuditEvent::ModelLoadUnsigned {
+            who: 1,
+            name: "x".to_string(),
+        };
+        let invalid = OverlayAuditEvent::ModelSignatureInvalid {
+            who: 1,
+            name: "x".to_string(),
+        };
+        let verified = OverlayAuditEvent::ModelSignatureVerified {
+            who: 1,
+            name: "x".to_string(),
+        };
+        assert_ne!(unsigned, invalid);
+        assert_ne!(invalid, verified);
+        assert_ne!(unsigned, verified);
     }
 
     #[test]
