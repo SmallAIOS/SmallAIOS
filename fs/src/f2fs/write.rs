@@ -69,6 +69,11 @@ use super::dir::{
     FILENAME_SLOTS_OFFSET, NR_DENTRY_IN_BLOCK, SIZE_OF_DENTRY_BITMAP,
 };
 use super::error::F2fsError;
+use super::gc::{
+    self, AllocatorHints, GcPassConfig, GcPassOutcome, LiveBlock, DEFAULT_COLD_THRESHOLD_SECS,
+    DEFAULT_GC_VICTIMS_PER_PASS, DEFAULT_PASS_BUDGET_TICKS, DEFAULT_YIELD_BUDGET_BLOCKS,
+};
+use super::gc_journal::GcJournalRecord;
 use super::inode::{
     ADDRS_PER_INODE, INLINE_DATA, INLINE_DENTRY, NIDS_PER_INODE, NODE_FOOTER_OFFSET, S_IFDIR,
     S_IFREG,
@@ -188,11 +193,55 @@ pub(crate) struct WriteState {
     /// Current data-segment cursor: (segno, blkoff_within_segment).
     pub(crate) cur_data_segno: u32,
     pub(crate) cur_data_blkoff: u16,
+    /// Hot-stream cursor (Phase 9): co-locates recently-touched data so
+    /// future GC has less to do. Initialized to `cur_data_segno` on
+    /// mount; advanced via the SIT free-segment bitmap when full.
+    pub(crate) cur_hot_segno: u32,
+    /// Hot-stream block offset within the segment. Initialized to
+    /// match `cur_data_blkoff` on mount; the GC v2 driver advances it
+    /// on each cold→hot relocation. Reserved for the dual-cursor
+    /// allocator (Phase 10); the integration only needs the segno.
+    #[allow(dead_code)]
+    pub(crate) cur_hot_blkoff: u16,
+    /// Cold-stream cursor (Phase 9): co-locates stale data (mtime older
+    /// than [`gc::DEFAULT_COLD_THRESHOLD_SECS`]). Initialized to
+    /// `cur_data_segno` on mount; advanced independently from the hot
+    /// cursor.
+    pub(crate) cur_cold_segno: u32,
+    /// Cold-stream block offset within the segment. See
+    /// [`Self::cur_hot_blkoff`].
+    #[allow(dead_code)]
+    pub(crate) cur_cold_blkoff: u16,
     /// Free data-segment list (segments that may be allocated when the
     /// cursor advances past the current segment's end).
     pub(crate) free_segments: Vec<u32>,
     /// Dirty journal entries (rename in-flight, etc.).
     pub(crate) journal_dirty: Vec<JournalEntry>,
+    /// Phase 9 GC journal records staged within the current commit
+    /// epoch. Each `run_gc_pass_v2` invocation appends one record per
+    /// relocation BEFORE SIT/NAT mutation, so a power loss replays
+    /// cleanly. Drained at fsync alongside `journal_dirty`. The on-disk
+    /// reservation lives in the existing journal block; encoding will
+    /// move into checkpoint commit when the v2 driver becomes the
+    /// primary path.
+    pub(crate) gc_journal_dirty: Vec<GcJournalRecord>,
+    /// In-memory SSA-style reverse map: physical block address →
+    /// `(owning_nid, ofs_in_node)`. Populated by `allocate_data_block`
+    /// for inode and indirect-node writes; consumed by the Phase 9 GC
+    /// pass's `live_blocks_for` projection. Persistence lives in the
+    /// SSA area on disk (Phase 5/7 code does not yet update it; the
+    /// write path keeps this in-memory mirror so GC v2 has the data).
+    pub(crate) ssa_index: BTreeMap<u32, (u32, u32)>,
+    /// Per-inode mtime cache used by the Phase 9 GC age classifier.
+    /// Production reads this from inode blocks on demand; Phase 9
+    /// integration keeps a write-through cache so the GC pass need not
+    /// reach into the on-disk inode for every relocation candidate.
+    pub(crate) mtime_index: BTreeMap<u32, u64>,
+    /// Wall-clock seconds (set via `F2fs::set_now_secs`). Used by the
+    /// Phase 9 GC age classifier to decide hot vs. cold placement.
+    /// Tests inject deterministic values; production wires this from
+    /// the kernel scheduler's clock tick.
+    pub(crate) now_secs: u64,
     /// Current `checkpoint_ver` — bumped at every commit.
     pub(crate) checkpoint_ver: u64,
     /// Wall-clock-style monotonic counter incremented on each write
@@ -222,8 +271,19 @@ impl WriteState {
             free_nid_pool: Vec::new(),
             cur_data_segno,
             cur_data_blkoff,
+            // Phase 9: hot/cold cursors both start co-located with the
+            // legacy data cursor; the first cold-classified write or GC
+            // relocation breaks them apart.
+            cur_hot_segno: cur_data_segno,
+            cur_hot_blkoff: cur_data_blkoff,
+            cur_cold_segno: cur_data_segno,
+            cur_cold_blkoff: cur_data_blkoff,
             free_segments: Vec::new(),
             journal_dirty: Vec::new(),
+            gc_journal_dirty: Vec::new(),
+            ssa_index: BTreeMap::new(),
+            mtime_index: BTreeMap::new(),
+            now_secs: 0,
             checkpoint_ver: cp.checkpoint_ver,
             ticks_since_dirty: 0,
             stats: WriteStats::default(),
@@ -268,6 +328,35 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
     /// next inter-block yield-poll surfaces this and pauses GC.
     pub fn request_yield(&mut self) {
         self.write_state.yield_pending = true;
+    }
+
+    /// Inject the current wall-clock seconds. Production wires this
+    /// from the kernel scheduler's clock tick; tests pass deterministic
+    /// values to drive the Phase 9 GC age classifier (hot/cold).
+    pub fn set_now_secs(&mut self, now_secs: u64) {
+        self.write_state.now_secs = now_secs;
+    }
+
+    /// Snapshot the current wall-clock seconds value (for tests).
+    pub fn now_secs(&self) -> u64 {
+        self.write_state.now_secs
+    }
+
+    /// Snapshot of the current Phase 9 hot/cold allocator cursors. Tests
+    /// use this to assert that cold-classified GC relocations advance
+    /// the cold cursor without disturbing the hot cursor.
+    pub fn allocator_hints(&self) -> AllocatorHints {
+        AllocatorHints {
+            hot_segno: self.write_state.cur_hot_segno,
+            cold_segno: self.write_state.cur_cold_segno,
+        }
+    }
+
+    /// Snapshot of the staged Phase 9 GC journal records since the last
+    /// fsync. Tests use this to assert that each GC relocation stages a
+    /// `(nid, ofs, old, new)` record BEFORE the SIT/NAT mutation lands.
+    pub fn gc_journal_snapshot(&self) -> Vec<GcJournalRecord> {
+        self.write_state.gc_journal_dirty.clone()
     }
 
     /// Drive the 5-second background timer. Each call increments the
@@ -357,6 +446,34 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
                 .or_insert_with(PendingSit::empty);
             entry.mark_invalid(blkoff as usize);
         }
+        // Phase 9: drop the SSA reverse-map entry for this addr; the
+        // GC pass uses absence to mean "block is dead".
+        self.write_state.ssa_index.remove(&addr);
+    }
+
+    /// Record the `(owning_nid, ofs_in_node)` reverse mapping for a
+    /// freshly allocated block. Called by every write-path code path
+    /// that pulls a block off `allocate_data_block`. The Phase 9 GC
+    /// pass projects this map (combined with SIT) into its
+    /// [`gc::live_blocks_from_segment`] input.
+    pub(crate) fn record_ssa(&mut self, addr: u32, nid: u32, ofs_in_node: u32) {
+        self.write_state.ssa_index.insert(addr, (nid, ofs_in_node));
+    }
+
+    /// Touch the in-memory inode-mtime cache. Phase 9 GC reads this when
+    /// classifying a live block as hot vs cold. Production write paths
+    /// call this whenever they stamp `i_mtime`; tests inject synthetic
+    /// values to drive the age classifier deterministically.
+    pub(crate) fn record_inode_mtime(&mut self, nid: u32, mtime_secs: u64) {
+        self.write_state.mtime_index.insert(nid, mtime_secs);
+    }
+
+    /// Public test hook: stamp an inode's mtime in the in-memory cache
+    /// without forcing a full inode-block rewrite. Tests use this to
+    /// deterministically age a file so the next GC pass classifies it
+    /// as cold; production stamps mtime when it writes the inode.
+    pub fn stamp_mtime(&mut self, nid: u32, mtime_secs: u64) {
+        self.record_inode_mtime(nid, mtime_secs);
     }
 
     /// Stage a NAT entry update.
@@ -524,6 +641,12 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
         self.write_block_at(inode_addr, &block)?;
         // Stage NAT update.
         self.dirty_nat(nid, nid, inode_addr);
+        // Phase 9: SSA reverse map for the inode block itself + seed
+        // the mtime cache so newly created files are "hot" until they
+        // age past the cold threshold.
+        self.record_ssa(inode_addr, nid, 0);
+        let now = self.write_state.now_secs;
+        self.record_inode_mtime(nid, now);
         // Cache the inode block.
         self.write_state.inode_cache.insert(nid, block);
 
@@ -642,6 +765,7 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
                         .copy_from_slice(&inode.inode_block[INLINE_OFFSET..INLINE_OFFSET + len]);
                     let addr = self.allocate_data_block()?;
                     self.write_block_at(addr, &data)?;
+                    self.record_ssa(addr, nid, 0);
                     write_inode_direct_addr_in(&mut inode_block, 0, addr);
                 }
                 // Zero the inline area.
@@ -680,6 +804,10 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
                 // Allocate a fresh block (log-structured).
                 let new_addr = self.allocate_data_block()?;
                 self.write_block_at(new_addr, &data)?;
+                // Phase 9: stamp the SSA reverse map BEFORE freeing the
+                // old slot, so an interleaved GC scan never sees both
+                // pointing at the same (nid, ofs).
+                self.record_ssa(new_addr, nid, block_idx as u32);
                 if block_idx < ADDRS_PER_INODE {
                     if let Some(old) = existing_addr {
                         if old != 0 && old != u32::MAX {
@@ -708,6 +836,13 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
         self.write_state.dirty = true;
         self.write_state.ticks_since_dirty = 0;
         self.write_state.stats.writes = self.write_state.stats.writes.saturating_add(1);
+        // Phase 9: stamp the in-memory mtime cache so the GC age
+        // classifier reflects this write. Production also flips the
+        // `i_mtime` field in the on-disk inode block (Phase 10 — file
+        // rewrites with explicit timestamps); the v1 write path keeps
+        // the cache as source-of-truth for the GC pass and lets fsync
+        // fold the value into the on-disk inode at checkpoint time.
+        self.record_inode_mtime(nid, self.write_state.now_secs);
 
         // Maybe run a GC pass if the free-segment ratio is low.
         self.maybe_run_gc()?;
@@ -744,6 +879,10 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
             // Wire i_nid[0] in the inode.
             inode_block[i_nid_off..i_nid_off + 4].copy_from_slice(&indirect_nid.to_le_bytes());
             self.dirty_nat(indirect_nid, owning_inode_nid, node_addr);
+            // Phase 9: SSA reverse map for the indirect-node block. The
+            // ofs we record is u32::MAX so a GC live-block scan can
+            // distinguish indirect-node blocks from regular data blocks.
+            self.record_ssa(node_addr, indirect_nid, u32::MAX);
         } else {
             // Load existing indirect block.
             let addr = self.resolve_inode_addr(indirect_nid)?;
@@ -1067,6 +1206,11 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
         self.write_state.nat_dirty.clear();
         self.write_state.sit_dirty.clear();
         self.write_state.journal_dirty.clear();
+        // Phase 9: GC journal records persist transitively via the SIT
+        // updates above (each `committed=1` record correlates with a
+        // SIT bit flip). Drain the staging buffer so the next pass
+        // starts clean.
+        self.write_state.gc_journal_dirty.clear();
         self.write_state.dirty = false;
         self.write_state.ticks_since_dirty = 0;
         self.write_state.stats.fsyncs = self.write_state.stats.fsyncs.saturating_add(1);
@@ -1120,7 +1264,24 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
 
     // ── GC integration ──────────────────────────────────────────────────
 
-    /// If free segments are below the threshold, run one GC pass.
+    /// If free segments are below the threshold, run one Phase 9 GC
+    /// pass via [`run_gc_pass_v2`].
+    ///
+    /// The integration:
+    /// 1. Builds the `(segno, valid_blocks)` candidate list from the
+    ///    SIT-dirty set.
+    /// 2. Projects each victim's live blocks via the in-memory SSA
+    ///    reverse map + the per-inode mtime cache.
+    /// 3. Pre-allocates one fresh data block per live block (so the
+    ///    `relocate` closure inside `run_gc_pass_v2` does NOT need
+    ///    `&mut self`).
+    /// 4. Runs the Phase 9 driver with hot/cold target hints + the
+    ///    [`DEFAULT_YIELD_BUDGET_BLOCKS`] / [`DEFAULT_PASS_BUDGET_TICKS`]
+    ///    cooperative-yield knobs.
+    /// 5. Applies the outcome: copies bytes into the new addresses,
+    ///    updates SIT/SSA, drains the segment, stages the GC journal
+    ///    records into [`WriteState::gc_journal_dirty`], and pushes the
+    ///    freed segno into `free_segments`.
     fn maybe_run_gc(&mut self) -> Result<(), F2fsError> {
         // Total segments comes from the superblock; cache it on first use.
         if self.write_state.total_segments == 0 {
@@ -1132,30 +1293,201 @@ impl<'a, D: BlockDevice + ?Sized> F2fs<'a, D> {
             .total_segments
             .saturating_sub(used_segments)
             .saturating_add(self.write_state.free_segments.len() as u32);
-        if !super::gc::should_run_gc(free_segments, self.write_state.total_segments) {
+        if !gc::should_run_gc(free_segments, self.write_state.total_segments) {
             return Ok(());
         }
-        // Phase 7 GC pass: pick a victim from the SIT-dirty set (we
-        // only have authoritative state for those segments without
-        // re-reading SIT). Yields between blocks if `request_yield`
-        // was raised.
+
+        // Phase 9 candidate set: every SIT-dirty segment EXCEPT the
+        // current cursor segments (we never relocate blocks out from
+        // under an active write cursor).
+        let active_cursors = [
+            self.write_state.cur_data_segno,
+            self.write_state.cur_hot_segno,
+            self.write_state.cur_cold_segno,
+        ];
         let candidates: Vec<(u32, u16)> = self
             .write_state
             .sit_dirty
             .iter()
+            .filter(|(s, _)| !active_cursors.contains(s))
             .map(|(s, e)| (*s, e.valid_blocks))
             .collect();
-        if let Some(_victim) = super::gc::pick_victim(&candidates, F2FS_BLOCKS_PER_SEG) {
-            self.write_state.stats.gc_passes = self.write_state.stats.gc_passes.saturating_add(1);
-            // Mark the victim free without actually relocating bytes —
-            // the relocation pass needs SSA reverse mapping which v1
-            // doesn't fully populate. Instead, increment the free-
-            // segment counter so subsequent allocations reuse it.
-            self.write_state
-                .free_segments
-                .push(self.write_state.cur_data_segno.saturating_add(1));
+
+        // Project each candidate's live blocks via SSA + mtime cache.
+        let victims = gc::pick_victims(
+            &candidates,
+            F2FS_BLOCKS_PER_SEG,
+            DEFAULT_GC_VICTIMS_PER_PASS,
+        );
+        let mut victim_live: Vec<(u32, Vec<LiveBlock>)> = Vec::with_capacity(victims.len());
+        for victim_segno in &victims {
+            let valid_map = self
+                .write_state
+                .sit_dirty
+                .get(victim_segno)
+                .map(|e| e.valid_map)
+                .unwrap_or([0u8; SIT_VBLOCK_MAP_BYTES]);
+            let ssa_index = self.write_state.ssa_index.clone();
+            let mtime_index = self.write_state.mtime_index.clone();
+            let sb_main = self.sb.main_blkaddr;
+            let live = gc::live_blocks_from_segment(
+                *victim_segno,
+                &valid_map,
+                |idx| {
+                    let addr =
+                        sb_main + victim_segno.saturating_mul(F2FS_BLOCKS_PER_SEG) + idx as u32;
+                    ssa_index.get(&addr).copied()
+                },
+                |nid| mtime_index.get(&nid).copied(),
+            );
+            victim_live.push((*victim_segno, live));
         }
-        // Reset yield flag.
+
+        // Pre-allocate one fresh address per live block (so the
+        // `relocate` closure stays pure-functional). We allocate these
+        // in advance because the v2 driver's closures cannot borrow
+        // `&mut self`.
+        let mut prealloc: Vec<u32> = Vec::new();
+        for (_, live) in &victim_live {
+            for _ in live.iter() {
+                prealloc.push(self.allocate_data_block()?);
+            }
+        }
+        prealloc.reverse(); // pop() from the back yields in alloc order
+
+        // Snapshot the per-victim live-block lists so the driver's
+        // `live_blocks_for` closure can serve them without borrowing
+        // `&self`.
+        let mut live_lookup: BTreeMap<u32, Vec<LiveBlock>> = BTreeMap::new();
+        let mut sit_candidate_snapshot: Vec<(u32, u16)> = Vec::new();
+        for (segno, live) in victim_live.into_iter() {
+            sit_candidate_snapshot.push((
+                segno,
+                self.write_state
+                    .sit_dirty
+                    .get(&segno)
+                    .map(|e| e.valid_blocks)
+                    .unwrap_or(0),
+            ));
+            live_lookup.insert(segno, live);
+        }
+
+        // Build the Phase 9 config — pull defaults from `gc::*`.
+        let cfg = GcPassConfig {
+            victims_per_pass: DEFAULT_GC_VICTIMS_PER_PASS,
+            yield_budget_blocks: DEFAULT_YIELD_BUDGET_BLOCKS,
+            pass_budget_ticks: DEFAULT_PASS_BUDGET_TICKS,
+            cold_threshold_secs: DEFAULT_COLD_THRESHOLD_SECS,
+            now_secs: self.write_state.now_secs,
+            hints: AllocatorHints {
+                hot_segno: self.write_state.cur_hot_segno,
+                cold_segno: self.write_state.cur_cold_segno,
+            },
+        };
+
+        let yield_pending = self.write_state.yield_pending;
+        let mut yielded_once = false;
+        let outcome: Result<GcPassOutcome, F2fsError> = gc::run_gc_pass_v2::<_, _, _, _, F2fsError>(
+            &sit_candidate_snapshot,
+            F2FS_BLOCKS_PER_SEG,
+            cfg,
+            |segno| live_lookup.remove(&segno).unwrap_or_default(),
+            |_blk, _target| {
+                let new_addr = prealloc.pop().ok_or(F2fsError::SizeOverflow)?;
+                Ok(new_addr)
+            },
+            || {
+                // Surface the foreground yield flag exactly once per
+                // pass — re-arming would wedge the inner loop.
+                if yield_pending && !yielded_once {
+                    yielded_once = true;
+                    return true;
+                }
+                false
+            },
+            // Synthetic clock: each call increments by 1 tick. The
+            // pass-budget cap of 100 means a single pass runs at most
+            // 100 yield-poll iterations. Production wires the real
+            // monotonic clock here.
+            {
+                let mut t: u64 = 0;
+                move || {
+                    t = t.saturating_add(1);
+                    t
+                }
+            },
+        );
+        let outcome = outcome?;
+
+        // Apply outcome: relocate bytes, update SIT/SSA, mark drained
+        // segments free.
+        for record in &outcome.journal {
+            // Phase 9 invariant: stage the journal record BEFORE the
+            // SIT mutation lands. `gc_journal_dirty` is the staging
+            // buffer; fsync drains it alongside `journal_dirty`.
+            self.write_state.gc_journal_dirty.push(*record);
+        }
+        for entry in &outcome.log {
+            if entry.dst_block_addr == 0 {
+                // Yield-marker entry — no relocation occurred.
+                continue;
+            }
+            // Find the source addr by inverting `addr_from`. The
+            // journal record carries the *relative* (src) address —
+            // re-derive the absolute one through the partition base.
+            // Re-derive the absolute source address from the journal
+            // record. `gc_journal::Record::old_block_addr` is the
+            // *relative* form `segno * blocks_per_seg + blkidx` (per
+            // `gc::addr_from` docs); add `main_blkaddr` for the
+            // partition-absolute form the device I/O path expects.
+            let matching_record = outcome
+                .journal
+                .iter()
+                .find(|r| r.nid == entry.owning_nid && r.new_block_addr == entry.dst_block_addr);
+            let old_addr = matching_record
+                .map(|r| self.sb.main_blkaddr.saturating_add(r.old_block_addr))
+                .unwrap_or(0);
+            // Read the source block, write to dst, update SIT.
+            if old_addr == 0 {
+                continue;
+            }
+            let mut buf = [0u8; F2FS_BLOCK_SIZE as usize];
+            read_f2fs_block(
+                &*self.device,
+                self.partition_lba,
+                self.partition_size_bytes,
+                old_addr,
+                &mut buf,
+            )?;
+            self.write_block_at(entry.dst_block_addr, &buf)?;
+            // Move SSA reverse-map entry to the new addr.
+            if let Some((nid, ofs)) = self.write_state.ssa_index.remove(&old_addr) {
+                self.write_state
+                    .ssa_index
+                    .insert(entry.dst_block_addr, (nid, ofs));
+            }
+            // Free the source block.
+            self.free_data_block(old_addr);
+        }
+
+        // Push every fully-drained segment onto the free list.
+        for segno in &victims {
+            let drained = self
+                .write_state
+                .sit_dirty
+                .get(segno)
+                .map(|e| e.valid_blocks == 0)
+                .unwrap_or(true);
+            if drained {
+                self.write_state.free_segments.push(*segno);
+            }
+        }
+        self.write_state.stats.gc_passes = self
+            .write_state
+            .stats
+            .gc_passes
+            .saturating_add(1 + outcome.segments_freed);
+        // Reset yield flag (single-shot per pass).
         self.write_state.yield_pending = false;
         Ok(())
     }

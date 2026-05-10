@@ -92,5 +92,17 @@ pub(super) const FILLER_USERNAME: &[u8] = b"filler";
 /// Username for a victim of a cross-rotate force-logout test.
 pub(super) const VICTIM_USERNAME: &[u8] = b"victim";
 
-/// Phase-3 placeholder factor-2 input — must be rejected with EINVAL.
-pub(super) const PHASE3_FACTOR2: &[u8] = b"123456";
+/// Six-digit numeric TOTP placeholder used by login factor-2 tests.
+/// In Phase 9 the value itself is meaningless — the user under test
+/// has `totp_required = false` so the kernel ignores the supplied
+/// code; what we actually exercise is that supplying a syntactically
+/// valid code on a non-enrolled user does NOT reject the login.
+pub(super) const FACTOR2_VALID_CODE: &[u8] = b"123456";
+
+/// Malformed factor-2: contains a non-digit byte. Must be rejected
+/// with `-EINVAL` regardless of the user's enrolment state.
+pub(super) const FACTOR2_MALFORMED: &[u8] = b"12abcd";
+
+/// Over-long factor-2: 10 digits, exceeds the 9-digit cap. Must be
+/// rejected with `-EINVAL`.
+pub(super) const FACTOR2_TOO_LONG: &[u8] = b"1234567890";

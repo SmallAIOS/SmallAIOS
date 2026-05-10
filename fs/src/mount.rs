@@ -59,6 +59,16 @@ use crate::gpt::{parse_gpt, GptError};
 use crate::integrity::{InferenceLockout, LockoutReason};
 use crate::squashfs::{Squashfs, SquashfsError};
 
+#[cfg(feature = "fs-overlay-mounts")]
+use crate::overlay::{
+    boot_cleanup::{run_boot_cleanup, BootCleanupReport},
+    conflict::{ConflictMemo, ConflictReport, LowerManifest},
+    conflict_scan::{run_boot_conflict_scan, ConflictAuditSink, ConflictScanEvent},
+    f2fs_upper::DEFAULT_UPPER_BASE,
+    upper_layer::UpperError,
+    write::WritableUpperLayer,
+};
+
 /// Trait the mount sequencer uses to ask "is the operator physically
 /// present for high-trust operations like auto-formatting `/data/`?".
 ///
@@ -486,6 +496,197 @@ impl MountAllOutcome {
         }
         events
     }
+}
+
+// ─── Overlay boot integration (`fs-overlay-mounts`) ─────────────────────────
+
+/// Audit-record tag emitted on first boot when the overlay creates the
+/// upper-layer root directory. The kernel boot path forwards this to
+/// the mgmt audit ring.
+#[cfg(feature = "fs-overlay-mounts")]
+pub const AUDIT_TAG_MODELS_UPPER_INITIALIZED: &str = "data_models_upper_initialized";
+
+/// Audit-record tag emitted on each boot for every `<name>.tmp` orphan
+/// the cleanup pass removes. The kernel boot path forwards this once
+/// per name in `OverlayBootReport::cleanup.removed`.
+#[cfg(feature = "fs-overlay-mounts")]
+pub const AUDIT_TAG_MODEL_ADD_ABORTED_RECOVERED: &str = "model_add_aborted_recovered";
+
+/// Outcome of the overlay boot handlers (run once per boot, after
+/// `mount_all` succeeds and the F2fs handle is live).
+///
+/// Carries the cleanup report (orphan `.tmp` removals), the
+/// first-boot signal for the upper-layer root directory, and a
+/// pass-through copy of the conflict-scan report. Suitable for the
+/// kernel boot sequencer to translate into one audit emission per
+/// observable change.
+#[cfg(feature = "fs-overlay-mounts")]
+#[derive(Debug, Clone)]
+pub struct OverlayBootReport {
+    /// Result of the [`run_boot_cleanup`] pass.
+    pub cleanup: BootCleanupReport,
+    /// `true` iff `/data/models-upper/` did not exist before this
+    /// boot and was created with mode 0700. Triggers a single
+    /// `data_models_upper_initialized` audit emission.
+    pub upper_initialized: bool,
+    /// Names emitted as `model_add_aborted_recovered` audit records
+    /// (one per `.tmp` orphan removed).
+    pub aborted_recovered: Vec<String>,
+}
+
+#[cfg(feature = "fs-overlay-mounts")]
+impl OverlayBootReport {
+    /// `true` iff the boot pass is fully clean (no orphans, no
+    /// first-boot init, no I/O errors).
+    pub fn is_clean(&self) -> bool {
+        !self.upper_initialized && self.cleanup.removed.is_empty() && self.cleanup.errors.is_empty()
+    }
+
+    /// Audit-tag list the kernel SHOULD emit after a successful run.
+    /// One `data_models_upper_initialized` if the upper was just
+    /// created, plus one `model_add_aborted_recovered` per recovered
+    /// `.tmp` orphan.
+    pub fn pending_audit_events(&self) -> Vec<(&'static str, String)> {
+        let mut events = Vec::new();
+        if self.upper_initialized {
+            events.push((
+                AUDIT_TAG_MODELS_UPPER_INITIALIZED,
+                String::from(DEFAULT_UPPER_BASE),
+            ));
+        }
+        for name in &self.aborted_recovered {
+            events.push((AUDIT_TAG_MODEL_ADD_ABORTED_RECOVERED, name.clone()));
+        }
+        events
+    }
+}
+
+/// Ensure the overlay's upper-layer root directory exists. If
+/// `/data/models-upper/` is absent, create it with mode 0700 and
+/// return `true` (caller emits `data_models_upper_initialized`).
+/// Safe to call on every boot — idempotent.
+#[cfg(feature = "fs-overlay-mounts")]
+pub fn ensure_models_upper_dir<D: BlockDevice + ?Sized>(
+    f2fs: &mut F2fs<'_, D>,
+) -> Result<bool, F2fsError> {
+    if f2fs.open_path(DEFAULT_UPPER_BASE).is_ok() {
+        return Ok(false);
+    }
+    // Walk the parent first; create `/data/` if missing as well so
+    // bare-bones first-boot images (which only have a root inode) can
+    // bootstrap.
+    if f2fs.open_path("/data").is_err() {
+        f2fs.mkdir("/data", 0o755)?;
+    }
+    f2fs.mkdir(DEFAULT_UPPER_BASE, 0o700)?;
+    f2fs.fsync()?;
+    Ok(true)
+}
+
+/// Sweep the `<name>.tmp` orphans in the overlay upper. Wraps
+/// [`run_boot_cleanup`] and returns a typed report so the caller can
+/// emit one audit record per recovered name. `upper` is the
+/// `WritableUpperLayer` produced by wrapping the F2fs handle in
+/// `F2fsUpperLayer::new`.
+///
+/// Errors per-entry are collected into the report rather than aborting
+/// the whole pass; the return is `Ok(report)` even when some entries
+/// fail. Hard I/O errors that prevent any cleanup at all surface via
+/// `report.errors`.
+#[cfg(feature = "fs-overlay-mounts")]
+pub fn sweep_overlay_upper<U: WritableUpperLayer>(upper: &mut U) -> BootCleanupReport {
+    run_boot_cleanup(upper)
+}
+
+/// Run the overlay's boot conflict scan. Wraps
+/// [`run_boot_conflict_scan`] so the caller doesn't have to import
+/// the [`crate::overlay::conflict_scan`] surface directly.
+#[cfg(feature = "fs-overlay-mounts")]
+pub fn scan_overlay_conflicts<U, M, A>(
+    upper: &U,
+    lower: &M,
+    memo: &ConflictMemo,
+    audit: &mut A,
+) -> Result<ConflictReport, UpperError>
+where
+    U: crate::overlay::upper_layer::UpperLayer,
+    M: LowerManifest,
+    A: ConflictAuditSink + ?Sized,
+{
+    run_boot_conflict_scan(upper, lower, memo, audit)
+}
+
+/// Compose all three overlay-boot integration handlers in the
+/// canonical order: first-boot models-upper init → orphan cleanup →
+/// conflict scan against the active lower. Returns the combined
+/// [`OverlayBootReport`] and the per-conflict scan output.
+///
+/// `lower` is whatever the squashfs reader projects as a
+/// [`LowerManifest`]; `audit` is the kernel's audit sink (production
+/// wires the mgmt audit ring; tests use [`crate::overlay::CapturingConflictAuditSink`]).
+///
+/// Per `embedded-overlay-v1` Phase 6: this is the integration handler
+/// the kernel boot sequencer invokes immediately after `mount_all`
+/// succeeds AND BEFORE the VFS exposes `/models/` to user-space.
+#[cfg(feature = "fs-overlay-mounts")]
+pub fn run_overlay_boot_handlers<D, M, A>(
+    f2fs: &mut F2fs<'_, D>,
+    lower: &M,
+    memo: &ConflictMemo,
+    audit: &mut A,
+) -> Result<(OverlayBootReport, ConflictReport), F2fsError>
+where
+    D: BlockDevice + ?Sized,
+    M: LowerManifest,
+    A: ConflictAuditSink + ?Sized,
+{
+    use crate::overlay::f2fs_upper::F2fsUpperLayer;
+
+    // 1. First-boot init. Idempotent — `false` on every boot after the
+    //    first.
+    let upper_initialized = ensure_models_upper_dir(f2fs)?;
+
+    // 2. Orphan cleanup pass on the upper layer. The wrapper takes a
+    //    short-lived `&mut` borrow of the F2fs handle; once it drops we
+    //    re-borrow `f2fs` for the conflict scan below.
+    let cleanup = {
+        let mut upper = F2fsUpperLayer::new(f2fs, DEFAULT_UPPER_BASE)?;
+        sweep_overlay_upper(&mut upper)
+    };
+
+    // 3. Conflict scan against the new lower (only run if both upper
+    //    and lower are reachable; if there's no lower, skip).
+    let scan = {
+        let upper = F2fsUpperLayer::new(f2fs, DEFAULT_UPPER_BASE)?;
+        // The conflict_scan can also surface a `Warning` event for
+        // missing/malformed sidecars — those land in the audit sink
+        // already; failing the boot for an upper-side I/O error here
+        // would be more disruptive than just audit-emitting and
+        // continuing.
+        match scan_overlay_conflicts(&upper, lower, memo, audit) {
+            Ok(r) => r,
+            Err(_e) => {
+                // Emit one warning and proceed with an empty report.
+                audit.append(ConflictScanEvent::Warning {
+                    name: String::from(DEFAULT_UPPER_BASE),
+                    kind: "upper_io_error",
+                });
+                ConflictReport {
+                    new_conflicts: Vec::new(),
+                    suppressed: Vec::new(),
+                    warnings: Vec::new(),
+                }
+            }
+        }
+    };
+
+    let aborted_recovered: Vec<String> = cleanup.removed.clone();
+    let report = OverlayBootReport {
+        cleanup,
+        upper_initialized,
+        aborted_recovered,
+    };
+    Ok((report, scan))
 }
 
 #[cfg(test)]
