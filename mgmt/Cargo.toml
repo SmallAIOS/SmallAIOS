@@ -19,7 +19,7 @@ smallaios-kernel = { path = "../kernel" }
 # our clean-room TOML parser against the upstream `toml` crate. Only
 # pulled in for `cargo test` — production builds (kernel + container)
 # do NOT depend on this crate.
-toml = { version = "0.8", default-features = false, features = ["parse"] }
+toml = { version = "1.1", default-features = false, features = ["parse"] }
 
 [features]
 default = []
