@@ -50,209 +50,109 @@ pub fn execute_graph(
         &mut crate::metal_dispatch::MetalDispatcher,
     >,
 ) -> Result<Vec<InferenceOutput>, SessionError> {
-    let mut value_map: BTreeMap<String, Tensor> = BTreeMap::new();
-
-    // Load user-provided inputs
-    for (name, tensor) in inputs {
-        value_map.insert(name.clone(), tensor.clone());
-    }
-
-    // Load initializer tensors (model weights)
-    for init in initializers {
-        if let Some(tensor) = tensor_from_proto(init) {
-            value_map.insert(init.name.clone(), tensor);
-        }
-    }
+    let mut value_map = seed_value_map(inputs, initializers);
 
     // Execute nodes in topological order
     for node_idx in graph.execution_order() {
         let node = &graph.nodes[node_idx.index()];
-
-        // Resolve input tensors
-        let input_tensors: Vec<Option<&Tensor>> = node
-            .inputs
-            .iter()
-            .map(|name| {
-                if name.is_empty() {
-                    None
-                } else {
-                    value_map.get(name)
-                }
-            })
-            .collect();
+        let input_tensors = resolve_input_tensors(node, &value_map);
 
         // Control-flow ops need the full ExecutionNode + outer value map,
         // so they bypass `dispatch_node` and go through the compiled inner
         // graph path.
         if is_control_flow_op(&node.op_type) {
             let outputs = dispatch_control_flow(node, &value_map, initializers)?;
-            for (i, output_name) in node.outputs.iter().enumerate() {
-                if !output_name.is_empty() {
-                    if let Some(tensor) = outputs.get(i) {
-                        value_map.insert(output_name.clone(), tensor.clone());
-                    }
-                }
-            }
-            if let Some(f) = yield_fn {
-                f();
-            }
+            store_node_outputs(node, &outputs, &mut value_map);
+            invoke_yield(yield_fn);
             continue;
         }
 
-        // Try Metal GPU dispatch first (if available). Falls back to CPU
-        // if the dispatcher returns None (unsupported op).
-        #[cfg(all(feature = "metal", target_os = "macos"))]
-        let metal_gpu_result = {
-            if let Some(ref mut dispatcher) = metal_dispatcher {
-                dispatcher
-                    .try_execute(&node.op_type, &input_tensors, &node.attributes)
-                    .map_err(|e| {
-                        SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e))
-                    })?
-            } else {
-                None
-            }
-        };
+        let outputs = execute_node(
+            node,
+            &input_tensors,
+            profile.as_deref_mut(),
+            budget,
+            time_source,
+            #[cfg(feature = "gpu")]
+            gpu_backend,
+            #[cfg(feature = "cuda")]
+            cuda_runtime,
+            #[cfg(all(feature = "metal", target_os = "macos"))]
+            metal_dispatcher.as_deref_mut(),
+        )?;
 
-        // Dispatch operator (optionally wrapped in timing measurement).
-        // If Metal GPU already handled this op, use that result directly.
-        #[cfg(all(feature = "metal", target_os = "macos"))]
-        let outputs = if let Some(gpu_outputs) = metal_gpu_result {
-            gpu_outputs
-        } else if let Some(prof) = profile.as_mut() {
-            let start = time_source.now_us();
-            let outputs = dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &input_tensors,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                gpu_backend,
-                #[cfg(feature = "cuda")]
-                cuda_runtime,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
-            let elapsed = time_source.now_us().saturating_sub(start);
-
-            let class = classify_op(&node.op_type);
-            let budget_result = budget.check(class, elapsed);
-
-            prof.operators.push(OperatorMeasurement {
-                op_type: node.op_type.clone(),
-                class,
-                actual_us: elapsed,
-                budget_result,
-            });
-            prof.total_us = prof.total_us.saturating_add(elapsed);
-
-            match budget_result {
-                BudgetResult::Ok => {}
-                BudgetResult::Warning => prof.warnings_count += 1,
-                BudgetResult::SoftLimit => prof.soft_limit_count += 1,
-                BudgetResult::HardLimit => {
-                    prof.hard_limit_aborted = true;
-                    return Err(SessionError::ExecutionFailed(alloc::format!(
-                        "operator '{}' exceeded hard time limit: {} us",
-                        node.op_type,
-                        elapsed
-                    )));
-                }
-            }
-
-            outputs
-        } else {
-            // Zero-overhead path: no profiling.
-            dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &input_tensors,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                gpu_backend,
-                #[cfg(feature = "cuda")]
-                cuda_runtime,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?
-        };
-
-        #[cfg(not(all(feature = "metal", target_os = "macos")))]
-        let outputs = if let Some(prof) = profile.as_mut() {
-            let start = time_source.now_us();
-            let outputs = dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &input_tensors,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                gpu_backend,
-                #[cfg(feature = "cuda")]
-                cuda_runtime,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
-            let elapsed = time_source.now_us().saturating_sub(start);
-
-            let class = classify_op(&node.op_type);
-            let budget_result = budget.check(class, elapsed);
-
-            prof.operators.push(OperatorMeasurement {
-                op_type: node.op_type.clone(),
-                class,
-                actual_us: elapsed,
-                budget_result,
-            });
-            prof.total_us = prof.total_us.saturating_add(elapsed);
-
-            match budget_result {
-                BudgetResult::Ok => {}
-                BudgetResult::Warning => prof.warnings_count += 1,
-                BudgetResult::SoftLimit => prof.soft_limit_count += 1,
-                BudgetResult::HardLimit => {
-                    prof.hard_limit_aborted = true;
-                    return Err(SessionError::ExecutionFailed(alloc::format!(
-                        "operator '{}' exceeded hard time limit: {} us",
-                        node.op_type,
-                        elapsed
-                    )));
-                }
-            }
-
-            outputs
-        } else {
-            // Zero-overhead path: no profiling.
-            dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &input_tensors,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                gpu_backend,
-                #[cfg(feature = "cuda")]
-                cuda_runtime,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?
-        };
-
-        // Store outputs in value map
-        for (i, output_name) in node.outputs.iter().enumerate() {
-            if !output_name.is_empty() {
-                if let Some(tensor) = outputs.get(i) {
-                    value_map.insert(output_name.clone(), tensor.clone());
-                }
-            }
-        }
-
-        // Yield to scheduler if callback provided
-        if let Some(f) = yield_fn {
-            f();
-        }
+        store_node_outputs(node, &outputs, &mut value_map);
+        invoke_yield(yield_fn);
     }
 
-    // Extract graph outputs
-    let mut results = Vec::new();
+    extract_graph_outputs(graph, &mut value_map)
+}
+
+/// Seeds the value map with user-provided inputs and initializers.
+fn seed_value_map(
+    inputs: &[(String, Tensor)],
+    initializers: &[TensorProto],
+) -> BTreeMap<String, Tensor> {
+    let mut value_map: BTreeMap<String, Tensor> = BTreeMap::new();
+    for (name, tensor) in inputs {
+        value_map.insert(name.clone(), tensor.clone());
+    }
+    for init in initializers {
+        if let Some(tensor) = tensor_from_proto(init) {
+            value_map.insert(init.name.clone(), tensor);
+        }
+    }
+    value_map
+}
+
+/// Resolves the input tensor slot for each named input of `node` against the
+/// outer `value_map`. Empty names map to `None` (optional/missing inputs).
+fn resolve_input_tensors<'a>(
+    node: &ExecutionNode,
+    value_map: &'a BTreeMap<String, Tensor>,
+) -> Vec<Option<&'a Tensor>> {
+    node.inputs
+        .iter()
+        .map(|name| {
+            if name.is_empty() {
+                None
+            } else {
+                value_map.get(name)
+            }
+        })
+        .collect()
+}
+
+/// Stores `outputs` into `value_map` under the node's declared output names,
+/// skipping empty names (optional/unused outputs).
+fn store_node_outputs(
+    node: &ExecutionNode,
+    outputs: &[Tensor],
+    value_map: &mut BTreeMap<String, Tensor>,
+) {
+    for (i, output_name) in node.outputs.iter().enumerate() {
+        if output_name.is_empty() {
+            continue;
+        }
+        if let Some(tensor) = outputs.get(i) {
+            value_map.insert(output_name.clone(), tensor.clone());
+        }
+    }
+}
+
+/// Invokes the optional yield callback if provided.
+fn invoke_yield(yield_fn: Option<fn()>) {
+    if let Some(f) = yield_fn {
+        f();
+    }
+}
+
+/// Extracts the graph's declared outputs from `value_map` in order.
+fn extract_graph_outputs(
+    graph: &ExecutionGraph,
+    value_map: &mut BTreeMap<String, Tensor>,
+) -> Result<Vec<InferenceOutput>, SessionError> {
+    let mut results = Vec::with_capacity(graph.output_names.len());
     for output_name in &graph.output_names {
         let tensor = value_map.remove(output_name).ok_or_else(|| {
             SessionError::ExecutionFailed(alloc::format!(
@@ -265,8 +165,144 @@ pub fn execute_graph(
             tensor,
         });
     }
-
     Ok(results)
+}
+
+/// Executes a single non-control-flow node, trying Metal GPU dispatch first
+/// (if available) and otherwise dispatching to CPU/CUDA with optional
+/// profiling/budget enforcement.
+#[allow(clippy::too_many_arguments)]
+fn execute_node(
+    node: &ExecutionNode,
+    input_tensors: &[Option<&Tensor>],
+    profile: Option<&mut InferenceProfile>,
+    budget: &OperatorBudget,
+    time_source: &dyn TimeSource,
+    #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
+    #[cfg(feature = "cuda")] cuda_runtime: Option<&cuda::CudaRuntime>,
+    #[cfg(all(feature = "metal", target_os = "macos"))] metal_dispatcher: Option<
+        &mut crate::metal_dispatch::MetalDispatcher,
+    >,
+) -> Result<Vec<Tensor>, SessionError> {
+    #[cfg(all(feature = "metal", target_os = "macos"))]
+    if let Some(gpu_outputs) = try_metal_dispatch(node, input_tensors, metal_dispatcher)? {
+        return Ok(gpu_outputs);
+    }
+
+    dispatch_node_with_profile(
+        node,
+        input_tensors,
+        profile,
+        budget,
+        time_source,
+        #[cfg(feature = "gpu")]
+        gpu_backend,
+        #[cfg(feature = "cuda")]
+        cuda_runtime,
+    )
+}
+
+/// Attempts Metal GPU dispatch for `node`. Returns `Ok(Some(outputs))` if
+/// handled, `Ok(None)` to fall through to CPU/CUDA, or `Err` on a dispatch
+/// failure.
+#[cfg(all(feature = "metal", target_os = "macos"))]
+fn try_metal_dispatch(
+    node: &ExecutionNode,
+    input_tensors: &[Option<&Tensor>],
+    metal_dispatcher: Option<&mut crate::metal_dispatch::MetalDispatcher>,
+) -> Result<Option<Vec<Tensor>>, SessionError> {
+    let Some(dispatcher) = metal_dispatcher else {
+        return Ok(None);
+    };
+    dispatcher
+        .try_execute(&node.op_type, input_tensors, &node.attributes)
+        .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))
+}
+
+/// Dispatches a node to CPU/CUDA, optionally wrapping the call in
+/// timing/budget measurement when `profile` is `Some`.
+fn dispatch_node_with_profile(
+    node: &ExecutionNode,
+    input_tensors: &[Option<&Tensor>],
+    profile: Option<&mut InferenceProfile>,
+    budget: &OperatorBudget,
+    time_source: &dyn TimeSource,
+    #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
+    #[cfg(feature = "cuda")] cuda_runtime: Option<&cuda::CudaRuntime>,
+) -> Result<Vec<Tensor>, SessionError> {
+    let Some(prof) = profile else {
+        // Zero-overhead path: no profiling.
+        return dispatch_node_with_domain(
+            &node.op_type,
+            &node.domain,
+            input_tensors,
+            &node.attributes,
+            node.outputs.len(),
+            #[cfg(feature = "gpu")]
+            gpu_backend,
+            #[cfg(feature = "cuda")]
+            cuda_runtime,
+        )
+        .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)));
+    };
+
+    let start = time_source.now_us();
+    let outputs = dispatch_node_with_domain(
+        &node.op_type,
+        &node.domain,
+        input_tensors,
+        &node.attributes,
+        node.outputs.len(),
+        #[cfg(feature = "gpu")]
+        gpu_backend,
+        #[cfg(feature = "cuda")]
+        cuda_runtime,
+    )
+    .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
+    let elapsed = time_source.now_us().saturating_sub(start);
+
+    record_budget_measurement(prof, &node.op_type, budget, elapsed)?;
+    Ok(outputs)
+}
+
+/// Records an operator measurement against the budget. Returns an error
+/// when the hard limit is exceeded (which marks the profile aborted).
+fn record_budget_measurement(
+    prof: &mut InferenceProfile,
+    op_type: &str,
+    budget: &OperatorBudget,
+    elapsed: u64,
+) -> Result<(), SessionError> {
+    let class = classify_op(op_type);
+    let budget_result = budget.check(class, elapsed);
+
+    prof.operators.push(OperatorMeasurement {
+        op_type: String::from(op_type),
+        class,
+        actual_us: elapsed,
+        budget_result,
+    });
+    prof.total_us = prof.total_us.saturating_add(elapsed);
+
+    match budget_result {
+        BudgetResult::Ok => Ok(()),
+        BudgetResult::Warning => {
+            prof.warnings_count += 1;
+            Ok(())
+        }
+        BudgetResult::SoftLimit => {
+            prof.soft_limit_count += 1;
+            Ok(())
+        }
+        BudgetResult::HardLimit => {
+            prof.hard_limit_aborted = true;
+            Err(SessionError::ExecutionFailed(alloc::format!(
+                "operator '{}' exceeded hard time limit: {} us",
+                op_type,
+                elapsed
+            )))
+        }
+    }
 }
 
 /// Converts a TensorProto (model initializer) to a runtime Tensor.
@@ -403,121 +439,183 @@ fn try_cuda_dispatch(
     attrs: &[AttributeProto],
 ) -> Option<Result<Vec<Tensor>, OpError>> {
     match op_type {
-        "MatMul" => {
-            let a = inputs.first().and_then(|o| *o)?;
-            let b = inputs.get(1).and_then(|o| *o)?;
-            if let Some(fp8_type) = matched_fp8_type(a.data_type, b.data_type) {
-                return match cuda::dispatch::gpu_gemm_fp8(rt, a, b, fp8_type) {
-                    Ok(Some(t)) => Some(Ok(alloc::vec![t])),
-                    Ok(None) => None, // unsupported shape, fall back to CPU
-                    Err(e) => Some(Err(OpError::InternalError(alloc::format!(
-                        "CUDA MatMul FP8: {}",
-                        e
-                    )))),
-                };
-            }
-            let both_f32 = a.data_type == DataType::Float && b.data_type == DataType::Float;
-            let both_bf16 = a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16;
-            if !both_f32 && !both_bf16 {
-                return None; // fall through to CPU for non-f32/non-BF16
-            }
-            match cuda::dispatch::gpu_gemm(rt, a, b, false, false, 1.0, 0.0, None) {
-                Ok(t) => Some(Ok(alloc::vec![t])),
-                Err(e) => Some(Err(OpError::InternalError(alloc::format!(
-                    "CUDA MatMul: {}",
-                    e
-                )))),
-            }
-        }
-        "Gemm" => {
-            let a = inputs.first().and_then(|o| *o)?;
-            let b = inputs.get(1).and_then(|o| *o)?;
-            let c_bias = inputs.get(2).and_then(|o| *o);
-            let both_f32 = a.data_type == DataType::Float && b.data_type == DataType::Float;
-            let both_bf16 = a.data_type == DataType::BFloat16 && b.data_type == DataType::BFloat16;
-            if !both_f32 && !both_bf16 {
-                return None;
-            }
-            // Parse Gemm attributes.
-            let mut trans_a = false;
-            let mut trans_b = false;
-            let mut alpha = 1.0f32;
-            let mut beta = 1.0f32;
-            for attr in attrs {
-                match attr.name.as_str() {
-                    "transA" => trans_a = attr.i != 0,
-                    "transB" => trans_b = attr.i != 0,
-                    "alpha" => alpha = attr.f,
-                    "beta" => beta = if c_bias.is_some() { attr.f } else { 0.0 },
-                    _ => {}
-                }
-            }
-            if c_bias.is_none() {
-                beta = 0.0;
-            }
-            match cuda::dispatch::gpu_gemm(rt, a, b, trans_a, trans_b, alpha, beta, c_bias) {
-                Ok(t) => Some(Ok(alloc::vec![t])),
-                Err(e) => Some(Err(OpError::InternalError(alloc::format!(
-                    "CUDA Gemm: {}",
-                    e
-                )))),
-            }
-        }
-        "MatMulInteger" => {
-            let a = inputs.first().and_then(|o| *o)?;
-            let b = inputs.get(1).and_then(|o| *o)?;
-            if a.data_type != DataType::Int8 || b.data_type != DataType::Int8 {
-                return None; // fall through to CPU for non-i8
-            }
-            match cuda::dispatch::gpu_gemm_int8(rt, a, b) {
-                Ok(Some(t)) => Some(Ok(alloc::vec![t])),
-                Ok(None) => None, // dimensions not 4-aligned, fall back to CPU
-                Err(e) => Some(Err(OpError::InternalError(alloc::format!(
-                    "CUDA MatMulInteger: {}",
-                    e
-                )))),
-            }
-        }
-        "Conv" => {
-            let x = inputs.first().and_then(|o| *o)?;
-            let w = inputs.get(1).and_then(|o| *o)?;
-            let bias = inputs.get(2).and_then(|o| *o);
-            if x.data_type != DataType::Float && x.data_type != DataType::BFloat16 {
-                return None;
-            }
-            if w.data_type != x.data_type {
-                return None;
-            }
-            // Parse attrs once via the shared parser so CPU and GPU
-            // paths agree on semantics. Parse errors propagate.
-            let conv_attrs = match operators::ConvAttrs::from_attributes(attrs) {
-                Ok(a) => a,
-                Err(e) => return Some(Err(e)),
-            };
-            let pads = [
-                conv_attrs.pads[0],
-                conv_attrs.pads[1],
-                conv_attrs.pads[2],
-                conv_attrs.pads[3],
-            ];
-            let strides = conv_attrs.strides;
-            let dilations = conv_attrs.dilations;
-            match cuda::conv::gpu_conv2d(
-                rt,
-                x,
-                w,
-                bias,
-                &pads,
-                &strides,
-                &dilations,
-                conv_attrs.group,
-            ) {
-                Ok(Some(t)) => Some(Ok(alloc::vec![t])),
-                Ok(None) => None, // not a 4D conv, fall back to CPU
-                Err(_) => None,   // cuDNN failed for this shape, fall back to CPU
-            }
-        }
+        "MatMul" => try_cuda_matmul(rt, inputs),
+        "Gemm" => try_cuda_gemm(rt, inputs, attrs),
+        "MatMulInteger" => try_cuda_matmul_integer(rt, inputs),
+        "Conv" => try_cuda_conv(rt, inputs, attrs),
         _ => None,
+    }
+}
+
+/// Returns `true` if both data types are either f32 or BFloat16 (matched).
+#[cfg(feature = "cuda")]
+fn both_f32_or_bf16(a: DataType, b: DataType) -> bool {
+    let both_f32 = a == DataType::Float && b == DataType::Float;
+    let both_bf16 = a == DataType::BFloat16 && b == DataType::BFloat16;
+    both_f32 || both_bf16
+}
+
+/// Wraps a `Result<Tensor, _>` from a CUDA dispatch helper into the outer
+/// `Option<Result<Vec<Tensor>, OpError>>` carrier with the given error
+/// label.
+#[cfg(feature = "cuda")]
+fn wrap_cuda_single(
+    result: Result<Tensor, cuda::CudaError>,
+    label: &str,
+) -> Option<Result<Vec<Tensor>, OpError>> {
+    match result {
+        Ok(t) => Some(Ok(alloc::vec![t])),
+        Err(e) => Some(Err(OpError::InternalError(alloc::format!(
+            "{}: {}", label, e
+        )))),
+    }
+}
+
+/// Wraps an `Ok(Option<Tensor>)`-style CUDA dispatch (where `Ok(None)`
+/// means "shape unsupported, fall back to CPU") into the outer carrier.
+#[cfg(feature = "cuda")]
+fn wrap_cuda_optional(
+    result: Result<Option<Tensor>, cuda::CudaError>,
+    label: &str,
+) -> Option<Result<Vec<Tensor>, OpError>> {
+    match result {
+        Ok(Some(t)) => Some(Ok(alloc::vec![t])),
+        Ok(None) => None,
+        Err(e) => Some(Err(OpError::InternalError(alloc::format!(
+            "{}: {}", label, e
+        )))),
+    }
+}
+
+#[cfg(feature = "cuda")]
+fn try_cuda_matmul(
+    rt: &cuda::CudaRuntime,
+    inputs: &[Option<&Tensor>],
+) -> Option<Result<Vec<Tensor>, OpError>> {
+    let a = inputs.first().and_then(|o| *o)?;
+    let b = inputs.get(1).and_then(|o| *o)?;
+    if let Some(fp8_type) = matched_fp8_type(a.data_type, b.data_type) {
+        return wrap_cuda_optional(
+            cuda::dispatch::gpu_gemm_fp8(rt, a, b, fp8_type),
+            "CUDA MatMul FP8",
+        );
+    }
+    if !both_f32_or_bf16(a.data_type, b.data_type) {
+        return None; // fall through to CPU for non-f32/non-BF16
+    }
+    wrap_cuda_single(
+        cuda::dispatch::gpu_gemm(rt, a, b, false, false, 1.0, 0.0, None),
+        "CUDA MatMul",
+    )
+}
+
+/// Gemm attribute bundle parsed from the operator's attribute list.
+#[cfg(feature = "cuda")]
+struct GemmAttrs {
+    trans_a: bool,
+    trans_b: bool,
+    alpha: f32,
+    beta: f32,
+}
+
+#[cfg(feature = "cuda")]
+fn parse_gemm_attrs(attrs: &[AttributeProto], has_bias: bool) -> GemmAttrs {
+    let mut out = GemmAttrs {
+        trans_a: false,
+        trans_b: false,
+        alpha: 1.0,
+        beta: 1.0,
+    };
+    for attr in attrs {
+        match attr.name.as_str() {
+            "transA" => out.trans_a = attr.i != 0,
+            "transB" => out.trans_b = attr.i != 0,
+            "alpha" => out.alpha = attr.f,
+            "beta" => out.beta = if has_bias { attr.f } else { 0.0 },
+            _ => {}
+        }
+    }
+    if !has_bias {
+        out.beta = 0.0;
+    }
+    out
+}
+
+#[cfg(feature = "cuda")]
+fn try_cuda_gemm(
+    rt: &cuda::CudaRuntime,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Option<Result<Vec<Tensor>, OpError>> {
+    let a = inputs.first().and_then(|o| *o)?;
+    let b = inputs.get(1).and_then(|o| *o)?;
+    let c_bias = inputs.get(2).and_then(|o| *o);
+    if !both_f32_or_bf16(a.data_type, b.data_type) {
+        return None;
+    }
+    let g = parse_gemm_attrs(attrs, c_bias.is_some());
+    wrap_cuda_single(
+        cuda::dispatch::gpu_gemm(rt, a, b, g.trans_a, g.trans_b, g.alpha, g.beta, c_bias),
+        "CUDA Gemm",
+    )
+}
+
+#[cfg(feature = "cuda")]
+fn try_cuda_matmul_integer(
+    rt: &cuda::CudaRuntime,
+    inputs: &[Option<&Tensor>],
+) -> Option<Result<Vec<Tensor>, OpError>> {
+    let a = inputs.first().and_then(|o| *o)?;
+    let b = inputs.get(1).and_then(|o| *o)?;
+    if a.data_type != DataType::Int8 || b.data_type != DataType::Int8 {
+        return None; // fall through to CPU for non-i8
+    }
+    wrap_cuda_optional(
+        cuda::dispatch::gpu_gemm_int8(rt, a, b),
+        "CUDA MatMulInteger",
+    )
+}
+
+#[cfg(feature = "cuda")]
+fn try_cuda_conv(
+    rt: &cuda::CudaRuntime,
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Option<Result<Vec<Tensor>, OpError>> {
+    let x = inputs.first().and_then(|o| *o)?;
+    let w = inputs.get(1).and_then(|o| *o)?;
+    let bias = inputs.get(2).and_then(|o| *o);
+    if x.data_type != DataType::Float && x.data_type != DataType::BFloat16 {
+        return None;
+    }
+    if w.data_type != x.data_type {
+        return None;
+    }
+    // Parse attrs once via the shared parser so CPU and GPU paths agree on
+    // semantics. Parse errors propagate.
+    let conv_attrs = match operators::ConvAttrs::from_attributes(attrs) {
+        Ok(a) => a,
+        Err(e) => return Some(Err(e)),
+    };
+    let pads = [
+        conv_attrs.pads[0],
+        conv_attrs.pads[1],
+        conv_attrs.pads[2],
+        conv_attrs.pads[3],
+    ];
+    match cuda::conv::gpu_conv2d(
+        rt,
+        x,
+        w,
+        bias,
+        &pads,
+        &conv_attrs.strides,
+        &conv_attrs.dilations,
+        conv_attrs.group,
+    ) {
+        Ok(Some(t)) => Some(Ok(alloc::vec![t])),
+        Ok(None) => None, // not a 4D conv, fall back to CPU
+        Err(_) => None,   // cuDNN failed for this shape, fall back to CPU
     }
 }
 
@@ -851,12 +949,47 @@ fn dispatch_loop(
     // LLM decoder pattern this change targets.
     let body = require_inner_graph(node, "body")?;
 
-    // Read M and cond inputs (both optional — empty string means absent).
     let m: Option<i64> = read_optional_i64(node, 0, value_map);
     let cond_initial: Option<bool> = read_optional_bool(node, 1, value_map);
+    let mut v_current = collect_initial_carried_values(node, value_map)?;
 
-    // Collect initial loop-carried values (inputs[2..]).
-    let mut v_current: Vec<Tensor> = Vec::new();
+    // Trivial-skip cases match the ONNX semantics.
+    if m == Some(0) || cond_initial == Some(false) {
+        return Ok(v_current);
+    }
+
+    let carried_input_names = carried_names_from(&body.input_names, 2);
+    let carried_output_names = carried_names_from(&body.output_names, 1);
+    let cond_out_name = body.output_names.first().cloned();
+
+    let mut cond_current = cond_initial.unwrap_or(true);
+    let mut iter: i64 = 0;
+
+    while !should_stop_loop(iter, m, cond_current)? {
+        let inner = seed_loop_body_inputs(
+            body,
+            value_map,
+            iter,
+            cond_current,
+            &carried_input_names,
+            &v_current,
+        );
+        let result = sub_executor::run_sub_graph(body, inner, initializers)?;
+        v_current = extract_loop_carried_outputs(&result, &carried_output_names)?;
+        cond_current = next_cond_from_body(&result, cond_out_name.as_deref(), cond_current);
+        iter += 1;
+    }
+
+    Ok(v_current)
+}
+
+/// Collects the initial loop-carried values from `inputs[2..]` against the
+/// outer value map. Empty input names are skipped (optional slots).
+fn collect_initial_carried_values(
+    node: &ExecutionNode,
+    value_map: &BTreeMap<String, Tensor>,
+) -> Result<Vec<Tensor>, SessionError> {
+    let mut v = Vec::new();
     for name in node.inputs.iter().skip(2) {
         if name.is_empty() {
             continue;
@@ -867,87 +1000,104 @@ fn dispatch_loop(
                 name
             ))
         })?;
-        v_current.push(tensor.clone());
+        v.push(tensor.clone());
     }
+    Ok(v)
+}
 
-    // Trivial-skip cases match the ONNX semantics.
-    if m == Some(0) || cond_initial == Some(false) {
-        return Ok(v_current);
-    }
-
-    // The body's input names: [iter_num, cond_in, v_in_0, v_in_1, ...].
-    let carried_input_names: Vec<String> = if body.input_names.len() > 2 {
-        body.input_names[2..].to_vec()
+/// Returns `names[start..]` as an owned `Vec<String>`, or an empty vector
+/// when `names` is shorter than `start`.
+fn carried_names_from(names: &[String], start: usize) -> Vec<String> {
+    if names.len() > start {
+        names[start..].to_vec()
     } else {
         Vec::new()
-    };
-    // Body outputs: [cond_out, v_out_0, v_out_1, ...].
-    let carried_output_names: Vec<String> = if body.output_names.len() > 1 {
-        body.output_names[1..].to_vec()
-    } else {
-        Vec::new()
-    };
-    let cond_out_name = body.output_names.first().cloned();
-
-    let mut cond_current = cond_initial.unwrap_or(true);
-    let mut iter: i64 = 0;
-
-    loop {
-        if iter >= sub_executor::MAX_LOOP_ITERATIONS {
-            return Err(SessionError::ExecutionFailed(alloc::format!(
-                "Loop exceeded safety limit ({})",
-                sub_executor::MAX_LOOP_ITERATIONS
-            )));
-        }
-        if let Some(max) = m {
-            if iter >= max {
-                break;
-            }
-        }
-        if !cond_current {
-            break;
-        }
-
-        // Seed the inner value map from the outer scope and bind the
-        // body's iter_num / cond_in / v_in_* inputs.
-        let mut inner = value_map.clone();
-        if let Some(name) = body.input_names.first() {
-            if !name.is_empty() {
-                inner.insert(name.clone(), sub_executor::i64_scalar(iter));
-            }
-        }
-        if let Some(name) = body.input_names.get(1) {
-            if !name.is_empty() {
-                inner.insert(name.clone(), sub_executor::bool_scalar(cond_current));
-            }
-        }
-        for (name, val) in carried_input_names.iter().zip(v_current.iter()) {
-            inner.insert(name.clone(), val.clone());
-        }
-
-        let result = sub_executor::run_sub_graph(body, inner, initializers)?;
-
-        // Extract loop-carried outputs.
-        let mut next_v = Vec::with_capacity(carried_output_names.len());
-        for name in &carried_output_names {
-            let t = result.get(name).ok_or_else(|| {
-                SessionError::ExecutionFailed(alloc::format!("Loop body missing output '{}'", name))
-            })?;
-            next_v.push(t.clone());
-        }
-        v_current = next_v;
-
-        // Read body-emitted cond_out for the next iteration's gate.
-        if let Some(name) = &cond_out_name {
-            if let Some(t) = result.get(name) {
-                cond_current = sub_executor::read_bool_scalar(t).unwrap_or(true);
-            }
-        }
-
-        iter += 1;
     }
+}
 
-    Ok(v_current)
+/// Decides whether the loop should stop iterating before the next body
+/// execution. Returns an error when the safety iteration cap is hit.
+fn should_stop_loop(iter: i64, m: Option<i64>, cond_current: bool) -> Result<bool, SessionError> {
+    if iter >= sub_executor::MAX_LOOP_ITERATIONS {
+        return Err(SessionError::ExecutionFailed(alloc::format!(
+            "Loop exceeded safety limit ({})",
+            sub_executor::MAX_LOOP_ITERATIONS
+        )));
+    }
+    if let Some(max) = m {
+        if iter >= max {
+            return Ok(true);
+        }
+    }
+    Ok(!cond_current)
+}
+
+/// Builds the inner value map for one iteration of the loop body, binding
+/// `iter_num`, `cond_in`, and the carried `v_in_*` slots.
+fn seed_loop_body_inputs(
+    body: &ExecutionGraph,
+    value_map: &BTreeMap<String, Tensor>,
+    iter: i64,
+    cond_current: bool,
+    carried_input_names: &[String],
+    v_current: &[Tensor],
+) -> BTreeMap<String, Tensor> {
+    let mut inner = value_map.clone();
+    bind_named(&mut inner, body.input_names.first(), || {
+        sub_executor::i64_scalar(iter)
+    });
+    bind_named(&mut inner, body.input_names.get(1), || {
+        sub_executor::bool_scalar(cond_current)
+    });
+    for (name, val) in carried_input_names.iter().zip(v_current.iter()) {
+        inner.insert(name.clone(), val.clone());
+    }
+    inner
+}
+
+/// Inserts `make()` into `map` under `name` if `name` is `Some(non-empty)`.
+fn bind_named<F: FnOnce() -> Tensor>(
+    map: &mut BTreeMap<String, Tensor>,
+    name: Option<&String>,
+    make: F,
+) {
+    if let Some(n) = name {
+        if !n.is_empty() {
+            map.insert(n.clone(), make());
+        }
+    }
+}
+
+/// Reads loop-carried output tensors from the body's result map in the
+/// order specified by `carried_output_names`.
+fn extract_loop_carried_outputs(
+    result: &BTreeMap<String, Tensor>,
+    carried_output_names: &[String],
+) -> Result<Vec<Tensor>, SessionError> {
+    let mut next_v = Vec::with_capacity(carried_output_names.len());
+    for name in carried_output_names {
+        let t = result.get(name).ok_or_else(|| {
+            SessionError::ExecutionFailed(alloc::format!("Loop body missing output '{}'", name))
+        })?;
+        next_v.push(t.clone());
+    }
+    Ok(next_v)
+}
+
+/// Reads the body-emitted `cond_out` tensor, falling back to the previous
+/// iteration's `cond_current` value when absent or unreadable.
+fn next_cond_from_body(
+    result: &BTreeMap<String, Tensor>,
+    cond_out_name: Option<&str>,
+    cond_current: bool,
+) -> bool {
+    let Some(name) = cond_out_name else {
+        return cond_current;
+    };
+    let Some(t) = result.get(name) else {
+        return cond_current;
+    };
+    sub_executor::read_bool_scalar(t).unwrap_or(true)
 }
 
 fn dispatch_scan(
@@ -1853,102 +2003,11 @@ fn dispatch_shape_data(
         OpKind::Shape => ops::shape_data::op_shape(require_input(inputs, 0, "Shape")?),
         OpKind::Size => ops::shape_data::op_size(require_input(inputs, 0, "Size")?),
         OpKind::Identity => ops::shape_data::op_identity(require_input(inputs, 0, "Identity")?),
-        OpKind::Constant => {
-            // ONNX Constant most commonly carries its payload in a
-            // 'value' attribute of type TensorProto. We also accept an
-            // explicit input tensor (initializer pass-through) or the
-            // scalar 'value_float' / 'value_int' variants emitted by
-            // some exporters. Scalar attributes produce a true 0-D
-            // tensor.
-            if let Some(t) = optional_input(inputs, 0) {
-                return ops::shape_data::op_identity(t);
-            }
-            if let Some(proto) = get_attr_tensor(attrs, "value") {
-                return tensor_from_proto(proto).ok_or_else(|| {
-                    OpError::InvalidAttribute(String::from(
-                        "Constant 'value' tensor has unsupported data_type",
-                    ))
-                });
-            }
-            if let Some(a) = attrs
-                .iter()
-                .find(|a| a.name == "value_float" && a.attr_type == AttributeType::Float)
-            {
-                return ops::shape_data::op_constant_of_shape(&[], a.f);
-            }
-            if let Some(a) = attrs
-                .iter()
-                .find(|a| a.name == "value_int" && a.attr_type == AttributeType::Int)
-            {
-                return ops::shape_data::op_constant_of_shape(&[], a.i as f32);
-            }
-            Err(OpError::InvalidAttribute(String::from(
-                "Constant requires one of: 'value' (TensorProto), \
-                 'value_float', 'value_int', or an input initializer",
-            )))
-        }
-        OpKind::ConstantOfShape => {
-            let shape_tensor = require_input(inputs, 0, "ConstantOfShape")?;
-            let shape = read_i64_tensor(shape_tensor)?;
-            // Prefer the tensor-typed 'value' attribute (standard ONNX
-            // export). Fall back to 'value_float' / 'value_int' or 0.0.
-            let value = if let Some(proto) = get_attr_tensor(attrs, "value") {
-                let fill_tensor = tensor_from_proto(proto).ok_or_else(|| {
-                    OpError::InvalidAttribute(String::from(
-                        "ConstantOfShape 'value' tensor has unsupported data_type",
-                    ))
-                })?;
-                read_scalar_f32(&fill_tensor)?
-            } else {
-                attrs
-                    .iter()
-                    .find_map(|a| match (a.name.as_str(), a.attr_type) {
-                        ("value_float", AttributeType::Float) => Some(a.f),
-                        ("value_int", AttributeType::Int) => Some(a.i as f32),
-                        _ => None,
-                    })
-                    .unwrap_or(0.0)
-            };
-            ops::shape_data::op_constant_of_shape(&shape, value)
-        }
-        OpKind::Range => {
-            let start_t = require_input(inputs, 0, "Range")?;
-            let limit_t = require_input(inputs, 1, "Range")?;
-            let delta_t = require_input(inputs, 2, "Range")?;
-            let start = read_scalar_f32(start_t)?;
-            let limit = read_scalar_f32(limit_t)?;
-            let delta = read_scalar_f32(delta_t)?;
-            ops::shape_data::op_range(start, limit, delta)
-        }
-        OpKind::Trilu => {
-            let x = require_input(inputs, 0, "Trilu")?;
-            // k is an optional second input (Int64 scalar)
-            let k = optional_input(inputs, 1)
-                .map(|t| {
-                    if t.data_type == DataType::Int64 && t.raw_data.len() >= I64_SIZE {
-                        byte_io::read_i64(&t.raw_data, 0)
-                    } else {
-                        0
-                    }
-                })
-                .unwrap_or(0);
-            let upper = get_attr_int(attrs, "upper", 1) != 0;
-            ops::shape_data::op_trilu(x, k, upper)
-        }
-        OpKind::CumSum => {
-            let x = require_input(inputs, 0, "CumSum")?;
-            let axis_tensor = require_input(inputs, 1, "CumSum")?;
-            let axis = if axis_tensor.data_type == DataType::Int64
-                && axis_tensor.raw_data.len() >= I64_SIZE
-            {
-                byte_io::read_i64(&axis_tensor.raw_data, 0)
-            } else {
-                0
-            };
-            let exclusive = get_attr_int(attrs, "exclusive", 0) != 0;
-            let reverse = get_attr_int(attrs, "reverse", 0) != 0;
-            ops::shape_data::op_cumsum(x, axis, exclusive, reverse)
-        }
+        OpKind::Constant => dispatch_constant(inputs, attrs),
+        OpKind::ConstantOfShape => dispatch_constant_of_shape(inputs, attrs),
+        OpKind::Range => dispatch_range(inputs),
+        OpKind::Trilu => dispatch_trilu(inputs, attrs),
+        OpKind::CumSum => dispatch_cumsum(inputs, attrs),
         OpKind::GatherND => {
             let data = require_input(inputs, 0, "GatherND")?;
             let idx = require_input(inputs, 1, "GatherND")?;
@@ -1962,6 +2021,110 @@ fn dispatch_shape_data(
             ops::shape_data::op_scatter_nd(data, idx, upd)
         }
         _ => Err(OpError::UnsupportedOp(String::from("shape_data"))),
+    }
+}
+
+/// Implements the ONNX `Constant` op. The op most commonly carries its
+/// payload in a `value` attribute of type `TensorProto`. We also accept an
+/// explicit input tensor (initializer pass-through) or the scalar
+/// `value_float` / `value_int` variants emitted by some exporters. Scalar
+/// attributes produce a true 0-D tensor.
+fn dispatch_constant(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    if let Some(t) = optional_input(inputs, 0) {
+        return ops::shape_data::op_identity(t);
+    }
+    if let Some(proto) = get_attr_tensor(attrs, "value") {
+        return tensor_from_proto(proto).ok_or_else(|| {
+            OpError::InvalidAttribute(String::from(
+                "Constant 'value' tensor has unsupported data_type",
+            ))
+        });
+    }
+    if let Some(v) = find_scalar_attr(attrs) {
+        return ops::shape_data::op_constant_of_shape(&[], v);
+    }
+    Err(OpError::InvalidAttribute(String::from(
+        "Constant requires one of: 'value' (TensorProto), \
+         'value_float', 'value_int', or an input initializer",
+    )))
+}
+
+/// Implements the ONNX `ConstantOfShape` op: prefer the tensor-typed
+/// `value` attribute, fall back to `value_float` / `value_int`, then 0.0.
+fn dispatch_constant_of_shape(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    let shape_tensor = require_input(inputs, 0, "ConstantOfShape")?;
+    let shape = read_i64_tensor(shape_tensor)?;
+    let value = constant_of_shape_value(attrs)?;
+    ops::shape_data::op_constant_of_shape(&shape, value)
+}
+
+/// Resolves the fill value for `ConstantOfShape`. Mirrors the original
+/// precedence: tensor `value` attribute, then scalar `value_float` /
+/// `value_int`, then 0.0.
+fn constant_of_shape_value(attrs: &[AttributeProto]) -> Result<f32, OpError> {
+    if let Some(proto) = get_attr_tensor(attrs, "value") {
+        let fill_tensor = tensor_from_proto(proto).ok_or_else(|| {
+            OpError::InvalidAttribute(String::from(
+                "ConstantOfShape 'value' tensor has unsupported data_type",
+            ))
+        })?;
+        return read_scalar_f32(&fill_tensor);
+    }
+    Ok(find_scalar_attr(attrs).unwrap_or(0.0))
+}
+
+/// Looks up `value_float` or `value_int` and returns it as an `f32`.
+fn find_scalar_attr(attrs: &[AttributeProto]) -> Option<f32> {
+    attrs
+        .iter()
+        .find_map(|a| match (a.name.as_str(), a.attr_type) {
+            ("value_float", AttributeType::Float) => Some(a.f),
+            ("value_int", AttributeType::Int) => Some(a.i as f32),
+            _ => None,
+        })
+}
+
+fn dispatch_range(inputs: &[Option<&Tensor>]) -> Result<Tensor, OpError> {
+    let start = read_scalar_f32(require_input(inputs, 0, "Range")?)?;
+    let limit = read_scalar_f32(require_input(inputs, 1, "Range")?)?;
+    let delta = read_scalar_f32(require_input(inputs, 2, "Range")?)?;
+    ops::shape_data::op_range(start, limit, delta)
+}
+
+fn dispatch_trilu(inputs: &[Option<&Tensor>], attrs: &[AttributeProto]) -> Result<Tensor, OpError> {
+    let x = require_input(inputs, 0, "Trilu")?;
+    let k = optional_input(inputs, 1)
+        .map(read_i64_scalar_or_default)
+        .unwrap_or(0);
+    let upper = get_attr_int(attrs, "upper", 1) != 0;
+    ops::shape_data::op_trilu(x, k, upper)
+}
+
+fn dispatch_cumsum(
+    inputs: &[Option<&Tensor>],
+    attrs: &[AttributeProto],
+) -> Result<Tensor, OpError> {
+    let x = require_input(inputs, 0, "CumSum")?;
+    let axis = read_i64_scalar_or_default(require_input(inputs, 1, "CumSum")?);
+    let exclusive = get_attr_int(attrs, "exclusive", 0) != 0;
+    let reverse = get_attr_int(attrs, "reverse", 0) != 0;
+    ops::shape_data::op_cumsum(x, axis, exclusive, reverse)
+}
+
+/// Reads a scalar `i64` from `t` when it is a well-formed `Int64` tensor,
+/// returning 0 otherwise. Used by `Trilu` (optional `k`) and `CumSum`
+/// (axis tensor) which both fall back to 0 on bad inputs.
+fn read_i64_scalar_or_default(t: &Tensor) -> i64 {
+    if t.data_type == DataType::Int64 && t.raw_data.len() >= I64_SIZE {
+        byte_io::read_i64(&t.raw_data, 0)
+    } else {
+        0
     }
 }
 
