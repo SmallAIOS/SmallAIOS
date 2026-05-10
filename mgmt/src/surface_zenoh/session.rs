@@ -208,6 +208,12 @@ impl ZenohSessionTable {
         &self.config
     }
 
+    /// Iterate `(token, entry)` pairs. Used by tests + diagnostics
+    /// that need direct visibility into the side-table contents.
+    pub fn iter(&self) -> impl Iterator<Item = (&Token, &ZenohSessionEntry)> {
+        self.entries.iter()
+    }
+
     /// Reserve a slot for a fresh login. Checks the per-identity and
     /// total caps **before** the kernel session table is touched, so
     /// the kernel slot is only acquired when the Zenoh-side caps
