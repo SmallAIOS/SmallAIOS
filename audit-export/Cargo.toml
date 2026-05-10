@@ -1,0 +1,35 @@
+[package]
+name = "smallaios-audit-export"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Verifiable audit-log exporter for SmallAIOS — clean-room immudb client over HTTP/2 + TLS 1.3"
+publish = false
+
+# Layer 1 — Core Service. May depend on Layer 0 (kernel, security)
+# and on Layer 1 siblings (net, mgmt). MUST NOT depend on any
+# Layer 2 (HAL/drivers) or Layer 3 (integration) crate.
+#
+# Concrete dependencies are added by subsequent implementation
+# phases (see openspec/changes/verifiable-audit-log-v1/tasks.md):
+#   Phase 2: net (HTTP/2 + gRPC framing)
+#   Phase 3: bytes-handling utilities (none new — security has SHA-256)
+#   Phase 5: security (Ed25519 verifier, SHA-256 hasher)
+#   Phase 7: mgmt (ConfigSurface trait, audit-ring tap)
+#
+# This Cargo manifest declares no dependencies in Phase 1 to keep
+# the crate trivially compilable as scaffolding while subsequent
+# phases land their own concrete wiring.
+
+[dependencies]
+
+[features]
+default = []
+# Authentication mode. Exactly one SHALL be enabled at compile time.
+# `bearer` is the v1 path (static token in /data/audit_export/immudb.token);
+# `mtls` is the v2 path (deferred — design.md D3).
+bearer = []
+mtls = []
+# Formal-gate flag (matches the workspace-wide convention).
+formal-gate = []

@@ -1,0 +1,24 @@
+// Placeholder for vendored immudb wire-protocol schema.
+//
+// The real `schema.proto` from `codenotary/immudb` will be
+// dropped here verbatim during task 1.2 of
+// `openspec/changes/verifiable-audit-log-v1/tasks.md`.
+//
+// The committed SHA from which this file was vendored MUST match
+// `audit-export/vendor/IMMUDB_SCHEMA_SHA`. The hand-written Rust
+// encoder/decoder in `audit-export/src/immudb/schema.rs` is the
+// authority for the actual on-the-wire bytes; this file exists for
+// provenance and to support the fixture-generator harness in
+// `tests/scripts/gen_fixtures.go`.
+//
+// Source: https://github.com/codenotary/immudb/blob/<SHA>/pkg/api/schema/schema.proto
+//
+// This is a TEXT placeholder; it is never compiled into the
+// SmallAIOS image (the crate has no `build.rs`, and the proto
+// content is hand-translated into Rust by humans, not generated).
+
+syntax = "proto3";
+
+package immudb.schema;
+
+// PLACEHOLDER — to be replaced verbatim from upstream during task 1.2.

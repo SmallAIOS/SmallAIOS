@@ -1,0 +1,26 @@
+# Immudb wire protocol pin
+#
+# This file records the upstream commit of the
+# `codenotary/immudb` repository whose `pkg/api/schema/schema.proto`
+# we vendored as the source of all wire-format field tags used by
+# the `audit-export` crate.
+#
+# Update procedure (see openspec/changes/verifiable-audit-log-v1/tasks.md
+# task 1.1):
+#
+#   1. Pick a target immudb release tag (recommended: latest stable
+#      v1.9.x). At time of this change the recommended tag is `v1.9.5`
+#      (verify before vendoring).
+#   2. Resolve the tag to a commit SHA:
+#         git ls-remote --tags https://github.com/codenotary/immudb v1.9.5
+#   3. Replace the placeholder line below with the resolved SHA.
+#   4. Vendor the proto file at that SHA into
+#      `audit-export/vendor/schema.proto` (task 1.2).
+#   5. Run the protobuf cross-check fixture generator (task 3.2).
+#
+# Format: a single line with the 40-char hexadecimal commit SHA,
+# followed by `# tag: <git-tag>` for human reference. No trailing
+# whitespace. The CI pin-checker (task 12.x) parses this file
+# strictly.
+
+PLACEHOLDER0000000000000000000000000000000  # tag: v1.9.x  TBD: verify

@@ -25,6 +25,7 @@ members = [
     "auth",
     "mgmt",
     "fs",
+    "audit-export",
     "tools/coverage-probe",
     "xtask",
 ]

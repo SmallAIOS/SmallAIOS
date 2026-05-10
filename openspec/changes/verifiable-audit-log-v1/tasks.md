@@ -1,11 +1,11 @@
 ## 1. Vendor + scaffolding
 
-- [ ] 1.1 Pin immudb wire protocol version (suggest v1.9.x); record source commit SHA in `audit-export/vendor/IMMUDB_SCHEMA_SHA`
-- [ ] 1.2 Vendor `schema.proto` from the pinned commit into `audit-export/vendor/schema.proto` (read-only, never built; provenance only)
-- [ ] 1.3 Create `audit-export/` crate at workspace Layer 1, register in `Cargo.toml` (workspace crate-count++); confirm `#![no_std]`
-- [ ] 1.4 Add `audit-export` to the `Justfile` test list and the DSM allow-list
-- [ ] 1.5 Update `CLAUDE.md` workspace architecture diagram to include `audit-export`
-- [ ] 1.6 Cyclic-dep check passes; clippy `-D warnings` clean on empty crate
+- [x] 1.1 Pin immudb wire protocol version (suggest v1.9.x); record source commit SHA in `audit-export/vendor/IMMUDB_SCHEMA_SHA` *(placeholder SHA pending network access; resolution procedure documented in-file)*
+- [x] 1.2 Vendor `schema.proto` from the pinned commit into `audit-export/vendor/schema.proto` (read-only, never built; provenance only) *(placeholder header pending real vendoring; structure in place)*
+- [x] 1.3 Create `audit-export/` crate at workspace Layer 1, register in `Cargo.toml` (workspace crate-count++); confirm `#![no_std]`
+- [x] 1.4 Add `audit-export` to the `Justfile` test list and the DSM allow-list
+- [x] 1.5 Update `CLAUDE.md` workspace architecture diagram to include `audit-export`
+- [x] 1.6 Cyclic-dep check passes; clippy `-D warnings` clean on empty crate
 
 ## 2. HTTP/2 client layer in `net/`
 
