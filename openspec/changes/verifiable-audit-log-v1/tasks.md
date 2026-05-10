@@ -21,10 +21,10 @@
 
 ## 3. immudb protobuf schema subset
 
-- [ ] 3.1 Hand-write encoder/decoder for `KeyValue`, `SetRequest`, `VerifiableSetRequest`, `TxHeader`, `TxEntry`, `LinearProof`, `InclusionProof`, `DualProof`, `ImmutableState`, `VerifiableTx` in `audit-export/src/immudb/schema.rs`
-- [ ] 3.2 Cross-validate every message round-trip against fixtures emitted by immudb's Go SDK (checked into `tests/proof_vectors/`)
-- [ ] 3.3 Reject oversized length-prefixed fields without panic or unbounded allocation
-- [ ] 3.4 Add `fuzz/fuzz_targets/audit_export_immudb_decode.rs` for the decoder; 60 s/PR in CI fuzz job
+- [x] 3.1 Hand-write encoder/decoder for `KeyValue`, `SetRequest`, `VerifiableSetRequest`, `TxHeader`, `TxEntry`, `LinearProof`, `InclusionProof`, `DualProof`, `ImmutableState`, `VerifiableTx` in `audit-export/src/immudb/schema.rs` *(plus `KVMetadata`, `Signature`, `Tx`)*
+- [ ] 3.2 Cross-validate every message round-trip against fixtures emitted by immudb's Go SDK (checked into `tests/proof_vectors/`) *(deferred — requires Go toolchain + immudb sidecar; falls into Phase 5 with the verifier vectors)*
+- [x] 3.3 Reject oversized length-prefixed fields without panic or unbounded allocation *(`DEFAULT_FIELD_CAP = 64 KiB`, varint capped at 10 bytes, length-delim cap enforced; `malformed_input_does_not_panic` test exercises this)*
+- [x] 3.4 Add `fuzz/fuzz_targets/audit_export_immudb_decode.rs` for the decoder; 60 s/PR in CI fuzz job
 
 ## 4. immudb gRPC client
 

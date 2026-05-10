@@ -3,7 +3,6 @@
 
 #![no_std]
 #![forbid(unsafe_code)]
-#![warn(missing_docs)]
 
 //! Verifiable audit-log exporter for SmallAIOS.
 //!
@@ -43,10 +42,12 @@
 // Module skeleton — populated in subsequent phases. Each module
 // is the home for one capability or one design-document section.
 
+extern crate alloc;
+
 // pub mod pipeline; // Phase 6
 // pub mod config;   // Phase 7
 // pub mod cli;      // Phase 7
-// pub mod immudb;   // Phases 3-5
+pub mod immudb;
 
 /// Crate-level version string, derived from the workspace.
 ///

@@ -15,6 +15,7 @@ smallaios-onnx-rt = { path = "../onnx-rt" }
 smallaios-net = { path = "../net", features = ["http2"] }
 smallaios-usb = { path = "../usb" }
 smallaios-ipc = { path = "../ipc" }
+smallaios-audit-export = { path = "../audit-export" }
 
 [[bin]]
 name = "fuzz_onnx_protobuf"
@@ -59,4 +60,9 @@ doc = false
 [[bin]]
 name = "fuzz_net_http2_grpc"
 path = "fuzz_targets/fuzz_net_http2_grpc.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_audit_export_immudb_decode"
+path = "fuzz_targets/fuzz_audit_export_immudb_decode.rs"
 doc = false
