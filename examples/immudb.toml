@@ -1,0 +1,51 @@
+# `examples/immudb.toml`
+#
+# Operator-facing template for /data/audit_export/immudb.toml.
+# Copy this file to /data/audit_export/immudb.toml, edit `endpoint`,
+# `server_pubkey_fingerprint`, and the token file, then flip
+# `enabled = true`.
+#
+# See:
+#   - docs/verifiable-audit-log.md  for the operator setup guide.
+#   - openspec/changes/verifiable-audit-log-v1/  for the design.
+#
+# Permissions:
+#   /data/audit_export/immudb.toml   0640  kernel
+#   /data/audit_export/immudb.token  0600  kernel  (NEVER world-readable)
+#   /data/audit_export/last_state.bin 0600 kernel  (persisted state)
+
+[exporter]
+enabled            = false                          # explicit opt-in
+endpoint           = ""                             # https://immudb.example.com:3322
+fallback_endpoints = []                             # optional round-robin list
+auth_mode          = "bearer"                       # "bearer" (v1) or "mtls" (v2, deferred)
+token_path         = "/data/audit_export/immudb.token"
+state_path         = "/data/audit_export/last_state.bin"
+database           = "smallaios_audit"              # immudb DB name (one per fleet)
+batch_size         = 100                            # records per VerifiableSet
+batch_interval_ms  = 1000                           # whichever fires first
+buffer_bytes       = 4194304                        # 4 MiB ring buffer; drop-oldest on overflow
+backoff_initial_ms = 10000                          # 10 s initial retry delay
+backoff_cap_ms     = 300000                         # 5 min cap
+
+[tls]
+require_pqc        = false                          # offer X25519+ML-KEM-768 first when true
+# 64-char lowercase-hex SHA-256 of the server's Ed25519 public key.
+# REQUIRED when `enabled = true`. There is no TOFU — operators must
+# pin this fingerprint after a controlled out-of-band exchange.
+server_pubkey_fingerprint = ""
+
+[record_filter]
+# Empty include_actions = "ship every action".
+include_actions = []
+# Default excludes the seven exporter-self records so the pipeline
+# does not generate a feedback loop reporting on its own attempts.
+exclude_actions = [
+  "audit_export_attempt",
+  "audit_export_overflow",
+  "audit_export_proof_failure",
+  "audit_export_rollback_suspected",
+  "audit_export_decode_failure",
+  "audit_export_state_init",
+  "immudb_state",
+]

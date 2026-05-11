@@ -326,7 +326,7 @@ mod tests {
         UnaryResponse {
             initial_headers: alloc::vec![Header::new(":status", "200")],
             body: framed,
-            trailers: alloc::vec![Header::new("grpc-status", &alloc::format!("{}", status))],
+            trailers: alloc::vec![Header::new("grpc-status", alloc::format!("{status}"))],
         }
     }
 

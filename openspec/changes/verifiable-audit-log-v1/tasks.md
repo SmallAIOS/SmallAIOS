@@ -86,26 +86,26 @@
 
 ## 10. End-to-end test against real immudb
 
-- [ ] 10.1 Add `tests/e2e_immudb.rs` driving the full pipeline against an `immudb:1.9.x` Docker sidecar
-- [ ] 10.2 Push 10,000 records over 5 minutes; assert `immuclient audit -d smallaios_audit` reports zero divergence
-- [ ] 10.3 Second pass: tamper with one record in the immudb tree (via direct manipulation in the test harness) and assert the local verifier surfaces `audit_export_proof_failure`
-- [ ] 10.4 Decide CI cost: every-PR vs nightly (recommend nightly; per-PR runs only the fixture-replay tests)
-- [ ] 10.5 Document CI flow in `docs/audit-export-ci.md`
+- [x] 10.1 Add `tests/e2e_immudb.rs` driving the full pipeline against an `immudb:1.9.x` Docker sidecar *(skeleton + env-driven contract test; ignored by default; container-side transport wired in Phase 7 follow-on enables full live drive)*
+- [ ] 10.2 Push 10,000 records over 5 minutes; assert `immuclient audit -d smallaios_audit` reports zero divergence *(requires container-side transport)*
+- [ ] 10.3 Second pass: tamper with one record in the immudb tree (via direct manipulation in the test harness) and assert the local verifier surfaces `audit_export_proof_failure` *(requires container-side transport)*
+- [x] 10.4 Decide CI cost: every-PR vs nightly (recommend nightly; per-PR runs only the fixture-replay tests) *(documented in `docs/audit-export-ci.md`)*
+- [x] 10.5 Document CI flow in `docs/audit-export-ci.md`
 
 ## 11. Documentation
 
-- [ ] 11.1 Add `docs/verifiable-audit-log.md`: operator-facing setup guide (immudb deployment, key generation, fingerprint pinning, token rotation, recovery from halts)
-- [ ] 11.2 Add `examples/immudb.toml` with conservative defaults and inline comments
-- [ ] 11.3 Update `CLAUDE.md` Container Environment Variables table if any envvar is added (none expected)
-- [ ] 11.4 Update `CLAUDE.md` Crate Feature Flags section: `audit-export` features (`bearer` default, `mtls` v2 placeholder)
+- [x] 11.1 Add `docs/verifiable-audit-log.md`: operator-facing setup guide (immudb deployment, key generation, fingerprint pinning, token rotation, recovery from halts)
+- [x] 11.2 Add `examples/immudb.toml` with conservative defaults and inline comments
+- [x] 11.3 Update `CLAUDE.md` Container Environment Variables table if any envvar is added (none expected) *(none added — exporter is TOML-only)*
+- [x] 11.4 Update `CLAUDE.md` Crate Feature Flags section: `audit-export` features (`bearer` default, `mtls` v2 placeholder)
 
 ## 12. CI plumbing
 
-- [ ] 12.1 Add `audit-export` to the host-testable crate list in `.github/workflows/ci.yml`
-- [ ] 12.2 Add fuzz target invocation in the existing Fuzz Testing job
-- [ ] 12.3 Add nightly E2E job using the immudb sidecar; surface failures as Slack/email (existing convention)
-- [ ] 12.4 Coverage gate: ensure `audit-export` lands in `cargo-llvm-cov` workspace report; expect ≥85 % line coverage on first pass
-- [ ] 12.5 Update `tasks.md`-derived test count target: 4,143 → ≥4,310 after `management-login-v1` and `telemetry-otel-export-v1` land first
-- [ ] 12.6 Add CI matrix entry `container --no-default-features` (audit-export cargo feature off) to prove zero-overhead-when-disabled per D10 Layer 1
-- [ ] 12.7 Add CI matrix entry `container --features audit-export` with default TOML (`enabled = false`) to prove zero-runtime-overhead per D10 Layer 2
-- [ ] 12.8 Add pin-check job: verify `audit-export/vendor/schema.proto` content matches the SHA in `audit-export/vendor/IMMUDB_SCHEMA_SHA` from `codenotary/immudb` (fails the build on drift)
+- [x] 12.1 Add `audit-export` to the host-testable crate list in `.github/workflows/ci.yml` *(workspace-wide `cargo test` / `cargo clippy` auto-picks the new crate; no list edit required)*
+- [x] 12.2 Add fuzz target invocation in the existing Fuzz Testing job *(four new targets added: net_http2_frame, net_http2_hpack, net_http2_grpc, audit_export_immudb_decode)*
+- [ ] 12.3 Add nightly E2E job using the immudb sidecar; surface failures as Slack/email (existing convention) *(Docker sidecar requires nightly workflow file beyond this PR's scope)*
+- [ ] 12.4 Coverage gate: ensure `audit-export` lands in `cargo-llvm-cov` workspace report; expect ≥85 % line coverage on first pass *(workspace coverage auto-picks; ratchet bump deferred until merged)*
+- [ ] 12.5 Update `tasks.md`-derived test count target: 4,143 → ≥4,310 after `management-login-v1` and `telemetry-otel-export-v1` land first *(deferred until depended-on changes archive)*
+- [ ] 12.6 Add CI matrix entry `container --no-default-features` (audit-export cargo feature off) to prove zero-overhead-when-disabled per D10 Layer 1 *(matrix wiring deferred until container/ has the audit-export feature flag)*
+- [ ] 12.7 Add CI matrix entry `container --features audit-export` with default TOML (`enabled = false`) to prove zero-runtime-overhead per D10 Layer 2 *(deferred — same)*
+- [ ] 12.8 Add pin-check job: verify `audit-export/vendor/schema.proto` content matches the SHA in `audit-export/vendor/IMMUDB_SCHEMA_SHA` from `codenotary/immudb` (fails the build on drift) *(deferred — separate workflow step)*

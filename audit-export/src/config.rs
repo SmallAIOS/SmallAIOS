@@ -344,11 +344,12 @@ mod tests {
     use super::*;
 
     fn ok() -> Config {
-        let mut c = Config::default();
-        c.enabled = true;
-        c.endpoint = "https://immudb.example.com:3322".into();
-        c.server_pubkey_fingerprint = "a".repeat(64);
-        c
+        Config {
+            enabled: true,
+            endpoint: "https://immudb.example.com:3322".into(),
+            server_pubkey_fingerprint: "a".repeat(64),
+            ..Config::default()
+        }
     }
 
     #[test]
@@ -358,9 +359,11 @@ mod tests {
 
     #[test]
     fn enabled_without_endpoint_rejected() {
-        let mut c = Config::default();
-        c.enabled = true;
-        c.server_pubkey_fingerprint = "a".repeat(64);
+        let c = Config {
+            enabled: true,
+            server_pubkey_fingerprint: "a".repeat(64),
+            ..Config::default()
+        };
         assert_eq!(
             c.validate().unwrap_err(),
             ConfigError::EnabledRequiresEndpoint
@@ -514,8 +517,10 @@ mod tests {
 
     #[test]
     fn toml_escapes_quote_and_backslash() {
-        let mut c = Config::default();
-        c.endpoint = String::from("https://w\"e\\ird");
+        let c = Config {
+            endpoint: String::from("https://w\"e\\ird"),
+            ..Config::default()
+        };
         let s = c.to_toml_string();
         assert!(s.contains("https://w\\\"e\\\\ird"));
     }

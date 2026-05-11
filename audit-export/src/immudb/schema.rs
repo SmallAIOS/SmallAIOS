@@ -609,7 +609,8 @@ mod tests {
         };
         let buf = req.encode();
         // Should contain tag 2 varint = 42 somewhere.
-        assert!(buf.contains(&((2 << 3) | 0)));
+        // Tag 2, wire type 0 ⇒ key byte = (2 << 3) = 0x10.
+        assert!(buf.contains(&0x10u8));
     }
 
     #[test]
@@ -619,8 +620,9 @@ mod tests {
             prove_since_tx: 0,
         };
         let buf = req.encode();
-        // tag 2 wire type 0 must NOT be present (default value omission).
-        assert!(!buf.contains(&((2 << 3) | 0)));
+        // Tag 2 wire type 0 key byte = (2 << 3) = 0x10; default value
+        // omission means it must NOT appear anywhere in the encoding.
+        assert!(!buf.contains(&0x10u8));
     }
 
     #[test]
