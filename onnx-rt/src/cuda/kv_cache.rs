@@ -265,33 +265,12 @@ impl GpuKvCache {
         let layer = &self.layers[layer_idx];
         let offset = self.current_position * stride;
 
+        // SAFETY: `offset + stride <= layer.k.size()` by the
+        // `current_position < max_seq_len` and `stride` invariants
+        // enforced above. Same for V.
         unsafe {
-            let k_dst = (layer.k.as_mut_ptr() as *mut u8).add(offset) as *mut core::ffi::c_void;
-            let err = ffi::cudaMemcpy(
-                k_dst,
-                new_k.buffer.as_ptr(),
-                stride,
-                ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,
-            );
-            if err != ffi::CUDA_SUCCESS {
-                return Err(CudaError::CopyFailed {
-                    msg: "kv_cache append K (D2D)",
-                    code: err,
-                });
-            }
-            let v_dst = (layer.v.as_mut_ptr() as *mut u8).add(offset) as *mut core::ffi::c_void;
-            let err = ffi::cudaMemcpy(
-                v_dst,
-                new_v.buffer.as_ptr(),
-                stride,
-                ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,
-            );
-            if err != ffi::CUDA_SUCCESS {
-                return Err(CudaError::CopyFailed {
-                    msg: "kv_cache append V (D2D)",
-                    code: err,
-                });
-            }
+            append_token_to(layer.k.as_mut_ptr(), offset, new_k, stride, "K")?;
+            append_token_to(layer.v.as_mut_ptr(), offset, new_v, stride, "V")?;
         }
 
         Ok(())
@@ -321,40 +300,7 @@ impl GpuKvCache {
     ///
     /// Returns raw device pointers (see [`KvView`]). The view does NOT copy.
     pub fn view(&self, layer_idx: usize) -> Result<KvView, CudaError> {
-        if layer_idx >= self.layers.len() {
-            return Err(CudaError::RuntimeError {
-                op: "kv_cache_view:layer_idx",
-                code: -1,
-            });
-        }
-        let layer = &self.layers[layer_idx];
-        let stride = self.token_stride_bytes();
-
-        let (start, count) = match layer.sliding_window {
-            None => (0, self.current_position),
-            Some(w) => {
-                let count = core::cmp::min(w, self.current_position);
-                let start = self.current_position - count;
-                (start, count)
-            }
-        };
-
-        // Even when count == 0 we return pointers to the buffer base. The
-        // caller is expected to handle the empty-view case gracefully.
-        let k_base = layer.k.as_ptr() as *const u8;
-        let v_base = layer.v.as_ptr() as *const u8;
-        let k_ptr = unsafe { k_base.add(start * stride) } as *const core::ffi::c_void;
-        let v_ptr = unsafe { v_base.add(start * stride) } as *const core::ffi::c_void;
-
-        Ok(KvView {
-            k_ptr,
-            v_ptr,
-            token_count: count,
-            stride_bytes: stride,
-            num_kv_heads: self.num_kv_heads,
-            head_dim: self.head_dim,
-            dtype: self.dtype,
-        })
+        self.view_at(layer_idx, self.current_position, "kv_cache_view:layer_idx")
     }
 
     /// View that includes the most recently appended (but not yet
@@ -372,27 +318,51 @@ impl GpuKvCache {
     /// itself reflects the same window — `view_pending` is only needed
     /// during the in-flight append.
     pub fn view_pending(&self, layer_idx: usize) -> Result<KvView, CudaError> {
+        self.view_at(
+            layer_idx,
+            self.current_position + 1,
+            "kv_cache_view_pending:layer_idx",
+        )
+    }
+
+    /// Build a [`KvView`] for `layer_idx` covering tokens
+    /// `[max(0, end - window), end)` where `end` is `position` for
+    /// global-attention layers and `min(window, position)` defines the
+    /// length for sliding-window layers.
+    ///
+    /// Shared body for [`view`](Self::view) (uses
+    /// `current_position`) and [`view_pending`](Self::view_pending)
+    /// (uses `current_position + 1`).
+    fn view_at(
+        &self,
+        layer_idx: usize,
+        position: usize,
+        oob_op: &'static str,
+    ) -> Result<KvView, CudaError> {
         if layer_idx >= self.layers.len() {
             return Err(CudaError::RuntimeError {
-                op: "kv_cache_view_pending:layer_idx",
+                op: oob_op,
                 code: -1,
             });
         }
         let layer = &self.layers[layer_idx];
         let stride = self.token_stride_bytes();
-        let pending_position = self.current_position + 1;
 
         let (start, count) = match layer.sliding_window {
-            None => (0, pending_position),
+            None => (0, position),
             Some(w) => {
-                let count = core::cmp::min(w, pending_position);
-                let start = pending_position - count;
+                let count = core::cmp::min(w, position);
+                let start = position - count;
                 (start, count)
             }
         };
 
+        // Even when count == 0 we return pointers to the buffer base. The
+        // caller is expected to handle the empty-view case gracefully.
         let k_base = layer.k.as_ptr() as *const u8;
         let v_base = layer.v.as_ptr() as *const u8;
+        // SAFETY: `start * stride <= max_seq_len * stride <= layer
+        // buffer size` by construction of the cache.
         let k_ptr = unsafe { k_base.add(start * stride) } as *const core::ffi::c_void;
         let v_ptr = unsafe { v_base.add(start * stride) } as *const core::ffi::c_void;
 
@@ -419,6 +389,47 @@ impl GpuKvCache {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/// Copy one token's worth (`stride` bytes) of K *or* V from `src`
+/// into `dst_base + offset` on the device.
+///
+/// `which` is one of `"K"` / `"V"` and only appears in the error
+/// message (`"kv_cache append K (D2D)"` / `"kv_cache append V (D2D)"`),
+/// so that K and V failures remain distinguishable in logs.
+///
+/// # Safety
+///
+/// - `dst_base + offset` must point to at least `stride` writable
+///   device bytes inside the per-layer K/V buffer (the caller checks
+///   `current_position < max_seq_len` and that `stride` matches
+///   `token_stride_bytes`).
+/// - `src.buffer.as_ptr()` must point to at least `stride` readable
+///   device bytes (the caller checks `src.byte_size() == stride`).
+unsafe fn append_token_to(
+    dst_base: *mut core::ffi::c_void,
+    offset: usize,
+    src: &DeviceTensor,
+    stride: usize,
+    which: &'static str,
+) -> Result<(), CudaError> {
+    let dst = (dst_base as *mut u8).add(offset) as *mut core::ffi::c_void;
+    let err = ffi::cudaMemcpy(
+        dst,
+        src.buffer.as_ptr(),
+        stride,
+        ffi::cudaMemcpyKind::cudaMemcpyDeviceToDevice,
+    );
+    if err != ffi::CUDA_SUCCESS {
+        let msg: &'static str = match which {
+            "K" => "kv_cache append K (D2D)",
+            // any non-"K" tag (currently only "V") falls through to
+            // the V message; this keeps the helper monomorphic
+            _ => "kv_cache append V (D2D)",
+        };
+        return Err(CudaError::CopyFailed { msg, code: err });
+    }
+    Ok(())
+}
 
 /// Fill a [`DeviceBuffer`] with zero bytes via `cudaMemset`.
 fn zero_buffer(buf: &DeviceBuffer) -> Result<(), CudaError> {
