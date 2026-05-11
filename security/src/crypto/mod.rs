@@ -15,6 +15,8 @@
 
 pub mod aes_gcm;
 pub mod blake2b;
+pub mod chacha20;
+pub mod chacha20_poly1305;
 pub mod constant_time;
 pub mod csprng;
 pub mod ed25519;
@@ -23,6 +25,7 @@ pub mod hybrid;
 pub mod key_manager;
 pub mod ml_dsa;
 pub mod ml_kem;
+pub mod poly1305;
 pub mod sha3;
 pub mod verify;
 pub mod x25519;

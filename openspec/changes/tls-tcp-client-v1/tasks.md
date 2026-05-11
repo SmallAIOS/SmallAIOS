@@ -1,19 +1,19 @@
 ## 1. Crate scaffolding
 
-- [ ] 1.1 Create `tls-client/` crate at workspace Layer 1; register in `Cargo.toml` (workspace 27 → 28); confirm `#![no_std]` + `extern crate alloc`
-- [ ] 1.2 Add `smallaios-security` and `smallaios-kernel` (for `kernel::clock()` access) as dependencies
-- [ ] 1.3 Add `smallaios-tls-client = { path = "../tls-client", optional = true }` to `container/Cargo.toml`; extend the existing `audit-export` feature to enable it
-- [ ] 1.4 Update CLAUDE.md workspace architecture diagram (27 → 28 crates; `tls-client` under Layer 1)
-- [ ] 1.5 Add `tls-client` to `Justfile` `host_crates` list and DSM allow-list
-- [ ] 1.6 Cyclic-dep check passes; clippy `-D warnings` clean on empty crate
+- [x] 1.1 Create `tls-client/` crate at workspace Layer 1; register in `Cargo.toml` (workspace 27 → 28); confirm `#![no_std]` + `extern crate alloc`
+- [x] 1.2 Add `smallaios-security` and `smallaios-kernel` (for `kernel::clock()` access) as dependencies
+- [ ] 1.3 Add `smallaios-tls-client = { path = "../tls-client", optional = true }` to `container/Cargo.toml`; extend the existing `audit-export` feature to enable it *(deferred to Phase 8 integration)*
+- [x] 1.4 Update CLAUDE.md workspace architecture diagram (27 → 28 crates; `tls-client` under Layer 1)
+- [x] 1.5 Add `tls-client` to `Justfile` `host_crates` list and DSM allow-list
+- [x] 1.6 Cyclic-dep check passes; clippy `-D warnings` clean on empty crate
 
 ## 2. `security::crypto::chacha20_poly1305`
 
-- [ ] 2.1 Add `security/src/crypto/chacha20.rs` with the IETF ChaCha20 stream cipher (RFC 8439 § 2.4)
-- [ ] 2.2 Add `security/src/crypto/poly1305.rs` with the Poly1305 one-time MAC (RFC 8439 § 2.5)
-- [ ] 2.3 Compose into `security/src/crypto/chacha20_poly1305.rs` providing `Aead::seal` / `Aead::open` matching the existing `aes_gcm` trait shape
-- [ ] 2.4 NIST + RFC 8439 KAT tests (≥4 vectors) including the canonical RFC 8439 § 2.8 example
-- [ ] 2.5 `cargo-fuzz` target on `Aead::open` against arbitrary bytes
+- [x] 2.1 Add `security/src/crypto/chacha20.rs` with the IETF ChaCha20 stream cipher (RFC 8439 § 2.4)
+- [x] 2.2 Add `security/src/crypto/poly1305.rs` with the Poly1305 one-time MAC (RFC 8439 § 2.5)
+- [x] 2.3 Compose into `security/src/crypto/chacha20_poly1305.rs` providing `seal` / `open` (matches the existing `aes_gcm` shape; constant-time tag compare via inline accumulator)
+- [x] 2.4 NIST + RFC 8439 KAT tests (≥4 vectors) including the canonical RFC 8439 § 2.8 example *(11 tests pass: § 2.3.2, § 2.4.2, § 2.5.2, § 2.8.2 + tamper-rejection variants + empty round-trips)*
+- [ ] 2.5 `cargo-fuzz` target on `Aead::open` against arbitrary bytes *(deferred — added with the rest of the tls-client fuzz targets in Phase 10)*
 
 ## 3. Record layer
 

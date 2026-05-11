@@ -94,12 +94,12 @@ Install with `just setup-hooks`. Run manually with `just check` (quick) or `just
 
 ## Workspace Architecture
 
-22-crate Rust workspace (`#![no_std]`, edition 2021). Strict 4-layer acyclic dependency model (see `docs/architecture.md` for full details):
+23-crate Rust workspace (`#![no_std]`, edition 2021). Strict 4-layer acyclic dependency model (see `docs/architecture.md` for full details):
 
 ```
 Layer 3 — Integration:  container, bench
 Layer 2 — HAL/Drivers:  arch/{x86_64,aarch64,riscv64,nvidia,intel_gpu,amd,apple}, peripheral, bus, sdr
-Layer 1 — Core Services: net, ipc, posix, onnx-rt, usb, auth, mgmt, fs, audit-export
+Layer 1 — Core Services: net, ipc, posix, onnx-rt, usb, auth, mgmt, fs, audit-export, tls-client
 Layer 0 — Foundation:    kernel → security, compute, sched-types
 ```
 

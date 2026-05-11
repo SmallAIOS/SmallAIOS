@@ -1006,6 +1006,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "smallaios-tls-client"
+version = "0.2.1"
+dependencies = [
+ "smallaios-kernel",
+ "smallaios-security",
+]
+
+[[package]]
 name = "smallaios-usb"
 version = "0.2.1"
 dependencies = [
