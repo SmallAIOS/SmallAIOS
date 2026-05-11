@@ -79,10 +79,10 @@
 
 ## 9. Fingerprint cross-binding
 
-- [ ] 9.1 Extend `smallaios/metrics/audit_fingerprint` payload with `immudb_state` field; default `null`
-- [ ] 9.2 Populate `immudb_state` on every successful `VerifiableSet` from the persisted state
-- [ ] 9.3 Document for the future `console-monitor-v1` archive: the `top` header line `IMMUDB ok|HALT ...`
-- [ ] 9.4 Test: backwards-compatible consumer still parses `ts`, `hex_fingerprint`, `record_count`
+- [x] 9.1 Extend `smallaios/metrics/audit_fingerprint` payload with `immudb_state` field; default `null` *(`fingerprint::render_payload` emits the canonical JSON; mgmt-zenoh-telemetry publishes it from container/)*
+- [x] 9.2 Populate `immudb_state` on every successful `VerifiableSet` from the persisted state *(`ImmudbStatePayload::from_persisted(state, observed_ts_ns)`)*
+- [x] 9.3 Document for the future `console-monitor-v1` archive: the `top` header line `IMMUDB ok|HALT ...` *(`fingerprint::monitor_status_line` covers off/pending/ok/stale/HALT)*
+- [x] 9.4 Test: backwards-compatible consumer still parses `ts`, `hex_fingerprint`, `record_count` *(`v1_consumer_still_parses_with_immudb_state` + `_without_immudb_state` tests)*
 
 ## 10. End-to-end test against real immudb
 

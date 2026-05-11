@@ -45,6 +45,7 @@
 extern crate alloc;
 
 pub mod config;
+pub mod fingerprint;
 pub mod immudb;
 pub mod pipeline;
 pub mod verbs;
