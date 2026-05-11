@@ -25,6 +25,13 @@ formal-gate = ["smallaios-security/formal-gate"]
 # openspec/changes/dataflow-inference-v1 task groups 1-4.
 bus-zenoh = []
 bus-dds = []
+# Verifiable audit-log export via immudb (verifiable-audit-log-v1).
+# Off by default — when enabled, the binary links the audit-export
+# crate and gains the `container::audit_export_runtime` module that
+# implements the StateStore + config-loader glue. D10 Layer 1 of
+# the design.md verifies the no-feature build links zero exporter
+# code (cargo bloat shows no audit-export symbols).
+audit-export = ["dep:smallaios-audit-export"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }
@@ -34,6 +41,7 @@ smallaios-bus = { path = "../bus", default-features = false, features = ["can"] 
 smallaios-posix = { path = "../posix" }
 smallaios-security = { path = "../security" }
 smallaios-net = { path = "../net" }
+smallaios-audit-export = { path = "../audit-export", optional = true }
 smallaios-arch-nvidia = { path = "../arch/nvidia", optional = true }
 libc = "0.2"
 

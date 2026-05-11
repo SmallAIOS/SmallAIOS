@@ -890,6 +890,7 @@ version = "0.2.1"
 dependencies = [
  "libc",
  "smallaios-arch-nvidia",
+ "smallaios-audit-export",
  "smallaios-bus",
  "smallaios-ipc",
  "smallaios-kernel",

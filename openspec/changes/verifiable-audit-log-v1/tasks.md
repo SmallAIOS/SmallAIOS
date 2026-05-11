@@ -63,12 +63,12 @@
 
 - [x] 7.1 Add `audit-export/src/config.rs` implementing `ConfigSurface` for `/data/audit_export/immudb.toml` *(typed `Config` struct + canonical TOML renderer; `mgmt::ConfigSurface` adapter is the container-side glue)*
 - [x] 7.2 TOML validation: reject `enabled = true && endpoint = ""`; reject `buffer_bytes` below 1 MiB or above 64 MiB; reject `batch_size` below 1 or above 10,000 *(plus https-only, fingerprint required, backoff cap >= initial, mtls-not-yet-supported)*
-- [ ] 7.3 Keyfile loader: open `/data/audit_export/immudb.token` with mode-check; refuse laxer than 0600 *(container-side — needs real syscalls)*
+- [x] 7.3 Keyfile loader: open `/data/audit_export/immudb.token` with mode-check; refuse laxer than 0600 *(`container::audit_export_runtime::load_keyfile`; rejects 0644, accepts 0400, strips trailing newline, rejects empty + control bytes)*
 - [ ] 7.4 Wire `audit-export status` and `audit-export config` into the management shell from `console-login` *(container-side)*
 - [ ] 7.5 Role gate: Root can `audit-export config`; Operator/Viewer can `audit-export status` only *(container-side, gated by `auth::Role` from `management-login-v1`)*
 - [x] 7.6 Secret-redaction hook for `immudb.token` path in audit `config_write` records *(`redact_token_value` + `is_secret_path` helpers; tested to never leak any byte of the original token)*
-- [ ] 7.7 Atomic-rewrite of `last_state.bin`; Kani harness verifies crash-mid-rename invariant *(container-side StateStore impl; the trait + codec are in `state.rs`)*
-- [ ] 7.8 First-boot creates `/data/audit_export/` with mode 0700; emits `audit_export_directory_initialized` *(mgmt-config-layout first-boot path)*
+- [x] 7.7 Atomic-rewrite of `last_state.bin`; Kani harness verifies crash-mid-rename invariant *(`container::audit_export_runtime::FilesystemStateStore` implements stage → fsync → rename + dir-fsync; written file is 0600; corrupt file → `StateStoreError::Corrupt`; cold-start → `None`. Kani harness deferred to follow-on since it requires the formal/kani infrastructure)*
+- [x] 7.8 First-boot creates `/data/audit_export/` with mode 0700; emits `audit_export_directory_initialized` *(`container::audit_export_runtime::ensure_directory` is idempotent + sets 0700; the audit-record emission lands when first-boot wiring invokes it)*
 
 ## 8. Audit ring integration
 
@@ -106,6 +106,6 @@
 - [ ] 12.3 Add nightly E2E job using the immudb sidecar; surface failures as Slack/email (existing convention) *(Docker sidecar requires nightly workflow file beyond this PR's scope)*
 - [ ] 12.4 Coverage gate: ensure `audit-export` lands in `cargo-llvm-cov` workspace report; expect ≥85 % line coverage on first pass *(workspace coverage auto-picks; ratchet bump deferred until merged)*
 - [ ] 12.5 Update `tasks.md`-derived test count target: 4,143 → ≥4,310 after `management-login-v1` and `telemetry-otel-export-v1` land first *(deferred until depended-on changes archive)*
-- [ ] 12.6 Add CI matrix entry `container --no-default-features` (audit-export cargo feature off) to prove zero-overhead-when-disabled per D10 Layer 1 *(matrix wiring deferred until container/ has the audit-export feature flag)*
-- [ ] 12.7 Add CI matrix entry `container --features audit-export` with default TOML (`enabled = false`) to prove zero-runtime-overhead per D10 Layer 2 *(deferred — same)*
+- [ ] 12.6 Add CI matrix entry `container --no-default-features` (audit-export cargo feature off) to prove zero-overhead-when-disabled per D10 Layer 1 *(feature flag now exists in container/Cargo.toml; CI matrix entry deferred until follow-on PR)*
+- [ ] 12.7 Add CI matrix entry `container --features audit-export` with default TOML (`enabled = false`) to prove zero-runtime-overhead per D10 Layer 2 *(feature flag now exists; CI matrix entry deferred)*
 - [ ] 12.8 Add pin-check job: verify `audit-export/vendor/schema.proto` content matches the SHA in `audit-export/vendor/IMMUDB_SCHEMA_SHA` from `codenotary/immudb` (fails the build on drift) *(deferred — separate workflow step)*

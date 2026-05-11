@@ -15,6 +15,9 @@ mod json;
 mod model_manager;
 #[allow(dead_code)]
 mod server;
+#[cfg(feature = "audit-export")]
+#[allow(dead_code)]
+mod audit_export_runtime;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
