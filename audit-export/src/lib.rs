@@ -44,10 +44,9 @@
 
 extern crate alloc;
 
+pub mod config;
 pub mod immudb;
 pub mod pipeline;
-// pub mod config;   // Phase 7
-// pub mod cli;      // Phase 7
 
 /// Crate-level version string, derived from the workspace.
 ///

@@ -61,14 +61,14 @@
 
 ## 7. Configuration surface
 
-- [ ] 7.1 Add `audit-export/src/config.rs` implementing `ConfigSurface` for `/data/audit_export/immudb.toml`
-- [ ] 7.2 TOML validation: reject `enabled = true && endpoint = ""`; reject `buffer_bytes` below 1 MiB or above 64 MiB; reject `batch_size` below 1 or above 10,000
-- [ ] 7.3 Keyfile loader: open `/data/audit_export/immudb.token` with mode-check; refuse laxer than 0600
-- [ ] 7.4 Wire `audit-export status` and `audit-export config` into the management shell from `console-login`
-- [ ] 7.5 Role gate: Root can `audit-export config`; Operator/Viewer can `audit-export status` only
-- [ ] 7.6 Secret-redaction hook for `immudb.token` path in audit `config_write` records
-- [ ] 7.7 Atomic-rewrite of `last_state.bin`; Kani harness verifies crash-mid-rename invariant
-- [ ] 7.8 First-boot creates `/data/audit_export/` with mode 0700; emits `audit_export_directory_initialized`
+- [x] 7.1 Add `audit-export/src/config.rs` implementing `ConfigSurface` for `/data/audit_export/immudb.toml` *(typed `Config` struct + canonical TOML renderer; `mgmt::ConfigSurface` adapter is the container-side glue)*
+- [x] 7.2 TOML validation: reject `enabled = true && endpoint = ""`; reject `buffer_bytes` below 1 MiB or above 64 MiB; reject `batch_size` below 1 or above 10,000 *(plus https-only, fingerprint required, backoff cap >= initial, mtls-not-yet-supported)*
+- [ ] 7.3 Keyfile loader: open `/data/audit_export/immudb.token` with mode-check; refuse laxer than 0600 *(container-side — needs real syscalls)*
+- [ ] 7.4 Wire `audit-export status` and `audit-export config` into the management shell from `console-login` *(container-side)*
+- [ ] 7.5 Role gate: Root can `audit-export config`; Operator/Viewer can `audit-export status` only *(container-side, gated by `auth::Role` from `management-login-v1`)*
+- [x] 7.6 Secret-redaction hook for `immudb.token` path in audit `config_write` records *(`redact_token_value` + `is_secret_path` helpers; tested to never leak any byte of the original token)*
+- [ ] 7.7 Atomic-rewrite of `last_state.bin`; Kani harness verifies crash-mid-rename invariant *(container-side StateStore impl; the trait + codec are in `state.rs`)*
+- [ ] 7.8 First-boot creates `/data/audit_export/` with mode 0700; emits `audit_export_directory_initialized` *(mgmt-config-layout first-boot path)*
 
 ## 8. Audit ring integration
 
