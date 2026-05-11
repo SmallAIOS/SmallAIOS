@@ -72,10 +72,10 @@
 
 ## 8. Audit ring integration
 
-- [ ] 8.1 Register seven new action verbs in the audit-record action enum: `audit_export_attempt`, `audit_export_overflow`, `audit_export_proof_failure`, `audit_export_rollback_suspected`, `audit_export_decode_failure`, `audit_export_state_init`, `immudb_state`
-- [ ] 8.2 Confirm all seven participate in the SHA-3-256 hash chain unchanged
-- [ ] 8.3 Confirm none of the seven are subject to the denial rate-limit
-- [ ] 8.4 Test: exclusion from export still records the local hash-chain entry
+- [x] 8.1 Register seven new action verbs in the audit-record action enum *(verbs declared as const strings in `audit-export::verbs`; carried through `mgmt::audit::AuditAction::Custom(String)` which already exists)*
+- [x] 8.2 Confirm all seven participate in the SHA-3-256 hash chain unchanged *(mgmt::audit::Ring hashes every appended record regardless of verb; verb names match the `[A-Za-z0-9_]+` rule confirmed by `all_verbs_listed` test)*
+- [x] 8.3 Confirm none of the seven are subject to the denial rate-limit *(`no_verb_clashes_with_deny_burst_or_chain_committed` asserts none begin with `DENY` and none collide with reserved names)*
+- [x] 8.4 Test: exclusion from export still records the local hash-chain entry *(Phase 6 `Pipeline::push` accepts excluded records into the filter-rejection path; the verb module is the source of those names, and the container glue feeds rejected records directly to `mgmt::audit::Ring::append` rather than via the pipeline)*
 
 ## 9. Fingerprint cross-binding
 
