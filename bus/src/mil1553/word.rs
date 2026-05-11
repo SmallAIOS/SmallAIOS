@@ -28,6 +28,46 @@ pub enum SyncType {
     Data,
 }
 
+/// 3-bit sync pattern that identifies a command word.
+const SYNC_COMMAND: u32 = 0b111;
+
+/// 3-bit sync pattern that identifies a status or data word.
+const SYNC_DATA: u32 = 0b110;
+
+/// Assemble a 20-bit MIL-STD-1553B word: `sync(3) | bits(16) | parity(1)`.
+///
+/// MIL-STD-1553B uses odd parity, so the parity bit is set to make the count
+/// of `1` bits across the 16-bit content plus the parity bit itself odd.
+#[inline]
+fn assemble_word(sync: u32, bits: u16) -> u32 {
+    let parity: u32 = if bits.count_ones().is_multiple_of(2) {
+        1
+    } else {
+        0
+    };
+    (sync << 17) | ((bits as u32) << 1) | parity
+}
+
+/// Validate sync + odd parity and extract the 16-bit content of a 1553 word.
+///
+/// Returns [`BusError::InvalidHeader`] if the sync field does not match
+/// `expected_sync`, or [`BusError::ParityError`] if the odd parity check fails.
+#[inline]
+fn parse_word(word: u32, expected_sync: u32) -> Result<u16, BusError> {
+    let sync = (word >> 17) & 0x7;
+    if sync != expected_sync {
+        return Err(BusError::InvalidHeader);
+    }
+    let bits = ((word >> 1) & 0xFFFF) as u16;
+    let parity_bit = (word & 1) as u16;
+    // Odd parity: count of ones in content + parity bit must be odd.
+    let ones = bits.count_ones() + parity_bit as u32;
+    if ones.is_multiple_of(2) {
+        return Err(BusError::ParityError);
+    }
+    Ok(bits)
+}
+
 /// MIL-STD-1553B Command Word.
 ///
 /// Layout (MSB first within the 16-bit content):
@@ -96,37 +136,17 @@ impl CommandWord {
         bits |= if self.transmit { 1 << 10 } else { 0 };
         bits |= (self.subaddress as u16 & 0x1F) << 5;
         bits |= self.word_count as u16 & 0x1F;
-        let parity = if !bits.count_ones().is_multiple_of(2) {
-            0u32
-        } else {
-            1
-        };
-        // Sync: command sync = 0b111 (we use 3-bit field [19:17])
-        (0b111u32 << 17) | ((bits as u32) << 1) | parity
+        assemble_word(SYNC_COMMAND, bits)
     }
 
     /// Decode from a 20-bit value.
     pub fn decode(word: u32) -> Result<Self, BusError> {
-        let sync = (word >> 17) & 0x7;
-        if sync != 0b111 {
-            return Err(BusError::InvalidHeader);
-        }
-        let bits = ((word >> 1) & 0xFFFF) as u16;
-        let parity_bit = (word & 1) as u16;
-        // Odd parity: count of 1s in bits + parity_bit should be odd
-        let ones = bits.count_ones() + parity_bit as u32;
-        if ones.is_multiple_of(2) {
-            return Err(BusError::ParityError);
-        }
-        let rt_address = ((bits >> 11) & 0x1F) as u8;
-        let transmit = (bits >> 10) & 1 == 1;
-        let subaddress = ((bits >> 5) & 0x1F) as u8;
-        let word_count = (bits & 0x1F) as u8;
+        let bits = parse_word(word, SYNC_COMMAND)?;
         Ok(Self {
-            rt_address,
-            transmit,
-            subaddress,
-            word_count,
+            rt_address: ((bits >> 11) & 0x1F) as u8,
+            transmit: (bits >> 10) & 1 == 1,
+            subaddress: ((bits >> 5) & 0x1F) as u8,
+            word_count: (bits & 0x1F) as u8,
         })
     }
 }
@@ -214,27 +234,12 @@ impl StatusWord {
         if self.terminal_flag {
             bits |= 1;
         }
-        let parity = if !bits.count_ones().is_multiple_of(2) {
-            0u32
-        } else {
-            1
-        };
-        // Data sync = 0b110
-        (0b110u32 << 17) | ((bits as u32) << 1) | parity
+        assemble_word(SYNC_DATA, bits)
     }
 
     /// Decode from a 20-bit value.
     pub fn decode(word: u32) -> Result<Self, BusError> {
-        let sync = (word >> 17) & 0x7;
-        if sync != 0b110 {
-            return Err(BusError::InvalidHeader);
-        }
-        let bits = ((word >> 1) & 0xFFFF) as u16;
-        let parity_bit = (word & 1) as u16;
-        let ones = bits.count_ones() + parity_bit as u32;
-        if ones.is_multiple_of(2) {
-            return Err(BusError::ParityError);
-        }
+        let bits = parse_word(word, SYNC_DATA)?;
         Ok(Self {
             rt_address: ((bits >> 11) & 0x1F) as u8,
             message_error: (bits >> 10) & 1 == 1,
@@ -271,28 +276,12 @@ impl DataWord {
 
     /// Encode to a 20-bit value (data sync + 16-bit data + parity).
     pub fn encode(&self) -> u32 {
-        let bits = self.data;
-        let parity = if !bits.count_ones().is_multiple_of(2) {
-            0u32
-        } else {
-            1
-        };
-        // Data sync = 0b110
-        (0b110u32 << 17) | ((bits as u32) << 1) | parity
+        assemble_word(SYNC_DATA, self.data)
     }
 
     /// Decode from a 20-bit value.
     pub fn decode(word: u32) -> Result<Self, BusError> {
-        let sync = (word >> 17) & 0x7;
-        if sync != 0b110 {
-            return Err(BusError::InvalidHeader);
-        }
-        let bits = ((word >> 1) & 0xFFFF) as u16;
-        let parity_bit = (word & 1) as u16;
-        let ones = bits.count_ones() + parity_bit as u32;
-        if ones.is_multiple_of(2) {
-            return Err(BusError::ParityError);
-        }
+        let bits = parse_word(word, SYNC_DATA)?;
         Ok(Self { data: bits })
     }
 }
@@ -533,6 +522,48 @@ mod tests {
             let dec = DataWord::decode(enc).unwrap();
             assert_eq!(dec.data, words[i]);
         }
+    }
+
+    // === Internal helper tests (assemble_word / parse_word) ===
+
+    #[test]
+    fn test_assemble_word_parity_odd_ones() {
+        // 0x0001 has one '1' bit (odd) -> parity bit must be 0 for total odd.
+        let word = assemble_word(SYNC_DATA, 0x0001);
+        assert_eq!((word >> 17) & 0x7, SYNC_DATA);
+        assert_eq!(word & 1, 0);
+    }
+
+    #[test]
+    fn test_assemble_word_parity_even_ones() {
+        // 0x0003 has two '1' bits (even) -> parity bit must be 1 for total odd.
+        let word = assemble_word(SYNC_DATA, 0x0003);
+        assert_eq!(word & 1, 1);
+    }
+
+    #[test]
+    fn test_parse_word_round_trip() {
+        let bits: u16 = 0xABCD;
+        let word = assemble_word(SYNC_COMMAND, bits);
+        assert_eq!(parse_word(word, SYNC_COMMAND).unwrap(), bits);
+    }
+
+    #[test]
+    fn test_parse_word_wrong_sync_rejected() {
+        let word = assemble_word(SYNC_COMMAND, 0x1234);
+        assert_eq!(
+            parse_word(word, SYNC_DATA).err(),
+            Some(BusError::InvalidHeader)
+        );
+    }
+
+    #[test]
+    fn test_parse_word_parity_flip_rejected() {
+        let word = assemble_word(SYNC_DATA, 0x5555) ^ 1;
+        assert_eq!(
+            parse_word(word, SYNC_DATA).err(),
+            Some(BusError::ParityError)
+        );
     }
 
     #[test]
