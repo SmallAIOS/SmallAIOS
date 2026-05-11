@@ -462,6 +462,41 @@ break.
   TLS-policy knob.
 - HTTP/1.x / h2c / cleartext gRPC all refused.
 
+### TLS sub-plan and trait boundary
+
+A full clean-room TLS 1.3 over TCP client is a substantial
+crate (~2000 LOC: record framing, ClientHello + ServerHello
++ EncryptedExtensions + Certificate + CertificateVerify
++ Finished, HKDF over SHA-256 + SHA-384, AEAD record
+protection, certificate-chain parser, plus optional
+ML-KEM-768 hybrid key share). The workspace already ships
+`net::quic::tls` with the *cryptographic* pieces of TLS 1.3
+(key schedule, hybrid key share, AEAD) targeted at QUIC's
+CRYPTO-frame transport.
+
+For the verifiable-audit-log-v1 change we **abstract over
+the TLS layer** rather than reimplement it inline:
+
+- `container::audit_export_runtime` defines a
+  `TlsStreamLike` trait that captures the post-handshake
+  read/write contract (`std::io::Read + Write + close`).
+- `TlsGrpcTransport<S: TlsStreamLike>` implements the
+  `audit_export::immudb::transport::GrpcTransport` trait
+  on top of `net::http2` framing and an arbitrary
+  `TlsStreamLike` stream.
+- The actual TLS 1.3 client lands in a follow-on
+  (`tls-tcp-client-v1`) reusing the QUIC TLS primitives.
+  Until that lands, the audit-export pipeline can be
+  exercised against a mock `TlsStreamLike` or — for
+  development environments only — against a cleartext
+  `TcpStream` adapter (`enabled = true` is gated by
+  `Config::validate` to require `https://` schemes, so
+  production wiring cannot start without TLS).
+
+This boundary keeps the present change focused on the
+audit-export feature itself while still landing a working
+GrpcTransport ready for the moment TLS arrives.
+
 ### Error handling
 
 - gRPC status `OK (0)` → record success in the audit

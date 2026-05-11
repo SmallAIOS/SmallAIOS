@@ -31,7 +31,7 @@ bus-dds = []
 # implements the StateStore + config-loader glue. D10 Layer 1 of
 # the design.md verifies the no-feature build links zero exporter
 # code (cargo bloat shows no audit-export symbols).
-audit-export = ["dep:smallaios-audit-export"]
+audit-export = ["dep:smallaios-audit-export", "smallaios-net/http2"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel", features = ["no-global-alloc"] }

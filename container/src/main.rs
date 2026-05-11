@@ -7,6 +7,9 @@
 //! as a container (Docker/K8s). It bootstraps the unikernel subsystems
 //! using the host kernel's syscall interface via musl libc.
 
+#[cfg(feature = "audit-export")]
+#[allow(dead_code)]
+mod audit_export_runtime;
 #[allow(dead_code)]
 mod handlers;
 #[allow(dead_code)]
@@ -15,9 +18,6 @@ mod json;
 mod model_manager;
 #[allow(dead_code)]
 mod server;
-#[cfg(feature = "audit-export")]
-#[allow(dead_code)]
-mod audit_export_runtime;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};

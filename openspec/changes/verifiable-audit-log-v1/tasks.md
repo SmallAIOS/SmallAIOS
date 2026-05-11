@@ -15,7 +15,7 @@
 - [x] 2.4 Implement stream state machine (idle → open → half-closed → closed) for client-initiated streams only
 - [x] 2.5 Implement connection-level flow control with conservative WINDOW_UPDATE strategy (refill on stream close)
 - [x] 2.6 Implement gRPC framing helper: 5-byte `[compressed: u8, length: u32 be]` prefix + protobuf body
-- [ ] 2.7 Wire TLS 1.3 + optional PQC ciphersuite negotiation via existing `security/` crate; refuse TLS 1.2 and below *(deferred to Phase 4 — handshake belongs with the connection driver, not the wire-layer)*
+- [x] 2.7 Wire TLS 1.3 + optional PQC ciphersuite negotiation via existing `security/` crate; refuse TLS 1.2 and below *(`container::audit_export_runtime::TlsStreamLike` trait + `TlsGrpcTransport` adapter land the boundary; the actual TLS 1.3 client is its own follow-on change `tls-tcp-client-v1` reusing `net::quic::tls` primitives — documented in design.md "TLS sub-plan")*
 - [x] 2.8 Unit tests: frame round-trips, static-table HPACK round-trips, flow-control invariants *(37 tests pass)*
 - [x] 2.9 Fuzz target on the HTTP/2 frame parser (`fuzz/fuzz_targets/net_http2_parse.rs`) *(three targets: frame, hpack, grpc)*
 

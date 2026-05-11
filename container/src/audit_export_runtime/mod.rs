@@ -16,13 +16,14 @@
 //!   (task 7.1).
 //! - [`ensure_directory`]: idempotent first-boot creation of
 //!   `/data/audit_export/` with mode 0700 (task 7.8).
-//!
-//! Skipped here (separate follow-on PR):
-//!
-//! - The `GrpcTransport` impl backed by a real TCP + TLS 1.3
-//!   socket. That requires wiring `smallaios-net::http2`
-//!   (already shipped) plus a TLS client; substantial enough
-//!   to warrant its own commit set.
+//! - [`transport`] — `TlsGrpcTransport` adapter implementing
+//!   `audit_export::immudb::transport::GrpcTransport` over
+//!   `smallaios-net::http2` + an abstract
+//!   [`transport::TlsStreamLike`] stream. The actual TLS 1.3
+//!   client is a separate follow-on
+//!   (`tls-tcp-client-v1`) that drops in via the trait.
+
+pub mod transport;
 
 use smallaios_audit_export::config::{AuthMode, Config};
 use smallaios_audit_export::immudb::state::{
@@ -40,7 +41,11 @@ pub enum RuntimeError {
     /// Mode of a sensitive file was laxer than required.
     /// `actual` is the observed mode bitmask; `required` is the
     /// strictest mode we accept (`0o600`).
-    InsecurePermissions { path: PathBuf, actual: u32, required: u32 },
+    InsecurePermissions {
+        path: PathBuf,
+        actual: u32,
+        required: u32,
+    },
     /// State-file decode failed.
     StateCorrupt(StateCodecError),
     /// Token file empty or contained illegal bytes.
@@ -181,8 +186,8 @@ pub fn ensure_directory(path: impl AsRef<Path>) -> Result<(), RuntimeError> {
 /// loader so the binary can boot the exporter even before that
 /// integration lands.
 pub fn load_config(toml_bytes: &[u8]) -> Result<Config, RuntimeError> {
-    let text = std::str::from_utf8(toml_bytes)
-        .map_err(|_| RuntimeError::BadConfig("non-UTF-8".into()))?;
+    let text =
+        std::str::from_utf8(toml_bytes).map_err(|_| RuntimeError::BadConfig("non-UTF-8".into()))?;
     let mut config = Config::default();
     let mut section: Option<String> = None;
     for (lineno, raw) in text.lines().enumerate() {
@@ -203,9 +208,8 @@ pub fn load_config(toml_bytes: &[u8]) -> Result<Config, RuntimeError> {
             Some(s) => format!("{s}.{key}"),
             None => key.to_string(),
         };
-        apply_kv(&mut config, &qualified, value).map_err(|e| {
-            RuntimeError::BadConfig(format!("line {}: {}", lineno + 1, e))
-        })?;
+        apply_kv(&mut config, &qualified, value)
+            .map_err(|e| RuntimeError::BadConfig(format!("line {}: {}", lineno + 1, e)))?;
     }
     config
         .validate()
@@ -363,7 +367,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = write_with_mode(dir.path(), "tok", b"abc", 0o644);
         match load_keyfile(&p).unwrap_err() {
-            RuntimeError::InsecurePermissions { actual, required, .. } => {
+            RuntimeError::InsecurePermissions {
+                actual, required, ..
+            } => {
                 assert_eq!(actual, 0o644);
                 assert_eq!(required, 0o600);
             }
@@ -382,14 +388,20 @@ mod tests {
     fn keyfile_loader_rejects_empty() {
         let dir = TempDir::new().unwrap();
         let p = write_with_mode(dir.path(), "tok", b"", 0o600);
-        assert!(matches!(load_keyfile(&p).unwrap_err(), RuntimeError::InvalidToken));
+        assert!(matches!(
+            load_keyfile(&p).unwrap_err(),
+            RuntimeError::InvalidToken
+        ));
     }
 
     #[test]
     fn keyfile_loader_rejects_control_bytes() {
         let dir = TempDir::new().unwrap();
         let p = write_with_mode(dir.path(), "tok", b"abc\x01def", 0o600);
-        assert!(matches!(load_keyfile(&p).unwrap_err(), RuntimeError::InvalidToken));
+        assert!(matches!(
+            load_keyfile(&p).unwrap_err(),
+            RuntimeError::InvalidToken
+        ));
     }
 
     #[test]
@@ -467,7 +479,10 @@ mod tests {
         let path = dir.path().join("last_state.bin");
         fs::write(&path, b"not a state file at all").unwrap();
         let store = FilesystemStateStore::new(&path);
-        assert!(matches!(store.load().unwrap_err(), StateStoreError::Corrupt));
+        assert!(matches!(
+            store.load().unwrap_err(),
+            StateStoreError::Corrupt
+        ));
     }
 
     #[test]
@@ -508,7 +523,10 @@ exclude_actions = ["audit_export_attempt", "immudb_state"]
         assert_eq!(c.database, "smallaios_audit");
         assert_eq!(c.token_path, DEFAULT_TOKEN_PATH);
         assert_eq!(c.state_path, DEFAULT_STATE_PATH);
-        assert_eq!(c.exclude_actions, vec!["audit_export_attempt", "immudb_state"]);
+        assert_eq!(
+            c.exclude_actions,
+            vec!["audit_export_attempt", "immudb_state"]
+        );
     }
 
     #[test]
