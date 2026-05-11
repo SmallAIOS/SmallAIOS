@@ -450,35 +450,61 @@ fn iter_dhcp_options(data: &[u8]) -> impl Iterator<Item = Result<(u8, &[u8]), Dh
         if done {
             return None;
         }
-        while pos < data.len() {
-            let code = data[pos];
-
-            // PAD option — skip
-            if code == OPT_PAD {
-                pos += 1;
-                continue;
-            }
-            // END option — stop
-            if code == OPT_END {
+        let step = next_dhcp_option(data, &mut pos);
+        match step {
+            DhcpOptionStep::Finished => {
                 done = true;
-                return None;
+                None
             }
-            // Other options have a length byte
-            if pos + 1 >= data.len() {
+            DhcpOptionStep::Error(e) => {
                 done = true;
-                return Some(Err(DhcpError::InvalidOptionLength));
+                Some(Err(e))
             }
-            let len = data[pos + 1] as usize;
-            if pos + 2 + len > data.len() {
-                done = true;
-                return Some(Err(DhcpError::InvalidOptionLength));
-            }
-            let value = &data[pos + 2..pos + 2 + len];
-            pos += 2 + len;
-            return Some(Ok((code, value)));
+            DhcpOptionStep::Yield(code, value) => Some(Ok((code, value))),
         }
-        None
     })
+}
+
+/// Outcome of a single advance through a DHCP options buffer.
+enum DhcpOptionStep<'a> {
+    /// No more options (END marker or buffer exhausted).
+    Finished,
+    /// One well-formed option ready to yield.
+    Yield(u8, &'a [u8]),
+    /// Truncated option — iteration must stop.
+    Error(DhcpError),
+}
+
+/// Advance `pos` past PAD bytes and return the next decoded option,
+/// END marker, or an error.
+fn next_dhcp_option<'a>(data: &'a [u8], pos: &mut usize) -> DhcpOptionStep<'a> {
+    while *pos < data.len() {
+        let code = data[*pos];
+        if code == OPT_PAD {
+            *pos += 1;
+            continue;
+        }
+        if code == OPT_END {
+            return DhcpOptionStep::Finished;
+        }
+        return decode_tlv_option(data, pos, code);
+    }
+    DhcpOptionStep::Finished
+}
+
+/// Decode a single TLV option starting at `*pos` (code already peeked).
+fn decode_tlv_option<'a>(data: &'a [u8], pos: &mut usize, code: u8) -> DhcpOptionStep<'a> {
+    if *pos + 1 >= data.len() {
+        return DhcpOptionStep::Error(DhcpError::InvalidOptionLength);
+    }
+    let len = data[*pos + 1] as usize;
+    let end = *pos + 2 + len;
+    if end > data.len() {
+        return DhcpOptionStep::Error(DhcpError::InvalidOptionLength);
+    }
+    let value = &data[*pos + 2..end];
+    *pos = end;
+    DhcpOptionStep::Yield(code, value)
 }
 
 /// Parse all TLV options from a raw options byte slice.

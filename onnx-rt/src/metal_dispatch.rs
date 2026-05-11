@@ -1939,36 +1939,86 @@ mod tests {
             let mut out = vec![0.0f32; bh * sq * d];
             for h in 0..bh {
                 for qi in 0..sq {
-                    let q_base = h * sq * d + qi * d;
-                    let causal_limit = qi + (sk - sq) + 1;
-                    let mut scores = vec![f32::NEG_INFINITY; sk];
-                    for j in 0..sk {
-                        if j >= causal_limit {
-                            continue;
-                        }
-                        let mut dot = 0.0f32;
-                        for dd in 0..d {
-                            dot += q[q_base + dd] * k[h * sk * d + j * d + dd];
-                        }
-                        scores[j] = dot * scale;
-                    }
-                    let max_s = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                    let exps: Vec<f32> = scores.iter().map(|s| (s - max_s).exp()).collect();
-                    let sum_exp: f32 = exps.iter().sum();
-                    for dd in 0..d {
-                        let mut acc = 0.0f32;
-                        for j in 0..sk {
-                            if j >= causal_limit {
-                                continue;
-                            }
-                            let prob = exps[j] / sum_exp;
-                            acc += prob * v[h * sk * d + j * d + dd];
-                        }
-                        out[h * sq * d + qi * d + dd] = acc;
-                    }
+                    cpu_sdpa_query(q, k, v, &mut out, h, qi, sq, sk, d, scale);
                 }
             }
             out
+        }
+
+        /// Compute the attention output for a single (head, query) position.
+        #[allow(clippy::too_many_arguments)]
+        fn cpu_sdpa_query(
+            q: &[f32],
+            k: &[f32],
+            v: &[f32],
+            out: &mut [f32],
+            h: usize,
+            qi: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
+            scale: f32,
+        ) {
+            let q_base = h * sq * d + qi * d;
+            let causal_limit = qi + (sk - sq) + 1;
+            let scores = cpu_sdpa_scores(q, k, h, sk, d, q_base, causal_limit, scale);
+            let (exps, sum_exp) = softmax_with_sum(&scores);
+            cpu_sdpa_weighted_values(v, &exps, sum_exp, out, h, qi, sq, sk, d, causal_limit);
+        }
+
+        /// Build the (masked) score vector for a single query position.
+        #[allow(clippy::too_many_arguments)]
+        fn cpu_sdpa_scores(
+            q: &[f32],
+            k: &[f32],
+            h: usize,
+            sk: usize,
+            d: usize,
+            q_base: usize,
+            causal_limit: usize,
+            scale: f32,
+        ) -> Vec<f32> {
+            let mut scores = vec![f32::NEG_INFINITY; sk];
+            for j in 0..sk.min(causal_limit) {
+                let mut dot = 0.0f32;
+                for dd in 0..d {
+                    dot += q[q_base + dd] * k[h * sk * d + j * d + dd];
+                }
+                scores[j] = dot * scale;
+            }
+            scores
+        }
+
+        /// Stable softmax over `scores`, returning the exp vector and its sum.
+        fn softmax_with_sum(scores: &[f32]) -> (Vec<f32>, f32) {
+            let max_s = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exps: Vec<f32> = scores.iter().map(|s| (s - max_s).exp()).collect();
+            let sum_exp: f32 = exps.iter().sum();
+            (exps, sum_exp)
+        }
+
+        /// Write `softmax(scores) @ V` for a single (head, query) into `out`.
+        #[allow(clippy::too_many_arguments)]
+        fn cpu_sdpa_weighted_values(
+            v: &[f32],
+            exps: &[f32],
+            sum_exp: f32,
+            out: &mut [f32],
+            h: usize,
+            qi: usize,
+            sq: usize,
+            sk: usize,
+            d: usize,
+            causal_limit: usize,
+        ) {
+            for dd in 0..d {
+                let mut acc = 0.0f32;
+                for j in 0..sk.min(causal_limit) {
+                    let prob = exps[j] / sum_exp;
+                    acc += prob * v[h * sk * d + j * d + dd];
+                }
+                out[h * sq * d + qi * d + dd] = acc;
+            }
         }
 
         #[test]
