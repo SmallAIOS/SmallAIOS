@@ -23,6 +23,55 @@ pub(crate) fn dnn_dtype(dt: DataType) -> Result<ffi::cudnnDataType_t, CudaError>
     }
 }
 
+/// Convert a cuDNN status code into a `CudaError::DnnError` when it is
+/// not `CUDNN_STATUS_SUCCESS`. Shared across the descriptor wrappers
+/// so each one doesn't hand-roll the same `if err != SUCCESS` check.
+#[inline]
+fn check_dnn(status: ffi::cudnnStatus_t, op: &'static str) -> Result<(), CudaError> {
+    if status == ffi::CUDNN_STATUS_SUCCESS {
+        Ok(())
+    } else {
+        Err(CudaError::DnnError { op, code: status })
+    }
+}
+
+/// Build a descriptor by:
+///   1. allocating a handle via `create_fn`,
+///   2. configuring it via `set_call` (a closure that returns the
+///      cuDNN status code from the `cudnnSet*Descriptor` call),
+///   3. destroying the handle via `destroy_fn` if step 2 fails.
+///
+/// This collapses the create-and-set boilerplate that every descriptor
+/// wrapper used to hand-roll.
+#[inline]
+fn build_desc<H>(
+    create_op: &'static str,
+    set_op: &'static str,
+    create_fn: unsafe extern "C" fn(*mut H) -> ffi::cudnnStatus_t,
+    set_call: impl FnOnce(H) -> ffi::cudnnStatus_t,
+    destroy_fn: unsafe extern "C" fn(H) -> ffi::cudnnStatus_t,
+) -> Result<H, CudaError>
+where
+    H: Copy,
+{
+    // SAFETY: we initialise `desc` to a null/zero handle before calling
+    // `create_fn`, which is documented to write a valid handle on
+    // success.
+    let mut desc: H = unsafe { core::mem::zeroed() };
+    // SAFETY: `create_fn` matches the descriptor type `H` and only
+    // writes through the `&mut H` we pass.
+    check_dnn(unsafe { create_fn(&mut desc) }, create_op)?;
+    if let Err(e) = check_dnn(set_call(desc), set_op) {
+        // SAFETY: `desc` was successfully created above; we must
+        // destroy it to avoid leaking the handle on the failure path.
+        unsafe {
+            let _ = destroy_fn(desc);
+        }
+        return Err(e);
+    }
+    Ok(desc)
+}
+
 pub(crate) struct TensorDesc {
     pub desc: ffi::cudnnTensorDescriptor_t,
 }
@@ -35,34 +84,23 @@ impl TensorDesc {
         w: i32,
         dtype: ffi::cudnnDataType_t,
     ) -> Result<Self, CudaError> {
-        let mut desc: ffi::cudnnTensorDescriptor_t = core::ptr::null_mut();
-        let err = unsafe { ffi::cudnnCreateTensorDescriptor(&mut desc) };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            return Err(CudaError::DnnError {
-                op: "createTensorDesc",
-                code: err,
-            });
-        }
-        let err = unsafe {
-            ffi::cudnnSetTensor4dDescriptor(
-                desc,
-                ffi::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
-                dtype,
-                n,
-                c,
-                h,
-                w,
-            )
-        };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            unsafe {
-                ffi::cudnnDestroyTensorDescriptor(desc);
-            }
-            return Err(CudaError::DnnError {
-                op: "setTensor4dDesc",
-                code: err,
-            });
-        }
+        let desc = build_desc(
+            "createTensorDesc",
+            "setTensor4dDesc",
+            ffi::cudnnCreateTensorDescriptor,
+            |d| unsafe {
+                ffi::cudnnSetTensor4dDescriptor(
+                    d,
+                    ffi::cudnnTensorFormat_t::CUDNN_TENSOR_NCHW,
+                    dtype,
+                    n,
+                    c,
+                    h,
+                    w,
+                )
+            },
+            ffi::cudnnDestroyTensorDescriptor,
+        )?;
         Ok(Self { desc })
     }
 }
@@ -90,36 +128,25 @@ impl PoolDesc {
         stride_h: i32,
         stride_w: i32,
     ) -> Result<Self, CudaError> {
-        let mut desc: ffi::cudnnPoolingDescriptor_t = core::ptr::null_mut();
-        let err = unsafe { ffi::cudnnCreatePoolingDescriptor(&mut desc) };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            return Err(CudaError::DnnError {
-                op: "createPoolingDesc",
-                code: err,
-            });
-        }
-        let err = unsafe {
-            ffi::cudnnSetPooling2dDescriptor(
-                desc,
-                mode,
-                ffi::cudnnNanPropagation_t::CUDNN_NOT_PROPAGATE_NAN,
-                kh,
-                kw,
-                pad_h,
-                pad_w,
-                stride_h,
-                stride_w,
-            )
-        };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            unsafe {
-                ffi::cudnnDestroyPoolingDescriptor(desc);
-            }
-            return Err(CudaError::DnnError {
-                op: "setPooling2dDesc",
-                code: err,
-            });
-        }
+        let desc = build_desc(
+            "createPoolingDesc",
+            "setPooling2dDesc",
+            ffi::cudnnCreatePoolingDescriptor,
+            |d| unsafe {
+                ffi::cudnnSetPooling2dDescriptor(
+                    d,
+                    mode,
+                    ffi::cudnnNanPropagation_t::CUDNN_NOT_PROPAGATE_NAN,
+                    kh,
+                    kw,
+                    pad_h,
+                    pad_w,
+                    stride_h,
+                    stride_w,
+                )
+            },
+            ffi::cudnnDestroyPoolingDescriptor,
+        )?;
         Ok(Self { desc })
     }
 }
@@ -138,31 +165,20 @@ pub(crate) struct ActivationDesc {
 
 impl ActivationDesc {
     pub fn new(mode: ffi::cudnnActivationMode_t, coef: f64) -> Result<Self, CudaError> {
-        let mut desc: ffi::cudnnActivationDescriptor_t = core::ptr::null_mut();
-        let err = unsafe { ffi::cudnnCreateActivationDescriptor(&mut desc) };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            return Err(CudaError::DnnError {
-                op: "createActivationDesc",
-                code: err,
-            });
-        }
-        let err = unsafe {
-            ffi::cudnnSetActivationDescriptor(
-                desc,
-                mode,
-                ffi::cudnnNanPropagation_t::CUDNN_NOT_PROPAGATE_NAN,
-                coef,
-            )
-        };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            unsafe {
-                ffi::cudnnDestroyActivationDescriptor(desc);
-            }
-            return Err(CudaError::DnnError {
-                op: "setActivationDesc",
-                code: err,
-            });
-        }
+        let desc = build_desc(
+            "createActivationDesc",
+            "setActivationDesc",
+            ffi::cudnnCreateActivationDescriptor,
+            |d| unsafe {
+                ffi::cudnnSetActivationDescriptor(
+                    d,
+                    mode,
+                    ffi::cudnnNanPropagation_t::CUDNN_NOT_PROPAGATE_NAN,
+                    coef,
+                )
+            },
+            ffi::cudnnDestroyActivationDescriptor,
+        )?;
         Ok(Self { desc })
     }
 }
@@ -184,31 +200,20 @@ impl OpTensorDesc {
         op: ffi::cudnnOpTensorOp_t,
         comp_type: ffi::cudnnDataType_t,
     ) -> Result<Self, CudaError> {
-        let mut desc: ffi::cudnnOpTensorDescriptor_t = core::ptr::null_mut();
-        let err = unsafe { ffi::cudnnCreateOpTensorDescriptor(&mut desc) };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            return Err(CudaError::DnnError {
-                op: "createOpTensorDesc",
-                code: err,
-            });
-        }
-        let err = unsafe {
-            ffi::cudnnSetOpTensorDescriptor(
-                desc,
-                op,
-                comp_type,
-                ffi::cudnnNanPropagation_t::CUDNN_NOT_PROPAGATE_NAN,
-            )
-        };
-        if err != ffi::CUDNN_STATUS_SUCCESS {
-            unsafe {
-                ffi::cudnnDestroyOpTensorDescriptor(desc);
-            }
-            return Err(CudaError::DnnError {
-                op: "setOpTensorDesc",
-                code: err,
-            });
-        }
+        let desc = build_desc(
+            "createOpTensorDesc",
+            "setOpTensorDesc",
+            ffi::cudnnCreateOpTensorDescriptor,
+            |d| unsafe {
+                ffi::cudnnSetOpTensorDescriptor(
+                    d,
+                    op,
+                    comp_type,
+                    ffi::cudnnNanPropagation_t::CUDNN_NOT_PROPAGATE_NAN,
+                )
+            },
+            ffi::cudnnDestroyOpTensorDescriptor,
+        )?;
         Ok(Self { desc })
     }
 }
