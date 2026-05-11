@@ -99,6 +99,36 @@ fn size_to_order(size: usize) -> usize {
     (usize::BITS - (pages - 1).leading_zeros()) as usize
 }
 
+/// Look up the current task's capability for `(resource_type, instance)`
+/// with the requested permission bits.
+///
+/// Returns `Ok(())` when the capability is held, or `Err(syscall_error_code)`
+/// (a negative `i64`) ready to be returned directly from a syscall handler.
+///
+/// This shared helper collapses the previously-repeated four-line block
+/// `let resource = ResourceRef::new(...); if let Err(e) = state::check_capability(...) { return e; }`
+/// that appeared in every capability-checked memory syscall.
+#[inline]
+fn require_capability(
+    resource_type: ResourceType,
+    instance: u64,
+    perm: Permissions,
+) -> Result<(), i64> {
+    let resource = ResourceRef::new(resource_type, instance);
+    state::check_capability(current_task_id(), &resource, perm).map(|_| ())
+}
+
+/// Convert a `Result<(), MemError>` into a `0`-on-success syscall return
+/// (negative on error). Used by `sys_mem_free` / `sys_tensor_free` to
+/// share their identical match-on-result tail.
+#[inline]
+fn unit_mem_result(r: Result<(), crate::mem::MemError>) -> SyscallResult {
+    match r {
+        Ok(()) => SyscallError::Success.as_i64(),
+        Err(err) => state::mem_error_to_syscall(err),
+    }
+}
+
 /// Allocate kernel memory.
 ///
 /// Args: [size, align, flags, 0, 0, 0]
@@ -154,23 +184,15 @@ pub fn sys_mem_free(args: &SyscallArgs) -> SyscallResult {
         return SyscallError::InvalidArgument.as_i64();
     }
 
-    // Try slab first for small sizes, fall back to buddy
+    // Try slab first for small sizes, fall back to buddy.
     if size <= 2048 {
         // SAFETY: Syscall handlers run with interrupts masked.
-        let result = unsafe { state::with_slab(|slab| slab.free(ptr as *mut u8, size)) };
-        match result {
-            Ok(()) => SyscallError::Success.as_i64(),
-            Err(err) => state::mem_error_to_syscall(err),
-        }
+        unit_mem_result(unsafe { state::with_slab(|slab| slab.free(ptr as *mut u8, size)) })
     } else {
         let order = size_to_order(size);
         let addr = PhysAddr::new(ptr);
         // SAFETY: Syscall handlers run with interrupts masked.
-        let result = unsafe { state::with_buddy(|buddy| buddy.free(addr, order)) };
-        match result {
-            Ok(()) => SyscallError::Success.as_i64(),
-            Err(err) => state::mem_error_to_syscall(err),
-        }
+        unit_mem_result(unsafe { state::with_buddy(|buddy| buddy.free(addr, order)) })
     }
 }
 
@@ -188,8 +210,7 @@ pub fn sys_mem_map(args: &SyscallArgs) -> SyscallResult {
     }
 
     // MMIO mapping is a privileged operation — require Device:WRITE capability.
-    let resource = ResourceRef::new(ResourceType::Device, 0);
-    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::WRITE) {
+    if let Err(e) = require_capability(ResourceType::Device, 0, Permissions::WRITE) {
         return e;
     }
 
@@ -212,8 +233,7 @@ pub fn sys_mem_protect(args: &SyscallArgs) -> SyscallResult {
     }
 
     // Memory protection changes are privileged — require Device:WRITE capability.
-    let resource = ResourceRef::new(ResourceType::Device, 0);
-    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::WRITE) {
+    if let Err(e) = require_capability(ResourceType::Device, 0, Permissions::WRITE) {
         return e;
     }
 
@@ -243,8 +263,7 @@ pub fn sys_tensor_alloc(args: &SyscallArgs) -> SyscallResult {
     };
 
     // Tensor allocation requires TensorBuffer:WRITE capability.
-    let resource = ResourceRef::new(ResourceType::TensorBuffer, 0);
-    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::WRITE) {
+    if let Err(e) = require_capability(ResourceType::TensorBuffer, 0, Permissions::WRITE) {
         return e;
     }
 
@@ -292,8 +311,11 @@ pub fn sys_tensor_free(args: &SyscallArgs) -> SyscallResult {
     }
 
     // Tensor free requires TensorBuffer:WRITE capability.
-    let resource = ResourceRef::new(ResourceType::TensorBuffer, handle_raw as u64);
-    if let Err(e) = state::check_capability(current_task_id(), &resource, Permissions::WRITE) {
+    if let Err(e) = require_capability(
+        ResourceType::TensorBuffer,
+        handle_raw as u64,
+        Permissions::WRITE,
+    ) {
         return e;
     }
 
@@ -301,11 +323,35 @@ pub fn sys_tensor_free(args: &SyscallArgs) -> SyscallResult {
     let handle = crate::mem::tensor::TensorHandle::from_index(handle_idx as u32);
 
     // SAFETY: Syscall handlers run with interrupts masked.
-    let result = unsafe { state::with_tensor_pool(|pool| pool.release(handle)) };
-    match result {
-        Ok(()) => SyscallError::Success.as_i64(),
-        Err(err) => state::mem_error_to_syscall(err),
+    unit_mem_result(unsafe { state::with_tensor_pool(|pool| pool.release(handle)) })
+}
+
+/// Shared front-end for `sys_tensor_map_gpu` / `sys_tensor_unmap_gpu`.
+///
+/// Validates the tensor handle and checks both capabilities required to
+/// map a tensor across the GPU boundary:
+///   * `TensorBuffer:WRITE` on the tensor handle
+///   * `GpuDevice:EXECUTE` on the target device
+///
+/// Returns `Ok(())` when the caller is authorized, or a negative syscall
+/// error code on the first failure. Mirrors the (formerly duplicated)
+/// validation logic that previously lived inline in both syscalls.
+#[inline]
+fn validate_tensor_gpu_request(handle: usize, device_id: usize) -> Result<(), i64> {
+    if handle == 0 {
+        return Err(SyscallError::InvalidHandle.as_i64());
     }
+    require_capability(
+        ResourceType::TensorBuffer,
+        handle as u64,
+        Permissions::WRITE,
+    )?;
+    require_capability(
+        ResourceType::GpuDevice,
+        device_id as u64,
+        Permissions::EXECUTE,
+    )?;
+    Ok(())
 }
 
 /// Map a tensor buffer for GPU access.
@@ -313,20 +359,7 @@ pub fn sys_tensor_free(args: &SyscallArgs) -> SyscallResult {
 /// Args: [handle, device_id, 0, 0, 0, 0]
 /// Returns: GPU pointer on success, negative error code on failure.
 pub fn sys_tensor_map_gpu(args: &SyscallArgs) -> SyscallResult {
-    let handle = args.args[0];
-    let device_id = args.args[1];
-
-    if handle == 0 {
-        return SyscallError::InvalidHandle.as_i64();
-    }
-
-    // Requires TensorBuffer:WRITE on the tensor and GpuDevice:EXECUTE on the device.
-    let tensor_res = ResourceRef::new(ResourceType::TensorBuffer, handle as u64);
-    if let Err(e) = state::check_capability(current_task_id(), &tensor_res, Permissions::WRITE) {
-        return e;
-    }
-    let gpu_res = ResourceRef::new(ResourceType::GpuDevice, device_id as u64);
-    if let Err(e) = state::check_capability(current_task_id(), &gpu_res, Permissions::EXECUTE) {
+    if let Err(e) = validate_tensor_gpu_request(args.args[0], args.args[1]) {
         return e;
     }
 
@@ -339,20 +372,7 @@ pub fn sys_tensor_map_gpu(args: &SyscallArgs) -> SyscallResult {
 /// Args: [handle, device_id, 0, 0, 0, 0]
 /// Returns: 0 on success, negative error code on failure.
 pub fn sys_tensor_unmap_gpu(args: &SyscallArgs) -> SyscallResult {
-    let handle = args.args[0];
-    let device_id = args.args[1];
-
-    if handle == 0 {
-        return SyscallError::InvalidHandle.as_i64();
-    }
-
-    // Requires TensorBuffer:WRITE on the tensor and GpuDevice:EXECUTE on the device.
-    let tensor_res = ResourceRef::new(ResourceType::TensorBuffer, handle as u64);
-    if let Err(e) = state::check_capability(current_task_id(), &tensor_res, Permissions::WRITE) {
-        return e;
-    }
-    let gpu_res = ResourceRef::new(ResourceType::GpuDevice, device_id as u64);
-    if let Err(e) = state::check_capability(current_task_id(), &gpu_res, Permissions::EXECUTE) {
+    if let Err(e) = validate_tensor_gpu_request(args.args[0], args.args[1]) {
         return e;
     }
 
