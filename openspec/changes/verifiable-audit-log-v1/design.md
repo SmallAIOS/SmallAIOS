@@ -52,7 +52,10 @@ to spec deltas, tasks, and implementation crates.
   unary for everything else).
 - Cross-validated proof verifier: every Merkle inclusion
   and dual-consistency proof verifier path covered by
-  golden fixtures emitted by immudb's reference Go SDK,
+  golden fixtures emitted by a small Rust binary that
+  talks to a live immudb sidecar via this same
+  `audit-export` client. SmallAIOS stays Rust-only —
+  no Go anywhere in the repo.
   checked into the repo so CI does not depend on a live
   immudb server.
 - Strict opt-in: default off, no embedded endpoint, no
@@ -380,7 +383,7 @@ audit-export/
 │       ├── verify.rs   # inclusion + dual consistency + signed state
 │       └── keys.rs     # host_id / ts_ns / seq key formatting
 └── tests/
-    ├── proof_vectors/  # checked-in fixtures from Go SDK
+    ├── proof_vectors/  # checked-in fixtures (binary blobs)
     └── e2e_immudb.rs   # docker-sidecar end-to-end test
 ```
 
@@ -478,7 +481,7 @@ break.
 
 ## Verifier design
 
-The verifier mirrors what immudb's Go SDK does on
+The verifier mirrors what a correct immudb client does on
 `verifiedSet`. Steps:
 
 1. Decode `VerifiableTx` from the gRPC reply.
@@ -506,8 +509,16 @@ Each step has a checked-in fixture set:
   states with known good and known tampered variants.
 
 Fixtures are produced by a deterministic harness in
-`tests/scripts/gen_fixtures.go` (the only Go we keep,
-in `tests/scripts/`, never built by the main image).
+`audit-export/tests/scripts/gen_fixtures.rs` — a Rust
+binary built from the workspace, never linked into any
+SmallAIOS image. It uses the same `audit-export::immudb`
+client this crate ships, points at a developer-controlled
+immudb sidecar, and writes the resulting `VerifiableTx`
+bytes to `audit-export/tests/proof_vectors/*.bin`. The
+binary blobs (not the generator) are what the per-PR
+fixture-replay tests consume. SmallAIOS itself is
+Rust-only; nothing in the repo or the production image
+links a Go toolchain.
 
 ## Configuration
 

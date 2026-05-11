@@ -137,7 +137,7 @@ on-box log close to what we already have.
   clean-room ONNX protobuf parser.
 - **Verification**: clean-room Merkle inclusion + dual
   consistency proof verifier in `audit-export/verify.rs`,
-  cross-tested against immudb's Go SDK proof vectors and
+  cross-tested against immudb-generated proof vectors and
   the reference auditor (`immuclient audit`).
 - **Authn**: immudb supports static token + mTLS. We
   re-use the OTLP keyfile convention: token at
@@ -295,7 +295,7 @@ Merkle tree later without re-doing the export side.
   immudb client; covers the protobuf subset, the
   HTTP/2 + TLS 1.3 transport, the signed-state response
   parsing, the inclusion-proof and dual-consistency-proof
-  verifier, the test-vector contract against the Go SDK,
+  verifier, the test-vector contract against immudb-generated fixtures,
   and the failure-mode semantics (offline → buffer →
   catch-up).
 - `audit-export-pipeline`: the batching policy (100
@@ -361,9 +361,11 @@ Merkle tree later without re-doing the export side.
 - **Tests:** ~80 new tests:
   - Protobuf encoder round-trips for each message.
   - Inclusion-proof verifier against ≥20 immudb-
-    generated vectors (test harness uses the Go SDK
-    on the dev workstation to emit fixtures; fixtures
-    checked into the repo).
+    generated vectors (a small Rust binary in
+    `audit-export/tests/scripts/gen_fixtures.rs` talks
+    to a developer-controlled immudb sidecar and writes
+    fixture blobs to `audit-export/tests/proof_vectors/`;
+    SmallAIOS stays Rust-only — no Go in the repo).
   - Dual consistency proof verifier across ≥10 vectors.
   - Ed25519 signed-state verifier against the
     immudb-emitted state JSON.
@@ -403,8 +405,8 @@ Merkle tree later without re-doing the export side.
   1. **Proof-verifier bugs.** Immudb has historically
      shipped client SDKs with broken verifiers
      ([GHSA-672p-m5jq-mrh8](https://github.com/codenotary/immudb/security/advisories/GHSA-672p-m5jq-mrh8)).
-     The CI fixture set against the reference Go SDK
-     is non-optional.
+     The CI fixture set generated against a live
+     immudb sidecar is non-optional.
   2. **Hash-algorithm split.** SHA-3-256 locally,
      SHA-256 remotely. Document loudly; operators must
      understand they are two integrity systems and

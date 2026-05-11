@@ -55,12 +55,17 @@ is checked once per day and on every change to
 ## Generating proof-vector fixtures
 
 The verifier ships with unit-test-only synthetic fixtures.
-Real-world Go-SDK-generated fixtures (tasks 5.7–5.10 in
+Real-world fixtures generated against a live immudb (tasks 5.7–5.10 in
 `openspec/changes/verifiable-audit-log-v1/tasks.md`) require
-a Go toolchain plus a running immudb instance and land in
-`tests/proof_vectors/` once generated. The harness in
-`tests/scripts/gen_fixtures.go` is the canonical generator;
-it produces:
+a running immudb sidecar (any version-pinned 1.11.x
+instance the developer controls) and land in
+`audit-export/tests/proof_vectors/` once generated. The
+harness in `audit-export/tests/scripts/gen_fixtures.rs` is
+the canonical generator — a Rust binary that uses this
+crate's own gRPC client against a live immudb instance and
+writes the response blobs to disk. **SmallAIOS itself is
+Rust-only; no Go toolchain is ever required.** The harness
+produces:
 
 - `inclusion_v1_*.bin` — ≥20 inclusion proofs across
   varying tree depths.

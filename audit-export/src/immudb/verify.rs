@@ -13,7 +13,7 @@
 //!
 //! 1. **`Alh` (accumulator linear hash) recomputation** — wraps a
 //!    transaction's metadata into a single hash. *Wire-byte
-//!    layout still pending Go-SDK fixture verification (task
+//!    layout still pending live-immudb fixture verification (task
 //!    5.7); the function is exposed but feature-gated as
 //!    `verifier-alh-wire-pending` until a real immudb fixture
 //!    confirms the exact byte order.*
