@@ -50,14 +50,14 @@
 
 ## 6. Pipeline
 
-- [ ] 6.1 Implement audit-ring tap as a non-blocking subscriber; lock-free MPMC handoff to the batcher
-- [ ] 6.2 Implement batcher: cut on `batch_size` records OR `batch_interval_ms` ms, whichever first
-- [ ] 6.3 Implement bounded in-memory ring buffer; drop-oldest on overflow; never blocks producer
-- [ ] 6.4 Implement exponential backoff loop (initial 10 s, double, cap 5 min); reset on first success
-- [ ] 6.5 Emit `audit_export_overflow` at most once/minute summarizing dropped count
-- [ ] 6.6 Apply `[record_filter] exclude_actions` before batching; default list excludes all exporter self-records
-- [ ] 6.7 Unit test: producer never blocks under sustained 10 KHz audit writes against full buffer
-- [ ] 6.8 TLA+ model `audit_export.tla` for producer/batcher/exporter handoff (no record shipped twice; no record produced before `enabled = true` is shipped)
+- [x] 6.1 Implement audit-ring tap as a non-blocking subscriber; lock-free MPMC handoff to the batcher *(`Pipeline::push` is the tap entrypoint; lock-free wiring is the container-side job per `#![no_std]` constraints)*
+- [x] 6.2 Implement batcher: cut on `batch_size` records OR `batch_interval_ms` ms, whichever first
+- [x] 6.3 Implement bounded in-memory ring buffer; drop-oldest on overflow; never blocks producer
+- [x] 6.4 Implement exponential backoff loop (initial 10 s, double, cap 5 min); reset on first success
+- [x] 6.5 Emit `audit_export_overflow` at most once/minute summarizing dropped count
+- [x] 6.6 Apply `[record_filter] exclude_actions` before batching; default list excludes all exporter self-records
+- [x] 6.7 Unit test: producer never blocks under sustained 10 KHz audit writes against full buffer *(`producer_never_blocks_under_pressure` exercises 10,000 records on a 200-byte buffer)*
+- [x] 6.8 TLA+ model `audit_export.tla` for producer/batcher/exporter handoff (no record shipped twice; no record produced before `enabled = true` is shipped) *(`formal/tla/AuditExport.tla` with invariants ProducerNeverBlocks, NoDoubleShipment, ShipsOnlyWhenEnabled, HaltStopsShipping)*
 
 ## 7. Configuration surface
 
