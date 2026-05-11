@@ -13,7 +13,7 @@ use alloc::format;
 use alloc::string::String;
 
 use super::word::{Arinc429Word, Label};
-use crate::transport::{BusSample, ZenohTransport};
+use crate::transport::{pack_sample, BusSample, ZenohTransport};
 use crate::BusError;
 
 /// Maximum number of queued receive words.
@@ -109,25 +109,9 @@ impl ZenohTransport for Arinc429ZenohAdapter {
     }
 
     fn receive<'a>(&mut self, buf: &'a mut [u8]) -> Result<Option<BusSample<'a>>, BusError> {
-        if let Some((key, word_bytes)) = self.rx_queue.pop_front() {
-            let key_bytes = key.as_bytes();
-            let total = key_bytes.len() + 1 + 4;
-            if buf.len() < total {
-                return Err(BusError::BufferTooSmall);
-            }
-            buf[..key_bytes.len()].copy_from_slice(key_bytes);
-            buf[key_bytes.len()] = 0;
-            let payload_start = key_bytes.len() + 1;
-            buf[payload_start..payload_start + 4].copy_from_slice(&word_bytes);
-
-            Ok(Some(BusSample {
-                key_expr: core::str::from_utf8(&buf[..key_bytes.len()])
-                    .map_err(|_| BusError::InvalidHeader)?,
-                payload: &buf[payload_start..payload_start + 4],
-                timestamp_us: 0,
-            }))
-        } else {
-            Ok(None)
+        match self.rx_queue.pop_front() {
+            Some((key, word_bytes)) => pack_sample(buf, &key, &word_bytes).map(Some),
+            None => Ok(None),
         }
     }
 }
