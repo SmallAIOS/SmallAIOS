@@ -66,6 +66,99 @@ fn sqrt_f32(x: f32) -> f32 {
 // Shared helper: apply RoPE in place
 // ---------------------------------------------------------------------------
 
+/// Validate `rotary_dim` and the cos/sin cache layout. Returns the
+/// number of rows (max_seq) in the cache and `half = rotary_dim/2`.
+fn validate_rope_caches(
+    cos_cache: &Tensor,
+    sin_cache: &Tensor,
+    rotary_dim: usize,
+    head_dim: usize,
+) -> Result<(usize, usize), OpError> {
+    require_float(cos_cache, "RotaryEmbedding")?;
+    require_float(sin_cache, "RotaryEmbedding")?;
+    if rotary_dim == 0 || rotary_dim > head_dim {
+        return Err(OpError::InvalidAttribute(String::from(
+            "apply_rope_in_place: rotary_dim must be in 1..=head_dim",
+        )));
+    }
+    if !rotary_dim.is_multiple_of(2) {
+        return Err(OpError::InvalidAttribute(String::from(
+            "apply_rope_in_place: rotary_dim must be even",
+        )));
+    }
+    let half = rotary_dim / 2;
+    let cos_dims = &cos_cache.shape.dims;
+    let sin_dims = &sin_cache.shape.dims;
+    if cos_dims.len() != 2 || sin_dims.len() != 2 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "apply_rope_in_place: cos/sin caches must be rank-2",
+        )));
+    }
+    let cache_cols = cos_dims[1] as usize;
+    if sin_dims[1] as usize != cache_cols {
+        return Err(OpError::ShapeMismatch(String::from(
+            "apply_rope_in_place: cos and sin caches must share the inner dim",
+        )));
+    }
+    if cache_cols != half {
+        return Err(OpError::ShapeMismatch(format!(
+            "apply_rope_in_place: cache inner dim {} != rotary_dim/2 = {}",
+            cache_cols, half
+        )));
+    }
+    Ok((cos_dims[0] as usize, half))
+}
+
+/// Resolve the position for a `(batch, query)` pair given a flat
+/// `position_ids` buffer that is either per-sequence or per-(batch, sequence).
+#[inline]
+fn rope_position_for(position_ids: &[i64], bi: usize, qi: usize, sq: usize) -> i64 {
+    if position_ids.len() == sq {
+        position_ids[qi]
+    } else {
+        position_ids[bi * sq + qi]
+    }
+}
+
+/// Validate that `pos` is a valid row in the cos/sin cache. Returns `pos` as a `usize`.
+#[inline]
+fn check_rope_position(pos: i64, cache_rows: usize) -> Result<usize, OpError> {
+    if pos < 0 || (pos as usize) >= cache_rows {
+        return Err(OpError::ShapeMismatch(format!(
+            "apply_rope_in_place: position {} out of cache range {}",
+            pos, cache_rows
+        )));
+    }
+    Ok(pos as usize)
+}
+
+/// Rotate a single `(query, head)` block in place using the RoPE pair layout.
+/// `interleaved == true` pairs `(x[2i], x[2i+1])`; otherwise `(x[i], x[i+half])`.
+fn rotate_rope_block(
+    raw: &mut [u8],
+    cos_cache: &Tensor,
+    sin_cache: &Tensor,
+    base: usize,
+    pos: usize,
+    cache_cols: usize,
+    half: usize,
+    interleaved: bool,
+) {
+    for pair in 0..half {
+        let c = read_f32(&cos_cache.raw_data, pos * cache_cols + pair);
+        let s = read_f32(&sin_cache.raw_data, pos * cache_cols + pair);
+        let (i0, i1) = if interleaved {
+            (base + 2 * pair, base + 2 * pair + 1)
+        } else {
+            (base + pair, base + pair + half)
+        };
+        let x0 = read_f32(raw, i0);
+        let x1 = read_f32(raw, i1);
+        write_f32(raw, i0, c * x0 - s * x1);
+        write_f32(raw, i1, s * x0 + c * x1);
+    }
+}
+
 /// Applies rotary positional embedding to a 4-D tensor in place.
 ///
 /// The tensor is expected to have shape `(B, num_heads, Sq, head_dim)`.
@@ -95,9 +188,6 @@ pub(crate) fn apply_rope_in_place(
             "apply_rope_in_place: tensor must be rank-4 (B, H, Sq, head_dim)",
         )));
     }
-    require_float(cos_cache, "RotaryEmbedding")?;
-    require_float(sin_cache, "RotaryEmbedding")?;
-
     let b = shape[0] as usize;
     let num_heads = shape[1] as usize;
     let sq = shape[2] as usize;
@@ -111,39 +201,8 @@ pub(crate) fn apply_rope_in_place(
         )));
     }
 
-    if rotary_dim == 0 || rotary_dim > head_dim {
-        return Err(OpError::InvalidAttribute(String::from(
-            "apply_rope_in_place: rotary_dim must be in 1..=head_dim",
-        )));
-    }
-    if !rotary_dim.is_multiple_of(2) {
-        return Err(OpError::InvalidAttribute(String::from(
-            "apply_rope_in_place: rotary_dim must be even",
-        )));
-    }
-    let half = rotary_dim / 2;
-
-    // cos/sin cache shape: (max_seq, head_dim/2) or (max_seq, rotary_dim/2).
-    let cos_dims = &cos_cache.shape.dims;
-    let sin_dims = &sin_cache.shape.dims;
-    if cos_dims.len() != 2 || sin_dims.len() != 2 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "apply_rope_in_place: cos/sin caches must be rank-2",
-        )));
-    }
-    let cache_cols = cos_dims[1] as usize;
-    if sin_dims[1] as usize != cache_cols {
-        return Err(OpError::ShapeMismatch(String::from(
-            "apply_rope_in_place: cos and sin caches must share the inner dim",
-        )));
-    }
-    if cache_cols != half {
-        return Err(OpError::ShapeMismatch(format!(
-            "apply_rope_in_place: cache inner dim {} != rotary_dim/2 = {}",
-            cache_cols, half
-        )));
-    }
-    let cache_rows = cos_dims[0] as usize;
+    let (cache_rows, half) = validate_rope_caches(cos_cache, sin_cache, rotary_dim, head_dim)?;
+    let cache_cols = half;
 
     // Strides into the raw buffer.
     let head_stride = sq * head_dim;
@@ -152,42 +211,19 @@ pub(crate) fn apply_rope_in_place(
     for bi in 0..b {
         for hi in 0..num_heads {
             for qi in 0..sq {
-                let pos = if position_ids.len() == sq {
-                    position_ids[qi]
-                } else {
-                    position_ids[bi * sq + qi]
-                };
-                if pos < 0 || (pos as usize) >= cache_rows {
-                    return Err(OpError::ShapeMismatch(format!(
-                        "apply_rope_in_place: position {} out of cache range {}",
-                        pos, cache_rows
-                    )));
-                }
+                let pos =
+                    check_rope_position(rope_position_for(position_ids, bi, qi, sq), cache_rows)?;
                 let base = bi * batch_stride + hi * head_stride + qi * head_dim;
-
-                if interleaved {
-                    for pair in 0..half {
-                        let c = read_f32(&cos_cache.raw_data, (pos as usize) * cache_cols + pair);
-                        let s = read_f32(&sin_cache.raw_data, (pos as usize) * cache_cols + pair);
-                        let i0 = base + 2 * pair;
-                        let i1 = base + 2 * pair + 1;
-                        let x0 = read_f32(raw, i0);
-                        let x1 = read_f32(raw, i1);
-                        write_f32(raw, i0, c * x0 - s * x1);
-                        write_f32(raw, i1, s * x0 + c * x1);
-                    }
-                } else {
-                    for pair in 0..half {
-                        let c = read_f32(&cos_cache.raw_data, (pos as usize) * cache_cols + pair);
-                        let s = read_f32(&sin_cache.raw_data, (pos as usize) * cache_cols + pair);
-                        let i0 = base + pair;
-                        let i1 = base + pair + half;
-                        let x0 = read_f32(raw, i0);
-                        let x1 = read_f32(raw, i1);
-                        write_f32(raw, i0, c * x0 - s * x1);
-                        write_f32(raw, i1, s * x0 + c * x1);
-                    }
-                }
+                rotate_rope_block(
+                    raw,
+                    cos_cache,
+                    sin_cache,
+                    base,
+                    pos,
+                    cache_cols,
+                    half,
+                    interleaved,
+                );
                 // Elements >= rotary_dim pass through unchanged.
             }
         }
@@ -199,6 +235,128 @@ pub(crate) fn apply_rope_in_place(
 // ---------------------------------------------------------------------------
 // Shared helper: scaled dot-product attention with on-the-fly causal mask
 // ---------------------------------------------------------------------------
+
+/// Compute the masked, scaled dot-product `scores[ki] = (Q_row · K_row[ki]) * scale`.
+/// Positions `ki >= max_k` are filled with `-inf`.
+fn sdpa_scores_row(
+    q_raw: &[u8],
+    k_raw: &[u8],
+    q_row: usize,
+    k_base: usize,
+    sk: usize,
+    head_dim: usize,
+    max_k: usize,
+    scale: f32,
+) -> Vec<f32> {
+    let mut scores: Vec<f32> = Vec::with_capacity(sk);
+    for ki in 0..sk {
+        if ki >= max_k {
+            scores.push(f32::NEG_INFINITY);
+            continue;
+        }
+        let k_row = k_base + ki * head_dim;
+        let mut acc = 0.0f32;
+        for d in 0..head_dim {
+            acc += read_f32(q_raw, q_row + d) * read_f32(k_raw, k_row + d);
+        }
+        scores.push(acc * scale);
+    }
+    scores
+}
+
+/// Numerically-stable softmax of `scores`. Returns `None` when every entry
+/// is `-inf` or the denominator underflows to zero — both cases are treated
+/// by the caller as "no valid key" and produce a zero output row.
+fn sdpa_softmax(scores: &[f32]) -> Option<Vec<f32>> {
+    let mut max_val = f32::NEG_INFINITY;
+    for &s in scores {
+        if s > max_val {
+            max_val = s;
+        }
+    }
+    if !max_val.is_finite() {
+        return None;
+    }
+    let mut denom = 0.0f32;
+    let mut probs: Vec<f32> = Vec::with_capacity(scores.len());
+    for &s in scores {
+        let e = if s.is_finite() {
+            expf_approx(s - max_val)
+        } else {
+            0.0
+        };
+        denom += e;
+        probs.push(e);
+    }
+    if denom == 0.0 {
+        return None;
+    }
+    let inv = 1.0 / denom;
+    for p in probs.iter_mut() {
+        *p *= inv;
+    }
+    Some(probs)
+}
+
+/// Write `probs · V` into `out[q_row..q_row+head_dim]`.
+fn sdpa_write_weighted_v(
+    out: &mut [u8],
+    v_raw: &[u8],
+    probs: &[f32],
+    q_row: usize,
+    v_base: usize,
+    sk: usize,
+    head_dim: usize,
+) {
+    for d in 0..head_dim {
+        let mut acc = 0.0f32;
+        for ki in 0..sk {
+            let v_row = v_base + ki * head_dim;
+            acc += probs[ki] * read_f32(v_raw, v_row + d);
+        }
+        write_f32(out, q_row + d, acc);
+    }
+}
+
+/// Write `head_dim` zeros into `out[q_row..q_row+head_dim]`.
+fn sdpa_write_zero_row(out: &mut [u8], q_row: usize, head_dim: usize) {
+    for d in 0..head_dim {
+        write_f32(out, q_row + d, 0.0);
+    }
+}
+
+/// Number of keys query position `qi` may attend to under the (optional)
+/// causal mask. Returns `sk` when `causal == false`.
+#[inline]
+fn sdpa_max_k(causal: bool, past_sk: usize, qi: usize, sk: usize) -> usize {
+    if causal {
+        (past_sk + qi + 1).min(sk)
+    } else {
+        sk
+    }
+}
+
+/// Compute the SDPA output for one `(batch, q-head, q-pos)` row.
+#[allow(clippy::too_many_arguments)]
+fn sdpa_row(
+    out: &mut [u8],
+    q_raw: &[u8],
+    k_raw: &[u8],
+    v_raw: &[u8],
+    q_row: usize,
+    k_base: usize,
+    v_base: usize,
+    sk: usize,
+    head_dim: usize,
+    max_k: usize,
+    scale: f32,
+) {
+    let scores = sdpa_scores_row(q_raw, k_raw, q_row, k_base, sk, head_dim, max_k, scale);
+    match sdpa_softmax(&scores) {
+        Some(probs) => sdpa_write_weighted_v(out, v_raw, &probs, q_row, v_base, sk, head_dim),
+        None => sdpa_write_zero_row(out, q_row, head_dim),
+    }
+}
 
 /// Computes `softmax(Q @ K^T * scale + causal_mask) @ V` over a single
 /// batched attention block.
@@ -258,7 +416,6 @@ pub(crate) fn scaled_dot_product_attention(
     let k_head_stride = sk * head_dim;
     let k_batch_stride = num_kv_heads * k_head_stride;
 
-    // Per (batch, q-head, q-pos) row compute masked softmax(Q·K^T) · V.
     for bi in 0..batch {
         for qh in 0..num_q_heads {
             let kh = qh / group_size;
@@ -267,75 +424,12 @@ pub(crate) fn scaled_dot_product_attention(
             let v_base = k_base;
 
             for qi in 0..sq {
-                // Compute scaled scores against every key position.
-                let mut scores: Vec<f32> = Vec::with_capacity(sk);
                 let q_row = q_base + qi * head_dim;
-                let max_k = if causal {
-                    // The current query's absolute position is past_sk + qi.
-                    // It attends over keys 0..=past_sk+qi, clamped to sk.
-                    (past_sk + qi + 1).min(sk)
-                } else {
-                    sk
-                };
-                for ki in 0..sk {
-                    if ki >= max_k {
-                        scores.push(f32::NEG_INFINITY);
-                        continue;
-                    }
-                    let k_row = k_base + ki * head_dim;
-                    let mut acc = 0.0f32;
-                    for d in 0..head_dim {
-                        let qv = read_f32(q_raw, q_row + d);
-                        let kv = read_f32(k_raw, k_row + d);
-                        acc += qv * kv;
-                    }
-                    scores.push(acc * scale);
-                }
-                // Max-stabilized softmax.
-                let mut max_val = f32::NEG_INFINITY;
-                for &s in &scores {
-                    if s > max_val {
-                        max_val = s;
-                    }
-                }
-                if !max_val.is_finite() {
-                    // All -inf: every output element is 0 (no valid key).
-                    for d in 0..head_dim {
-                        write_f32(&mut out, q_row + d, 0.0);
-                    }
-                    continue;
-                }
-                let mut denom = 0.0f32;
-                let mut probs: Vec<f32> = Vec::with_capacity(sk);
-                for &s in &scores {
-                    let e = if s.is_finite() {
-                        expf_approx(s - max_val)
-                    } else {
-                        0.0
-                    };
-                    denom += e;
-                    probs.push(e);
-                }
-                if denom == 0.0 {
-                    for d in 0..head_dim {
-                        write_f32(&mut out, q_row + d, 0.0);
-                    }
-                    continue;
-                }
-                let inv = 1.0 / denom;
-                for p in probs.iter_mut() {
-                    *p *= inv;
-                }
-
-                // Weighted sum of V rows.
-                for d in 0..head_dim {
-                    let mut acc = 0.0f32;
-                    for ki in 0..sk {
-                        let v_row = v_base + ki * head_dim;
-                        acc += probs[ki] * read_f32(v_raw, v_row + d);
-                    }
-                    write_f32(&mut out, q_row + d, acc);
-                }
+                let max_k = sdpa_max_k(causal, past_sk, qi, sk);
+                sdpa_row(
+                    &mut out, q_raw, k_raw, v_raw, q_row, k_base, v_base, sk, head_dim, max_k,
+                    scale,
+                );
             }
         }
     }
@@ -609,6 +703,59 @@ fn reshape_from_bhsd(
     out
 }
 
+/// Validate a (potentially absent) past KV cache tensor and return its
+/// sequence-length axis (`past_sk`). Returns 0 when `past` is `None`.
+fn validate_past_kv(
+    past: Option<&Tensor>,
+    batch: usize,
+    heads: usize,
+    head_dim: usize,
+) -> Result<usize, OpError> {
+    let Some(p) = past else {
+        return Ok(0);
+    };
+    require_float(p, "GroupQueryAttention")?;
+    if p.shape.dims.len() != 4 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GQA/MHA: past_key/past_value must be rank-4",
+        )));
+    }
+    if p.shape.dims[0] as usize != batch
+        || p.shape.dims[1] as usize != heads
+        || p.shape.dims[3] as usize != head_dim
+    {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GQA/MHA: past cache batch/heads/head_dim mismatch",
+        )));
+    }
+    Ok(p.shape.dims[2] as usize)
+}
+
+/// Copy `src_sk` rows of `(head_dim)` from `src_raw` into the `(B,H,total_sk,head_dim)`
+/// destination starting at `dst_start_si` along the sequence axis.
+fn kv_copy_block(
+    dst: &mut [u8],
+    src_raw: &[u8],
+    batch: usize,
+    heads: usize,
+    src_sk: usize,
+    total_sk: usize,
+    head_dim: usize,
+    dst_start_si: usize,
+) {
+    for bi in 0..batch {
+        for hi in 0..heads {
+            for si in 0..src_sk {
+                for d in 0..head_dim {
+                    let src = ((bi * heads + hi) * src_sk + si) * head_dim + d;
+                    let dst_idx = ((bi * heads + hi) * total_sk + dst_start_si + si) * head_dim + d;
+                    write_f32(dst, dst_idx, read_f32(src_raw, src));
+                }
+            }
+        }
+    }
+}
+
 /// Concatenate past + new along the sequence axis of a
 /// `(B, H, Sk, head_dim)` buffer. Produces `(B, H, past_sk + new_sk,
 /// head_dim)`. If `past_sk == 0`, returns a clone of `new`.
@@ -620,53 +767,26 @@ fn kv_concat(
     new_sk: usize,
     head_dim: usize,
 ) -> Result<(Vec<u8>, usize), OpError> {
-    let past_sk = match past {
-        Some(p) => {
-            require_float(p, "GroupQueryAttention")?;
-            if p.shape.dims.len() != 4 {
-                return Err(OpError::ShapeMismatch(String::from(
-                    "GQA/MHA: past_key/past_value must be rank-4",
-                )));
-            }
-            if p.shape.dims[0] as usize != batch
-                || p.shape.dims[1] as usize != heads
-                || p.shape.dims[3] as usize != head_dim
-            {
-                return Err(OpError::ShapeMismatch(String::from(
-                    "GQA/MHA: past cache batch/heads/head_dim mismatch",
-                )));
-            }
-            p.shape.dims[2] as usize
-        }
-        None => 0,
-    };
-
+    let past_sk = validate_past_kv(past, batch, heads, head_dim)?;
     let total_sk = past_sk + new_sk;
     let out_len = batch * heads * total_sk * head_dim;
     let mut out = allocate_tensor_data(out_len, DataType::Float);
 
-    for bi in 0..batch {
-        for hi in 0..heads {
-            // Copy past.
-            if let Some(p) = past {
-                for si in 0..past_sk {
-                    for d in 0..head_dim {
-                        let src = ((bi * heads + hi) * past_sk + si) * head_dim + d;
-                        let dst = ((bi * heads + hi) * total_sk + si) * head_dim + d;
-                        write_f32(&mut out, dst, read_f32(&p.raw_data, src));
-                    }
-                }
-            }
-            // Copy new.
-            for si in 0..new_sk {
-                for d in 0..head_dim {
-                    let src = ((bi * heads + hi) * new_sk + si) * head_dim + d;
-                    let dst = ((bi * heads + hi) * total_sk + past_sk + si) * head_dim + d;
-                    write_f32(&mut out, dst, read_f32(new_raw, src));
-                }
-            }
-        }
+    if let Some(p) = past {
+        kv_copy_block(
+            &mut out,
+            &p.raw_data,
+            batch,
+            heads,
+            past_sk,
+            total_sk,
+            head_dim,
+            0,
+        );
     }
+    kv_copy_block(
+        &mut out, new_raw, batch, heads, new_sk, total_sk, head_dim, past_sk,
+    );
 
     Ok((out, past_sk))
 }
@@ -808,6 +928,129 @@ pub fn op_multi_head_attention(
 // GroupQueryAttention
 // ---------------------------------------------------------------------------
 
+/// Validate the per-attribute and per-tensor shape invariants for GQA.
+/// Returns `(num_heads, kv_heads, b, sq, q_hidden, head_dim)`.
+fn gqa_validate(
+    query: &Tensor,
+    key: &Tensor,
+    value: &Tensor,
+    num_heads: i64,
+    kv_num_heads: i64,
+) -> Result<(usize, usize, usize, usize, usize, usize), OpError> {
+    if num_heads <= 0 || kv_num_heads <= 0 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "GroupQueryAttention: num_heads and kv_num_heads must be > 0",
+        )));
+    }
+    if num_heads % kv_num_heads != 0 {
+        return Err(OpError::InvalidAttribute(String::from(
+            "GroupQueryAttention: num_heads must be a multiple of kv_num_heads",
+        )));
+    }
+    let num_heads = num_heads as usize;
+    let kv_heads = kv_num_heads as usize;
+
+    if query.shape.dims.len() != 3 || key.shape.dims.len() != 3 || value.shape.dims.len() != 3 {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GroupQueryAttention: Q/K/V must be rank-3",
+        )));
+    }
+    let b = query.shape.dims[0] as usize;
+    let sq = query.shape.dims[1] as usize;
+    let q_hidden = query.shape.dims[2] as usize;
+    let kv_hidden = key.shape.dims[2] as usize;
+    if !q_hidden.is_multiple_of(num_heads) {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GroupQueryAttention: q_hidden not divisible by num_heads",
+        )));
+    }
+    if !kv_hidden.is_multiple_of(kv_heads) {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GroupQueryAttention: kv_hidden not divisible by kv_num_heads",
+        )));
+    }
+    let head_dim = q_hidden / num_heads;
+    if kv_hidden / kv_heads != head_dim {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GroupQueryAttention: Q and KV head_dim must match",
+        )));
+    }
+    if value.shape.dims != key.shape.dims {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GroupQueryAttention: key and value must have the same shape",
+        )));
+    }
+    Ok((num_heads, kv_heads, b, sq, q_hidden, head_dim))
+}
+
+/// Past-key sequence length for GQA's pre-validation step (before `kv_concat`
+/// runs the deeper checks).
+fn gqa_past_sk(past_key: Option<&Tensor>) -> Result<usize, OpError> {
+    match past_key {
+        Some(p) => {
+            if p.shape.dims.len() != 4 {
+                return Err(OpError::ShapeMismatch(String::from(
+                    "GroupQueryAttention: past_key must be rank-4",
+                )));
+            }
+            Ok(p.shape.dims[2] as usize)
+        }
+        None => Ok(0),
+    }
+}
+
+/// Apply fused RoPE to Q and K when `do_rotary` is set.
+#[allow(clippy::too_many_arguments)]
+fn gqa_apply_rotary(
+    q_bhsd: &mut [u8],
+    k_bhsd: &mut [u8],
+    cos_cache: Option<&Tensor>,
+    sin_cache: Option<&Tensor>,
+    b: usize,
+    num_heads: usize,
+    kv_heads: usize,
+    sq: usize,
+    head_dim: usize,
+    past_sk: usize,
+    rotary_interleaved: bool,
+) -> Result<(), OpError> {
+    let cos = cos_cache.ok_or_else(|| {
+        OpError::ShapeMismatch(String::from(
+            "GroupQueryAttention: do_rotary=1 but cos_cache is missing",
+        ))
+    })?;
+    let sin = sin_cache.ok_or_else(|| {
+        OpError::ShapeMismatch(String::from(
+            "GroupQueryAttention: do_rotary=1 but sin_cache is missing",
+        ))
+    })?;
+    let mut positions: Vec<i64> = Vec::with_capacity(sq);
+    for i in 0..sq {
+        positions.push((past_sk + i) as i64);
+    }
+    let q_shape = vec![b as i64, num_heads as i64, sq as i64, head_dim as i64];
+    let k_shape = vec![b as i64, kv_heads as i64, sq as i64, head_dim as i64];
+    apply_rope_in_place(
+        q_bhsd,
+        &q_shape,
+        cos,
+        sin,
+        &positions,
+        rotary_interleaved,
+        head_dim,
+    )?;
+    apply_rope_in_place(
+        k_bhsd,
+        &k_shape,
+        cos,
+        sin,
+        &positions,
+        rotary_interleaved,
+        head_dim,
+    )?;
+    Ok(())
+}
+
 /// `com.microsoft.GroupQueryAttention`.
 ///
 /// Inputs (per ORT contrib op spec):
@@ -870,104 +1113,29 @@ pub fn op_group_query_attention(
     require_float(key, "GroupQueryAttention")?;
     require_float(value, "GroupQueryAttention")?;
 
-    if num_heads <= 0 || kv_num_heads <= 0 {
-        return Err(OpError::InvalidAttribute(String::from(
-            "GroupQueryAttention: num_heads and kv_num_heads must be > 0",
-        )));
-    }
-    if num_heads % kv_num_heads != 0 {
-        return Err(OpError::InvalidAttribute(String::from(
-            "GroupQueryAttention: num_heads must be a multiple of kv_num_heads",
-        )));
-    }
-    let num_heads = num_heads as usize;
-    let kv_heads = kv_num_heads as usize;
+    let (num_heads, kv_heads, b, sq, q_hidden, head_dim) =
+        gqa_validate(query, key, value, num_heads, kv_num_heads)?;
 
-    if query.shape.dims.len() != 3 || key.shape.dims.len() != 3 || value.shape.dims.len() != 3 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GroupQueryAttention: Q/K/V must be rank-3",
-        )));
-    }
-    let b = query.shape.dims[0] as usize;
-    let sq = query.shape.dims[1] as usize;
-    let q_hidden = query.shape.dims[2] as usize;
-    let kv_hidden = key.shape.dims[2] as usize;
-    if !q_hidden.is_multiple_of(num_heads) {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GroupQueryAttention: q_hidden not divisible by num_heads",
-        )));
-    }
-    if !kv_hidden.is_multiple_of(kv_heads) {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GroupQueryAttention: kv_hidden not divisible by kv_num_heads",
-        )));
-    }
-    let head_dim = q_hidden / num_heads;
-    if kv_hidden / kv_heads != head_dim {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GroupQueryAttention: Q and KV head_dim must match",
-        )));
-    }
-    if value.shape.dims != key.shape.dims {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GroupQueryAttention: key and value must have the same shape",
-        )));
-    }
-
-    // Past length from cache.
-    let past_sk = match past_key {
-        Some(p) => {
-            if p.shape.dims.len() != 4 {
-                return Err(OpError::ShapeMismatch(String::from(
-                    "GroupQueryAttention: past_key must be rank-4",
-                )));
-            }
-            p.shape.dims[2] as usize
-        }
-        None => 0,
-    };
+    let past_sk = gqa_past_sk(past_key)?;
 
     // Reshape Q and KV into (B, H*, Sq, head_dim).
     let mut q_bhsd = reshape_to_bhsd(&query.raw_data, b, sq, num_heads, head_dim);
     let mut k_bhsd = reshape_to_bhsd(&key.raw_data, b, sq, kv_heads, head_dim);
     let v_bhsd = reshape_to_bhsd(&value.raw_data, b, sq, kv_heads, head_dim);
 
-    // Apply fused RoPE to Q and K if requested.
     if do_rotary {
-        let cos = cos_cache.ok_or_else(|| {
-            OpError::ShapeMismatch(String::from(
-                "GroupQueryAttention: do_rotary=1 but cos_cache is missing",
-            ))
-        })?;
-        let sin = sin_cache.ok_or_else(|| {
-            OpError::ShapeMismatch(String::from(
-                "GroupQueryAttention: do_rotary=1 but sin_cache is missing",
-            ))
-        })?;
-        // Positions are past_sk..past_sk+sq per batch.
-        let mut positions: Vec<i64> = Vec::with_capacity(sq);
-        for i in 0..sq {
-            positions.push((past_sk + i) as i64);
-        }
-        let q_shape = vec![b as i64, num_heads as i64, sq as i64, head_dim as i64];
-        let k_shape = vec![b as i64, kv_heads as i64, sq as i64, head_dim as i64];
-        apply_rope_in_place(
+        gqa_apply_rotary(
             &mut q_bhsd,
-            &q_shape,
-            cos,
-            sin,
-            &positions,
-            rotary_interleaved,
-            head_dim,
-        )?;
-        apply_rope_in_place(
             &mut k_bhsd,
-            &k_shape,
-            cos,
-            sin,
-            &positions,
-            rotary_interleaved,
+            cos_cache,
+            sin_cache,
+            b,
+            num_heads,
+            kv_heads,
+            sq,
             head_dim,
+            past_sk,
+            rotary_interleaved,
         )?;
     }
 
