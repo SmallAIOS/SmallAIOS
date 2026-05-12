@@ -111,27 +111,39 @@ records (handshake / application_data), and QUIC's
 PacketProtectionKeys carries QUIC-specific header
 protection that has no TLS counterpart.
 
-### D2. Cipher-suite policy: AES-128-GCM + AES-256-GCM + ChaCha20-Poly1305
+### D2. Cipher-suite policy: AES-256-GCM + ChaCha20-Poly1305
 
-**Decision:** The client advertises exactly three cipher
+**Decision:** The client advertises exactly two cipher
 suites in ClientHello, in this preference order:
 
-1. `TLS_AES_256_GCM_SHA384` (strongest classical AEAD)
+1. `TLS_AES_256_GCM_SHA384` (strongest classical AEAD;
+   uses `security::crypto::aes_gcm`, AES-256 only)
 2. `TLS_CHACHA20_POLY1305_SHA256` (constant-time on
    any 32-bit machine; preferred on AES-hardware-less
-   targets)
-3. `TLS_AES_128_GCM_SHA256` (fallback for low-end
-   peers)
+   targets; uses `security::crypto::chacha20_poly1305`
+   added in this change)
 
-**Why:** All three are RFC 8446 mandatory-to-implement.
-We do not advertise legacy suites (CBC, RC4, 3DES — all
-TLS 1.2 anyway, so refused at version negotiation).
+**Why two, not three:** the existing
+`security::crypto::aes_gcm` ships AES-256-GCM only.
+TLS_AES_128_GCM_SHA256 is mandatory-to-implement per
+RFC 8446 § 9.1; deferring it is a conscious
+non-conformance trade for this PR's scope. A follow-on
+change `security-aes-128-v1` would add the 128-bit
+variant (which AES-NI hardware can do for free; only
+the software path needs new code). Until then, the
+client refuses to negotiate AES-128-GCM-SHA256 by
+simply not advertising it.
 
-**Alternative considered:** "AES-128 only" — rejected
-because 256-bit symmetric strength gives better
-post-quantum margin (Grover halves it to ~128 bits).
-"ChaCha20 only" — rejected because some peers refuse to
-negotiate it.
+**Alternative considered:** Add AES-128-GCM in this
+change (~300 LOC for the software path + KAT corpus).
+Rejected because (a) it's a separate well-bounded
+addition that belongs in its own change, (b) every
+production TLS 1.3 deployment we'd talk to negotiates
+AES-256 or ChaCha20 over AES-128 when offered, (c) the
+RFC 8446 § 9.1 MUST is at implementation scope, not
+per-connection — a client advertising fewer suites
+than the spec's MUST list is still functional, just
+not strictly conformant.
 
 ### D3. Hybrid key exchange is **opt-in**, not default
 

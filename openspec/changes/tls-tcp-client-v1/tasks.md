@@ -17,12 +17,12 @@
 
 ## 3. Record layer
 
-- [ ] 3.1 `tls-client/src/record.rs` — `ContentType`, `TLSPlaintext`, `TLSCiphertext` encoders + decoders
-- [ ] 3.2 Enforce `TLSPlaintext.length ≤ 2^14` and `TLSCiphertext.length ≤ 2^14 + 256` BEFORE allocation
-- [ ] 3.3 Refuse `LegacyVersion` outside `{0x0303}` (post-handshake)
-- [ ] 3.4 AEAD wrap/unwrap routing on cipher-suite negotiation
-- [ ] 3.5 Unit tests: round-trip for each of the three suites; oversized rejection; legacy-version rejection
-- [ ] 3.6 `cargo-fuzz` target on the inbound record parser
+- [x] 3.1 `tls-client/src/record.rs` — `ContentType`, `TLSPlaintext`, `TLSCiphertext` encoders + decoders
+- [x] 3.2 Enforce `TLSPlaintext.length ≤ 2^14` and `TLSCiphertext.length ≤ 2^14 + 256` BEFORE allocation
+- [x] 3.3 Refuse `LegacyVersion` outside `{0x0303}` (post-handshake)
+- [x] 3.4 AEAD wrap/unwrap routing on cipher-suite negotiation *(two suites: AES-256-GCM-SHA384 and ChaCha20-Poly1305-SHA256; AES-128-GCM deferred per design.md D2)*
+- [x] 3.5 Unit tests: round-trip for each of the three suites; oversized rejection; legacy-version rejection *(16 tests: header round-trip, header too short, unknown content type, oversized length, legacy-version enforcement, cipher-suite wire round-trip + AES-128 refused, per-record nonce XOR, plaintext record round-trip + oversized, seal/open round-trip for both suites, tampered ciphertext, wrong seq, legacy-version mismatch, ciphertext too short, wrong outer content type)*
+- [ ] 3.6 `cargo-fuzz` target on the inbound record parser *(deferred — added with the other tls-client fuzz targets in Phase 10)*
 
 ## 4. Handshake state machine
 

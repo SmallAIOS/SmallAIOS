@@ -15,7 +15,7 @@ The `tls-client` crate SHALL implement the TLS 1.3 record layer per RFC 8446 § 
 
 ### Requirement: AEAD-protected application records use the negotiated cipher suite
 
-Once the handshake-traffic keys are derived, the record layer SHALL AEAD-encrypt every outbound record (other than the legacy `ChangeCipherSpec` echo permitted by RFC 8446 § 5.1) and AEAD-decrypt every inbound `application_data` record. The AEAD primitive SHALL be the one negotiated in the cipher suite: one of `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`. Authentication failure on a decrypt SHALL be reported as `TlsClientError::Aead`; the implementation SHALL NOT surface the plaintext.
+Once the handshake-traffic keys are derived, the record layer SHALL AEAD-encrypt every outbound record (other than the legacy `ChangeCipherSpec` echo permitted by RFC 8446 § 5.1) and AEAD-decrypt every inbound `application_data` record. The AEAD primitive SHALL be the one negotiated in the cipher suite: one of `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`. (`TLS_AES_128_GCM_SHA256` is deferred to a follow-on change per design.md D2.) Authentication failure on a decrypt SHALL be reported as `TlsClientError::Aead`; the implementation SHALL NOT surface the plaintext.
 
 #### Scenario: AEAD decrypt failure surfaces as TlsClientError::Aead
 - **WHEN** an inbound record's authentication tag does not validate under the current decryption keys

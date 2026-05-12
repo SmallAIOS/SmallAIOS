@@ -11,10 +11,10 @@ The `tls-client` ClientHello SHALL advertise `legacy_version = 0x0303` (mandated
 
 ### Requirement: Cipher-suite preference list
 
-The ClientHello SHALL advertise exactly three cipher suites, in this order: `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`, `TLS_AES_128_GCM_SHA256`. The client SHALL accept any of the three as the server's selection; selection of any other suite SHALL be rejected with `TlsClientError::BadHandshake`.
+The ClientHello SHALL advertise exactly two cipher suites, in this order: `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`. (AES-128-GCM-SHA256 is deferred to a follow-on change per design.md D2.) The client SHALL accept either of the two as the server's selection; selection of any other suite SHALL be rejected with `TlsClientError::BadHandshake`.
 
 #### Scenario: Server selects unsupported suite → reject
-- **WHEN** the ServerHello selects `TLS_AES_128_CCM_SHA256` (not advertised)
+- **WHEN** the ServerHello selects `TLS_AES_128_GCM_SHA256` (not advertised)
 - **THEN** the client SHALL return `TlsClientError::BadHandshake`
 
 ### Requirement: PQC-hybrid key exchange behind operator opt-in
