@@ -75,6 +75,31 @@ fn compute_strides(shape: &[i64]) -> Vec<usize> {
     strides
 }
 
+/// Maps an input coordinate to the corresponding flat output index for a
+/// reduction described by `resolved` (axes being reduced) and `keepdims`.
+fn reduce_out_index(
+    in_coord: &[usize],
+    resolved: &[usize],
+    keepdims: bool,
+    out_strides: &[usize],
+) -> usize {
+    let mut out_idx = 0usize;
+    let mut od = 0usize;
+    for (d, &coord) in in_coord.iter().enumerate() {
+        if resolved.contains(&d) {
+            if keepdims {
+                od += 1;
+            }
+        } else {
+            if od < out_strides.len() {
+                out_idx += coord * out_strides[od];
+            }
+            od += 1;
+        }
+    }
+    out_idx
+}
+
 /// Generic reduction helper for f32 reductions with an initial value and a
 /// combine function.
 fn reduce_float<F: Fn(f32, f32) -> f32>(
@@ -92,7 +117,6 @@ fn reduce_float<F: Fn(f32, f32) -> f32>(
     let out_shape = TensorShape::new(out_dims);
     let total_out = out_shape.total_elements();
     let mut raw = allocate_tensor_data(total_out, DataType::Float);
-    // Fill with init.
     for i in 0..total_out {
         write_f32(&mut raw, i, init);
     }
@@ -104,21 +128,7 @@ fn reduce_float<F: Fn(f32, f32) -> f32>(
         if i > 0 {
             next_coord(&mut in_coord, &input.shape.dims);
         }
-        let mut out_idx = 0usize;
-        let mut od = 0usize;
-        #[allow(clippy::needless_range_loop)]
-        for d in 0..ndim {
-            if resolved.contains(&d) {
-                if keepdims {
-                    od += 1;
-                }
-            } else {
-                if od < out_strides.len() {
-                    out_idx += in_coord[d] * out_strides[od];
-                }
-                od += 1;
-            }
-        }
+        let out_idx = reduce_out_index(&in_coord, &resolved, keepdims, &out_strides);
         let prev = read_f32(&raw, out_idx);
         let v = read_f32(&input.raw_data, i);
         write_f32(&mut raw, out_idx, combine(prev, v));
@@ -159,6 +169,68 @@ pub fn op_reduce_prod(input: &Tensor, axes: &[i64], keepdims: bool) -> Result<Te
     reduce_float(input, axes, keepdims, "ReduceProd", 1.0, |a, b| a * b)
 }
 
+/// Normalizes a signed axis for an `ndim`-rank tensor, returning the
+/// non-negative axis or an `InvalidAttribute` error.
+fn normalize_arg_axis(axis: i64, ndim: i64, op: &str) -> Result<usize, OpError> {
+    let axis = if axis < 0 { ndim + axis } else { axis };
+    if axis < 0 || axis >= ndim {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "{} axis out of range",
+            op
+        )));
+    }
+    Ok(axis as usize)
+}
+
+/// Builds the output shape for an ArgMax/ArgMin reduction along `axis`.
+/// A fully-collapsed shape becomes `[1]`.
+fn arg_out_shape(dims: &[i64], axis: usize, keepdims: bool) -> TensorShape {
+    let out_dims: Vec<i64> = dims
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &d)| {
+            if i == axis {
+                if keepdims {
+                    Some(1)
+                } else {
+                    None
+                }
+            } else {
+                Some(d)
+            }
+        })
+        .collect();
+    if out_dims.is_empty() {
+        TensorShape::new(alloc::vec![1])
+    } else {
+        TensorShape::new(out_dims)
+    }
+}
+
+/// Scans one (outer, inner) lane of an ArgMax/ArgMin and returns the
+/// winning index into the axis.
+fn argreduce_scan_lane<F: Fn(f32, f32) -> bool>(
+    input: &[u8],
+    o: usize,
+    i: usize,
+    axis_size: usize,
+    inner: usize,
+    select_last_index: bool,
+    better: &F,
+) -> usize {
+    let mut best_idx: usize = 0;
+    let mut best_val = read_f32(input, (o * axis_size) * inner + i);
+    for a in 1..axis_size {
+        let idx = (o * axis_size + a) * inner + i;
+        let v = read_f32(input, idx);
+        if better(v, best_val) || (select_last_index && v == best_val) {
+            best_val = v;
+            best_idx = a;
+        }
+    }
+    best_idx
+}
+
 /// ArgMax/ArgMin core. Operates along a single axis and emits Int64 indices.
 /// `select_last_index` controls whether ties pick the last matching index.
 fn argreduce<F: Fn(f32, f32) -> bool>(
@@ -171,14 +243,7 @@ fn argreduce<F: Fn(f32, f32) -> bool>(
 ) -> Result<Tensor, OpError> {
     require_float(input, op)?;
     let ndim = input.shape.ndim() as i64;
-    let axis = if axis < 0 { ndim + axis } else { axis };
-    if axis < 0 || axis >= ndim {
-        return Err(OpError::InvalidAttribute(alloc::format!(
-            "{} axis out of range",
-            op
-        )));
-    }
-    let axis = axis as usize;
+    let axis = normalize_arg_axis(axis, ndim, op)?;
     let dims = &input.shape.dims;
     let axis_size = dims[axis] as usize;
     if axis_size == 0 {
@@ -198,41 +263,21 @@ fn argreduce<F: Fn(f32, f32) -> bool>(
         .product::<usize>()
         .max(1);
 
-    let out_dims: Vec<i64> = dims
-        .iter()
-        .enumerate()
-        .filter_map(|(i, &d)| {
-            if i == axis {
-                if keepdims {
-                    Some(1)
-                } else {
-                    None
-                }
-            } else {
-                Some(d)
-            }
-        })
-        .collect();
-    let out_shape = TensorShape::new(if out_dims.is_empty() {
-        alloc::vec![1]
-    } else {
-        out_dims
-    });
+    let out_shape = arg_out_shape(dims, axis, keepdims);
     let total_out = outer * inner;
     let mut raw = alloc::vec![0u8; total_out * I64_SIZE];
 
     for o in 0..outer {
         for i in 0..inner {
-            let mut best_idx: usize = 0;
-            let mut best_val = read_f32(&input.raw_data, (o * axis_size) * inner + i);
-            for a in 1..axis_size {
-                let idx = (o * axis_size + a) * inner + i;
-                let v = read_f32(&input.raw_data, idx);
-                if better(v, best_val) || (select_last_index && v == best_val) {
-                    best_val = v;
-                    best_idx = a;
-                }
-            }
+            let best_idx = argreduce_scan_lane(
+                &input.raw_data,
+                o,
+                i,
+                axis_size,
+                inner,
+                select_last_index,
+                &better,
+            );
             write_i64(&mut raw, o * inner + i, best_idx as i64);
         }
     }
