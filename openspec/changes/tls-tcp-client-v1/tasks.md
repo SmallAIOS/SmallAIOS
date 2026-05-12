@@ -26,16 +26,16 @@
 
 ## 4. Handshake state machine
 
-- [ ] 4.1 `tls-client/src/handshake.rs` — message types: ClientHello, ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished, NewSessionTicket (parsed-and-ignored in v1)
-- [ ] 4.2 Build ClientHello: legacy_version=0x0303, supported_versions=[0x0304], supported_groups=[x25519] (or hybrid first when `require_pqc`), key_share matching first supported_group, signature_algorithms allow-list (per `tls-client-handshake` spec), server_name when DNS endpoint
-- [ ] 4.3 Parse ServerHello: pin `supported_versions = 0x0304`; reject `HelloRetryRequest` (refused in v1); confirm key_share group matches advertised
-- [ ] 4.4 Derive handshake-traffic keys via `net::quic::tls::TlsKeySchedule::derive_handshake_secrets`
-- [ ] 4.5 Parse EncryptedExtensions; check SNI ack (server MUST echo if we sent one and accepted)
-- [ ] 4.6 Parse Certificate; pass each cert to the cert-chain verifier (capability `tls-client-cert-chain`)
-- [ ] 4.7 Parse CertificateVerify; verify signature against the leaf's pubkey + transcript hash; enforce the signature-suite allow-list
-- [ ] 4.8 Parse server Finished; verify HMAC over transcript
-- [ ] 4.9 Send client Finished; derive application-traffic keys; transition to data phase
-- [ ] 4.10 Unit tests: ServerHello selecting TLS 1.2 → `Version` error; PqcDowngrade when `require_pqc` + classical reply; SHA-1 CertificateVerify → `BadCertificate`
+- [x] 4.1 `tls-client/src/handshake/` — message types: HandshakeType (ClientHello/ServerHello/EncryptedExtensions/Certificate/CertificateRequest/CertificateVerify/Finished/NewSessionTicket/KeyUpdate); 4-byte HandshakeHeader (type + 24-bit length); extension encoders/parsers for supported_versions, supported_groups, signature_algorithms, key_share, server_name
+- [x] 4.2 Build ClientHello: legacy_version=0x0303, supported_versions=[0x0304], supported_groups configurable (PQC hybrid first when `require_pqc`), key_share matching primary supported_group, signature_algorithms allow-list per spec, server_name when DNS endpoint
+- [x] 4.3 Parse ServerHello: pin `supported_versions = 0x0304`; pin `legacy_version = 0x0303`; pin `legacy_compression_method = 0`; refuse unsupported cipher_suite; surface (cipher_suite, group, public_key, selected_version)
+- [ ] 4.4 Derive handshake-traffic keys via `net::quic::tls::TlsKeySchedule::derive_handshake_secrets` *(state-machine driver — follow-on commit; the message layer it consumes is ready)*
+- [ ] 4.5 Parse EncryptedExtensions; check SNI ack *(state-machine driver follow-on)*
+- [ ] 4.6 Parse Certificate; pass each cert to the cert-chain verifier *(needs Phase 5)*
+- [ ] 4.7 Parse CertificateVerify; verify signature against the leaf's pubkey + transcript hash; enforce the signature-suite allow-list *(needs Phase 5)*
+- [ ] 4.8 Parse server Finished; verify HMAC over transcript *(state-machine driver follow-on)*
+- [ ] 4.9 Send client Finished; derive application-traffic keys; transition to data phase *(state-machine driver follow-on)*
+- [x] 4.10 Unit tests for the message layer: ServerHello selecting TLS 1.2 → `Version` error; missing supported_versions → `Version`; unsupported cipher_suite → `BadHandshake`; non-zero compression method → reject; wrong legacy_version → `Version`; truncated → reject. (PqcDowngrade and SHA-1 CertificateVerify cases land with their respective phases.)
 
 ## 5. X.509v3 parser + chain verifier
 
