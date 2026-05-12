@@ -73,6 +73,48 @@ pub(crate) fn erf_approx(x: f32) -> f32 {
 // Public operators
 // ---------------------------------------------------------------------------
 
+/// Computes `b ^ e` for the special case where `b == 0`, matching the
+/// behavior expected by ONNX Pow: `0^0 = 1`, `0^neg = +inf`, `0^pos = 0`.
+fn pow_zero_base(e: f32) -> f32 {
+    if e == 0.0 {
+        1.0
+    } else if e < 0.0 {
+        f32::INFINITY
+    } else {
+        0.0
+    }
+}
+
+/// Computes `b ^ e` for negative `b`, supporting only integer exponents.
+/// Non-integer exponents on a negative base return NaN.
+fn pow_negative_base(b: f32, e: f32) -> f32 {
+    let e_int = e as i32;
+    if (e_int as f32 - e).abs() >= 1e-6 {
+        return f32::NAN;
+    }
+    let mut p = 1.0_f32;
+    let n = e_int.unsigned_abs();
+    for _ in 0..n {
+        p *= b;
+    }
+    if e_int < 0 {
+        1.0 / p
+    } else {
+        p
+    }
+}
+
+/// Computes a single element-wise `pow(b, e)` matching ONNX semantics.
+fn pow_one(b: f32, e: f32) -> f32 {
+    if b == 0.0 {
+        pow_zero_base(e)
+    } else if b < 0.0 {
+        pow_negative_base(b, e)
+    } else {
+        expf_approx(e * lnf_approx(b))
+    }
+}
+
 /// Element-wise power with broadcasting: `out[i] = base[i] ^ exp[i]`.
 pub fn op_pow(base: &Tensor, exponent: &Tensor) -> Result<Tensor, OpError> {
     require_float(base, "Pow")?;
@@ -91,36 +133,7 @@ pub fn op_pow(base: &Tensor, exponent: &Tensor) -> Result<Tensor, OpError> {
         let ei = broadcast_index(&coord, &exponent.shape.dims);
         let b = read_f32(&base.raw_data, bi);
         let e = read_f32(&exponent.raw_data, ei);
-        // pow(x, y) = exp(y * ln(x)) for positive x; handle integer y for negatives.
-        let v = if b == 0.0 {
-            if e == 0.0 {
-                1.0
-            } else if e < 0.0 {
-                f32::INFINITY
-            } else {
-                0.0
-            }
-        } else if b < 0.0 {
-            // Only support integer exponents for negative bases.
-            let e_int = e as i32;
-            if (e_int as f32 - e).abs() < 1e-6 {
-                let mut p = 1.0_f32;
-                let n = e_int.unsigned_abs();
-                for _ in 0..n {
-                    p *= b;
-                }
-                if e_int < 0 {
-                    1.0 / p
-                } else {
-                    p
-                }
-            } else {
-                f32::NAN
-            }
-        } else {
-            expf_approx(e * lnf_approx(b))
-        };
-        write_f32(&mut data, flat, v);
+        write_f32(&mut data, flat, pow_one(b, e));
         if flat + 1 < total {
             next_coord(&mut coord, &out_dims);
         }
@@ -450,6 +463,45 @@ pub fn op_or(a: &Tensor, b: &Tensor) -> Result<Tensor, OpError> {
     bool_binary(a, b, "Or", |x, y| x || y)
 }
 
+/// Returns the maximum value along one (outer, inner) lane of `axis_size`
+/// elements with stride `inner` starting at `base`.
+fn lane_max(input: &[u8], base: usize, axis_size: usize, inner: usize) -> f32 {
+    let mut maxv = f32::NEG_INFINITY;
+    for a in 0..axis_size {
+        let v = read_f32(input, base + a * inner);
+        if v > maxv {
+            maxv = v;
+        }
+    }
+    maxv
+}
+
+/// Returns `sum(exp(x - maxv))` along one lane.
+fn lane_exp_sum(input: &[u8], base: usize, axis_size: usize, inner: usize, maxv: f32) -> f32 {
+    let mut sum = 0.0_f32;
+    for a in 0..axis_size {
+        sum += expf_approx(read_f32(input, base + a * inner) - maxv);
+    }
+    sum
+}
+
+/// Writes `x - maxv - log_sum` into `out` along one lane.
+fn lane_write_logsoftmax(
+    input: &[u8],
+    out: &mut [u8],
+    base: usize,
+    axis_size: usize,
+    inner: usize,
+    maxv: f32,
+    log_sum: f32,
+) {
+    for a in 0..axis_size {
+        let idx = base + a * inner;
+        let v = read_f32(input, idx) - maxv - log_sum;
+        write_f32(out, idx, v);
+    }
+}
+
 /// Numerically-stable log-softmax along a single axis.
 ///
 /// Computes `x - max - log(sum(exp(x - max)))` along `axis`.
@@ -464,7 +516,6 @@ pub fn op_log_softmax(input: &Tensor, axis: i64) -> Result<Tensor, OpError> {
     }
     let dims = &input.shape.dims;
     let axis = axis as usize;
-    // Compute outer/axis/inner factor sizes.
     let outer: usize = dims[..axis]
         .iter()
         .map(|&d| d as usize)
@@ -481,27 +532,19 @@ pub fn op_log_softmax(input: &Tensor, axis: i64) -> Result<Tensor, OpError> {
 
     for o in 0..outer {
         for i in 0..inner {
-            // Find max along axis
-            let mut maxv = f32::NEG_INFINITY;
-            for a in 0..axis_size {
-                let idx = (o * axis_size + a) * inner + i;
-                let v = read_f32(&input.raw_data, idx);
-                if v > maxv {
-                    maxv = v;
-                }
-            }
-            // Sum of exp(x - max)
-            let mut sum = 0.0_f32;
-            for a in 0..axis_size {
-                let idx = (o * axis_size + a) * inner + i;
-                sum += expf_approx(read_f32(&input.raw_data, idx) - maxv);
-            }
+            let base = o * axis_size * inner + i;
+            let maxv = lane_max(&input.raw_data, base, axis_size, inner);
+            let sum = lane_exp_sum(&input.raw_data, base, axis_size, inner, maxv);
             let log_sum = lnf_approx(sum);
-            for a in 0..axis_size {
-                let idx = (o * axis_size + a) * inner + i;
-                let v = read_f32(&input.raw_data, idx) - maxv - log_sum;
-                write_f32(&mut out, idx, v);
-            }
+            lane_write_logsoftmax(
+                &input.raw_data,
+                &mut out,
+                base,
+                axis_size,
+                inner,
+                maxv,
+                log_sum,
+            );
         }
     }
     Ok(Tensor {

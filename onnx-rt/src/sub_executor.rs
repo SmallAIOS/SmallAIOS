@@ -75,73 +75,86 @@ pub const MAX_LOOP_ITERATIONS: i64 = 1_000_000;
 /// threaded through: per §6 of the design doc, the parent `Loop`/`If`/`Scan`
 /// is the single budget unit. Inner-operator measurement is a follow-up
 /// work-item.
+/// Inserts the body's initializers into `value_map` without overwriting
+/// already-seeded entries (loop-carried values shadow same-named weights).
+fn seed_initializers(value_map: &mut BTreeMap<String, Tensor>, initializers: &[TensorProto]) {
+    for init in initializers {
+        value_map
+            .entry(init.name.clone())
+            .or_insert_with(|| materialize_initializer(init));
+    }
+}
+
+/// Writes a node's positional outputs into `value_map`, skipping empty
+/// output names (the ONNX convention for "ignore this output").
+fn record_outputs(
+    value_map: &mut BTreeMap<String, Tensor>,
+    output_names: &[String],
+    outputs: &[Tensor],
+) {
+    for (i, output_name) in output_names.iter().enumerate() {
+        if !output_name.is_empty() {
+            if let Some(tensor) = outputs.get(i) {
+                value_map.insert(output_name.clone(), tensor.clone());
+            }
+        }
+    }
+}
+
+/// Resolves a node's inputs against `value_map`. Empty names map to `None`,
+/// matching ONNX optional-input semantics.
+fn resolve_inputs<'a>(
+    inputs: &[String],
+    value_map: &'a BTreeMap<String, Tensor>,
+) -> Vec<Option<&'a Tensor>> {
+    inputs
+        .iter()
+        .map(|name| {
+            if name.is_empty() {
+                None
+            } else {
+                value_map.get(name)
+            }
+        })
+        .collect()
+}
+
+/// Executes a single non-control-flow node and returns its outputs.
+fn run_plain_node(
+    node: &crate::graph::ExecutionNode,
+    value_map: &BTreeMap<String, Tensor>,
+) -> Result<Vec<Tensor>, SessionError> {
+    let input_tensors = resolve_inputs(&node.inputs, value_map);
+    dispatch_node(
+        &node.op_type,
+        &input_tensors,
+        &node.attributes,
+        node.outputs.len(),
+        #[cfg(feature = "gpu")]
+        None,
+        #[cfg(feature = "cuda")]
+        None,
+    )
+    .map_err(|e| {
+        SessionError::ExecutionFailed(alloc::format!("sub_executor: {}: {}", node.name, e))
+    })
+}
+
 pub fn run_sub_graph(
     graph: &ExecutionGraph,
     mut value_map: BTreeMap<String, Tensor>,
     initializers: &[TensorProto],
 ) -> Result<BTreeMap<String, Tensor>, SessionError> {
-    // Load any initializers not already present in the seeded map so the
-    // body can reference outer weights by name.
-    for init in initializers {
-        value_map.entry(init.name.clone()).or_insert_with(|| {
-            // Convert TensorProto -> Tensor. For now only raw_data / f32
-            // initializers are supported; string/f16 initializers are
-            // rejected by the main graph builder anyway.
-            materialize_initializer(init)
-        });
-    }
+    seed_initializers(&mut value_map, initializers);
 
     for node_idx in graph.execution_order() {
         let node = &graph.nodes[node_idx.index()];
-
-        // Control-flow ops need the full ExecutionNode + outer value map
-        // and bypass the flat dispatch_node path.
-        if crate::executor::is_control_flow_op(&node.op_type) {
-            let outputs = crate::executor::dispatch_control_flow(node, &value_map, initializers)?;
-            for (i, output_name) in node.outputs.iter().enumerate() {
-                if !output_name.is_empty() {
-                    if let Some(tensor) = outputs.get(i) {
-                        value_map.insert(output_name.clone(), tensor.clone());
-                    }
-                }
-            }
-            continue;
-        }
-
-        // Resolve input tensors from the value map.
-        let input_tensors: Vec<Option<&Tensor>> = node
-            .inputs
-            .iter()
-            .map(|name| {
-                if name.is_empty() {
-                    None
-                } else {
-                    value_map.get(name)
-                }
-            })
-            .collect();
-
-        let outputs = dispatch_node(
-            &node.op_type,
-            &input_tensors,
-            &node.attributes,
-            node.outputs.len(),
-            #[cfg(feature = "gpu")]
-            None,
-            #[cfg(feature = "cuda")]
-            None,
-        )
-        .map_err(|e| {
-            SessionError::ExecutionFailed(alloc::format!("sub_executor: {}: {}", node.name, e))
-        })?;
-
-        for (i, output_name) in node.outputs.iter().enumerate() {
-            if !output_name.is_empty() {
-                if let Some(tensor) = outputs.get(i) {
-                    value_map.insert(output_name.clone(), tensor.clone());
-                }
-            }
-        }
+        let outputs = if crate::executor::is_control_flow_op(&node.op_type) {
+            crate::executor::dispatch_control_flow(node, &value_map, initializers)?
+        } else {
+            run_plain_node(node, &value_map)?
+        };
+        record_outputs(&mut value_map, &node.outputs, &outputs);
     }
 
     Ok(value_map)
