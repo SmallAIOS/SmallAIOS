@@ -39,9 +39,9 @@
 
 extern crate alloc;
 
+pub mod cert;
 pub mod handshake;
 pub mod record;
-// pub mod cert;       // Phase 5
 // pub mod trust;      // Phase 6
 // pub mod std_io;     // Phase 7
 

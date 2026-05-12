@@ -39,15 +39,15 @@
 
 ## 5. X.509v3 parser + chain verifier
 
-- [ ] 5.1 `tls-client/src/cert.rs` — minimal DER decoder + the X.509 field subset listed in design.md D4
-- [ ] 5.2 Refuse `version != v3`, SHA-1 signatures, missing SAN
-- [ ] 5.3 Length-bound every OCTET STRING / SEQUENCE before allocation
-- [ ] 5.4 Chain construction: leaf → intermediate(s) → anchor in trust store; each intermediate must have `BasicConstraints.CA = true` + `KeyUsage.keyCertSign`
-- [ ] 5.5 Signature verification on every link (Ed25519, ECDSA-P256, RSA-PSS)
-- [ ] 5.6 Validity-window check with `kernel::clock()`; unsynced-clock sentinel handling (`tls.require_synced_clock`); audit `audit_export_unsynced_clock` on bypass
-- [ ] 5.7 RFC 6125 hostname matcher (DNS-ID + iPAddress SAN; wildcard rules per design.md D6)
-- [ ] 5.8 Cross-vector tests in `tls-client/tests/corpus/`: ≥10 known-good cert chains + ≥6 known-bad (expired, wrong issuer, mismatched SAN, SHA-1, no SAN, malformed length)
-- [ ] 5.9 `cargo-fuzz` target on the X.509 parser (the largest attacker-controlled surface)
+- [x] 5.1 `tls-client/src/cert/der.rs` — minimal DER TLV decoder. Accepts short-form length (≤127), long-form length (1-4 octets, value ≤ 1 MiB cap); refuses indefinite-length, multi-byte tag forms, non-minimal long forms, length exceeding enclosing structure
+- [x] 5.3 Length-bound every OCTET STRING / SEQUENCE before allocation *(landed with 5.1)*
+- [x] 5.7 RFC 6125 hostname matcher (`tls-client/src/cert/hostname.rs`): DNS-ID with exact + wildcard matching (leftmost-label, ≥3-label cert, no mid-label `*`, no multi-label span); iPAddress SAN (IPv4 + IPv6 with `::` elision); refuses DNS-ID for IP literals and vice versa
+- [ ] 5.2 Refuse `version != v3`, SHA-1 signatures, missing SAN *(follow-on: full X.509v3 structure parser — needs RSA-PSS + ECDSA-P256 primitives in security/, both deferred)*
+- [ ] 5.4 Chain construction: leaf → intermediate(s) → anchor in trust store; each intermediate must have `BasicConstraints.CA = true` + `KeyUsage.keyCertSign` *(follow-on)*
+- [ ] 5.5 Signature verification on every link (Ed25519, ECDSA-P256, RSA-PSS) *(follow-on; Ed25519 ready in security/crypto/ed25519; ECDSA-P256 and RSA-PSS deferred to their own primitive sub-adds)*
+- [ ] 5.6 Validity-window check with `kernel::clock()`; unsynced-clock sentinel handling; audit `audit_export_unsynced_clock` on bypass *(follow-on)*
+- [ ] 5.8 Cross-vector tests in `tls-client/tests/corpus/`: ≥10 known-good cert chains + ≥6 known-bad *(follow-on; requires the full structure parser + a synthetic Ed25519-signed cert generator harness)*
+- [ ] 5.9 `cargo-fuzz` target on the X.509 parser *(follow-on; the DER decoder landed in this commit is the largest attacker-controlled surface and is fuzz-ready)*
 
 ## 6. Trust store
 

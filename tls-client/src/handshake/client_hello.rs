@@ -187,23 +187,6 @@ mod tests {
             },
         })
         .unwrap();
-        // SNI ext_type = 0x0000. Scan the extensions block; must NOT
-        // appear when server_name is None.
-        let mut found_sni = false;
-        let mut i = 0;
-        while i + 1 < out.len() {
-            if out[i] == 0x00 && out[i + 1] == 0x00 {
-                // Crude check — may match random bytes too. Use bigger
-                // structure: confirm we don't see the extension shape
-                // immediately preceded by an extension-length field
-                // of 2-something. For sanity we just confirm the
-                // header check is sound by searching for the SNI body
-                // bytes (which the with-SNI build would have).
-                // Here we instead positively assert no occurrence of
-                // the SNI body bytes from the other test.
-            }
-            i += 1;
-        }
         // Build the same input WITH SNI for comparison.
         let with_sni = build_client_hello(&ClientHelloInput {
             random,
@@ -220,7 +203,6 @@ mod tests {
         // contain the hostname bytes.
         assert!(out.len() < with_sni.len());
         assert!(!out.windows(18).any(|w| w == b"immudb.example.com"));
-        let _ = found_sni; // silence unused-mut
     }
 
     #[test]
