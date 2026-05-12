@@ -74,16 +74,8 @@ pub fn op_top_k(
         )));
     }
     let k_us = k as usize;
-    let outer: usize = input.shape.dims[..ax]
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
-    let inner: usize = input.shape.dims[ax + 1..]
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    let outer = product_dims(&input.shape.dims[..ax]);
+    let inner = product_dims(&input.shape.dims[ax + 1..]);
 
     let mut out_dims = input.shape.dims.clone();
     out_dims[ax] = k;
@@ -94,25 +86,12 @@ pub fn op_top_k(
     let mut scratch: Vec<(f32, usize)> = Vec::with_capacity(axis_dim);
     for o in 0..outer {
         for i in 0..inner {
-            scratch.clear();
-            for a in 0..axis_dim {
-                let src = o * axis_dim * inner + a * inner + i;
-                scratch.push((read_f32(&input.raw_data, src), a));
-            }
-            // Sort descending (largest=true) or ascending.
-            if largest {
-                scratch.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
-            } else {
-                scratch.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
-            }
-            // scratch[..k_us] is the top-k. If not sorted, the spec allows
-            // any order — we still return the selection order from sort.
+            fill_top_k_scratch(&input.raw_data, &mut scratch, o, i, axis_dim, inner);
+            sort_top_k(&mut scratch, largest);
+            // If not sorted, the spec allows any order — we still
+            // return the selection order from sort.
             let _ = sorted;
-            for (rank_idx, &(v, idx)) in scratch.iter().take(k_us).enumerate() {
-                let dst = o * k_us * inner + rank_idx * inner + i;
-                write_f32(&mut val_data, dst, v);
-                write_i64(&mut idx_data, dst, idx as i64);
-            }
+            write_top_k_slot(&scratch, &mut val_data, &mut idx_data, o, i, k_us, inner);
         }
     }
     let values = Tensor {
@@ -130,6 +109,49 @@ pub fn op_top_k(
     Ok(alloc::vec![values, indices])
 }
 
+fn product_dims(dims: &[i64]) -> usize {
+    dims.iter().map(|&d| d as usize).product::<usize>().max(1)
+}
+
+fn fill_top_k_scratch(
+    raw: &[u8],
+    scratch: &mut Vec<(f32, usize)>,
+    o: usize,
+    i: usize,
+    axis_dim: usize,
+    inner: usize,
+) {
+    scratch.clear();
+    for a in 0..axis_dim {
+        let src = o * axis_dim * inner + a * inner + i;
+        scratch.push((read_f32(raw, src), a));
+    }
+}
+
+fn sort_top_k(scratch: &mut [(f32, usize)], largest: bool) {
+    if largest {
+        scratch.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(core::cmp::Ordering::Equal));
+    } else {
+        scratch.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(core::cmp::Ordering::Equal));
+    }
+}
+
+fn write_top_k_slot(
+    scratch: &[(f32, usize)],
+    val_data: &mut [u8],
+    idx_data: &mut [u8],
+    o: usize,
+    i: usize,
+    k_us: usize,
+    inner: usize,
+) {
+    for (rank_idx, &(v, idx)) in scratch.iter().take(k_us).enumerate() {
+        let dst = o * k_us * inner + rank_idx * inner + i;
+        write_f32(val_data, dst, v);
+        write_i64(idx_data, dst, idx as i64);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Compress
 // ---------------------------------------------------------------------------
@@ -144,81 +166,78 @@ pub fn op_compress(
     axis: Option<i64>,
 ) -> Result<Tensor, OpError> {
     require_float(input, "Compress")?;
-    let cond: Vec<bool> = {
-        // Condition may be Bool/Int8 but we store as raw bytes: treat any
-        // non-zero byte in a length-aligned stream as true.
-        let n = condition.shape.total_elements();
-        (0..n)
-            .map(|i| {
-                if i < condition.raw_data.len() {
-                    condition.raw_data[i] != 0
-                } else {
-                    false
-                }
-            })
-            .collect()
-    };
+    let cond = decode_compress_condition(condition);
     match axis {
-        None => {
-            // Flatten and filter.
-            let total = input.shape.total_elements();
-            let mut kept: Vec<f32> = Vec::new();
-            for i in 0..total {
-                if i < cond.len() && cond[i] {
-                    kept.push(read_f32(&input.raw_data, i));
-                }
+        None => Ok(compress_flat(input, &cond)),
+        Some(ax) => compress_along_axis(input, &cond, ax),
+    }
+}
+
+fn decode_compress_condition(condition: &Tensor) -> Vec<bool> {
+    // Condition may be Bool/Int8 but we store as raw bytes: treat any
+    // non-zero byte in a length-aligned stream as true.
+    let n = condition.shape.total_elements();
+    (0..n)
+        .map(|i| {
+            if i < condition.raw_data.len() {
+                condition.raw_data[i] != 0
+            } else {
+                false
             }
-            let len = kept.len();
-            let mut data = allocate_tensor_data(len, DataType::Float);
-            for (i, v) in kept.iter().enumerate() {
-                write_f32(&mut data, i, *v);
-            }
-            Ok(Tensor {
-                data_type: DataType::Float,
-                shape: TensorShape::new(alloc::vec![len as i64]),
-                name: String::new(),
-                raw_data: data,
-            })
-        }
-        Some(ax) => {
-            let rank = input.shape.dims.len();
-            let ax = normalize_axis(ax, rank)?;
-            let axis_dim = input.shape.dims[ax] as usize;
-            let outer: usize = input.shape.dims[..ax]
-                .iter()
-                .map(|&d| d as usize)
-                .product::<usize>()
-                .max(1);
-            let inner: usize = input.shape.dims[ax + 1..]
-                .iter()
-                .map(|&d| d as usize)
-                .product::<usize>()
-                .max(1);
-            let keep: Vec<usize> = (0..axis_dim)
-                .filter(|&i| i < cond.len() && cond[i])
-                .collect();
-            let k_len = keep.len();
-            let mut out_dims = input.shape.dims.clone();
-            out_dims[ax] = k_len as i64;
-            let total = outer * k_len * inner;
-            let mut data = allocate_tensor_data(total, DataType::Float);
-            for o in 0..outer {
-                for (ki, &src_a) in keep.iter().enumerate() {
-                    for i in 0..inner {
-                        let src = o * axis_dim * inner + src_a * inner + i;
-                        let dst = o * k_len * inner + ki * inner + i;
-                        write_f32(&mut data, dst, read_f32(&input.raw_data, src));
-                    }
-                }
-            }
-            Ok(Tensor {
-                data_type: DataType::Float,
-                shape: TensorShape::new(out_dims),
-                name: String::new(),
-                raw_data: data,
-            })
+        })
+        .collect()
+}
+
+fn compress_flat(input: &Tensor, cond: &[bool]) -> Tensor {
+    let total = input.shape.total_elements();
+    let mut kept: Vec<f32> = Vec::new();
+    for i in 0..total {
+        if i < cond.len() && cond[i] {
+            kept.push(read_f32(&input.raw_data, i));
         }
     }
+    let len = kept.len();
+    let mut data = allocate_tensor_data(len, DataType::Float);
+    for (i, v) in kept.iter().enumerate() {
+        write_f32(&mut data, i, *v);
+    }
+    Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(alloc::vec![len as i64]),
+        name: String::new(),
+        raw_data: data,
+    }
+}
+
+fn compress_along_axis(input: &Tensor, cond: &[bool], ax: i64) -> Result<Tensor, OpError> {
+    let rank = input.shape.dims.len();
+    let ax = normalize_axis(ax, rank)?;
+    let axis_dim = input.shape.dims[ax] as usize;
+    let outer = product_dims(&input.shape.dims[..ax]);
+    let inner = product_dims(&input.shape.dims[ax + 1..]);
+    let keep: Vec<usize> = (0..axis_dim)
+        .filter(|&i| i < cond.len() && cond[i])
+        .collect();
+    let k_len = keep.len();
+    let mut out_dims = input.shape.dims.clone();
+    out_dims[ax] = k_len as i64;
+    let total = outer * k_len * inner;
+    let mut data = allocate_tensor_data(total, DataType::Float);
+    for o in 0..outer {
+        for (ki, &src_a) in keep.iter().enumerate() {
+            for i in 0..inner {
+                let src = o * axis_dim * inner + src_a * inner + i;
+                let dst = o * k_len * inner + ki * inner + i;
+                write_f32(&mut data, dst, read_f32(&input.raw_data, src));
+            }
+        }
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(out_dims),
+        name: String::new(),
+        raw_data: data,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -233,31 +252,12 @@ pub fn op_non_zero(input: &Tensor) -> Result<Tensor, OpError> {
     let mut coord = alloc::vec![0usize; rank];
     let mut rows: Vec<Vec<i64>> = (0..rank).map(|_| Vec::new()).collect();
     for flat in 0..total {
-        let nonzero = match input.data_type {
-            DataType::Float => read_f32(&input.raw_data, flat) != 0.0,
-            DataType::Int64 => read_i64(&input.raw_data, flat) != 0,
-            DataType::Int32 => crate::byte_io::read_i32(&input.raw_data, flat) != 0,
-            _ => {
-                if flat < input.raw_data.len() {
-                    input.raw_data[flat] != 0
-                } else {
-                    false
-                }
-            }
-        };
-        if nonzero {
-            for d in 0..rank {
-                rows[d].push(coord[d] as i64);
+        if is_nonzero_element(input, flat) {
+            for (d, row) in rows.iter_mut().enumerate() {
+                row.push(coord[d] as i64);
             }
         }
-        // Increment coord
-        for d in (0..rank).rev() {
-            coord[d] += 1;
-            if (coord[d] as i64) < input.shape.dims[d] {
-                break;
-            }
-            coord[d] = 0;
-        }
+        increment_shape_coord(&mut coord, &input.shape.dims, rank);
     }
     let count = rows.first().map(|r| r.len()).unwrap_or(0);
     let mut data = allocate_tensor_data(rank * count, DataType::Int64);
@@ -272,6 +272,25 @@ pub fn op_non_zero(input: &Tensor) -> Result<Tensor, OpError> {
         name: String::new(),
         raw_data: data,
     })
+}
+
+fn is_nonzero_element(input: &Tensor, flat: usize) -> bool {
+    match input.data_type {
+        DataType::Float => read_f32(&input.raw_data, flat) != 0.0,
+        DataType::Int64 => read_i64(&input.raw_data, flat) != 0,
+        DataType::Int32 => crate::byte_io::read_i32(&input.raw_data, flat) != 0,
+        _ => flat < input.raw_data.len() && input.raw_data[flat] != 0,
+    }
+}
+
+fn increment_shape_coord(coord: &mut [usize], dims: &[i64], rank: usize) {
+    for d in (0..rank).rev() {
+        coord[d] += 1;
+        if (coord[d] as i64) < dims[d] {
+            break;
+        }
+        coord[d] = 0;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -350,40 +369,13 @@ pub fn op_gather_elements(input: &Tensor, indices: &Tensor, axis: i64) -> Result
         )));
     }
     let mut data = allocate_tensor_data(total, DataType::Float);
-    // Compute strides.
-    let mut strides = alloc::vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        strides[i] = strides[i + 1] * input.shape.dims[i + 1] as usize;
-    }
+    let strides = element_strides(&input.shape.dims, rank);
     let mut coord = alloc::vec![0usize; rank];
     for (flat, &raw_idx) in idx.iter().enumerate().take(total) {
-        let mut src_idx_val = raw_idx;
-        if src_idx_val < 0 {
-            src_idx_val += axis_dim as i64;
-        }
-        if src_idx_val < 0 || (src_idx_val as usize) >= axis_dim {
-            return Err(OpError::ShapeMismatch(String::from(
-                "GatherElements: index out of range",
-            )));
-        }
-        let mut src = 0usize;
-        for d in 0..rank {
-            let c = if d == ax {
-                src_idx_val as usize
-            } else {
-                coord[d]
-            };
-            src += c * strides[d];
-        }
+        let src_idx_val = normalize_index(raw_idx, axis_dim, "GatherElements")?;
+        let src = src_offset(&coord, &strides, rank, ax, src_idx_val);
         write_f32(&mut data, flat, read_f32(&input.raw_data, src));
-        // Increment coord.
-        for d in (0..rank).rev() {
-            coord[d] += 1;
-            if (coord[d] as i64) < input.shape.dims[d] {
-                break;
-            }
-            coord[d] = 0;
-        }
+        increment_shape_coord(&mut coord, &input.shape.dims, rank);
     }
     Ok(Tensor {
         data_type: DataType::Float,
@@ -391,6 +383,43 @@ pub fn op_gather_elements(input: &Tensor, indices: &Tensor, axis: i64) -> Result
         name: String::new(),
         raw_data: data,
     })
+}
+
+fn element_strides(dims: &[i64], rank: usize) -> Vec<usize> {
+    let mut strides = alloc::vec![1usize; rank];
+    for i in (0..rank.saturating_sub(1)).rev() {
+        strides[i] = strides[i + 1] * dims[i + 1] as usize;
+    }
+    strides
+}
+
+fn normalize_index(raw_idx: i64, axis_dim: usize, op: &str) -> Result<usize, OpError> {
+    let mut v = raw_idx;
+    if v < 0 {
+        v += axis_dim as i64;
+    }
+    if v < 0 || (v as usize) >= axis_dim {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "{}: index out of range",
+            op
+        )));
+    }
+    Ok(v as usize)
+}
+
+fn src_offset(
+    coord: &[usize],
+    strides: &[usize],
+    rank: usize,
+    ax: usize,
+    axis_idx: usize,
+) -> usize {
+    let mut src = 0usize;
+    for d in 0..rank {
+        let c = if d == ax { axis_idx } else { coord[d] };
+        src += c * strides[d];
+    }
+    src
 }
 
 /// Element-wise scatter along `axis`. `indices` and `updates` must have
@@ -418,12 +447,47 @@ pub fn op_scatter_elements(
     }
     let ax = normalize_axis(axis, rank)?;
     let axis_dim = input.shape.dims[ax] as usize;
-    // Non-axis dims of indices/updates must not exceed the corresponding
-    // dims of `input`, otherwise the scatter would write past the output
-    // buffer. ONNX additionally allows indices[ax] <= input[ax].
+    validate_scatter_dims(&input.shape.dims, &indices.shape.dims, rank, ax)?;
+    let idx = read_i64_vec(indices);
+    let u_total = updates.shape.total_elements();
+    if idx.len() != u_total {
+        return Err(OpError::ShapeMismatch(String::from(
+            "ScatterElements: indices must be Int32/Int64",
+        )));
+    }
+    // Start with a copy of input.
+    let mut data = input.raw_data.clone();
+    let strides = element_strides(&input.shape.dims, rank);
+    let mut coord = alloc::vec![0usize; rank];
+    for (flat, &raw_idx) in idx.iter().enumerate().take(u_total) {
+        let ax_idx = normalize_index(raw_idx, axis_dim, "ScatterElements")?;
+        let dst = src_offset(&coord, &strides, rank, ax, ax_idx);
+        let upd = read_f32(&updates.raw_data, flat);
+        let cur = read_f32(&data, dst);
+        let new_val = apply_scatter_reduction(reduction, cur, upd)?;
+        write_f32(&mut data, dst, new_val);
+        increment_shape_coord(&mut coord, &updates.shape.dims, rank);
+    }
+    Ok(Tensor {
+        data_type: DataType::Float,
+        shape: input.shape.clone(),
+        name: String::new(),
+        raw_data: data,
+    })
+}
+
+/// Non-axis dims of indices/updates must not exceed the corresponding
+/// dims of `input`, otherwise the scatter would write past the output
+/// buffer. ONNX additionally allows indices[ax] <= input[ax].
+fn validate_scatter_dims(
+    input_dims: &[i64],
+    idx_dims: &[i64],
+    rank: usize,
+    ax: usize,
+) -> Result<(), OpError> {
     for d in 0..rank {
-        let in_d = input.shape.dims[d];
-        let idx_d = indices.shape.dims[d];
+        let in_d = input_dims[d];
+        let idx_d = idx_dims[d];
         if idx_d < 0 || in_d < 0 {
             return Err(OpError::ShapeMismatch(String::from(
                 "ScatterElements: negative dimensions are invalid",
@@ -441,64 +505,19 @@ pub fn op_scatter_elements(
             )));
         }
     }
-    let idx = read_i64_vec(indices);
-    let u_total = updates.shape.total_elements();
-    if idx.len() != u_total {
-        return Err(OpError::ShapeMismatch(String::from(
-            "ScatterElements: indices must be Int32/Int64",
-        )));
+    Ok(())
+}
+
+fn apply_scatter_reduction(reduction: &str, cur: f32, upd: f32) -> Result<f32, OpError> {
+    match reduction {
+        "" | "none" => Ok(upd),
+        "add" => Ok(cur + upd),
+        "mul" => Ok(cur * upd),
+        other => Err(OpError::InvalidAttribute(alloc::format!(
+            "ScatterElements reduction '{}' not supported",
+            other
+        ))),
     }
-    // Start with a copy of input.
-    let mut data = input.raw_data.clone();
-    let mut strides = alloc::vec![1usize; rank];
-    for i in (0..rank.saturating_sub(1)).rev() {
-        strides[i] = strides[i + 1] * input.shape.dims[i + 1] as usize;
-    }
-    let mut coord = alloc::vec![0usize; rank];
-    for (flat, &raw_idx) in idx.iter().enumerate().take(u_total) {
-        let mut ax_idx = raw_idx;
-        if ax_idx < 0 {
-            ax_idx += axis_dim as i64;
-        }
-        if ax_idx < 0 || (ax_idx as usize) >= axis_dim {
-            return Err(OpError::ShapeMismatch(String::from(
-                "ScatterElements: index out of range",
-            )));
-        }
-        let mut dst = 0usize;
-        for d in 0..rank {
-            let c = if d == ax { ax_idx as usize } else { coord[d] };
-            dst += c * strides[d];
-        }
-        let upd = read_f32(&updates.raw_data, flat);
-        let cur = read_f32(&data, dst);
-        let new_val = match reduction {
-            "" | "none" => upd,
-            "add" => cur + upd,
-            "mul" => cur * upd,
-            other => {
-                return Err(OpError::InvalidAttribute(alloc::format!(
-                    "ScatterElements reduction '{}' not supported",
-                    other
-                )));
-            }
-        };
-        write_f32(&mut data, dst, new_val);
-        // Increment coord over updates shape.
-        for d in (0..rank).rev() {
-            coord[d] += 1;
-            if (coord[d] as i64) < updates.shape.dims[d] {
-                break;
-            }
-            coord[d] = 0;
-        }
-    }
-    Ok(Tensor {
-        data_type: DataType::Float,
-        shape: input.shape.clone(),
-        name: String::new(),
-        raw_data: data,
-    })
 }
 
 #[cfg(test)]
