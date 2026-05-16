@@ -386,7 +386,12 @@ fn open_aes256(
 }
 
 #[cfg(test)]
+#[path = "record_test_vectors.rs"]
+mod test_vectors;
+
+#[cfg(test)]
 mod tests {
+    use super::test_vectors::*;
     use super::*;
 
     #[test]
@@ -462,7 +467,7 @@ mod tests {
 
     #[test]
     fn per_record_nonce_xors_seq() {
-        let iv = [0u8; NONCE_LEN];
+        let iv = ZERO_IV;
         let nonce = per_record_nonce(&iv, 1);
         // seq=1 BE = [0,0,0,0,0,0,0,1]; XOR'd into last 8 bytes.
         assert_eq!(nonce, [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
@@ -487,8 +492,8 @@ mod tests {
 
     #[test]
     fn seal_open_round_trip_chacha20() {
-        let key = [0x42u8; 32];
-        let iv = [0x9eu8; NONCE_LEN];
+        let key = FILL_KEY_42;
+        let iv = FILL_IV_9E;
         let inner = b"transcript material";
         let rec = seal(
             CipherSuite::ChaCha20Poly1305Sha256,
@@ -506,8 +511,8 @@ mod tests {
 
     #[test]
     fn seal_open_round_trip_aes256() {
-        let key = [0x42u8; 32];
-        let iv = [0x9eu8; NONCE_LEN];
+        let key = FILL_KEY_42;
+        let iv = FILL_IV_9E;
         let inner = b"some application bytes";
         let rec = seal(
             CipherSuite::Aes256GcmSha384,
@@ -525,8 +530,8 @@ mod tests {
 
     #[test]
     fn tampered_ciphertext_rejected() {
-        let key = [0u8; 32];
-        let iv = [0u8; NONCE_LEN];
+        let key = ZERO_KEY;
+        let iv = ZERO_IV;
         let mut rec = seal(
             CipherSuite::ChaCha20Poly1305Sha256,
             &key,
@@ -545,8 +550,8 @@ mod tests {
 
     #[test]
     fn wrong_seq_rejected() {
-        let key = [0u8; 32];
-        let iv = [0u8; NONCE_LEN];
+        let key = ZERO_KEY;
+        let iv = ZERO_IV;
         let rec = seal(
             CipherSuite::ChaCha20Poly1305Sha256,
             &key,
@@ -568,8 +573,8 @@ mod tests {
     fn open_with_legacy_version_mismatch_rejected() {
         // Build a valid record then corrupt the legacy_version
         // byte.
-        let key = [0u8; 32];
-        let iv = [0u8; NONCE_LEN];
+        let key = ZERO_KEY;
+        let iv = ZERO_IV;
         let mut rec = seal(
             CipherSuite::ChaCha20Poly1305Sha256,
             &key,
@@ -592,8 +597,8 @@ mod tests {
         // Header says length = 5 but tag alone is 16 bytes —
         // any length < AEAD_TAG_LEN + 1 must be refused.
         let bad = [23, 0x03, 0x03, 0, 5, 0, 0, 0, 0, 0];
-        let key = [0u8; 32];
-        let iv = [0u8; NONCE_LEN];
+        let key = ZERO_KEY;
+        let iv = ZERO_IV;
         assert_eq!(
             open(CipherSuite::ChaCha20Poly1305Sha256, &key, &iv, 0, &bad).unwrap_err(),
             TlsClientError::BadRecord
@@ -606,8 +611,8 @@ mod tests {
         // content_type = application_data (23). Build a
         // record with outer = Handshake (22) and confirm
         // we refuse it.
-        let key = [0u8; 32];
-        let iv = [0u8; NONCE_LEN];
+        let key = ZERO_KEY;
+        let iv = ZERO_IV;
         let mut rec = seal(
             CipherSuite::ChaCha20Poly1305Sha256,
             &key,
