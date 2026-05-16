@@ -15,6 +15,7 @@ pub mod boot;
 pub mod gdt;
 pub mod interrupts;
 pub mod paging;
+pub mod security;
 pub mod serial;
 pub mod syscall;
 #[cfg(feature = "fs-block-virtio")]
@@ -46,6 +47,16 @@ pub extern "C" fn kernel_main(mb_info_addr: u64) -> ! {
     serial::putc(b'\n');
 
     serial::puts("[SmallAIOS] BSS cleared, stack initialized\n");
+
+    // Speculative-execution mitigations (spec-exec-mitigations-v1 Phase 2).
+    // Probe CPUID, program IBRS/STIBP, and emit the boot status line. Done
+    // early so the indirect-branch predictor state is configured before the
+    // kernel takes any feature-dependent indirect branches. Retpoline + SLH
+    // (compiler half) are already baked in by `build.rs`. SAFETY: ring-0
+    // boot context, called exactly once.
+    unsafe {
+        security::spec_exec::init(serial::puts);
+    }
 
     // Parse physical memory map from Multiboot2 info
     serial::puts("[SmallAIOS] Parsing Multiboot2 memory map...\n");

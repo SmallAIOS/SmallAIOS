@@ -1,6 +1,38 @@
+# NOTE: `rustflags` here is TARGET-scoped to `x86_64-unknown-none` (the
+# freestanding kernel image) only. It is NOT a blanket global `RUSTFLAGS`:
+# host build-script / proc-macro compilation uses the host triple (e.g.
+# `aarch64-apple-darwin`) and is therefore completely unaffected. This is the
+# Cargo-supported mechanism for per-target codegen flags (build scripts may
+# only emit `-l`/`-L`, not `-C`).
+#
+# spec-exec-mitigations-v1 Phase 2 (Retpoline + Speculative Load Hardening):
+#   -Z retpoline                                  Spectre-v2 / BTI
+#   -C llvm-args=-x86-speculative-load-hardening  Spectre-v1 / BCB
+#
+# Toolchain note (nightly-2026-02-01 / rustc 1.95): the original design
+# referenced `-C target-feature=+retpoline-external-thunk` etc., but this
+# rustc REJECTS the `target-feature` form ("use `-Zretpoline` compiler flag
+# instead"). The dedicated `-Zretpoline` flag enables the
+# retpoline-indirect-branches + retpoline-indirect-calls target features and
+# has LLVM emit the indirect-branch thunk *inline*, so the freestanding
+# kernel needs no externally-provided `__x86_indirect_thunk_*` symbols. The
+# `-Zretpoline-external-thunk` variant was rejected here precisely because it
+# left `__x86_indirect_thunk_r11` undefined (no thunk provider in a
+# unikernel). `-Zretpoline` delivers the same Spectre-v2 mitigation,
+# self-contained — strictly better for `#![no_std]`.
+#
+# These are default-ON for the kernel image because the only x86_64 binary
+# crate (`smallaios-arch-x86_64`) has `default = ["spec-exec-x86"]`. The
+# `arch/x86_64/build.rs` gate emits a loud `cargo:warning` if the feature is
+# ever disabled so config + feature set cannot silently disagree.
 [target.x86_64-unknown-none]
 runner = "scripts/run-qemu-x86.sh"
-rustflags = ["-C", "link-arg=-Tarch/x86_64/linker.ld", "-C", "code-model=kernel"]
+rustflags = [
+    "-C", "link-arg=-Tarch/x86_64/linker.ld",
+    "-C", "code-model=kernel",
+    "-Z", "retpoline",
+    "-C", "llvm-args=-x86-speculative-load-hardening",
+]
 
 [target.aarch64-unknown-none]
 runner = "scripts/run-qemu-arm.sh"

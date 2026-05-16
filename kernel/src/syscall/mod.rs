@@ -26,6 +26,9 @@ pub mod memory;
 pub mod model;
 pub mod onnx;
 pub mod posix;
+/// Speculative-execution barriers for the syscall trust boundary
+/// (OpenSpec `spec-exec-mitigations-v1`, Phase 3 — aarch64).
+pub mod spec_exec;
 pub mod system;
 pub mod task;
 
