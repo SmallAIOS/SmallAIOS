@@ -22,6 +22,7 @@ pub mod features;
 pub mod paging;
 pub mod plic;
 pub mod sbi;
+pub mod security;
 pub mod syscall;
 pub mod trap;
 pub mod uart;
@@ -87,6 +88,12 @@ pub extern "C" fn kernel_main(hart_id: u64, dtb_addr: u64) -> ! {
         uart::puts("unknown");
     }
     uart::putc(b'\n');
+
+    // Speculative-execution mitigation scaffolding (Phase 4, RISC-V).
+    // Currently a no-op beyond logging — the relevant extensions
+    // (Zicfilp / Zicfiss) are unratified. See
+    // docs/spec-exec-audit-riscv.md and arch/riscv64/src/security/.
+    security::spec_exec::init();
 
     // Parse physical memory map from DTB
     uart::puts("[SmallAIOS] Parsing DTB memory map...\n");
