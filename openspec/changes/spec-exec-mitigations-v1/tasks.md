@@ -2,10 +2,10 @@
 
 ## 0. Audit + matrix population (Phase 1 — gates all others)
 
-- [ ] 0.1 Enumerate trust boundaries in SmallAIOS today: syscall entry, capability check (`require_capability` in `kernel/src/cap.rs`), ONNX op-dispatch indirect call (`onnx-rt/`), GPU command submission (when the NVIDIA HAL lands), bus-backed dataflow runner message receive (`ipc/`). Document each in `docs/spec-exec-audit.md` with the file path + line number where the boundary lives.
-- [ ] 0.2 Per architecture (x86_64, aarch64, riscv64), populate the trust-boundary × attack-class matrix in `docs/spec-exec-audit.md`. Attack classes covered: Spectre v1 (BCB), Spectre v2 (BTI), Spectre v4 (SSB), Meltdown, Retbleed, Spectre-BHB.
-- [ ] 0.3 Identify silicon-level mitigations already present (CSV2/CSV3 on Cortex-A78AE, Enhanced IBRS on modern Xeon) and note the silicon-detection method (read `ID_AA64PFR0_EL1` on aarch64, `CPUID` leaf 7 on x86_64).
-- [ ] 0.4 Identify compiler-flag mitigations available per arch + Rust toolchain pinned in `rust-toolchain.toml`. Document the exact `RUSTFLAGS` / `-C` / `-mllvm` flags needed.
+- [x] 0.1 Enumerate trust boundaries in SmallAIOS today: syscall entry, capability check (`require_capability` in `kernel/src/cap.rs`), ONNX op-dispatch indirect call (`onnx-rt/`), GPU command submission (when the NVIDIA HAL lands), bus-backed dataflow runner message receive (`ipc/`). Document each in `docs/spec-exec-audit.md` with the file path + line number where the boundary lives.
+- [x] 0.2 Per architecture (x86_64, aarch64, riscv64), populate the trust-boundary × attack-class matrix in `docs/spec-exec-audit.md`. Attack classes covered: Spectre v1 (BCB), Spectre v2 (BTI), Spectre v4 (SSB), Meltdown, Retbleed, Spectre-BHB.
+- [x] 0.3 Identify silicon-level mitigations already present (CSV2/CSV3 on Cortex-A78AE, Enhanced IBRS on modern Xeon) and note the silicon-detection method (read `ID_AA64PFR0_EL1` on aarch64, `CPUID` leaf 7 on x86_64).
+- [x] 0.4 Identify compiler-flag mitigations available per arch + Rust toolchain pinned in `rust-toolchain.toml`. Document the exact `RUSTFLAGS` / `-C` / `-mllvm` flags needed.
 
 ## 1. Phase 2 — x86_64 mitigations
 
