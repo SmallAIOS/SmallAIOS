@@ -54,8 +54,6 @@ use crate::tensor::{DataType, Tensor, TensorShape};
 /// An iteration count beyond this limit is treated as a hard failure.
 pub const MAX_LOOP_ITERATIONS: i64 = 1_000_000;
 
-// Helper for sub-graph setup.
-
 /// Runs a compiled inner graph once with the given seeded value map.
 ///
 /// The caller is responsible for:
