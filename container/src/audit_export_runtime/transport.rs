@@ -141,20 +141,31 @@ impl<S: TlsStreamLike> TlsGrpcTransport<S> {
     }
 }
 
-impl<S: TlsStreamLike> GrpcTransport for TlsGrpcTransport<S> {
-    fn unary_call(
-        &mut self,
+/// Outcome of dispatching a single inbound response frame.
+enum FrameOutcome {
+    /// Keep reading frames.
+    Continue,
+    /// Response is complete; carries the resolved trailers.
+    Done(Vec<GrpcHeader>),
+}
+
+/// Mutable response-accumulation state shared across the
+/// frame-dispatch loop in `unary_call`.
+struct ResponseState {
+    stream_id: u32,
+    stream_state: Stream,
+    initial_headers: Option<Vec<GrpcHeader>>,
+    response_body: Vec<u8>,
+}
+
+impl<S: TlsStreamLike> TlsGrpcTransport<S> {
+    /// Build the HEADERS block: pseudo-headers in fixed order
+    /// (per RFC 7540 § 8.1.2.3) followed by user headers.
+    fn build_request_headers(
+        &self,
         full_method: &str,
         headers: &[GrpcHeader],
-        body: &[u8],
-    ) -> Result<UnaryResponse, TransportError> {
-        self.send_preface().map_err(map_io)?;
-
-        let stream_id = self.allocate_stream_id();
-        let mut stream_state = Stream::new(stream_id).map_err(|_| TransportError::Http2)?;
-
-        // Build HEADERS block: pseudo-headers in fixed order
-        // (per RFC 7540 § 8.1.2.3) followed by user headers.
+    ) -> Vec<HpackHeader> {
         let mut all_headers: Vec<HpackHeader> = Vec::with_capacity(4 + headers.len());
         all_headers.push(HpackHeader {
             name: ":method".into(),
@@ -178,6 +189,178 @@ impl<S: TlsStreamLike> GrpcTransport for TlsGrpcTransport<S> {
                 value: h.value.clone(),
             });
         }
+        all_headers
+    }
+
+    /// ACK any incoming SETTINGS (no fields applied; we accept
+    /// defaults).
+    fn handle_settings_frame(&mut self, header: &FrameHeader) -> Result<(), TransportError> {
+        if header.flags & flags::ACK == 0 {
+            let ack = build_settings(true, &[]);
+            self.write_all(&ack)?;
+        }
+        Ok(())
+    }
+
+    /// Echo PING with ACK if it isn't already an ACK.
+    fn handle_ping_frame(
+        &mut self,
+        header: &FrameHeader,
+        payload: &[u8],
+    ) -> Result<(), TransportError> {
+        if header.flags & flags::ACK == 0 && header.length == 8 {
+            let mut data = [0u8; 8];
+            data.copy_from_slice(payload);
+            self.write_all(&smallaios_net::http2::frame::build_ping(true, data))?;
+        }
+        Ok(())
+    }
+
+    fn handle_headers_frame(
+        &mut self,
+        header: &FrameHeader,
+        payload: &[u8],
+        state: &mut ResponseState,
+    ) -> Result<FrameOutcome, TransportError> {
+        if header.stream_id != state.stream_id {
+            return Err(TransportError::Http2);
+        }
+        let end_stream = header.flags & flags::END_STREAM != 0;
+        let decoded = decode_block(payload).map_err(|_| TransportError::Http2)?;
+        let mapped: Vec<GrpcHeader> = decoded
+            .into_iter()
+            .map(|h| GrpcHeader::new(h.name, h.value))
+            .collect();
+        if state.initial_headers.is_none() {
+            state
+                .stream_state
+                .recv_headers(end_stream)
+                .map_err(|_| TransportError::Http2)?;
+            state.initial_headers = Some(mapped);
+            if end_stream {
+                return Ok(FrameOutcome::Done(Vec::new()));
+            }
+            Ok(FrameOutcome::Continue)
+        } else {
+            // Trailing HEADERS MUST carry END_STREAM.
+            if !end_stream {
+                return Err(TransportError::Http2);
+            }
+            state
+                .stream_state
+                .recv_headers(true)
+                .map_err(|_| TransportError::Http2)?;
+            Ok(FrameOutcome::Done(mapped))
+        }
+    }
+
+    fn handle_data_frame(
+        &mut self,
+        header: &FrameHeader,
+        payload: &[u8],
+        state: &mut ResponseState,
+    ) -> Result<FrameOutcome, TransportError> {
+        if header.stream_id != state.stream_id {
+            return Err(TransportError::Http2);
+        }
+        let end_stream = header.flags & flags::END_STREAM != 0;
+        state
+            .stream_state
+            .recv_data(end_stream)
+            .map_err(|_| TransportError::Http2)?;
+        state.response_body.extend_from_slice(payload);
+        if state.response_body.len() > (self.inbound_max_message_len as usize) + PREFIX_LEN {
+            return Err(TransportError::Http2);
+        }
+        if end_stream {
+            return Ok(FrameOutcome::Done(Vec::new()));
+        }
+        // Replenish connection-level window if we just consumed
+        // a non-trivial DATA frame.
+        if header.length > 0 {
+            self.write_all(&build_window_update(0, header.length))?;
+        }
+        Ok(FrameOutcome::Continue)
+    }
+
+    /// Dispatch a single inbound frame, mutating `state` and
+    /// emitting any required protocol responses.
+    fn dispatch_response_frame(
+        &mut self,
+        header: &FrameHeader,
+        payload: &[u8],
+        state: &mut ResponseState,
+    ) -> Result<FrameOutcome, TransportError> {
+        match header.frame_type {
+            FrameType::Settings => {
+                self.handle_settings_frame(header)?;
+                Ok(FrameOutcome::Continue)
+            }
+            FrameType::Ping => {
+                self.handle_ping_frame(header, payload)?;
+                Ok(FrameOutcome::Continue)
+            }
+            FrameType::WindowUpdate => {
+                // Ignore — flow-control credits are tracked but
+                // we never request more than the default window.
+                Ok(FrameOutcome::Continue)
+            }
+            FrameType::GoAway => Err(TransportError::Http2),
+            FrameType::RstStream => {
+                if header.stream_id == state.stream_id {
+                    state.stream_state.remote_reset();
+                    return Err(TransportError::Http2);
+                }
+                Ok(FrameOutcome::Continue)
+            }
+            FrameType::Headers => self.handle_headers_frame(header, payload, state),
+            FrameType::Data => self.handle_data_frame(header, payload, state),
+            FrameType::Continuation => {
+                // We require END_HEADERS on the initial HEADERS
+                // frame, so CONTINUATION is unexpected.
+                Err(TransportError::Http2)
+            }
+        }
+    }
+
+    /// Read response frames until the stream completes,
+    /// accumulating body DATA frames between the initial HEADERS
+    /// and the trailing HEADERS.
+    fn read_unary_response(
+        &mut self,
+        mut state: ResponseState,
+    ) -> Result<UnaryResponse, TransportError> {
+        let mut payload = Vec::new();
+        let trailers = loop {
+            payload.clear();
+            let header = self.read_frame(&mut payload)?;
+            match self.dispatch_response_frame(&header, &payload, &mut state)? {
+                FrameOutcome::Continue => {}
+                FrameOutcome::Done(t) => break t,
+            }
+        };
+
+        Ok(UnaryResponse {
+            initial_headers: state.initial_headers.unwrap_or_default(),
+            body: state.response_body,
+            trailers,
+        })
+    }
+}
+
+impl<S: TlsStreamLike> GrpcTransport for TlsGrpcTransport<S> {
+    fn unary_call(
+        &mut self,
+        full_method: &str,
+        headers: &[GrpcHeader],
+        body: &[u8],
+    ) -> Result<UnaryResponse, TransportError> {
+        self.send_preface().map_err(map_io)?;
+
+        let stream_id = self.allocate_stream_id();
+        let mut stream_state = Stream::new(stream_id).map_err(|_| TransportError::Http2)?;
+
+        let all_headers = self.build_request_headers(full_method, headers);
         let block = encode_block(&all_headers);
 
         stream_state
@@ -194,111 +377,11 @@ impl<S: TlsStreamLike> GrpcTransport for TlsGrpcTransport<S> {
             .map_err(|_| TransportError::Http2)?;
         self.write_all(&build_data(stream_id, body, true))?;
 
-        // Read response. We accumulate the body DATA frames
-        // between the initial HEADERS and the trailing HEADERS.
-        let mut initial_headers: Option<Vec<GrpcHeader>> = None;
-        let mut response_body: Vec<u8> = Vec::new();
-        let trailers: Option<Vec<GrpcHeader>>;
-        let mut payload = Vec::new();
-
-        loop {
-            payload.clear();
-            let header = self.read_frame(&mut payload)?;
-            match header.frame_type {
-                FrameType::Settings => {
-                    // ACK any incoming SETTINGS (no fields applied; we
-                    // accept defaults).
-                    if header.flags & flags::ACK == 0 {
-                        let ack = build_settings(true, &[]);
-                        self.write_all(&ack)?;
-                    }
-                }
-                FrameType::Ping => {
-                    // Echo PING with ACK if it isn't already an ACK.
-                    if header.flags & flags::ACK == 0 && header.length == 8 {
-                        let mut data = [0u8; 8];
-                        data.copy_from_slice(&payload);
-                        self.write_all(&smallaios_net::http2::frame::build_ping(true, data))?;
-                    }
-                }
-                FrameType::WindowUpdate => {
-                    // Ignore — flow-control credits are tracked but
-                    // we never request more than the default window.
-                }
-                FrameType::GoAway => {
-                    return Err(TransportError::Http2);
-                }
-                FrameType::RstStream => {
-                    if header.stream_id == stream_id {
-                        stream_state.remote_reset();
-                        return Err(TransportError::Http2);
-                    }
-                }
-                FrameType::Headers => {
-                    if header.stream_id != stream_id {
-                        return Err(TransportError::Http2);
-                    }
-                    let end_stream = header.flags & flags::END_STREAM != 0;
-                    let decoded = decode_block(&payload).map_err(|_| TransportError::Http2)?;
-                    let mapped: Vec<GrpcHeader> = decoded
-                        .into_iter()
-                        .map(|h| GrpcHeader::new(h.name, h.value))
-                        .collect();
-                    if initial_headers.is_none() {
-                        stream_state
-                            .recv_headers(end_stream)
-                            .map_err(|_| TransportError::Http2)?;
-                        initial_headers = Some(mapped);
-                        if end_stream {
-                            trailers = Some(Vec::new());
-                            break;
-                        }
-                    } else {
-                        // Trailing HEADERS MUST carry END_STREAM.
-                        if !end_stream {
-                            return Err(TransportError::Http2);
-                        }
-                        stream_state
-                            .recv_headers(true)
-                            .map_err(|_| TransportError::Http2)?;
-                        trailers = Some(mapped);
-                        break;
-                    }
-                }
-                FrameType::Data => {
-                    if header.stream_id != stream_id {
-                        return Err(TransportError::Http2);
-                    }
-                    let end_stream = header.flags & flags::END_STREAM != 0;
-                    stream_state
-                        .recv_data(end_stream)
-                        .map_err(|_| TransportError::Http2)?;
-                    response_body.extend_from_slice(&payload);
-                    if response_body.len() > (self.inbound_max_message_len as usize) + PREFIX_LEN {
-                        return Err(TransportError::Http2);
-                    }
-                    if end_stream {
-                        trailers = Some(Vec::new());
-                        break;
-                    }
-                    // Replenish connection-level window if we just
-                    // consumed a non-trivial DATA frame.
-                    if header.length > 0 {
-                        self.write_all(&build_window_update(0, header.length))?;
-                    }
-                }
-                FrameType::Continuation => {
-                    // We require END_HEADERS on the initial HEADERS
-                    // frame, so CONTINUATION is unexpected.
-                    return Err(TransportError::Http2);
-                }
-            }
-        }
-
-        Ok(UnaryResponse {
-            initial_headers: initial_headers.unwrap_or_default(),
-            body: response_body,
-            trailers: trailers.unwrap_or_default(),
+        self.read_unary_response(ResponseState {
+            stream_id,
+            stream_state,
+            initial_headers: None,
+            response_body: Vec::new(),
         })
     }
 }
