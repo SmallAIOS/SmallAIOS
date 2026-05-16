@@ -2,10 +2,10 @@
 
 ## 0. Audit + matrix population (Phase 1 — gates all others)
 
-- [ ] 0.1 Enumerate trust boundaries in SmallAIOS today: syscall entry, capability check (`require_capability` in `kernel/src/cap.rs`), ONNX op-dispatch indirect call (`onnx-rt/`), GPU command submission (when the NVIDIA HAL lands), bus-backed dataflow runner message receive (`ipc/`). Document each in `docs/spec-exec-audit.md` with the file path + line number where the boundary lives.
-- [ ] 0.2 Per architecture (x86_64, aarch64, riscv64), populate the trust-boundary × attack-class matrix in `docs/spec-exec-audit.md`. Attack classes covered: Spectre v1 (BCB), Spectre v2 (BTI), Spectre v4 (SSB), Meltdown, Retbleed, Spectre-BHB.
-- [ ] 0.3 Identify silicon-level mitigations already present (CSV2/CSV3 on Cortex-A78AE, Enhanced IBRS on modern Xeon) and note the silicon-detection method (read `ID_AA64PFR0_EL1` on aarch64, `CPUID` leaf 7 on x86_64).
-- [ ] 0.4 Identify compiler-flag mitigations available per arch + Rust toolchain pinned in `rust-toolchain.toml`. Document the exact `RUSTFLAGS` / `-C` / `-mllvm` flags needed.
+- [x] 0.1 Enumerate trust boundaries in SmallAIOS today: syscall entry, capability check (`require_capability` in `kernel/src/cap.rs`), ONNX op-dispatch indirect call (`onnx-rt/`), GPU command submission (when the NVIDIA HAL lands), bus-backed dataflow runner message receive (`ipc/`). Document each in `docs/spec-exec-audit.md` with the file path + line number where the boundary lives.
+- [x] 0.2 Per architecture (x86_64, aarch64, riscv64), populate the trust-boundary × attack-class matrix in `docs/spec-exec-audit.md`. Attack classes covered: Spectre v1 (BCB), Spectre v2 (BTI), Spectre v4 (SSB), Meltdown, Retbleed, Spectre-BHB.
+- [x] 0.3 Identify silicon-level mitigations already present (CSV2/CSV3 on Cortex-A78AE, Enhanced IBRS on modern Xeon) and note the silicon-detection method (read `ID_AA64PFR0_EL1` on aarch64, `CPUID` leaf 7 on x86_64).
+- [x] 0.4 Identify compiler-flag mitigations available per arch + Rust toolchain pinned in `rust-toolchain.toml`. Document the exact `RUSTFLAGS` / `-C` / `-mllvm` flags needed.
 
 ## 1. Phase 2 — x86_64 mitigations
 
@@ -59,21 +59,21 @@
 
 ## 4. Phase 5 — ONNX op-dispatch hardening
 
-- [ ] 4.1 Audit `onnx-rt`'s op-dispatch table location — confirm it is in `.rodata` after init (not writable). If it is currently writable post-init, move it.
-- [ ] 4.2 On aarch64 builds, confirm every dispatch entry has a BTI landing pad (compiler-emitted). Disassemble and assert.
-- [ ] 4.3 On x86_64 builds with Retpoline on, confirm the dispatch indirect call goes through a Retpoline thunk. Disassemble and assert.
-- [ ] 4.4 Document the op-dispatch attack surface + mitigations in `docs/onnx-runtime.md` or equivalent.
+- [x] 4.1 Audit `onnx-rt`'s op-dispatch table location — confirm it is in `.rodata` after init (not writable). If it is currently writable post-init, move it.
+- [x] 4.2 On aarch64 builds, confirm every dispatch entry has a BTI landing pad (compiler-emitted). Disassemble and assert.
+- [x] 4.3 On x86_64 builds with Retpoline on, confirm the dispatch indirect call goes through a Retpoline thunk. Disassemble and assert.
+- [x] 4.4 Document the op-dispatch attack surface + mitigations in `docs/onnx-runtime.md` or equivalent.
 
 ## 5. Phase 6 — Spec + safety-case integration
 
-- [ ] 5.1 Populate the `kernel-security` capability spec (this change) with the trust-boundary × attack-class × mitigation matrix as Requirements.
-- [ ] 5.2 Cross-reference from the existing `safety-critical` and `security` specs to `kernel-security` so the DO-178C safety case can cite one canonical table.
-- [ ] 5.3 Add a "review trigger" line to `docs/spec-exec-audit.md` — every new CVE in the speculation-class space triggers a re-audit, tracked as a new OpenSpec change.
+- [x] 5.1 Populate the `kernel-security` capability spec (this change) with the trust-boundary × attack-class × mitigation matrix as Requirements.
+- [x] 5.2 Cross-reference from the existing `safety-critical` and `security` specs to `kernel-security` so the DO-178C safety case can cite one canonical table.
+- [x] 5.3 Add a "review trigger" line to `docs/spec-exec-audit.md` — every new CVE in the speculation-class space triggers a re-audit, tracked as a new OpenSpec change.
 
 ## 6. CI
 
-- [ ] 6.1 Add `spec-exec-disasm-audit` CI advisory job that runs `objdump -d` on the kernel binary (per arch) and greps for the expected barrier opcodes at the expected sites; fails if any barrier is missing.
-- [ ] 6.2 Add a release-profile build smoke that confirms `spec-exec` feature is default-on for `cargo build --release` on each arch.
+- [x] 6.1 Add `spec-exec-disasm-audit` CI advisory job that runs `objdump -d` on the kernel binary (per arch) and greps for the expected barrier opcodes at the expected sites; fails if any barrier is missing.
+- [x] 6.2 Add a release-profile build smoke that confirms `spec-exec` feature is default-on for `cargo build --release` on each arch.
 
 ## 7. Verify + archive
 
