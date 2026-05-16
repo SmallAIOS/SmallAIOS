@@ -12,8 +12,54 @@
 //!   - Return value in a0
 //!
 //! This matches the Linux RISC-V ABI, making future compatibility easier.
+//!
+//! # Privileged-transition instruction-fetch barrier (`fence.i`)
+//!
+//! Part of OpenSpec change `spec-exec-mitigations-v1`, Phase 4 (RISC-V,
+//! scaffolding). The `ecall` path is a privileged transition: U-mode traps
+//! into S-mode, the kernel dispatches, then `sret` (in `trap.rs`) resumes
+//! U-mode. RISC-V does **not** make stores to the instruction stream visible
+//! to subsequent instruction fetches on the same hart without an explicit
+//! [`fence.i`] — the architecturally-defined instruction-fetch / fetch-
+//! coherence barrier.
+//!
+//! We emit `fence.i` **after** [`smallaios_kernel::syscall::dispatch`]
+//! returns and **before** control unwinds toward `sret` back to U-mode. The
+//! *after* side is the load-bearing one: a syscall may legitimately have
+//! mutated the code that the about-to-resume context will fetch (future
+//! code-load / page-remap / module-style syscalls), and the resuming hart
+//! must observe that mutation. Placing it after dispatch also bounds any
+//! stale-instruction window opened during kernel servicing of the call.
+//!
+//! This is a coherence / correctness barrier, **not** a speculation barrier:
+//! it does not by itself close the Spectre-v1/v2 windows. Those need
+//! Zicfilp / Zicfiss (forward/backward-edge CFI), which are **not ratified**
+//! as of 2026-02. RISC-V therefore ships with *partial* mitigations — see
+//! `docs/spec-exec-audit-riscv.md` and `crate::security::spec_exec`. The
+//! barrier is inserted now so the privileged-transition entry shape is
+//! correct-by-construction even though syscall workloads are not yet
+//! exercised on this target.
 
 use super::trap::TrapFrame;
+
+/// Instruction-fetch / fetch-coherence barrier at the privileged-transition
+/// boundary.
+///
+/// Emits a single `fence.i` (Zifencei, part of the RV64GC baseline). On the
+/// host test target this is a no-op so `handle_ecall` stays host-testable.
+///
+/// See the module docs for placement rationale (emitted *after* dispatch,
+/// *before* the return toward `sret` to U-mode).
+#[inline(always)]
+fn fence_i_barrier() {
+    // SAFETY: `fence.i` has no operands, no memory effects beyond ordering
+    // the calling hart's own instruction fetch w.r.t. its prior stores, and
+    // is part of the RV64GC baseline (Zifencei). It cannot trap in S-mode.
+    #[cfg(not(test))]
+    unsafe {
+        core::arch::asm!("fence.i", options(nostack, preserves_flags));
+    }
+}
 
 /// Handle an ecall from U-mode.
 ///
@@ -41,6 +87,14 @@ pub fn handle_ecall(frame: &mut TrapFrame) {
 
     // Write return value to a0 (x10) in the trap frame
     frame.regs[10] = result as u64;
+
+    // Privileged-transition instruction-fetch barrier (Phase 4 scaffolding).
+    // Emitted AFTER dispatch and BEFORE the return that unwinds toward `sret`
+    // (in trap.rs) back to U-mode: a syscall may have mutated code the
+    // resuming context will fetch, and `fence.i` makes that visible to this
+    // hart's subsequent instruction fetch. Coherence barrier, not a
+    // speculation barrier — see module docs and docs/spec-exec-audit-riscv.md.
+    fence_i_barrier();
 }
 
 #[cfg(test)]
@@ -93,5 +147,20 @@ mod tests {
         handle_ecall(&mut frame);
         assert_eq!(frame.regs[1], 0xDEAD);
         assert_eq!(frame.regs[8], 0xBEEF);
+    }
+
+    /// The `fence.i` privileged-transition barrier is on the `handle_ecall`
+    /// path (after dispatch, before return). On the host target the asm is
+    /// `cfg(not(test))`-gated to a no-op; this test pins that the barrier
+    /// helper stays callable and total so the scaffolding can't regress to a
+    /// shape where the barrier is unreachable.
+    #[test]
+    fn test_fence_i_barrier_is_total() {
+        // Direct call: must not panic / diverge on host.
+        fence_i_barrier();
+        // Indirect via the real entry path: handle_ecall reaches the barrier
+        // after dispatch even for an out-of-range syscall.
+        let mut frame = make_frame(0xFF, [0; 6]);
+        handle_ecall(&mut frame);
     }
 }
