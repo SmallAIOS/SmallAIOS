@@ -96,6 +96,44 @@ Task 4.1's "ensure the table is read-only after init" therefore becomes
 "assert the lowered jump table is in `.rodata`" rather than "relocate a
 mutable table" — a verification task, not a code-restructuring task.
 
+## 4b. ONNX op-dispatch hardening (Phase 5 — tasks 4.1–4.4)
+
+**Attack surface.** The ONNX runtime selects an operator implementation
+per graph node. The dispatch is a Rust `match node.op_type.as_str()`
+(`onnx-rt/src/executor.rs:441`, `:867`; the CUDA fast-path mirror is
+`try_cuda_dispatch:441`). There is **no runtime-mutable function-pointer
+table**. The Spectre-v2 surface is therefore the ordinary indirect-branch
+that LLVM may emit when lowering a large string-`match` to a jump table —
+not a poisonable dispatch array.
+
+**Mitigations and how they are verified:**
+
+- **4.1 — table is read-only after init.** The jump table LLVM emits for
+  the `match` is placed in `.rodata` by construction (it is compiler-owned,
+  not a `static mut`/`&[fn()]` the runtime fills in). No relocation work is
+  required; the obligation is *verification*: the `spec-exec-disasm-audit`
+  CI job (`scripts/spec-exec-disasm-audit.sh`) asserts a `.rodata` section
+  exists and that there is no writable dispatch array. There is no
+  `static mut` operator table in `onnx-rt` to move.
+- **4.2 — aarch64 BTI landing pads.** BTI is enabled by the
+  `aarch64-mte-pac-hardening-v1` change's `-Z branch-protection=bti`
+  codegen. Every indirect-branch target then begins with a `bti` landing
+  pad; a branch to a non-`bti` address raises a Branch Target exception.
+  Verified by the disasm-audit job (greps for `bti` opcodes on the
+  aarch64 build); cross-referenced — this change does not re-implement BTI.
+- **4.3 — x86_64 Retpoline dispatch.** With `--features spec-exec-x86`
+  the Retpoline codegen flags (Phase 2) thunk every indirect branch,
+  including the `match` jump table's indirect jump. The disasm-audit job
+  asserts there is no naked `call *%reg` / `jmp *%reg` in the linked
+  kernel.
+- **4.4 — documentation.** This section *is* the canonical op-dispatch
+  attack-surface + mitigation record. `docs/onnx-runtime.md` does not
+  exist; the `onnx-runtime` capability spec and this audit doc are the
+  equivalent. The net: op-dispatch is a *smaller* Spectre-v2 surface than
+  the proposal's worst case, fully covered by the per-arch compiler
+  mitigations already scheduled in Phases 2–3, with a CI assertion as the
+  regression catcher.
+
 ## 5. Silicon-level mitigations already present (task 0.3)
 
 | Mitigation | Arch | Detection method | SmallAIOS reference platform |

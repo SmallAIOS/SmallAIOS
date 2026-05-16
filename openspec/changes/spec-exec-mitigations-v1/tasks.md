@@ -59,21 +59,21 @@
 
 ## 4. Phase 5 — ONNX op-dispatch hardening
 
-- [ ] 4.1 Audit `onnx-rt`'s op-dispatch table location — confirm it is in `.rodata` after init (not writable). If it is currently writable post-init, move it.
-- [ ] 4.2 On aarch64 builds, confirm every dispatch entry has a BTI landing pad (compiler-emitted). Disassemble and assert.
-- [ ] 4.3 On x86_64 builds with Retpoline on, confirm the dispatch indirect call goes through a Retpoline thunk. Disassemble and assert.
-- [ ] 4.4 Document the op-dispatch attack surface + mitigations in `docs/onnx-runtime.md` or equivalent.
+- [x] 4.1 Audit `onnx-rt`'s op-dispatch table location — confirm it is in `.rodata` after init (not writable). If it is currently writable post-init, move it.
+- [x] 4.2 On aarch64 builds, confirm every dispatch entry has a BTI landing pad (compiler-emitted). Disassemble and assert.
+- [x] 4.3 On x86_64 builds with Retpoline on, confirm the dispatch indirect call goes through a Retpoline thunk. Disassemble and assert.
+- [x] 4.4 Document the op-dispatch attack surface + mitigations in `docs/onnx-runtime.md` or equivalent.
 
 ## 5. Phase 6 — Spec + safety-case integration
 
-- [ ] 5.1 Populate the `kernel-security` capability spec (this change) with the trust-boundary × attack-class × mitigation matrix as Requirements.
-- [ ] 5.2 Cross-reference from the existing `safety-critical` and `security` specs to `kernel-security` so the DO-178C safety case can cite one canonical table.
-- [ ] 5.3 Add a "review trigger" line to `docs/spec-exec-audit.md` — every new CVE in the speculation-class space triggers a re-audit, tracked as a new OpenSpec change.
+- [x] 5.1 Populate the `kernel-security` capability spec (this change) with the trust-boundary × attack-class × mitigation matrix as Requirements.
+- [x] 5.2 Cross-reference from the existing `safety-critical` and `security` specs to `kernel-security` so the DO-178C safety case can cite one canonical table.
+- [x] 5.3 Add a "review trigger" line to `docs/spec-exec-audit.md` — every new CVE in the speculation-class space triggers a re-audit, tracked as a new OpenSpec change.
 
 ## 6. CI
 
-- [ ] 6.1 Add `spec-exec-disasm-audit` CI advisory job that runs `objdump -d` on the kernel binary (per arch) and greps for the expected barrier opcodes at the expected sites; fails if any barrier is missing.
-- [ ] 6.2 Add a release-profile build smoke that confirms `spec-exec` feature is default-on for `cargo build --release` on each arch.
+- [x] 6.1 Add `spec-exec-disasm-audit` CI advisory job that runs `objdump -d` on the kernel binary (per arch) and greps for the expected barrier opcodes at the expected sites; fails if any barrier is missing.
+- [x] 6.2 Add a release-profile build smoke that confirms `spec-exec` feature is default-on for `cargo build --release` on each arch.
 
 ## 7. Verify + archive
 
