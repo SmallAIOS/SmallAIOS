@@ -54,6 +54,8 @@ use crate::tensor::{DataType, Tensor, TensorShape};
 /// An iteration count beyond this limit is treated as a hard failure.
 pub const MAX_LOOP_ITERATIONS: i64 = 1_000_000;
 
+// Helper for sub-graph setup.
+
 /// Runs a compiled inner graph once with the given seeded value map.
 ///
 /// The caller is responsible for:
@@ -75,8 +77,7 @@ pub const MAX_LOOP_ITERATIONS: i64 = 1_000_000;
 /// threaded through: per §6 of the design doc, the parent `Loop`/`If`/`Scan`
 /// is the single budget unit. Inner-operator measurement is a follow-up
 /// work-item.
-
-// Helper for sub-graph setup.
+///
 /// Inserts the body's initializers into `value_map` without overwriting
 /// already-seeded entries (loop-carried values shadow same-named weights).
 fn seed_initializers(value_map: &mut BTreeMap<String, Tensor>, initializers: &[TensorProto]) {
