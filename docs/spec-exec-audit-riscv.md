@@ -22,7 +22,7 @@ but is not driven by a real workload on RISC-V silicon).
 
 Critically, the hardware extensions that would let RISC-V mount a *real*
 defense against the Spectre-class attacks at the syscall trust boundary are
-**mostly unratified as of 2026-02**. We therefore cannot ship the
+**mostly unratified as of February 2026**. We therefore cannot ship the
 silicon-programming half of the mitigation; what we ship is:
 
 1. The architecturally-defined `fence.i` instruction-fetch barrier at the
@@ -59,8 +59,13 @@ ones we **cannot** ship:
 
 | Extension | CFI edge | Attack class addressed | Ratification (2026-02) |
 |-----------|----------|------------------------|------------------------|
-| **Zicfilp** | Forward-edge (landing pads on indirect-branch targets) | Spectre v2 / branch-target-injection (BTI) | **NOT ratified.** No stable encoding for the CSRs (`menvcfg.LPE` / `senvcfg.LPE`, `mseccfg` lockdown bits) we would program. |
-| **Zicfiss** | Backward-edge (hardware shadow stack) | Return-address corruption / Retbleed-class | **NOT ratified.** No stable `ssp` shadow-stack-pointer CSR / `menvcfg.SSE` / `senvcfg.SSE` to rely on. |
+| **Zicfilp** | Forward-edge (landing pads on indirect-branch targets) | Spectre v2 / branch-target-injection (BTI) | **NOT ratified** |
+| **Zicfiss** | Backward-edge (hardware shadow stack) | Return-address corruption / Retbleed-class | **NOT ratified** |
+
+Ratification details: Zicfilp currently has no stable encoding for the CSRs
+(`menvcfg.LPE` / `senvcfg.LPE`, `mseccfg` lockdown bits) we would program.
+Zicfiss currently has no stable `ssp` shadow-stack-pointer CSR or
+`menvcfg.SSE` / `senvcfg.SSE` encodings to rely on.
 
 Because both are unratified, SmallAIOS:
 
@@ -85,7 +90,7 @@ Because both are unratified, SmallAIOS:
   returns and **before** `handle_ecall` returns toward the `sret` (in
   `arch/riscv64/src/trap.rs`) that resumes U-mode.
 - **Why this side:** the *after-dispatch / pre-return* position is the
-  load-bearing one. RISC-V does not make a hart's stores to the instruction
+  load-bearing one. RISC-V does not make a hart (hardware thread)'s stores to the instruction
   stream visible to that hart's *subsequent instruction fetch* without an
   explicit `fence.i`. A syscall may legitimately mutate code the resuming
   context will fetch (future code-load / page-remap / module-style calls);
@@ -107,10 +112,20 @@ Because both are unratified, SmallAIOS:
 The canonical trust-boundary × attack-class matrix lives in the spine
 document `docs/spec-exec-audit.md`. The RISC-V column summarizes as:
 
-| Trust boundary | Spectre v1 (BCB) | Spectre v2 (BTI) | Spectre v4 (SSB) | Meltdown | Retbleed | Spectre-BHB |
-|----------------|------------------|------------------|------------------|----------|----------|-------------|
-| Syscall entry (`syscall.rs::handle_ecall`) | Partial — `fence.i` shipped (coherence, not a spec barrier); Zicbo* cache cleanup gated off | **Absent** — needs Zicfilp (unratified) | Absent — no ratified SSB control on RISC-V | **N/A (structural)** — unikernel, single address space, no user/kernel page-table split (same rationale as the spine doc's Meltdown row) | **Absent** — needs Zicfiss shadow stack (unratified) | Absent — no ratified BHB control |
-| Capability check / ONNX op-dispatch / bus receive | Inherits the above; not separately mitigated on RISC-V at this phase | Absent | Absent | N/A (structural) | Absent | Absent |
+| Trust boundary | Attack class | RISC-V status |
+|----------------|--------------|---------------|
+| Syscall entry (`syscall.rs::handle_ecall`) | Spectre v1 (BCB) | Partial — `fence.i` shipped (coherence, not a spec barrier); Zicbo* cache cleanup gated off |
+| Syscall entry (`syscall.rs::handle_ecall`) | Spectre v2 (BTI) | **Absent** — needs Zicfilp (unratified) |
+| Syscall entry (`syscall.rs::handle_ecall`) | Spectre v4 (SSB) | Absent — no ratified SSB control on RISC-V |
+| Syscall entry (`syscall.rs::handle_ecall`) | Meltdown | **N/A (structural)** — unikernel, single address space, no user/kernel page-table split (same rationale as the spine doc's Meltdown row) |
+| Syscall entry (`syscall.rs::handle_ecall`) | Retbleed | **Absent** — needs Zicfiss shadow stack (unratified) |
+| Syscall entry (`syscall.rs::handle_ecall`) | Spectre-BHB | Absent — no ratified BHB control |
+| Capability check / ONNX op-dispatch / bus receive | Spectre v1 (BCB) | Inherits the above; not separately mitigated on RISC-V at this phase |
+| Capability check / ONNX op-dispatch / bus receive | Spectre v2 (BTI) | Absent |
+| Capability check / ONNX op-dispatch / bus receive | Spectre v4 (SSB) | Absent |
+| Capability check / ONNX op-dispatch / bus receive | Meltdown | N/A (structural) |
+| Capability check / ONNX op-dispatch / bus receive | Retbleed | Absent |
+| Capability check / ONNX op-dispatch / bus receive | Spectre-BHB | Absent |
 
 "Partial" / "Absent" here is **stronger language than the other arches** by
 design — RISC-V genuinely lacks the ratified primitives the spine doc's
