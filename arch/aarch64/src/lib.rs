@@ -28,6 +28,9 @@ pub mod gicv2;
 pub mod interrupts;
 pub mod paging;
 pub mod platform;
+/// Speculative-execution silicon detection + profile selection
+/// (OpenSpec `spec-exec-mitigations-v1`, Phase 3 — aarch64).
+pub mod security;
 pub mod syscall;
 pub mod uart;
 #[cfg(feature = "fs-block-virtio")]
@@ -103,6 +106,12 @@ pub extern "C" fn kernel_main(dtb_addr: u64) -> ! {
     uart::puts("[boot] DTB address: 0x");
     uart::put_hex(dtb_addr);
     uart::puts("\n");
+
+    // Speculative-execution silicon detection + profile selection.
+    // OpenSpec `spec-exec-mitigations-v1` (Phase 3 — aarch64). Runs before
+    // the syscall path is reachable so the dispatch barrier profile is
+    // already published. Never panics — boot always continues.
+    security::spec_exec::init();
 
     // ── Stage 2: Memory ──────────────────────────────────────────────
     uart::puts("\n[boot] Stage 2: Memory detection\n");

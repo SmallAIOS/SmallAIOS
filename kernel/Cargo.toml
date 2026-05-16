@@ -13,6 +13,25 @@ verbose-boot = []
 no-global-alloc = []
 large-memory = []  # Track 64 GiB of pages (16M pages); default tracks 1 GiB (256K pages)
 verified-boot = ["smallaios-security/verified-boot"]  # Boot integrity verification and measurement log
+# Speculative-execution mitigations for x86_64 (Spectre v1/v2). When active:
+#   * `state::check_capability` emits an `lfence` speculation barrier after a
+#     successful capability check, before any attacker-controlled-address load
+#     (Spectre-v1 / bounds-check-bypass mitigation).
+#   * `arch/x86_64/build.rs` (gated on the same-named arch feature) emits
+#     Retpoline + Speculative-Load-Hardening compiler flags for the kernel
+#     binary.
+# Cargo has no target-conditional `default`, so this is wired default-ON for
+# x86_64 via `smallaios-arch-x86_64`'s own `default` feature (which forwards
+# here). Library/host builds on non-x86 targets compile it out at zero cost
+# (the barrier is `cfg(target_arch = "x86_64")`-gated regardless).
+spec-exec-x86 = []
+# Opt-out of the per-syscall-entry IBPB (Indirect Branch Predictor Barrier).
+# IBPB on every syscall entry fully flushes the indirect branch predictor,
+# closing cross-domain Spectre-v2 training but costing ~1-2k cycles per
+# syscall. Disabling it keeps IBRS/STIBP/Retpoline/SLH active but accepts the
+# residual risk that a prior context's poisoned BTB entries survive into the
+# kernel until the next IBRS refresh. See docs/spec-exec-audit.md.
+spec-exec-ibpb-off = []
 # `test-mocks` exposes the in-memory `MockShadowProvider` and any other
 # auth-test fixtures so downstream crates (auth/, peripheral/, mgmt/)
 # can drive integration tests without needing the kernel's real F2FS
