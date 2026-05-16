@@ -10,6 +10,8 @@
 //! Implementations are sequence-major and use a simple per-timestep loop.
 //! Output Y has shape `[seq_length, num_directions, batch, hidden_size]`.
 
+#![allow(clippy::too_many_arguments)]
+
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -45,9 +47,241 @@ fn slice_f32(data: &[u8], base: usize, n: usize) -> Vec<f32> {
     (0..n).map(|i| read_f32(data, base + i)).collect()
 }
 
+/// Whether this direction iterates the sequence in reverse.
+#[inline]
+fn dir_is_reverse(direction: &str, d: usize) -> bool {
+    direction == "reverse" || (direction == "bidirectional" && d == 1)
+}
+
+/// Shared shape validation for the `[seq, batch, input]` X tensor.
+/// Returns `(seq, batch, input_size)`.
+fn validate_x_shape(x: &Tensor, op: &str) -> Result<(usize, usize, usize), OpError> {
+    if x.shape.dims.len() != 3 {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "{}: X must be 3D [seq, batch, input]",
+            op
+        )));
+    }
+    Ok((
+        x.shape.dims[0] as usize,
+        x.shape.dims[1] as usize,
+        x.shape.dims[2] as usize,
+    ))
+}
+
+/// Validate the `[num_dir, gates*hidden, hidden]` R tensor.
+fn validate_r_shape(
+    r: &Tensor,
+    num_dir: usize,
+    gates: usize,
+    hidden: usize,
+    op: &str,
+    shape_msg: &str,
+) -> Result<(), OpError> {
+    if r.shape.dims.len() != 3
+        || r.shape.dims[0] as usize != num_dir
+        || r.shape.dims[1] as usize != gates * hidden
+        || r.shape.dims[2] as usize != hidden
+    {
+        return Err(OpError::ShapeMismatch(alloc::format!(
+            "{}: R shape must be {}",
+            op,
+            shape_msg
+        )));
+    }
+    Ok(())
+}
+
+/// Validate the `[num_dir, total]` B tensor, if provided.
+fn validate_b_shape(
+    b: Option<&Tensor>,
+    num_dir: usize,
+    total: usize,
+    op: &str,
+    shape_msg: &str,
+) -> Result<(), OpError> {
+    if let Some(bt) = b {
+        if bt.shape.dims.len() != 2
+            || bt.shape.dims[0] as usize != num_dir
+            || bt.shape.dims[1] as usize != total
+        {
+            return Err(OpError::ShapeMismatch(alloc::format!(
+                "{}: B shape must be {}",
+                op,
+                shape_msg
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate the `[num_dir, batch, hidden]` initial-state tensor (h0 or c0).
+fn validate_initial_state(
+    state: Option<&Tensor>,
+    num_dir: usize,
+    batch: usize,
+    hidden: usize,
+    op: &str,
+    name: &str,
+) -> Result<(), OpError> {
+    if let Some(st) = state {
+        if st.shape.dims.len() != 3
+            || st.shape.dims[0] as usize != num_dir
+            || st.shape.dims[1] as usize != batch
+            || st.shape.dims[2] as usize != hidden
+        {
+            return Err(OpError::ShapeMismatch(alloc::format!(
+                "{}: {} shape must be [num_dir, batch, hidden]",
+                op,
+                name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Read the per-direction initial state slice, defaulting to zeros.
+fn read_initial_state(
+    state: Option<&Tensor>,
+    d: usize,
+    batch: usize,
+    hidden: usize,
+    op: &str,
+) -> Result<Vec<f32>, OpError> {
+    if let Some(st) = state {
+        require_float(st, op)?;
+        Ok(slice_f32(&st.raw_data, d * batch * hidden, batch * hidden))
+    } else {
+        Ok(alloc::vec![0.0f32; batch * hidden])
+    }
+}
+
+/// Merge `[W bias | R bias]` halves into a single bias of length `half`.
+fn merge_wr_bias(b: Option<&Tensor>, d: usize, half: usize, op: &str) -> Result<Vec<f32>, OpError> {
+    if let Some(bt) = b {
+        require_float(bt, op)?;
+        let off = d * 2 * half;
+        let wb = slice_f32(&bt.raw_data, off, half);
+        let rb = slice_f32(&bt.raw_data, off + half, half);
+        Ok(wb.iter().zip(rb.iter()).map(|(a, b)| a + b).collect())
+    } else {
+        Ok(alloc::vec![0.0f32; half])
+    }
+}
+
+/// Write the final per-direction hidden state into the `Y_h`-style buffer.
+fn write_final_state(yh_data: &mut [u8], h: &[f32], d: usize, batch: usize, hidden: usize) {
+    let off = d * batch * hidden;
+    for (i, &v) in h.iter().enumerate() {
+        write_f32(yh_data, off + i, v);
+    }
+}
+
+/// Write the per-direction output slice into `Y[t, d, :, :]`.
+fn write_y_timestep(
+    y_data: &mut [u8],
+    h: &[f32],
+    t: usize,
+    d: usize,
+    num_dir: usize,
+    batch: usize,
+    hidden: usize,
+) {
+    let y_off = t * num_dir * batch * hidden + d * batch * hidden;
+    for (i, &v) in h.iter().enumerate() {
+        write_f32(y_data, y_off + i, v);
+    }
+}
+
+/// Build the output Y tensor with shape `[seq, num_dir, batch, hidden]`.
+fn make_y_tensor(
+    y_data: Vec<u8>,
+    seq: usize,
+    num_dir: usize,
+    batch: usize,
+    hidden: usize,
+) -> Tensor {
+    Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(alloc::vec![
+            seq as i64,
+            num_dir as i64,
+            batch as i64,
+            hidden as i64
+        ]),
+        name: String::new(),
+        raw_data: y_data,
+    }
+}
+
+/// Build the hidden-state tensor with shape `[num_dir, batch, hidden]`.
+fn make_state_tensor(data: Vec<u8>, num_dir: usize, batch: usize, hidden: usize) -> Tensor {
+    Tensor {
+        data_type: DataType::Float,
+        shape: TensorShape::new(alloc::vec![num_dir as i64, batch as i64, hidden as i64]),
+        name: String::new(),
+        raw_data: data,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // RNN
 // ---------------------------------------------------------------------------
+
+/// Validate W (and derive `hidden`) and the related R/B/h0 shapes for RNN.
+fn rnn_validate_shapes(
+    w: &Tensor,
+    r: &Tensor,
+    b: Option<&Tensor>,
+    h0: Option<&Tensor>,
+    num_dir: usize,
+    batch: usize,
+    input_size: usize,
+) -> Result<usize, OpError> {
+    if w.shape.dims.len() != 3 || w.shape.dims[0] as usize != num_dir {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RNN: W shape must be [num_dir, hidden, input]",
+        )));
+    }
+    let hidden = w.shape.dims[1] as usize;
+    if w.shape.dims[2] as usize != input_size {
+        return Err(OpError::ShapeMismatch(String::from(
+            "RNN: W input dim mismatch",
+        )));
+    }
+    validate_r_shape(r, num_dir, 1, hidden, "RNN", "[num_dir, hidden, hidden]")?;
+    validate_b_shape(b, num_dir, 2 * hidden, "RNN", "[num_dir, 2*hidden]")?;
+    validate_initial_state(h0, num_dir, batch, hidden, "RNN", "h0")?;
+    Ok(hidden)
+}
+
+/// Compute one RNN timestep: `h_t = tanh(x_t W^T + h_{t-1} R^T + b)`.
+fn rnn_step(
+    x_raw: &[u8],
+    x_off: usize,
+    h_prev: &[f32],
+    w_dir: &[f32],
+    r_dir: &[f32],
+    b_dir: &[f32],
+    batch: usize,
+    input_size: usize,
+    hidden: usize,
+) -> Vec<f32> {
+    let mut new_h = alloc::vec![0.0f32; batch * hidden];
+    for bi in 0..batch {
+        for hi in 0..hidden {
+            let mut acc = b_dir[hi];
+            for ii in 0..input_size {
+                acc += read_f32(x_raw, x_off + bi * input_size + ii) * w_dir[hi * input_size + ii];
+            }
+            for hh in 0..hidden {
+                acc += h_prev[bi * hidden + hh] * r_dir[hi * hidden + hh];
+            }
+            new_h[bi * hidden + hi] = tanh_approx(acc);
+        }
+    }
+    new_h
+}
 
 /// Basic RNN with tanh activation.
 ///
@@ -72,145 +306,171 @@ pub fn op_rnn(
     require_float(w, "RNN")?;
     require_float(r, "RNN")?;
     let (num_dir, _bi) = parse_direction(direction)?;
+    let (seq, batch, input_size) = validate_x_shape(x, "RNN")?;
+    let hidden = rnn_validate_shapes(w, r, b, h0, num_dir, batch, input_size)?;
 
-    if x.shape.dims.len() != 3 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "RNN: X must be 3D [seq, batch, input]",
-        )));
-    }
-    let seq = x.shape.dims[0] as usize;
-    let batch = x.shape.dims[1] as usize;
-    let input_size = x.shape.dims[2] as usize;
-
-    if w.shape.dims.len() != 3 || w.shape.dims[0] as usize != num_dir {
-        return Err(OpError::ShapeMismatch(String::from(
-            "RNN: W shape must be [num_dir, hidden, input]",
-        )));
-    }
-    let hidden = w.shape.dims[1] as usize;
-    if w.shape.dims[2] as usize != input_size {
-        return Err(OpError::ShapeMismatch(String::from(
-            "RNN: W input dim mismatch",
-        )));
-    }
-    if r.shape.dims.len() != 3
-        || r.shape.dims[0] as usize != num_dir
-        || r.shape.dims[1] as usize != hidden
-        || r.shape.dims[2] as usize != hidden
-    {
-        return Err(OpError::ShapeMismatch(String::from(
-            "RNN: R shape must be [num_dir, hidden, hidden]",
-        )));
-    }
-    // Validate optional B, h0 shapes up-front before we slice raw data.
-    if let Some(bt) = b {
-        if bt.shape.dims.len() != 2
-            || bt.shape.dims[0] as usize != num_dir
-            || bt.shape.dims[1] as usize != 2 * hidden
-        {
-            return Err(OpError::ShapeMismatch(String::from(
-                "RNN: B shape must be [num_dir, 2*hidden]",
-            )));
-        }
-    }
-    if let Some(h0t) = h0 {
-        if h0t.shape.dims.len() != 3
-            || h0t.shape.dims[0] as usize != num_dir
-            || h0t.shape.dims[1] as usize != batch
-            || h0t.shape.dims[2] as usize != hidden
-        {
-            return Err(OpError::ShapeMismatch(String::from(
-                "RNN: h0 shape must be [num_dir, batch, hidden]",
-            )));
-        }
-    }
-
-    // Output buffers.
     let y_total = seq * num_dir * batch * hidden;
     let mut y_data = allocate_tensor_data(y_total, DataType::Float);
     let mut yh_data = allocate_tensor_data(num_dir * batch * hidden, DataType::Float);
 
     for d in 0..num_dir {
-        let reverse = direction == "reverse" || (direction == "bidirectional" && d == 1);
-        // Read this direction's weights / biases.
+        let reverse = dir_is_reverse(direction, d);
         let w_off = d * hidden * input_size;
         let r_off = d * hidden * hidden;
         let w_dir = slice_f32(&w.raw_data, w_off, hidden * input_size);
         let r_dir = slice_f32(&r.raw_data, r_off, hidden * hidden);
-        let b_dir: Vec<f32> = if let Some(bt) = b {
-            require_float(bt, "RNN")?;
-            // B is [num_dir, 2*hidden]; final bias is sum of W bias and R bias halves.
-            let off = d * 2 * hidden;
-            let wb = slice_f32(&bt.raw_data, off, hidden);
-            let rb = slice_f32(&bt.raw_data, off + hidden, hidden);
-            wb.iter().zip(rb.iter()).map(|(a, b)| a + b).collect()
-        } else {
-            alloc::vec![0.0f32; hidden]
-        };
-        // Initial hidden state.
-        let mut h: Vec<f32> = if let Some(h0t) = h0 {
-            require_float(h0t, "RNN")?;
-            slice_f32(&h0t.raw_data, d * batch * hidden, batch * hidden)
-        } else {
-            alloc::vec![0.0f32; batch * hidden]
-        };
+        let b_dir = merge_wr_bias(b, d, hidden, "RNN")?;
+        let mut h = read_initial_state(h0, d, batch, hidden, "RNN")?;
 
         for step in 0..seq {
             let t = if reverse { seq - 1 - step } else { step };
-            // Compute h_t = tanh(x_t W^T + h_{t-1} R^T + b)
             let x_off = t * batch * input_size;
-            let mut new_h = alloc::vec![0.0f32; batch * hidden];
-            for bi in 0..batch {
-                for hi in 0..hidden {
-                    let mut acc = b_dir[hi];
-                    for ii in 0..input_size {
-                        acc += read_f32(&x.raw_data, x_off + bi * input_size + ii)
-                            * w_dir[hi * input_size + ii];
-                    }
-                    for hh in 0..hidden {
-                        acc += h[bi * hidden + hh] * r_dir[hi * hidden + hh];
-                    }
-                    new_h[bi * hidden + hi] = tanh_approx(acc);
-                }
-            }
-            h = new_h;
-            // Write Y[t, d, :, :].
-            let y_off = t * num_dir * batch * hidden + d * batch * hidden;
-            for (i, &v) in h.iter().enumerate() {
-                write_f32(&mut y_data, y_off + i, v);
-            }
+            h = rnn_step(
+                &x.raw_data,
+                x_off,
+                &h,
+                &w_dir,
+                &r_dir,
+                &b_dir,
+                batch,
+                input_size,
+                hidden,
+            );
+            write_y_timestep(&mut y_data, &h, t, d, num_dir, batch, hidden);
         }
-        // Final hidden state for this direction.
-        let yh_off = d * batch * hidden;
-        for (i, &v) in h.iter().enumerate() {
-            write_f32(&mut yh_data, yh_off + i, v);
-        }
+        write_final_state(&mut yh_data, &h, d, batch, hidden);
     }
 
     Ok(alloc::vec![
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(alloc::vec![
-                seq as i64,
-                num_dir as i64,
-                batch as i64,
-                hidden as i64
-            ]),
-            name: String::new(),
-            raw_data: y_data,
-        },
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(alloc::vec![num_dir as i64, batch as i64, hidden as i64]),
-            name: String::new(),
-            raw_data: yh_data,
-        },
+        make_y_tensor(y_data, seq, num_dir, batch, hidden),
+        make_state_tensor(yh_data, num_dir, batch, hidden),
     ])
 }
 
 // ---------------------------------------------------------------------------
 // LSTM
 // ---------------------------------------------------------------------------
+
+/// Validate W (and derive `hidden`) and the related R/B/h0/c0 shapes for LSTM.
+fn lstm_validate_shapes(
+    w: &Tensor,
+    r: &Tensor,
+    b: Option<&Tensor>,
+    h0: Option<&Tensor>,
+    c0: Option<&Tensor>,
+    num_dir: usize,
+    batch: usize,
+    input_size: usize,
+) -> Result<usize, OpError> {
+    if w.shape.dims.len() != 3 || w.shape.dims[0] as usize != num_dir {
+        return Err(OpError::ShapeMismatch(String::from(
+            "LSTM: W shape must be [num_dir, 4*hidden, input]",
+        )));
+    }
+    if w.shape.dims[2] as usize != input_size {
+        return Err(OpError::ShapeMismatch(String::from(
+            "LSTM: W input dim mismatch",
+        )));
+    }
+    let four_h = w.shape.dims[1] as usize;
+    if !four_h.is_multiple_of(4) {
+        return Err(OpError::ShapeMismatch(String::from(
+            "LSTM: W second dim must be 4*hidden",
+        )));
+    }
+    let hidden = four_h / 4;
+    validate_r_shape(r, num_dir, 4, hidden, "LSTM", "[num_dir, 4*hidden, hidden]")?;
+    validate_b_shape(b, num_dir, 8 * hidden, "LSTM", "[num_dir, 8*hidden]")?;
+    validate_initial_state(h0, num_dir, batch, hidden, "LSTM", "h0")?;
+    validate_initial_state(c0, num_dir, batch, hidden, "LSTM", "c0")?;
+    Ok(hidden)
+}
+
+/// Compute the LSTM gate pre-activations for one batch element:
+/// `g[k] = X·W^T_k + H·R^T_k + b_k` for `k in 0..4*hidden`.
+fn lstm_gate_preacts(
+    x_raw: &[u8],
+    x_row_off: usize,
+    h_prev_row: &[f32],
+    w_dir: &[f32],
+    r_dir: &[f32],
+    b_dir: &[f32],
+    input_size: usize,
+    hidden: usize,
+) -> Vec<f32> {
+    let mut gates = alloc::vec![0.0f32; 4 * hidden];
+    for k in 0..4 * hidden {
+        let mut acc = b_dir[k];
+        for ii in 0..input_size {
+            acc += read_f32(x_raw, x_row_off + ii) * w_dir[k * input_size + ii];
+        }
+        for hh in 0..hidden {
+            acc += h_prev_row[hh] * r_dir[k * hidden + hh];
+        }
+        gates[k] = acc;
+    }
+    gates
+}
+
+/// Apply the LSTM gate non-linearities and update `(h, c)` for one batch row.
+/// Gate layout per ONNX: i, o, f, c (input, output, forget, cell).
+fn lstm_apply_gates(
+    gates: &[f32],
+    c_prev_row: &[f32],
+    new_h_row: &mut [f32],
+    new_c_row: &mut [f32],
+    hidden: usize,
+) {
+    for hi in 0..hidden {
+        let i_g = sigmoid(gates[hi]);
+        let o_g = sigmoid(gates[hidden + hi]);
+        let f_g = sigmoid(gates[2 * hidden + hi]);
+        let c_g = tanh_approx(gates[3 * hidden + hi]);
+        let c_new = f_g * c_prev_row[hi] + i_g * c_g;
+        new_c_row[hi] = c_new;
+        new_h_row[hi] = o_g * tanh_approx(c_new);
+    }
+}
+
+/// Compute one LSTM timestep across the batch, returning the updated
+/// `(h, c)` slices.
+#[allow(clippy::too_many_arguments)]
+fn lstm_step(
+    x_raw: &[u8],
+    x_off: usize,
+    h_prev: &[f32],
+    c_prev: &[f32],
+    w_dir: &[f32],
+    r_dir: &[f32],
+    b_dir: &[f32],
+    batch: usize,
+    input_size: usize,
+    hidden: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let mut new_h = alloc::vec![0.0f32; batch * hidden];
+    let mut new_c = alloc::vec![0.0f32; batch * hidden];
+    for bi in 0..batch {
+        let off = bi * hidden;
+        let gates = lstm_gate_preacts(
+            x_raw,
+            x_off + bi * input_size,
+            &h_prev[off..off + hidden],
+            w_dir,
+            r_dir,
+            b_dir,
+            input_size,
+            hidden,
+        );
+        lstm_apply_gates(
+            &gates,
+            &c_prev[off..off + hidden],
+            &mut new_h[off..off + hidden],
+            &mut new_c[off..off + hidden],
+            hidden,
+        );
+    }
+    (new_h, new_c)
+}
 
 /// LSTM with input, forget, cell, output gates (i, o, f, c order per ONNX).
 ///
@@ -233,74 +493,8 @@ pub fn op_lstm(
     require_float(w, "LSTM")?;
     require_float(r, "LSTM")?;
     let (num_dir, _bi) = parse_direction(direction)?;
-
-    if x.shape.dims.len() != 3 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "LSTM: X must be 3D [seq, batch, input]",
-        )));
-    }
-    let seq = x.shape.dims[0] as usize;
-    let batch = x.shape.dims[1] as usize;
-    let input_size = x.shape.dims[2] as usize;
-
-    if w.shape.dims.len() != 3 || w.shape.dims[0] as usize != num_dir {
-        return Err(OpError::ShapeMismatch(String::from(
-            "LSTM: W shape must be [num_dir, 4*hidden, input]",
-        )));
-    }
-    if w.shape.dims[2] as usize != input_size {
-        return Err(OpError::ShapeMismatch(String::from(
-            "LSTM: W input dim mismatch",
-        )));
-    }
-    let four_h = w.shape.dims[1] as usize;
-    if !four_h.is_multiple_of(4) {
-        return Err(OpError::ShapeMismatch(String::from(
-            "LSTM: W second dim must be 4*hidden",
-        )));
-    }
-    let hidden = four_h / 4;
-    if r.shape.dims.len() != 3
-        || r.shape.dims[0] as usize != num_dir
-        || r.shape.dims[1] as usize != 4 * hidden
-        || r.shape.dims[2] as usize != hidden
-    {
-        return Err(OpError::ShapeMismatch(String::from(
-            "LSTM: R shape must be [num_dir, 4*hidden, hidden]",
-        )));
-    }
-    if let Some(bt) = b {
-        if bt.shape.dims.len() != 2
-            || bt.shape.dims[0] as usize != num_dir
-            || bt.shape.dims[1] as usize != 8 * hidden
-        {
-            return Err(OpError::ShapeMismatch(String::from(
-                "LSTM: B shape must be [num_dir, 8*hidden]",
-            )));
-        }
-    }
-    if let Some(h0t) = h0 {
-        if h0t.shape.dims.len() != 3
-            || h0t.shape.dims[0] as usize != num_dir
-            || h0t.shape.dims[1] as usize != batch
-            || h0t.shape.dims[2] as usize != hidden
-        {
-            return Err(OpError::ShapeMismatch(String::from(
-                "LSTM: h0 shape must be [num_dir, batch, hidden]",
-            )));
-        }
-    }
-    if let Some(c0t) = c0 {
-        if c0t.shape.dims.len() != 3
-            || c0t.shape.dims[0] as usize != num_dir
-            || c0t.shape.dims[1] as usize != batch
-            || c0t.shape.dims[2] as usize != hidden
-        {
-            return Err(OpError::ShapeMismatch(String::from(
-                "LSTM: c0 shape must be [num_dir, batch, hidden]",
-            )));
-        }
-    }
+    let (seq, batch, input_size) = validate_x_shape(x, "LSTM")?;
+    let hidden = lstm_validate_shapes(w, r, b, h0, c0, num_dir, batch, input_size)?;
 
     let y_total = seq * num_dir * batch * hidden;
     let mut y_data = allocate_tensor_data(y_total, DataType::Float);
@@ -308,115 +502,185 @@ pub fn op_lstm(
     let mut yc_data = allocate_tensor_data(num_dir * batch * hidden, DataType::Float);
 
     for d in 0..num_dir {
-        let reverse = direction == "reverse" || (direction == "bidirectional" && d == 1);
-
+        let reverse = dir_is_reverse(direction, d);
         let w_off = d * 4 * hidden * input_size;
         let r_off = d * 4 * hidden * hidden;
         let w_dir = slice_f32(&w.raw_data, w_off, 4 * hidden * input_size);
         let r_dir = slice_f32(&r.raw_data, r_off, 4 * hidden * hidden);
-        let b_dir: Vec<f32> = if let Some(bt) = b {
-            require_float(bt, "LSTM")?;
-            // B is [num_dir, 8*hidden]; collapse W bias + R bias.
-            let off = d * 8 * hidden;
-            let wb = slice_f32(&bt.raw_data, off, 4 * hidden);
-            let rb = slice_f32(&bt.raw_data, off + 4 * hidden, 4 * hidden);
-            wb.iter().zip(rb.iter()).map(|(a, b)| a + b).collect()
-        } else {
-            alloc::vec![0.0f32; 4 * hidden]
-        };
-
-        let mut h: Vec<f32> = if let Some(h0t) = h0 {
-            require_float(h0t, "LSTM")?;
-            slice_f32(&h0t.raw_data, d * batch * hidden, batch * hidden)
-        } else {
-            alloc::vec![0.0f32; batch * hidden]
-        };
-        let mut c: Vec<f32> = if let Some(c0t) = c0 {
-            require_float(c0t, "LSTM")?;
-            slice_f32(&c0t.raw_data, d * batch * hidden, batch * hidden)
-        } else {
-            alloc::vec![0.0f32; batch * hidden]
-        };
-
-        // Gate layout per ONNX: i, o, f, c (input, output, forget, cell).
-        let gate_offset = |g: usize| g * hidden;
+        let b_dir = merge_wr_bias(b, d, 4 * hidden, "LSTM")?;
+        let mut h = read_initial_state(h0, d, batch, hidden, "LSTM")?;
+        let mut c = read_initial_state(c0, d, batch, hidden, "LSTM")?;
 
         for step in 0..seq {
             let t = if reverse { seq - 1 - step } else { step };
             let x_off = t * batch * input_size;
-            let mut new_h = alloc::vec![0.0f32; batch * hidden];
-            let mut new_c = alloc::vec![0.0f32; batch * hidden];
-            for bi in 0..batch {
-                // Compute gate pre-activations: g[k] = X·W^T_k + H·R^T_k + b_k
-                let mut gates = alloc::vec![0.0f32; 4 * hidden];
-                for k in 0..4 * hidden {
-                    let mut acc = b_dir[k];
-                    for ii in 0..input_size {
-                        acc += read_f32(&x.raw_data, x_off + bi * input_size + ii)
-                            * w_dir[k * input_size + ii];
-                    }
-                    for hh in 0..hidden {
-                        acc += h[bi * hidden + hh] * r_dir[k * hidden + hh];
-                    }
-                    gates[k] = acc;
-                }
-                // Apply activations: i, o, f use sigmoid; c uses tanh.
-                for hi in 0..hidden {
-                    let i_g = sigmoid(gates[gate_offset(0) + hi]);
-                    let o_g = sigmoid(gates[gate_offset(1) + hi]);
-                    let f_g = sigmoid(gates[gate_offset(2) + hi]);
-                    let c_g = tanh_approx(gates[gate_offset(3) + hi]);
-                    let c_prev = c[bi * hidden + hi];
-                    let c_new = f_g * c_prev + i_g * c_g;
-                    let h_new = o_g * tanh_approx(c_new);
-                    new_c[bi * hidden + hi] = c_new;
-                    new_h[bi * hidden + hi] = h_new;
-                }
-            }
+            let (new_h, new_c) = lstm_step(
+                &x.raw_data,
+                x_off,
+                &h,
+                &c,
+                &w_dir,
+                &r_dir,
+                &b_dir,
+                batch,
+                input_size,
+                hidden,
+            );
             h = new_h;
             c = new_c;
-            let y_off = t * num_dir * batch * hidden + d * batch * hidden;
-            for (i, &v) in h.iter().enumerate() {
-                write_f32(&mut y_data, y_off + i, v);
-            }
+            write_y_timestep(&mut y_data, &h, t, d, num_dir, batch, hidden);
         }
-        let off = d * batch * hidden;
-        for (i, (&hv, &cv)) in h.iter().zip(c.iter()).enumerate() {
-            write_f32(&mut yh_data, off + i, hv);
-            write_f32(&mut yc_data, off + i, cv);
-        }
+        write_final_state(&mut yh_data, &h, d, batch, hidden);
+        write_final_state(&mut yc_data, &c, d, batch, hidden);
     }
 
     Ok(alloc::vec![
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(alloc::vec![
-                seq as i64,
-                num_dir as i64,
-                batch as i64,
-                hidden as i64
-            ]),
-            name: String::new(),
-            raw_data: y_data,
-        },
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(alloc::vec![num_dir as i64, batch as i64, hidden as i64]),
-            name: String::new(),
-            raw_data: yh_data,
-        },
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(alloc::vec![num_dir as i64, batch as i64, hidden as i64]),
-            name: String::new(),
-            raw_data: yc_data,
-        },
+        make_y_tensor(y_data, seq, num_dir, batch, hidden),
+        make_state_tensor(yh_data, num_dir, batch, hidden),
+        make_state_tensor(yc_data, num_dir, batch, hidden),
     ])
 }
 
 // ---------------------------------------------------------------------------
 // GRU
 // ---------------------------------------------------------------------------
+
+/// Validate W (and derive `hidden`) and the related R/B/h0 shapes for GRU.
+fn gru_validate_shapes(
+    w: &Tensor,
+    r: &Tensor,
+    b: Option<&Tensor>,
+    h0: Option<&Tensor>,
+    num_dir: usize,
+    batch: usize,
+    input_size: usize,
+) -> Result<usize, OpError> {
+    if w.shape.dims.len() != 3 || w.shape.dims[0] as usize != num_dir {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GRU: W shape must be [num_dir, 3*hidden, input]",
+        )));
+    }
+    if w.shape.dims[2] as usize != input_size {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GRU: W input dim mismatch",
+        )));
+    }
+    let three_h = w.shape.dims[1] as usize;
+    if !three_h.is_multiple_of(3) {
+        return Err(OpError::ShapeMismatch(String::from(
+            "GRU: W second dim must be 3*hidden",
+        )));
+    }
+    let hidden = three_h / 3;
+    validate_r_shape(r, num_dir, 3, hidden, "GRU", "[num_dir, 3*hidden, hidden]")?;
+    validate_b_shape(b, num_dir, 6 * hidden, "GRU", "[num_dir, 6*hidden]")?;
+    validate_initial_state(h0, num_dir, batch, hidden, "GRU", "h0")?;
+    Ok(hidden)
+}
+
+/// Split the GRU bias into separate `(W bias, R bias)` halves for direction `d`.
+/// ONNX keeps these separate because the hidden gate adds `R bias` only after
+/// being scaled by the reset gate.
+fn gru_split_bias(
+    b: Option<&Tensor>,
+    d: usize,
+    hidden: usize,
+) -> Result<(Vec<f32>, Vec<f32>), OpError> {
+    if let Some(bt) = b {
+        require_float(bt, "GRU")?;
+        let off = d * 6 * hidden;
+        Ok((
+            slice_f32(&bt.raw_data, off, 3 * hidden),
+            slice_f32(&bt.raw_data, off + 3 * hidden, 3 * hidden),
+        ))
+    } else {
+        Ok((
+            alloc::vec![0.0f32; 3 * hidden],
+            alloc::vec![0.0f32; 3 * hidden],
+        ))
+    }
+}
+
+/// Compute the GRU `(z, r)` gates and the split hidden pre-activations
+/// `(h_pre_w, h_pre_r)` for one batch row.
+#[allow(clippy::too_many_arguments)]
+fn gru_zr_and_h_preacts(
+    x_raw: &[u8],
+    x_row_off: usize,
+    h_prev_row: &[f32],
+    w_dir: &[f32],
+    r_dir: &[f32],
+    wb_dir: &[f32],
+    rb_dir: &[f32],
+    input_size: usize,
+    hidden: usize,
+) -> (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>) {
+    let mut z_g = alloc::vec![0.0f32; hidden];
+    let mut r_g = alloc::vec![0.0f32; hidden];
+    let mut h_pre_w = alloc::vec![0.0f32; hidden];
+    let mut h_pre_r = alloc::vec![0.0f32; hidden];
+    for hi in 0..hidden {
+        let mut z_acc = wb_dir[hi] + rb_dir[hi];
+        let mut r_acc = wb_dir[hidden + hi] + rb_dir[hidden + hi];
+        let mut hw_acc = wb_dir[2 * hidden + hi];
+        let mut hr_acc = rb_dir[2 * hidden + hi];
+        for ii in 0..input_size {
+            let xv = read_f32(x_raw, x_row_off + ii);
+            z_acc += xv * w_dir[hi * input_size + ii];
+            r_acc += xv * w_dir[(hidden + hi) * input_size + ii];
+            hw_acc += xv * w_dir[(2 * hidden + hi) * input_size + ii];
+        }
+        for hh in 0..hidden {
+            let hv = h_prev_row[hh];
+            z_acc += hv * r_dir[hi * hidden + hh];
+            r_acc += hv * r_dir[(hidden + hi) * hidden + hh];
+            hr_acc += hv * r_dir[(2 * hidden + hi) * hidden + hh];
+        }
+        z_g[hi] = sigmoid(z_acc);
+        r_g[hi] = sigmoid(r_acc);
+        h_pre_w[hi] = hw_acc;
+        h_pre_r[hi] = hr_acc;
+    }
+    (z_g, r_g, h_pre_w, h_pre_r)
+}
+
+/// Compute one GRU timestep across the batch.
+#[allow(clippy::too_many_arguments)]
+fn gru_step(
+    x_raw: &[u8],
+    x_off: usize,
+    h_prev: &[f32],
+    w_dir: &[f32],
+    r_dir: &[f32],
+    wb_dir: &[f32],
+    rb_dir: &[f32],
+    batch: usize,
+    input_size: usize,
+    hidden: usize,
+) -> Vec<f32> {
+    let mut new_h = alloc::vec![0.0f32; batch * hidden];
+    for bi in 0..batch {
+        let off = bi * hidden;
+        let (z_g, r_g, h_pre_w, h_pre_r) = gru_zr_and_h_preacts(
+            x_raw,
+            x_off + bi * input_size,
+            &h_prev[off..off + hidden],
+            w_dir,
+            r_dir,
+            wb_dir,
+            rb_dir,
+            input_size,
+            hidden,
+        );
+        // Hidden gate: h_tilde = tanh(h_pre_w + r * h_pre_r)
+        for hi in 0..hidden {
+            let h_tilde = tanh_approx(h_pre_w[hi] + r_g[hi] * h_pre_r[hi]);
+            let h_prev_v = h_prev[off + hi];
+            new_h[off + hi] = (1.0 - z_g[hi]) * h_tilde + z_g[hi] * h_prev_v;
+        }
+    }
+    new_h
+}
 
 /// GRU with reset, update, and hidden gates (z, r, h order per ONNX).
 ///
@@ -435,165 +699,45 @@ pub fn op_gru(
     require_float(w, "GRU")?;
     require_float(r, "GRU")?;
     let (num_dir, _bi) = parse_direction(direction)?;
-
-    if x.shape.dims.len() != 3 {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GRU: X must be 3D [seq, batch, input]",
-        )));
-    }
-    let seq = x.shape.dims[0] as usize;
-    let batch = x.shape.dims[1] as usize;
-    let input_size = x.shape.dims[2] as usize;
-
-    if w.shape.dims.len() != 3 || w.shape.dims[0] as usize != num_dir {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GRU: W shape must be [num_dir, 3*hidden, input]",
-        )));
-    }
-    if w.shape.dims[2] as usize != input_size {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GRU: W input dim mismatch",
-        )));
-    }
-    let three_h = w.shape.dims[1] as usize;
-    if !three_h.is_multiple_of(3) {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GRU: W second dim must be 3*hidden",
-        )));
-    }
-    let hidden = three_h / 3;
-    if r.shape.dims.len() != 3
-        || r.shape.dims[0] as usize != num_dir
-        || r.shape.dims[1] as usize != 3 * hidden
-        || r.shape.dims[2] as usize != hidden
-    {
-        return Err(OpError::ShapeMismatch(String::from(
-            "GRU: R shape must be [num_dir, 3*hidden, hidden]",
-        )));
-    }
-    if let Some(bt) = b {
-        if bt.shape.dims.len() != 2
-            || bt.shape.dims[0] as usize != num_dir
-            || bt.shape.dims[1] as usize != 6 * hidden
-        {
-            return Err(OpError::ShapeMismatch(String::from(
-                "GRU: B shape must be [num_dir, 6*hidden]",
-            )));
-        }
-    }
-    if let Some(h0t) = h0 {
-        if h0t.shape.dims.len() != 3
-            || h0t.shape.dims[0] as usize != num_dir
-            || h0t.shape.dims[1] as usize != batch
-            || h0t.shape.dims[2] as usize != hidden
-        {
-            return Err(OpError::ShapeMismatch(String::from(
-                "GRU: h0 shape must be [num_dir, batch, hidden]",
-            )));
-        }
-    }
+    let (seq, batch, input_size) = validate_x_shape(x, "GRU")?;
+    let hidden = gru_validate_shapes(w, r, b, h0, num_dir, batch, input_size)?;
 
     let y_total = seq * num_dir * batch * hidden;
     let mut y_data = allocate_tensor_data(y_total, DataType::Float);
     let mut yh_data = allocate_tensor_data(num_dir * batch * hidden, DataType::Float);
 
     for d in 0..num_dir {
-        let reverse = direction == "reverse" || (direction == "bidirectional" && d == 1);
+        let reverse = dir_is_reverse(direction, d);
         let w_off = d * 3 * hidden * input_size;
         let r_off = d * 3 * hidden * hidden;
         let w_dir = slice_f32(&w.raw_data, w_off, 3 * hidden * input_size);
         let r_dir = slice_f32(&r.raw_data, r_off, 3 * hidden * hidden);
-        // For GRU, ONNX keeps W bias and R bias separate because the hidden
-        // gate (h) needs to add R bias *after* multiplying by reset. We split.
-        let (wb_dir, rb_dir): (Vec<f32>, Vec<f32>) = if let Some(bt) = b {
-            require_float(bt, "GRU")?;
-            let off = d * 6 * hidden;
-            (
-                slice_f32(&bt.raw_data, off, 3 * hidden),
-                slice_f32(&bt.raw_data, off + 3 * hidden, 3 * hidden),
-            )
-        } else {
-            (
-                alloc::vec![0.0f32; 3 * hidden],
-                alloc::vec![0.0f32; 3 * hidden],
-            )
-        };
-        let mut h: Vec<f32> = if let Some(h0t) = h0 {
-            require_float(h0t, "GRU")?;
-            slice_f32(&h0t.raw_data, d * batch * hidden, batch * hidden)
-        } else {
-            alloc::vec![0.0f32; batch * hidden]
-        };
+        let (wb_dir, rb_dir) = gru_split_bias(b, d, hidden)?;
+        let mut h = read_initial_state(h0, d, batch, hidden, "GRU")?;
 
         for step in 0..seq {
             let t = if reverse { seq - 1 - step } else { step };
             let x_off = t * batch * input_size;
-            let mut new_h = alloc::vec![0.0f32; batch * hidden];
-            for bi in 0..batch {
-                // Compute z, r gates from W and R linearly.
-                let mut z_g = alloc::vec![0.0f32; hidden];
-                let mut r_g = alloc::vec![0.0f32; hidden];
-                let mut h_pre_w = alloc::vec![0.0f32; hidden]; // x·W^T_h + wb_h
-                let mut h_pre_r = alloc::vec![0.0f32; hidden]; // h·R^T_h + rb_h
-                for hi in 0..hidden {
-                    let mut z_acc = wb_dir[hi] + rb_dir[hi];
-                    let mut r_acc = wb_dir[hidden + hi] + rb_dir[hidden + hi];
-                    let mut hw_acc = wb_dir[2 * hidden + hi];
-                    let mut hr_acc = rb_dir[2 * hidden + hi];
-                    for ii in 0..input_size {
-                        let xv = read_f32(&x.raw_data, x_off + bi * input_size + ii);
-                        z_acc += xv * w_dir[hi * input_size + ii];
-                        r_acc += xv * w_dir[(hidden + hi) * input_size + ii];
-                        hw_acc += xv * w_dir[(2 * hidden + hi) * input_size + ii];
-                    }
-                    for hh in 0..hidden {
-                        let hv = h[bi * hidden + hh];
-                        z_acc += hv * r_dir[hi * hidden + hh];
-                        r_acc += hv * r_dir[(hidden + hi) * hidden + hh];
-                        hr_acc += hv * r_dir[(2 * hidden + hi) * hidden + hh];
-                    }
-                    z_g[hi] = sigmoid(z_acc);
-                    r_g[hi] = sigmoid(r_acc);
-                    h_pre_w[hi] = hw_acc;
-                    h_pre_r[hi] = hr_acc;
-                }
-                // Hidden gate: h_tilde = tanh(h_pre_w + r * h_pre_r)
-                for hi in 0..hidden {
-                    let h_tilde = tanh_approx(h_pre_w[hi] + r_g[hi] * h_pre_r[hi]);
-                    let h_prev = h[bi * hidden + hi];
-                    new_h[bi * hidden + hi] = (1.0 - z_g[hi]) * h_tilde + z_g[hi] * h_prev;
-                }
-            }
-            h = new_h;
-            let y_off = t * num_dir * batch * hidden + d * batch * hidden;
-            for (i, &v) in h.iter().enumerate() {
-                write_f32(&mut y_data, y_off + i, v);
-            }
+            h = gru_step(
+                &x.raw_data,
+                x_off,
+                &h,
+                &w_dir,
+                &r_dir,
+                &wb_dir,
+                &rb_dir,
+                batch,
+                input_size,
+                hidden,
+            );
+            write_y_timestep(&mut y_data, &h, t, d, num_dir, batch, hidden);
         }
-        let off = d * batch * hidden;
-        for (i, &v) in h.iter().enumerate() {
-            write_f32(&mut yh_data, off + i, v);
-        }
+        write_final_state(&mut yh_data, &h, d, batch, hidden);
     }
 
     Ok(alloc::vec![
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(alloc::vec![
-                seq as i64,
-                num_dir as i64,
-                batch as i64,
-                hidden as i64
-            ]),
-            name: String::new(),
-            raw_data: y_data,
-        },
-        Tensor {
-            data_type: DataType::Float,
-            shape: TensorShape::new(alloc::vec![num_dir as i64, batch as i64, hidden as i64]),
-            name: String::new(),
-            raw_data: yh_data,
-        },
+        make_y_tensor(y_data, seq, num_dir, batch, hidden),
+        make_state_tensor(yh_data, num_dir, batch, hidden),
     ])
 }
 

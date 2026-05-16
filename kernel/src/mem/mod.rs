@@ -26,53 +26,76 @@ pub struct PhysAddr(pub usize);
 #[repr(transparent)]
 pub struct VirtAddr(pub usize);
 
+/// Internal const helper: round `addr` up to the next multiple of `align`.
+///
+/// `align` must be a power of two. Used by both `PhysAddr::align_up` and
+/// `VirtAddr::align_up` to share their alignment arithmetic without
+/// forcing the address newtypes through a (non-`const`) trait.
+#[inline]
+const fn align_up_usize(addr: usize, align: usize) -> usize {
+    (addr + align - 1) & !(align - 1)
+}
+
+/// Internal const helper: round `addr` down to the previous multiple of `align`.
+#[inline]
+const fn align_down_usize(addr: usize, align: usize) -> usize {
+    addr & !(align - 1)
+}
+
+/// Internal const helper: check that `addr` is a multiple of `align`.
+#[inline]
+const fn is_aligned_usize(addr: usize, align: usize) -> bool {
+    addr & (align - 1) == 0
+}
+
+/// Generates the shared `const fn` API (`new`, `as_usize`, `align_up`,
+/// `align_down`, `is_aligned`) on a `#[repr(transparent)]` address newtype.
+///
+/// `PhysAddr` and `VirtAddr` are intentionally distinct types (mixing them
+/// is a kernel-correctness bug), so we keep the strong typing but share
+/// the body via a macro instead of duplicating five identical methods per
+/// type. This preserves the existing public API byte-for-byte.
+macro_rules! impl_addr_newtype {
+    ($t:ty) => {
+        impl $t {
+            #[inline]
+            pub const fn new(addr: usize) -> Self {
+                Self(addr)
+            }
+
+            #[inline]
+            pub const fn as_usize(self) -> usize {
+                self.0
+            }
+
+            #[inline]
+            pub const fn align_up(self, align: usize) -> Self {
+                Self(align_up_usize(self.0, align))
+            }
+
+            #[inline]
+            pub const fn align_down(self, align: usize) -> Self {
+                Self(align_down_usize(self.0, align))
+            }
+
+            #[inline]
+            pub const fn is_aligned(self, align: usize) -> bool {
+                is_aligned_usize(self.0, align)
+            }
+        }
+    };
+}
+
+impl_addr_newtype!(PhysAddr);
+impl_addr_newtype!(VirtAddr);
+
 impl PhysAddr {
-    pub const fn new(addr: usize) -> Self {
-        Self(addr)
-    }
-
-    pub const fn as_usize(self) -> usize {
-        self.0
-    }
-
-    pub const fn align_up(self, align: usize) -> Self {
-        Self((self.0 + align - 1) & !(align - 1))
-    }
-
-    pub const fn align_down(self, align: usize) -> Self {
-        Self(self.0 & !(align - 1))
-    }
-
-    pub const fn is_aligned(self, align: usize) -> bool {
-        self.0 & (align - 1) == 0
-    }
-
     pub const fn offset(self, offset: usize) -> Self {
         Self(self.0 + offset)
     }
 }
 
 impl VirtAddr {
-    pub const fn new(addr: usize) -> Self {
-        Self(addr)
-    }
-
-    pub const fn as_usize(self) -> usize {
-        self.0
-    }
-
-    pub const fn align_up(self, align: usize) -> Self {
-        Self((self.0 + align - 1) & !(align - 1))
-    }
-
-    pub const fn align_down(self, align: usize) -> Self {
-        Self(self.0 & !(align - 1))
-    }
-
-    pub const fn is_aligned(self, align: usize) -> bool {
-        self.0 & (align - 1) == 0
-    }
-
     pub const fn as_ptr<T>(self) -> *const T {
         self.0 as *const T
     }
@@ -118,18 +141,32 @@ pub enum MemError {
 mod tests {
     use super::*;
 
-    #[test]
-    fn phys_addr_basic() {
-        let addr = PhysAddr::new(0x1000);
-        assert_eq!(addr.as_usize(), 0x1000);
+    /// Asserts that an address newtype's shared `new` / `as_usize` /
+    /// `align_up` / `align_down` / `is_aligned` API behaves correctly.
+    ///
+    /// Used by both the `PhysAddr` and `VirtAddr` test cases below to
+    /// avoid duplicating the same five assertions per type.
+    macro_rules! assert_addr_api {
+        ($t:ty, $base:expr) => {{
+            let base: usize = $base;
+            // new + as_usize round-trip.
+            assert_eq!(<$t>::new(base).as_usize(), base);
+            // align_up rounds an off-by-one address up to the next page.
+            assert_eq!(
+                <$t>::new(base | 0x1).align_up(0x1000).as_usize(),
+                base + 0x1000
+            );
+            // align_down strips the low bits.
+            assert_eq!(<$t>::new(base | 0xFFF).align_down(0x1000).as_usize(), base);
+            // is_aligned discriminates page-aligned vs unaligned.
+            assert!(<$t>::new(base).is_aligned(0x1000));
+            assert!(!<$t>::new(base | 0x1).is_aligned(0x1000));
+        }};
     }
 
     #[test]
-    fn phys_addr_align() {
-        assert_eq!(PhysAddr::new(0x1001).align_up(0x1000).as_usize(), 0x2000);
-        assert_eq!(PhysAddr::new(0x1FFF).align_down(0x1000).as_usize(), 0x1000);
-        assert!(PhysAddr::new(0x1000).is_aligned(0x1000));
-        assert!(!PhysAddr::new(0x1001).is_aligned(0x1000));
+    fn phys_addr_basic_and_align() {
+        assert_addr_api!(PhysAddr, 0x1000);
     }
 
     #[test]
@@ -138,17 +175,8 @@ mod tests {
     }
 
     #[test]
-    fn virt_addr_basic() {
-        let addr = VirtAddr::new(0x2000);
-        assert_eq!(addr.as_usize(), 0x2000);
-    }
-
-    #[test]
-    fn virt_addr_align() {
-        assert_eq!(VirtAddr::new(0x2001).align_up(0x1000).as_usize(), 0x3000);
-        assert_eq!(VirtAddr::new(0x2FFF).align_down(0x1000).as_usize(), 0x2000);
-        assert!(VirtAddr::new(0x2000).is_aligned(0x1000));
-        assert!(!VirtAddr::new(0x2001).is_aligned(0x1000));
+    fn virt_addr_basic_and_align() {
+        assert_addr_api!(VirtAddr, 0x2000);
     }
 
     #[test]

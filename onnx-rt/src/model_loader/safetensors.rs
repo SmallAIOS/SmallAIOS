@@ -126,6 +126,22 @@ impl SafetensorsFile {
 
 /// Parse the 8-byte length prefix + JSON header region of a mmap'd file.
 fn parse_header(bytes: &[u8]) -> Result<BTreeMap<String, TensorEntry>, LoaderError> {
+    let (header_json, payload_start) = split_header_region(bytes)?;
+    let raw = parse_json_object(header_json)?;
+
+    let mut out = BTreeMap::new();
+    for (name, value) in raw {
+        if name == "__metadata__" {
+            continue;
+        }
+        let entry = build_tensor_entry(&name, value, payload_start, bytes.len())?;
+        out.insert(name, entry);
+    }
+    Ok(out)
+}
+
+/// Split a safetensors file into (header JSON, payload start offset).
+fn split_header_region(bytes: &[u8]) -> Result<(&str, usize), LoaderError> {
     if bytes.len() < 8 {
         return Err(LoaderError::InvalidHeader(
             "file smaller than 8-byte length prefix".to_string(),
@@ -146,126 +162,146 @@ fn parse_header(bytes: &[u8]) -> Result<BTreeMap<String, TensorEntry>, LoaderErr
     }
     let header_json = core::str::from_utf8(&bytes[header_start..header_end])
         .map_err(|e| LoaderError::InvalidHeader(format!("header not valid UTF-8: {e}")))?;
+    Ok((header_json, header_end))
+}
 
-    let payload_start = header_end;
-    let raw = parse_json_object(header_json)?;
-
-    let mut out = BTreeMap::new();
-    for (name, value) in raw {
-        if name == "__metadata__" {
-            continue;
-        }
-        let obj = match value {
-            JsonValue::Object(o) => o,
-            _ => {
-                return Err(LoaderError::InvalidHeader(format!(
-                    "tensor entry {name} is not a JSON object"
-                )))
-            }
-        };
-        let dtype_str = obj
-            .iter()
-            .find(|(k, _)| k == "dtype")
-            .map(|(_, v)| v)
-            .ok_or_else(|| LoaderError::InvalidHeader(format!("{name}: missing dtype")))?;
-        let dtype_str = match dtype_str {
-            JsonValue::String(s) => s.as_str(),
-            _ => {
-                return Err(LoaderError::InvalidHeader(format!(
-                    "{name}: dtype must be a string"
-                )))
-            }
-        };
-        let dtype = dtype_from_str(dtype_str)
-            .ok_or_else(|| LoaderError::UnsupportedDtype(dtype_str.to_string()))?;
-
-        let shape_val = obj
-            .iter()
-            .find(|(k, _)| k == "shape")
-            .map(|(_, v)| v)
-            .ok_or_else(|| LoaderError::InvalidHeader(format!("{name}: missing shape")))?;
-        let shape = match shape_val {
-            JsonValue::Array(arr) => {
-                let mut dims = Vec::with_capacity(arr.len());
-                for dim in arr {
-                    match dim {
-                        JsonValue::Number(n) => dims.push(*n),
-                        _ => {
-                            return Err(LoaderError::InvalidHeader(format!(
-                                "{name}: shape element not a number"
-                            )))
-                        }
-                    }
-                }
-                dims
-            }
-            _ => {
-                return Err(LoaderError::InvalidHeader(format!(
-                    "{name}: shape must be an array"
-                )))
-            }
-        };
-
-        let offsets_val = obj
-            .iter()
-            .find(|(k, _)| k == "data_offsets")
-            .map(|(_, v)| v)
-            .ok_or_else(|| LoaderError::InvalidHeader(format!("{name}: missing data_offsets")))?;
-        let (rel_start, rel_end) = match offsets_val {
-            JsonValue::Array(arr) if arr.len() == 2 => {
-                let a = match &arr[0] {
-                    JsonValue::Number(n) => *n,
-                    _ => {
-                        return Err(LoaderError::InvalidHeader(format!(
-                            "{name}: data_offsets[0] not a number"
-                        )))
-                    }
-                };
-                let b = match &arr[1] {
-                    JsonValue::Number(n) => *n,
-                    _ => {
-                        return Err(LoaderError::InvalidHeader(format!(
-                            "{name}: data_offsets[1] not a number"
-                        )))
-                    }
-                };
-                (a, b)
-            }
-            _ => {
-                return Err(LoaderError::InvalidHeader(format!(
-                    "{name}: data_offsets must be a 2-element array"
-                )))
-            }
-        };
-        if rel_start < 0 || rel_end < rel_start {
+/// Build a single [`TensorEntry`] from the parsed JSON object value.
+fn build_tensor_entry(
+    name: &str,
+    value: JsonValue,
+    payload_start: usize,
+    file_len: usize,
+) -> Result<TensorEntry, LoaderError> {
+    let obj = match value {
+        JsonValue::Object(o) => o,
+        _ => {
             return Err(LoaderError::InvalidHeader(format!(
-                "{name}: invalid data_offsets [{rel_start}, {rel_end}]"
-            )));
+                "tensor entry {name} is not a JSON object"
+            )))
         }
-        let abs_start = payload_start
-            .checked_add(rel_start as usize)
-            .ok_or_else(|| LoaderError::InvalidHeader(format!("{name}: offset overflow")))?;
-        let abs_end = payload_start
-            .checked_add(rel_end as usize)
-            .ok_or_else(|| LoaderError::InvalidHeader(format!("{name}: offset overflow")))?;
-        if abs_end > bytes.len() {
-            return Err(LoaderError::InvalidHeader(format!(
-                "{name}: data_offsets end {abs_end} exceeds file size {}",
-                bytes.len()
-            )));
-        }
+    };
+    let dtype = decode_entry_dtype(name, &obj)?;
+    let shape = decode_entry_shape(name, &obj)?;
+    let (rel_start, rel_end) = decode_entry_offsets(name, &obj)?;
+    let (abs_start, abs_end) =
+        resolve_absolute_offsets(name, payload_start, file_len, rel_start, rel_end)?;
+    Ok(TensorEntry {
+        dtype,
+        shape,
+        data_offset_start: abs_start,
+        data_offset_end: abs_end,
+    })
+}
 
-        out.insert(
-            name,
-            TensorEntry {
-                dtype,
-                shape,
-                data_offset_start: abs_start,
-                data_offset_end: abs_end,
-            },
-        );
+/// Find a key in a JSON object payload, or fail with a helpful error.
+fn find_obj_field<'a>(
+    obj: &'a [(String, JsonValue)],
+    key: &str,
+    name: &str,
+) -> Result<&'a JsonValue, LoaderError> {
+    obj.iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+        .ok_or_else(|| LoaderError::InvalidHeader(format!("{name}: missing {key}")))
+}
+
+fn decode_entry_dtype(name: &str, obj: &[(String, JsonValue)]) -> Result<DataType, LoaderError> {
+    let dtype_val = find_obj_field(obj, "dtype", name)?;
+    let dtype_str = match dtype_val {
+        JsonValue::String(s) => s.as_str(),
+        _ => {
+            return Err(LoaderError::InvalidHeader(format!(
+                "{name}: dtype must be a string"
+            )))
+        }
+    };
+    dtype_from_str(dtype_str).ok_or_else(|| LoaderError::UnsupportedDtype(dtype_str.to_string()))
+}
+
+fn decode_entry_shape(name: &str, obj: &[(String, JsonValue)]) -> Result<Vec<i64>, LoaderError> {
+    let shape_val = find_obj_field(obj, "shape", name)?;
+    let arr = match shape_val {
+        JsonValue::Array(arr) => arr,
+        _ => {
+            return Err(LoaderError::InvalidHeader(format!(
+                "{name}: shape must be an array"
+            )))
+        }
+    };
+    let mut dims = Vec::with_capacity(arr.len());
+    for dim in arr {
+        match dim {
+            JsonValue::Number(n) => dims.push(*n),
+            _ => {
+                return Err(LoaderError::InvalidHeader(format!(
+                    "{name}: shape element not a number"
+                )))
+            }
+        }
     }
-    Ok(out)
+    Ok(dims)
+}
+
+fn decode_entry_offsets(
+    name: &str,
+    obj: &[(String, JsonValue)],
+) -> Result<(i64, i64), LoaderError> {
+    let offsets_val = find_obj_field(obj, "data_offsets", name)?;
+    match offsets_val {
+        JsonValue::Array(arr) if arr.len() == 2 => {
+            let a = offset_element(name, &arr[0], 0)?;
+            let b = offset_element(name, &arr[1], 1)?;
+            Ok((a, b))
+        }
+        _ => Err(LoaderError::InvalidHeader(format!(
+            "{name}: data_offsets must be a 2-element array"
+        ))),
+    }
+}
+
+fn offset_element(name: &str, value: &JsonValue, idx: usize) -> Result<i64, LoaderError> {
+    match value {
+        JsonValue::Number(n) => Ok(*n),
+        _ => Err(LoaderError::InvalidHeader(format!(
+            "{name}: data_offsets[{idx}] not a number"
+        ))),
+    }
+}
+
+fn resolve_absolute_offsets(
+    name: &str,
+    payload_start: usize,
+    file_len: usize,
+    rel_start: i64,
+    rel_end: i64,
+) -> Result<(usize, usize), LoaderError> {
+    if rel_start < 0 || rel_end < rel_start {
+        return Err(LoaderError::InvalidHeader(format!(
+            "{name}: invalid data_offsets [{rel_start}, {rel_end}]"
+        )));
+    }
+    let abs_start = payload_start
+        .checked_add(rel_start as usize)
+        .ok_or_else(|| LoaderError::InvalidHeader(format!("{name}: offset overflow")))?;
+    let abs_end = payload_start
+        .checked_add(rel_end as usize)
+        .ok_or_else(|| LoaderError::InvalidHeader(format!("{name}: offset overflow")))?;
+    if abs_end > file_len {
+        return Err(LoaderError::InvalidHeader(format!(
+            "{name}: data_offsets end {abs_end} exceeds file size {file_len}"
+        )));
+    }
+    Ok((abs_start, abs_end))
+}
+
+/// Convert a single ASCII hex digit to its numeric value.
+fn hex_digit_value(d: u8) -> Option<u8> {
+    match d {
+        b'0'..=b'9' => Some(d - b'0'),
+        b'a'..=b'f' => Some(d - b'a' + 10),
+        b'A'..=b'F' => Some(d - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Map safetensors dtype strings to ONNX-runtime `DataType`.
@@ -458,54 +494,7 @@ impl<'a> JsonParser<'a> {
         loop {
             match self.bump() {
                 Some(b'"') => return Ok(out),
-                Some(b'\\') => match self.bump() {
-                    Some(b'"') => out.push('"'),
-                    Some(b'\\') => out.push('\\'),
-                    Some(b'/') => out.push('/'),
-                    Some(b'n') => out.push('\n'),
-                    Some(b'r') => out.push('\r'),
-                    Some(b't') => out.push('\t'),
-                    Some(b'b') => out.push('\u{08}'),
-                    Some(b'f') => out.push('\u{0C}'),
-                    Some(b'u') => {
-                        let mut code: u32 = 0;
-                        for _ in 0..4 {
-                            let d = self.bump().ok_or_else(|| {
-                                LoaderError::InvalidHeader("truncated \\u escape".to_string())
-                            })?;
-                            let hv = match d {
-                                b'0'..=b'9' => d - b'0',
-                                b'a'..=b'f' => d - b'a' + 10,
-                                b'A'..=b'F' => d - b'A' + 10,
-                                _ => {
-                                    return Err(LoaderError::InvalidHeader(format!(
-                                        "bad hex digit '{}' in \\u escape",
-                                        d as char
-                                    )))
-                                }
-                            };
-                            code = (code << 4) | hv as u32;
-                        }
-                        if let Some(c) = char::from_u32(code) {
-                            out.push(c);
-                        } else {
-                            return Err(LoaderError::InvalidHeader(format!(
-                                "invalid unicode codepoint U+{code:04X}"
-                            )));
-                        }
-                    }
-                    Some(c) => {
-                        return Err(LoaderError::InvalidHeader(format!(
-                            "bad escape '\\{}'",
-                            c as char
-                        )))
-                    }
-                    None => {
-                        return Err(LoaderError::InvalidHeader(
-                            "unterminated escape".to_string(),
-                        ))
-                    }
-                },
+                Some(b'\\') => self.consume_escape(&mut out)?,
                 Some(b) => {
                     // Accept UTF-8 continuation bytes verbatim.
                     out.push(b as char);
@@ -517,6 +506,53 @@ impl<'a> JsonParser<'a> {
                 }
             }
         }
+    }
+
+    /// Consume one `\<x>` escape sequence (already past the backslash).
+    fn consume_escape(&mut self, out: &mut String) -> Result<(), LoaderError> {
+        match self.bump() {
+            Some(b'"') => out.push('"'),
+            Some(b'\\') => out.push('\\'),
+            Some(b'/') => out.push('/'),
+            Some(b'n') => out.push('\n'),
+            Some(b'r') => out.push('\r'),
+            Some(b't') => out.push('\t'),
+            Some(b'b') => out.push('\u{08}'),
+            Some(b'f') => out.push('\u{0C}'),
+            Some(b'u') => self.consume_unicode_escape(out)?,
+            Some(c) => {
+                return Err(LoaderError::InvalidHeader(format!(
+                    "bad escape '\\{}'",
+                    c as char
+                )))
+            }
+            None => {
+                return Err(LoaderError::InvalidHeader(
+                    "unterminated escape".to_string(),
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    /// Consume the 4 hex digits of a `\uXXXX` escape and push the
+    /// resulting code point onto `out`.
+    fn consume_unicode_escape(&mut self, out: &mut String) -> Result<(), LoaderError> {
+        let mut code: u32 = 0;
+        for _ in 0..4 {
+            let d = self
+                .bump()
+                .ok_or_else(|| LoaderError::InvalidHeader("truncated \\u escape".to_string()))?;
+            let hv = hex_digit_value(d).ok_or_else(|| {
+                LoaderError::InvalidHeader(format!("bad hex digit '{}' in \\u escape", d as char))
+            })?;
+            code = (code << 4) | hv as u32;
+        }
+        let c = char::from_u32(code).ok_or_else(|| {
+            LoaderError::InvalidHeader(format!("invalid unicode codepoint U+{code:04X}"))
+        })?;
+        out.push(c);
+        Ok(())
     }
 
     fn parse_number(&mut self) -> Result<JsonValue, LoaderError> {

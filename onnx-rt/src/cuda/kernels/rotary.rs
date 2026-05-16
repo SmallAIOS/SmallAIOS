@@ -170,81 +170,79 @@ extern "C" __global__ void rotary_bf16(
 ///
 /// The call is asynchronous on the default stream; use
 /// [`super::synchronize`] before reading the output on the host.
-pub fn rotary_gpu(
-    runtime: &CudaRuntime,
+/// Parsed RoPE layout: `(batch, heads, seq_len, head_dim, h_per_seq)`.
+type RotaryLayout = (i64, i64, i64, i64, i64);
+
+/// Select the kernel name for the given input dtype.
+fn pick_rotary_kernel(dtype: DataType) -> Result<&'static str, CudaError> {
+    match dtype {
+        DataType::Float => Ok("rotary_f32"),
+        DataType::BFloat16 => Ok("rotary_bf16"),
+        _ => Err(CudaError::RuntimeError {
+            op: "rotary_gpu: unsupported dtype (need Float or BFloat16)",
+            code: -1,
+        }),
+    }
+}
+
+/// Resolve the rank-3 RoPE layout from `[B, Sq, H*head_dim]` shape.
+fn rotary_layout_rank3(
     x: &DeviceTensor,
+    num_heads_for_rank3: Option<i64>,
+) -> Result<RotaryLayout, CudaError> {
+    let n = num_heads_for_rank3.ok_or(CudaError::RuntimeError {
+        op: "rotary_gpu: rank-3 input requires num_heads_for_rank3",
+        code: -1,
+    })?;
+    if n <= 0 {
+        return Err(CudaError::RuntimeError {
+            op: "rotary_gpu: num_heads must be > 0 for rank-3 input",
+            code: -1,
+        });
+    }
+    let b = x.shape[0];
+    let sq = x.shape[1];
+    let hidden = x.shape[2];
+    if hidden % n != 0 {
+        return Err(CudaError::RuntimeError {
+            op: "rotary_gpu: hidden not divisible by num_heads (rank-3)",
+            code: -1,
+        });
+    }
+    Ok((b, n, sq, hidden / n, n))
+}
+
+/// Resolve the RoPE input layout for either rank-3 or rank-4 inputs.
+fn resolve_rotary_layout(
+    x: &DeviceTensor,
+    num_heads_for_rank3: Option<i64>,
+) -> Result<RotaryLayout, CudaError> {
+    match x.shape.len() {
+        4 => Ok((x.shape[0], x.shape[1], x.shape[2], x.shape[3], 1i64)),
+        3 => rotary_layout_rank3(x, num_heads_for_rank3),
+        _ => Err(CudaError::RuntimeError {
+            op: "rotary_gpu: x must be rank-3 or rank-4",
+            code: -1,
+        }),
+    }
+}
+
+/// Validate cos/sin tables against the resolved `head_dim` and `seq_len`.
+///
+/// Returns the shared `max_seq_len` of the two tables.
+fn validate_rotary_tables(
     cos_table: &DeviceTensor,
     sin_table: &DeviceTensor,
+    half_i64: i64,
+    seq_len_i64: i64,
     position: i32,
-    interleaved: bool,
-    num_heads_for_rank3: Option<i64>,
-) -> Result<DeviceTensor, CudaError> {
-    let kernel_name = match x.dtype {
-        DataType::Float => "rotary_f32",
-        DataType::BFloat16 => "rotary_bf16",
-        _ => {
-            return Err(CudaError::RuntimeError {
-                op: "rotary_gpu: unsupported dtype (need Float or BFloat16)",
-                code: -1,
-            });
-        }
-    };
+) -> Result<(), CudaError> {
     if cos_table.dtype != DataType::Float || sin_table.dtype != DataType::Float {
         return Err(CudaError::RuntimeError {
             op: "rotary_gpu: cos/sin tables must be Float",
             code: -1,
         });
     }
-    // Two accepted input layouts:
-    //   - rank-4 [B, H, Sq, head_dim] (qi stride = 1 row, `h_per_seq = 1`)
-    //   - rank-3 [B, Sq, H*head_dim]   (qi stride = H rows, `h_per_seq = H`)
-    let (batch_i64, heads_i64, seq_len_i64, head_dim_i64, h_per_seq_i64) = match x.shape.len() {
-        4 => {
-            let b = x.shape[0];
-            let h = x.shape[1];
-            let sq = x.shape[2];
-            let d = x.shape[3];
-            (b, h, sq, d, 1i64)
-        }
-        3 => {
-            let n = num_heads_for_rank3.ok_or(CudaError::RuntimeError {
-                op: "rotary_gpu: rank-3 input requires num_heads_for_rank3",
-                code: -1,
-            })?;
-            if n <= 0 {
-                return Err(CudaError::RuntimeError {
-                    op: "rotary_gpu: num_heads must be > 0 for rank-3 input",
-                    code: -1,
-                });
-            }
-            let b = x.shape[0];
-            let sq = x.shape[1];
-            let hidden = x.shape[2];
-            if hidden % n != 0 {
-                return Err(CudaError::RuntimeError {
-                    op: "rotary_gpu: hidden not divisible by num_heads (rank-3)",
-                    code: -1,
-                });
-            }
-            let d = hidden / n;
-            (b, n, sq, d, n)
-        }
-        _ => {
-            return Err(CudaError::RuntimeError {
-                op: "rotary_gpu: x must be rank-3 or rank-4",
-                code: -1,
-            });
-        }
-    };
-
-    if head_dim_i64 <= 0 || head_dim_i64 % 2 != 0 {
-        return Err(CudaError::RuntimeError {
-            op: "rotary_gpu: head_dim must be a positive even integer",
-            code: -1,
-        });
-    }
-    let half_i64 = head_dim_i64 / 2;
-
     if cos_table.shape.len() != 2 || sin_table.shape.len() != 2 {
         return Err(CudaError::RuntimeError {
             op: "rotary_gpu: cos/sin tables must be rank-2",
@@ -270,6 +268,34 @@ pub fn rotary_gpu(
             code: -1,
         });
     }
+    Ok(())
+}
+
+pub fn rotary_gpu(
+    runtime: &CudaRuntime,
+    x: &DeviceTensor,
+    cos_table: &DeviceTensor,
+    sin_table: &DeviceTensor,
+    position: i32,
+    interleaved: bool,
+    num_heads_for_rank3: Option<i64>,
+) -> Result<DeviceTensor, CudaError> {
+    let kernel_name = pick_rotary_kernel(x.dtype)?;
+    // Two accepted input layouts:
+    //   - rank-4 [B, H, Sq, head_dim] (qi stride = 1 row, `h_per_seq = 1`)
+    //   - rank-3 [B, Sq, H*head_dim]   (qi stride = H rows, `h_per_seq = H`)
+    let (batch_i64, heads_i64, seq_len_i64, head_dim_i64, h_per_seq_i64) =
+        resolve_rotary_layout(x, num_heads_for_rank3)?;
+
+    if head_dim_i64 <= 0 || head_dim_i64 % 2 != 0 {
+        return Err(CudaError::RuntimeError {
+            op: "rotary_gpu: head_dim must be a positive even integer",
+            code: -1,
+        });
+    }
+    let half_i64 = head_dim_i64 / 2;
+
+    validate_rotary_tables(cos_table, sin_table, half_i64, seq_len_i64, position)?;
 
     let out = DeviceTensor::alloc(x.shape.clone(), x.dtype)?;
 

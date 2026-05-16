@@ -78,10 +78,7 @@ pub fn op_loop_with_body<F: FnMut(i64, &[Tensor]) -> bool>(
     mut body_cond: F,
 ) -> Result<Vec<Tensor>, SessionError> {
     // Trivial skips.
-    if m == Some(0) {
-        return Ok(v_initial);
-    }
-    if cond_initial == Some(false) {
+    if m == Some(0) || cond_initial == Some(false) {
         return Ok(v_initial);
     }
 
@@ -89,77 +86,111 @@ pub fn op_loop_with_body<F: FnMut(i64, &[Tensor]) -> bool>(
     let mut cond_current = cond_initial.unwrap_or(true);
     let mut iter: i64 = 0;
 
-    // The body's carried-input names start at body.input_names[2]
-    // (following iter_num and cond_in). For an empty-input body we
-    // simply have no carried values to rotate.
-    let carried_input_names: Vec<String> = if body.input_names.len() > 2 {
-        body.input_names[2..].to_vec()
-    } else {
-        Vec::new()
-    };
-    // Body output names: the first is `cond_out`; the remainder are
-    // `v_out_*`. We pull them from the value-map after each inner run.
-    let carried_output_names: Vec<String> = if body.output_names.len() > 1 {
-        body.output_names[1..].to_vec()
-    } else {
-        Vec::new()
-    };
+    let carried_input_names = loop_carried_input_names(body);
+    let carried_output_names = loop_carried_output_names(body);
 
     loop {
-        if iter >= MAX_LOOP_ITERATIONS {
-            return Err(SessionError::ExecutionFailed(alloc::format!(
-                "Loop exceeded compile-time safety limit ({})",
-                MAX_LOOP_ITERATIONS
-            )));
-        }
-        if let Some(max) = m {
-            if iter >= max {
-                break;
-            }
-        }
-        if !cond_current {
+        if loop_should_terminate(iter, m, cond_current)? {
             break;
         }
 
-        // Seed inner map with outer-scope refs, iter_num, cond_in,
-        // and the current loop-carried values.
-        let mut inner = outer_scope.clone();
-        // iter_num / cond_in are named by the body's first two inputs if
-        // present (otherwise they are optional and simply skipped).
-        if let Some(name) = body.input_names.first() {
-            if !name.is_empty() {
-                inner.insert(name.clone(), crate::sub_executor::i64_scalar(iter));
-            }
-        }
-        if let Some(name) = body.input_names.get(1) {
-            if !name.is_empty() {
-                inner.insert(name.clone(), crate::sub_executor::bool_scalar(cond_current));
-            }
-        }
-        for (name, val) in carried_input_names.iter().zip(v_current.iter()) {
-            inner.insert(name.clone(), val.clone());
-        }
-
+        let inner = build_loop_inner_scope(
+            body,
+            outer_scope,
+            iter,
+            cond_current,
+            &carried_input_names,
+            &v_current,
+        );
         let result = run_sub_graph(body, inner, &[])?;
+        v_current = extract_loop_carried_outputs(&result, &carried_output_names)?;
 
-        // Extract loop-carried outputs.
-        let mut next_v = Vec::with_capacity(carried_output_names.len());
-        for name in &carried_output_names {
-            let t = result.get(name).ok_or_else(|| {
-                SessionError::ExecutionFailed(alloc::format!("Loop body missing output '{}'", name))
-            })?;
-            next_v.push(t.clone());
-        }
-        v_current = next_v;
-
-        // Evaluate the external cond predicate (stand-in for body
-        // `cond_out` which would be extracted from result[cond_out_name]
-        // when the parser learns to produce control-flow graphs).
         cond_current = body_cond(iter, &v_current);
         iter += 1;
     }
 
     Ok(v_current)
+}
+
+/// Returns the body's carried-input names (starting after `iter_num` and
+/// `cond_in`). Empty if the body has fewer than two declared inputs.
+fn loop_carried_input_names(body: &ExecutionGraph) -> Vec<String> {
+    if body.input_names.len() > 2 {
+        body.input_names[2..].to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Returns the body's carried-output names (skipping `cond_out`). Empty if
+/// the body has fewer than two declared outputs.
+fn loop_carried_output_names(body: &ExecutionGraph) -> Vec<String> {
+    if body.output_names.len() > 1 {
+        body.output_names[1..].to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Returns `Ok(true)` when the loop should exit (max iters, `m` reached,
+/// or `cond_current == false`), and `Err` on safety-limit violation.
+fn loop_should_terminate(
+    iter: i64,
+    m: Option<i64>,
+    cond_current: bool,
+) -> Result<bool, SessionError> {
+    if iter >= MAX_LOOP_ITERATIONS {
+        return Err(SessionError::ExecutionFailed(alloc::format!(
+            "Loop exceeded compile-time safety limit ({})",
+            MAX_LOOP_ITERATIONS
+        )));
+    }
+    if matches!(m, Some(max) if iter >= max) {
+        return Ok(true);
+    }
+    Ok(!cond_current)
+}
+
+/// Builds the per-iteration inner value map: outer scope, then `iter_num`,
+/// `cond_in`, and the carried-input bindings.
+fn build_loop_inner_scope(
+    body: &ExecutionGraph,
+    outer_scope: &BTreeMap<String, Tensor>,
+    iter: i64,
+    cond_current: bool,
+    carried_input_names: &[String],
+    v_current: &[Tensor],
+) -> BTreeMap<String, Tensor> {
+    let mut inner = outer_scope.clone();
+    if let Some(name) = body.input_names.first() {
+        if !name.is_empty() {
+            inner.insert(name.clone(), crate::sub_executor::i64_scalar(iter));
+        }
+    }
+    if let Some(name) = body.input_names.get(1) {
+        if !name.is_empty() {
+            inner.insert(name.clone(), crate::sub_executor::bool_scalar(cond_current));
+        }
+    }
+    for (name, val) in carried_input_names.iter().zip(v_current.iter()) {
+        inner.insert(name.clone(), val.clone());
+    }
+    inner
+}
+
+/// Pulls the carried-output tensors out of the post-body value map.
+fn extract_loop_carried_outputs(
+    result: &BTreeMap<String, Tensor>,
+    carried_output_names: &[String],
+) -> Result<Vec<Tensor>, SessionError> {
+    let mut next_v = Vec::with_capacity(carried_output_names.len());
+    for name in carried_output_names {
+        let t = result.get(name).ok_or_else(|| {
+            SessionError::ExecutionFailed(alloc::format!("Loop body missing output '{}'", name))
+        })?;
+        next_v.push(t.clone());
+    }
+    Ok(next_v)
 }
 
 /// Runs an `If` by dispatching to either `then_branch` or `else_branch`

@@ -71,19 +71,16 @@ impl Xorshift64 {
 // Walsh-Hadamard Transform
 // ---------------------------------------------------------------------------
 
-/// In-place Walsh-Hadamard transform with random sign flips.
+/// In-place Walsh-Hadamard butterfly followed by `1/sqrt(n)`
+/// normalisation. `n = x.len()` must be a power of two.
 ///
-/// `x` must have power-of-two length equal to `signs.len()`.
-/// After the transform, `x` is scaled by `1/sqrt(n)`.
-fn wht_with_signs(x: &mut [f32], signs: &[i8]) {
+/// Shared by both `wht_with_signs` (which applies the signs *before*
+/// the butterfly) and `inverse_wht_with_signs` (which applies them
+/// *after*). The transform itself is identical in both directions.
+#[inline]
+fn wht_butterfly_normalize(x: &mut [f32]) {
     let n = x.len();
     debug_assert!(n.is_power_of_two());
-    debug_assert_eq!(n, signs.len());
-
-    // Apply sign flips
-    for i in 0..n {
-        x[i] *= signs[i] as f32;
-    }
 
     // Butterfly
     let mut h = 1;
@@ -108,41 +105,37 @@ fn wht_with_signs(x: &mut [f32], signs: &[i8]) {
     }
 }
 
+/// Multiply each element of `x` by the corresponding `signs[i]`
+/// (interpreted as `±1`). Used both before the forward WHT and after
+/// the inverse WHT, where `S^{-1} = S` because each sign is its own
+/// inverse.
+#[inline]
+fn apply_signs(x: &mut [f32], signs: &[i8]) {
+    debug_assert_eq!(x.len(), signs.len());
+    for i in 0..x.len() {
+        x[i] *= signs[i] as f32;
+    }
+}
+
+/// In-place Walsh-Hadamard transform with random sign flips.
+///
+/// `x` must have power-of-two length equal to `signs.len()`.
+/// After the transform, `x` is scaled by `1/sqrt(n)`.
+fn wht_with_signs(x: &mut [f32], signs: &[i8]) {
+    debug_assert_eq!(x.len(), signs.len());
+    apply_signs(x, signs);
+    wht_butterfly_normalize(x);
+}
+
 /// Inverse WHT: apply WHT again then undo sign flips.
 ///
 /// WHT is self-inverse up to scaling: H * H = n * I.
 /// With our `1/sqrt(n)` normalization, applying WHT twice is identity.
 fn inverse_wht_with_signs(x: &mut [f32], signs: &[i8]) {
-    let n = x.len();
-    debug_assert!(n.is_power_of_two());
-    debug_assert_eq!(n, signs.len());
-
-    // Butterfly (same as forward)
-    let mut h = 1;
-    while h < n {
-        let mut i = 0;
-        while i < n {
-            for j in i..i + h {
-                let a = x[j];
-                let b = x[j + h];
-                x[j] = a + b;
-                x[j + h] = a - b;
-            }
-            i += h * 2;
-        }
-        h *= 2;
-    }
-
-    // Normalize
-    let scale = 1.0 / sqrt_approx(n as f32);
-    for v in x.iter_mut() {
-        *v *= scale;
-    }
-
+    debug_assert_eq!(x.len(), signs.len());
+    wht_butterfly_normalize(x);
     // Undo sign flips (S^{-1} = S since each sign is its own inverse)
-    for i in 0..n {
-        x[i] *= signs[i] as f32;
-    }
+    apply_signs(x, signs);
 }
 
 // ---------------------------------------------------------------------------
@@ -889,13 +882,7 @@ impl CompressedKVCache {
         }
 
         // Fallback: dequantize from blocks
-        let quantizer = &self.quantizers[layer][head];
-        let mut result = Vec::with_capacity(len * self.head_dim);
-        for block in blocks.iter().take(end).skip(start) {
-            let decoded = quantizer.decode(block);
-            result.extend_from_slice(&decoded);
-        }
-        result
+        self.dequantize_blocks(blocks, layer, head, start, end, len)
     }
 
     /// Read dequantized V values for a given layer, head, starting position
@@ -908,6 +895,26 @@ impl CompressedKVCache {
         let end = start + len;
         assert!(end <= blocks.len());
 
+        self.dequantize_blocks(blocks, layer, head, start, end, len)
+    }
+
+    /// Dequantize the range `blocks[start..end]` (which has `len`
+    /// entries) using `self.quantizers[layer][head]` and concatenate
+    /// the decoded vectors into a single `Vec<f32>` of length
+    /// `len * head_dim`.
+    ///
+    /// Shared by [`read_k`](Self::read_k) (after its low-rank
+    /// fast-path miss) and [`read_v`](Self::read_v).
+    #[inline]
+    fn dequantize_blocks(
+        &self,
+        blocks: &[QuantizedBlock],
+        layer: usize,
+        head: usize,
+        start: usize,
+        end: usize,
+        len: usize,
+    ) -> Vec<f32> {
         let quantizer = &self.quantizers[layer][head];
         let mut result = Vec::with_capacity(len * self.head_dim);
         for block in blocks.iter().take(end).skip(start) {

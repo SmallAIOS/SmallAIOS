@@ -380,6 +380,16 @@ enum JsonValue {
     Object(ConfigMap),
 }
 
+/// Convert a single ASCII hex digit to its numeric value.
+fn hex_digit_value(d: u8) -> Option<u8> {
+    match d {
+        b'0'..=b'9' => Some(d - b'0'),
+        b'a'..=b'f' => Some(d - b'a' + 10),
+        b'A'..=b'F' => Some(d - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn parse_config_object(input: &str) -> Result<ConfigMap, LoaderError> {
     let mut p = ConfigJsonParser::new(input);
     p.skip_ws();
@@ -536,54 +546,7 @@ impl<'a> ConfigJsonParser<'a> {
         loop {
             match self.bump() {
                 Some(b'"') => return Ok(out),
-                Some(b'\\') => match self.bump() {
-                    Some(b'"') => out.push('"'),
-                    Some(b'\\') => out.push('\\'),
-                    Some(b'/') => out.push('/'),
-                    Some(b'n') => out.push('\n'),
-                    Some(b'r') => out.push('\r'),
-                    Some(b't') => out.push('\t'),
-                    Some(b'b') => out.push('\u{08}'),
-                    Some(b'f') => out.push('\u{0C}'),
-                    Some(b'u') => {
-                        let mut code: u32 = 0;
-                        for _ in 0..4 {
-                            let d = self.bump().ok_or_else(|| {
-                                LoaderError::InvalidConfig("truncated \\u escape".to_string())
-                            })?;
-                            let hv = match d {
-                                b'0'..=b'9' => d - b'0',
-                                b'a'..=b'f' => d - b'a' + 10,
-                                b'A'..=b'F' => d - b'A' + 10,
-                                _ => {
-                                    return Err(LoaderError::InvalidConfig(format!(
-                                        "bad hex digit '{}' in \\u escape",
-                                        d as char
-                                    )))
-                                }
-                            };
-                            code = (code << 4) | hv as u32;
-                        }
-                        if let Some(c) = char::from_u32(code) {
-                            out.push(c);
-                        } else {
-                            return Err(LoaderError::InvalidConfig(format!(
-                                "invalid unicode codepoint U+{code:04X}"
-                            )));
-                        }
-                    }
-                    Some(c) => {
-                        return Err(LoaderError::InvalidConfig(format!(
-                            "bad escape '\\{}'",
-                            c as char
-                        )))
-                    }
-                    None => {
-                        return Err(LoaderError::InvalidConfig(
-                            "unterminated escape".to_string(),
-                        ))
-                    }
-                },
+                Some(b'\\') => self.consume_escape(&mut out)?,
                 Some(b) => {
                     out.push(b as char);
                 }
@@ -596,41 +559,58 @@ impl<'a> ConfigJsonParser<'a> {
         }
     }
 
+    /// Consume one `\<x>` escape sequence (already past the backslash).
+    fn consume_escape(&mut self, out: &mut String) -> Result<(), LoaderError> {
+        match self.bump() {
+            Some(b'"') => out.push('"'),
+            Some(b'\\') => out.push('\\'),
+            Some(b'/') => out.push('/'),
+            Some(b'n') => out.push('\n'),
+            Some(b'r') => out.push('\r'),
+            Some(b't') => out.push('\t'),
+            Some(b'b') => out.push('\u{08}'),
+            Some(b'f') => out.push('\u{0C}'),
+            Some(b'u') => self.consume_unicode_escape(out)?,
+            Some(c) => {
+                return Err(LoaderError::InvalidConfig(format!(
+                    "bad escape '\\{}'",
+                    c as char
+                )))
+            }
+            None => {
+                return Err(LoaderError::InvalidConfig(
+                    "unterminated escape".to_string(),
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    /// Consume the 4 hex digits of a `\uXXXX` escape.
+    fn consume_unicode_escape(&mut self, out: &mut String) -> Result<(), LoaderError> {
+        let mut code: u32 = 0;
+        for _ in 0..4 {
+            let d = self
+                .bump()
+                .ok_or_else(|| LoaderError::InvalidConfig("truncated \\u escape".to_string()))?;
+            let hv = hex_digit_value(d).ok_or_else(|| {
+                LoaderError::InvalidConfig(format!("bad hex digit '{}' in \\u escape", d as char))
+            })?;
+            code = (code << 4) | hv as u32;
+        }
+        let c = char::from_u32(code).ok_or_else(|| {
+            LoaderError::InvalidConfig(format!("invalid unicode codepoint U+{code:04X}"))
+        })?;
+        out.push(c);
+        Ok(())
+    }
+
     fn parse_number(&mut self) -> Result<JsonValue, LoaderError> {
         let start = self.pos;
-        if self.peek() == Some(b'-') {
-            self.pos += 1;
-        }
-        while let Some(b) = self.peek() {
-            if b.is_ascii_digit() {
-                self.pos += 1;
-            } else {
-                break;
-            }
-        }
-        if self.peek() == Some(b'.') {
-            self.pos += 1;
-            while let Some(b) = self.peek() {
-                if b.is_ascii_digit() {
-                    self.pos += 1;
-                } else {
-                    break;
-                }
-            }
-        }
-        if matches!(self.peek(), Some(b'e') | Some(b'E')) {
-            self.pos += 1;
-            if matches!(self.peek(), Some(b'+') | Some(b'-')) {
-                self.pos += 1;
-            }
-            while let Some(b) = self.peek() {
-                if b.is_ascii_digit() {
-                    self.pos += 1;
-                } else {
-                    break;
-                }
-            }
-        }
+        self.consume_optional_sign();
+        self.consume_digits();
+        self.consume_fraction_part();
+        self.consume_exponent_part();
         let slice = &self.bytes[start..self.pos];
         let s = core::str::from_utf8(slice)
             .map_err(|_| LoaderError::InvalidConfig("non-utf8 number".to_string()))?;
@@ -638,6 +618,43 @@ impl<'a> ConfigJsonParser<'a> {
             .parse()
             .map_err(|_| LoaderError::InvalidConfig(format!("bad number '{s}'")))?;
         Ok(JsonValue::Number(n))
+    }
+
+    fn consume_optional_sign(&mut self) {
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+    }
+
+    /// Advance past any run of ASCII digits.
+    fn consume_digits(&mut self) {
+        while let Some(b) = self.peek() {
+            if b.is_ascii_digit() {
+                self.pos += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    /// Advance past `.<digits>` if present.
+    fn consume_fraction_part(&mut self) {
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            self.consume_digits();
+        }
+    }
+
+    /// Advance past `(e|E)[+-]?<digits>` if present.
+    fn consume_exponent_part(&mut self) {
+        if !matches!(self.peek(), Some(b'e') | Some(b'E')) {
+            return;
+        }
+        self.pos += 1;
+        if matches!(self.peek(), Some(b'+') | Some(b'-')) {
+            self.pos += 1;
+        }
+        self.consume_digits();
     }
 
     fn parse_bool(&mut self) -> Result<JsonValue, LoaderError> {

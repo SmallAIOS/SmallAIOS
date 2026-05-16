@@ -168,6 +168,42 @@ pub fn op_range(start: f32, limit: f32, delta: f32) -> Result<Tensor, OpError> {
     })
 }
 
+/// Returns `true` when element `(r, c)` is kept by a Trilu mask with
+/// diagonal offset `k`. `upper=true` keeps `col-row >= k`; otherwise keeps
+/// `col-row <= k`.
+fn trilu_keep(r: i64, c: i64, k: i64, upper: bool) -> bool {
+    let diff = c - r;
+    if upper {
+        diff >= k
+    } else {
+        diff <= k
+    }
+}
+
+/// Writes the Trilu mask for one matrix slice (rows × cols) starting at
+/// `base` into the flat output buffer.
+fn trilu_fill_matrix(
+    input: &[u8],
+    out: &mut [u8],
+    base: usize,
+    rows: i64,
+    cols: i64,
+    k: i64,
+    upper: bool,
+) {
+    for r in 0..rows {
+        for c in 0..cols {
+            let flat = base + (r * cols + c) as usize;
+            let v = if trilu_keep(r, c, k, upper) {
+                read_f32(input, flat)
+            } else {
+                0.0
+            };
+            write_f32(out, flat, v);
+        }
+    }
+}
+
 /// Trilu: upper or lower triangular mask for 2D+ tensors.
 ///
 /// For higher-rank inputs, the masking is applied to the last two dims
@@ -195,19 +231,15 @@ pub fn op_trilu(input: &Tensor, k: i64, upper: bool) -> Result<Tensor, OpError> 
     let total = batches * matrix_elems;
     let mut out = allocate_tensor_data(total, DataType::Float);
     for b in 0..batches {
-        for r in 0..rows {
-            for c in 0..cols {
-                let flat = b * matrix_elems + (r * cols + c) as usize;
-                let diff = c - r;
-                let keep = if upper { diff >= k } else { diff <= k };
-                let v = if keep {
-                    read_f32(&input.raw_data, flat)
-                } else {
-                    0.0
-                };
-                write_f32(&mut out, flat, v);
-            }
-        }
+        trilu_fill_matrix(
+            &input.raw_data,
+            &mut out,
+            b * matrix_elems,
+            rows,
+            cols,
+            k,
+            upper,
+        );
     }
     Ok(Tensor {
         data_type: DataType::Float,
@@ -217,24 +249,24 @@ pub fn op_trilu(input: &Tensor, k: i64, upper: bool) -> Result<Tensor, OpError> 
     })
 }
 
-/// CumSum along a single axis. `exclusive=true` omits the current element
-/// from each partial sum; `reverse=true` scans from the end.
-pub fn op_cumsum(
-    input: &Tensor,
-    axis: i64,
-    exclusive: bool,
-    reverse: bool,
-) -> Result<Tensor, OpError> {
-    require_float(input, "CumSum")?;
-    let ndim = input.shape.ndim() as i64;
-    let axis = if axis < 0 { ndim + axis } else { axis };
-    if axis < 0 || axis >= ndim {
-        return Err(OpError::InvalidAttribute(String::from(
-            "CumSum axis out of range",
+/// Normalizes a signed axis index against an `ndim`-rank tensor. Returns
+/// the non-negative axis or an `InvalidAttribute` error when out of range.
+fn normalize_axis(axis: i64, ndim: usize, op: &str) -> Result<usize, OpError> {
+    let nd = ndim as i64;
+    let normalized = if axis < 0 { nd + axis } else { axis };
+    if normalized < 0 || normalized >= nd {
+        return Err(OpError::InvalidAttribute(alloc::format!(
+            "{} axis out of range",
+            op
         )));
     }
-    let axis = axis as usize;
-    let dims = &input.shape.dims;
+    Ok(normalized as usize)
+}
+
+/// Splits a shape into `(outer, axis_size, inner)` factor sizes around
+/// `axis`. Each factor is clamped to `max(1)` so scalar/empty inputs still
+/// step exactly once.
+fn factor_sizes(dims: &[i64], axis: usize) -> (usize, usize, usize) {
     let outer: usize = dims[..axis]
         .iter()
         .map(|&d| d as usize)
@@ -246,37 +278,67 @@ pub fn op_cumsum(
         .map(|&d| d as usize)
         .product::<usize>()
         .max(1);
+    (outer, axis_size, inner)
+}
+
+/// Scans a single (outer, inner) lane of a CumSum along `axis_size`
+/// elements with stride `inner`. `exclusive=true` emits the running total
+/// *before* adding the current element.
+fn cumsum_scan_lane(
+    input: &[u8],
+    out: &mut [u8],
+    base: usize,
+    axis_size: usize,
+    inner: usize,
+    exclusive: bool,
+    reverse: bool,
+) {
+    let mut acc = 0.0_f32;
+    let order: alloc::vec::Vec<usize> = if reverse {
+        (0..axis_size).rev().collect()
+    } else {
+        (0..axis_size).collect()
+    };
+    for a in order {
+        let idx = base + a * inner;
+        let v = read_f32(input, idx);
+        if exclusive {
+            write_f32(out, idx, acc);
+            acc += v;
+        } else {
+            acc += v;
+            write_f32(out, idx, acc);
+        }
+    }
+}
+
+/// CumSum along a single axis. `exclusive=true` omits the current element
+/// from each partial sum; `reverse=true` scans from the end.
+pub fn op_cumsum(
+    input: &Tensor,
+    axis: i64,
+    exclusive: bool,
+    reverse: bool,
+) -> Result<Tensor, OpError> {
+    require_float(input, "CumSum")?;
+    let ndim = input.shape.ndim();
+    let axis = normalize_axis(axis, ndim, "CumSum")?;
+    let (outer, axis_size, inner) = factor_sizes(&input.shape.dims, axis);
     let total = outer * axis_size * inner;
     let mut out = allocate_tensor_data(total, DataType::Float);
 
     for o in 0..outer {
         for i in 0..inner {
-            let mut acc = 0.0_f32;
-            if !reverse {
-                for a in 0..axis_size {
-                    let idx = (o * axis_size + a) * inner + i;
-                    let v = read_f32(&input.raw_data, idx);
-                    if exclusive {
-                        write_f32(&mut out, idx, acc);
-                        acc += v;
-                    } else {
-                        acc += v;
-                        write_f32(&mut out, idx, acc);
-                    }
-                }
-            } else {
-                for a in (0..axis_size).rev() {
-                    let idx = (o * axis_size + a) * inner + i;
-                    let v = read_f32(&input.raw_data, idx);
-                    if exclusive {
-                        write_f32(&mut out, idx, acc);
-                        acc += v;
-                    } else {
-                        acc += v;
-                        write_f32(&mut out, idx, acc);
-                    }
-                }
-            }
+            let base = o * axis_size * inner + i;
+            cumsum_scan_lane(
+                &input.raw_data,
+                &mut out,
+                base,
+                axis_size,
+                inner,
+                exclusive,
+                reverse,
+            );
         }
     }
     Ok(Tensor {
@@ -299,17 +361,77 @@ pub fn op_cumsum(
 /// output has shape `indices.shape[:-1] + input.shape[batch_dims + k:]`.
 ///
 /// Float32 data only. Int64 indices only.
-pub fn op_gather_nd(input: &Tensor, indices: &Tensor, batch_dims: i64) -> Result<Tensor, OpError> {
-    require_float(input, "GatherND")?;
-    require_int64(indices, "GatherND")?;
+/// Folds an index tuple (`k` elements starting at `idx_base` in
+/// `indices`) into a flat input offset using `in_strides`. The tuple
+/// addresses dimensions `[axis_start, axis_start + k)` of `input_dims`.
+/// Negative indices are normalized to the non-negative range; out-of-range
+/// values produce an error tagged with `op`.
+fn gather_index_offset(
+    indices: &[u8],
+    idx_base: usize,
+    k: usize,
+    axis_start: usize,
+    input_dims: &[i64],
+    in_strides: &[usize],
+    op: &str,
+) -> Result<usize, OpError> {
+    let mut off = 0usize;
+    for j in 0..k {
+        let raw = read_i64(indices, idx_base + j);
+        let pos = axis_start + j;
+        let dim = input_dims[pos];
+        let normalized = if raw < 0 { raw + dim } else { raw };
+        if normalized < 0 || normalized >= dim {
+            return Err(OpError::ShapeMismatch(alloc::format!(
+                "{} index {} out of range [0,{})",
+                op,
+                raw,
+                dim
+            )));
+        }
+        off += (normalized as usize) * in_strides[pos];
+    }
+    Ok(off)
+}
+
+/// Returns the flat offset into a tensor with `in_strides` corresponding
+/// to the row-major batch index `batch` over the first `batch_dims` of
+/// `input_dims`.
+fn batch_offset(
+    batch: usize,
+    batch_dims: usize,
+    input_dims: &[i64],
+    in_strides: &[usize],
+) -> usize {
+    let mut off = 0usize;
+    let mut rem = batch;
+    for d in (0..batch_dims).rev() {
+        let dim = input_dims[d] as usize;
+        let c = rem % dim;
+        rem /= dim;
+        off += c * in_strides[d];
+    }
+    off
+}
+
+/// Product of a dim slice, clamped to at least 1.
+fn product_dims(dims: &[i64]) -> usize {
+    dims.iter().map(|&d| d as usize).product::<usize>().max(1)
+}
+
+/// Validates `indices`/`batch_dims` for GatherND and returns the
+/// `(idx_ndim, batch_dims, k)` triple expected by the main loop.
+fn gather_nd_validate(
+    input: &Tensor,
+    indices: &Tensor,
+    batch_dims: i64,
+) -> Result<(usize, usize, usize), OpError> {
     let idx_ndim = indices.shape.ndim();
     if idx_ndim == 0 {
         return Err(OpError::ShapeMismatch(String::from(
             "GatherND indices must have at least 1 dimension",
         )));
     }
-    // ONNX GatherND-13: batch_dims must satisfy
-    // 0 <= batch_dims <= rank(indices) - 1 (the last dim of indices is `k`).
     if batch_dims < 0 || (batch_dims as usize) >= idx_ndim {
         return Err(OpError::InvalidAttribute(alloc::format!(
             "GatherND batch_dims {} out of range [0, {})",
@@ -319,77 +441,48 @@ pub fn op_gather_nd(input: &Tensor, indices: &Tensor, batch_dims: i64) -> Result
     }
     let batch_dims = batch_dims as usize;
     let k = indices.shape.dims[idx_ndim - 1] as usize;
-    let in_ndim = input.shape.ndim();
-    if batch_dims + k > in_ndim {
+    if batch_dims + k > input.shape.ndim() {
         return Err(OpError::ShapeMismatch(String::from(
             "GatherND batch_dims+k exceeds input rank",
         )));
     }
+    Ok((idx_ndim, batch_dims, k))
+}
+
+pub fn op_gather_nd(input: &Tensor, indices: &Tensor, batch_dims: i64) -> Result<Tensor, OpError> {
+    require_float(input, "GatherND")?;
+    require_int64(indices, "GatherND")?;
+    let (idx_ndim, batch_dims, k) = gather_nd_validate(input, indices, batch_dims)?;
 
     // Output shape = indices.shape[:-1] + input.shape[batch_dims+k:]
     let mut out_shape: Vec<i64> = indices.shape.dims[..idx_ndim - 1].to_vec();
     let slice_dims = &input.shape.dims[batch_dims + k..];
     out_shape.extend_from_slice(slice_dims);
-    let slice_size: usize = slice_dims
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    let slice_size = product_dims(slice_dims);
 
-    let total_out: usize = out_shape
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    let total_out = product_dims(&out_shape);
     let mut out = allocate_tensor_data(total_out, DataType::Float);
 
-    // Total number of index tuples = product of indices.shape[:-1]
-    let tuple_count: usize = indices.shape.dims[..idx_ndim - 1]
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
-    // Number of batch tuples = product of first batch_dims of indices
-    let batch_count: usize = indices.shape.dims[..batch_dims]
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    let tuple_count = product_dims(&indices.shape.dims[..idx_ndim - 1]);
+    let batch_count = product_dims(&indices.shape.dims[..batch_dims]);
     let tuples_per_batch = tuple_count / batch_count;
 
     let in_strides = compute_strides(&input.shape.dims);
 
     for batch in 0..batch_count {
-        // Leading batch offset into input (flattened).
-        let in_batch_offset = {
-            let mut off = 0usize;
-            let mut rem = batch;
-            for d in (0..batch_dims).rev() {
-                let dim = input.shape.dims[d] as usize;
-                let c = rem % dim;
-                rem /= dim;
-                off += c * in_strides[d];
-            }
-            off
-        };
+        let in_batch_offset = batch_offset(batch, batch_dims, &input.shape.dims, &in_strides);
         for t in 0..tuples_per_batch {
             let idx_base = (batch * tuples_per_batch + t) * k;
-            // Compute linear offset into input.
-            let mut in_off = in_batch_offset;
-            for (j, idx_pos) in (batch_dims..batch_dims + k).enumerate() {
-                let raw = read_i64(&indices.raw_data, idx_base + j);
-                let dim = input.shape.dims[idx_pos];
-                let normalized = if raw < 0 { raw + dim } else { raw };
-                if normalized < 0 || normalized >= dim {
-                    return Err(OpError::ShapeMismatch(alloc::format!(
-                        "GatherND index {} out of range [0,{})",
-                        raw,
-                        dim
-                    )));
-                }
-                in_off += (normalized as usize) * in_strides[idx_pos];
-            }
-            // Copy slice_size elements.
+            let tuple_off = gather_index_offset(
+                &indices.raw_data,
+                idx_base,
+                k,
+                batch_dims,
+                &input.shape.dims,
+                &in_strides,
+                "GatherND",
+            )?;
+            let in_off = in_batch_offset + tuple_off;
             let out_off = (batch * tuples_per_batch + t) * slice_size;
             for s in 0..slice_size {
                 let v = read_f32(&input.raw_data, in_off + s);
@@ -411,15 +504,13 @@ pub fn op_gather_nd(input: &Tensor, indices: &Tensor, batch_dims: i64) -> Result
 /// Copies `input` and overwrites slices at the positions specified by
 /// `indices` with values from `updates`. `indices.shape[-1] = k` and
 /// `updates.shape == indices.shape[:-1] + input.shape[k:]`.
-pub fn op_scatter_nd(
+/// Validates the ScatterND shape contracts and returns `(idx_ndim, k)`
+/// for the main loop.
+fn scatter_nd_validate(
     input: &Tensor,
     indices: &Tensor,
     updates: &Tensor,
-) -> Result<Tensor, OpError> {
-    require_float(input, "ScatterND")?;
-    require_int64(indices, "ScatterND")?;
-    require_float(updates, "ScatterND")?;
-
+) -> Result<(usize, usize), OpError> {
     let idx_ndim = indices.shape.ndim();
     if idx_ndim == 0 {
         return Err(OpError::ShapeMismatch(String::from(
@@ -433,8 +524,6 @@ pub fn op_scatter_nd(
             "ScatterND index depth exceeds input rank",
         )));
     }
-    // ONNX ScatterND-16 requires
-    //   updates.shape == indices.shape[:-1] + input.shape[k:]
     let expected_updates_rank = (idx_ndim - 1) + (in_ndim - k);
     if updates.shape.ndim() != expected_updates_rank {
         return Err(OpError::ShapeMismatch(alloc::format!(
@@ -443,6 +532,18 @@ pub fn op_scatter_nd(
             expected_updates_rank
         )));
     }
+    scatter_nd_check_updates_dims(input, indices, updates, idx_ndim, k)?;
+    Ok((idx_ndim, k))
+}
+
+/// Verifies `updates.shape == indices.shape[:-1] + input.shape[k:]`.
+fn scatter_nd_check_updates_dims(
+    input: &Tensor,
+    indices: &Tensor,
+    updates: &Tensor,
+    idx_ndim: usize,
+    k: usize,
+) -> Result<(), OpError> {
     for (i, &d) in indices.shape.dims[..idx_ndim - 1].iter().enumerate() {
         if updates.shape.dims[i] != d {
             return Err(OpError::ShapeMismatch(String::from(
@@ -457,46 +558,58 @@ pub fn op_scatter_nd(
             )));
         }
     }
-    let slice_dims = &input.shape.dims[k..];
-    let slice_size: usize = slice_dims
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    Ok(())
+}
+
+/// Copies `slice_size` f32 elements from `updates[upd_off..]` into
+/// `out_raw[in_off..]` (element indices).
+fn scatter_nd_write_slice(
+    out_raw: &mut [u8],
+    updates: &[u8],
+    in_off: usize,
+    upd_off: usize,
+    slice_size: usize,
+) {
+    for s in 0..slice_size {
+        let v = read_f32(updates, upd_off + s);
+        let byte_off = (in_off + s) * F32_SIZE;
+        out_raw[byte_off..byte_off + F32_SIZE].copy_from_slice(&v.to_le_bytes());
+    }
+}
+
+pub fn op_scatter_nd(
+    input: &Tensor,
+    indices: &Tensor,
+    updates: &Tensor,
+) -> Result<Tensor, OpError> {
+    require_float(input, "ScatterND")?;
+    require_int64(indices, "ScatterND")?;
+    require_float(updates, "ScatterND")?;
+
+    let (idx_ndim, k) = scatter_nd_validate(input, indices, updates)?;
+    let slice_size = product_dims(&input.shape.dims[k..]);
 
     let mut out_raw = input.raw_data.clone();
     let in_strides = compute_strides(&input.shape.dims);
-
-    let tuple_count: usize = indices.shape.dims[..idx_ndim - 1]
-        .iter()
-        .map(|&d| d as usize)
-        .product::<usize>()
-        .max(1);
+    let tuple_count = product_dims(&indices.shape.dims[..idx_ndim - 1]);
 
     for t in 0..tuple_count {
-        let idx_base = t * k;
-        let mut in_off = 0usize;
-        #[allow(clippy::needless_range_loop)]
-        for j in 0..k {
-            let raw = read_i64(&indices.raw_data, idx_base + j);
-            let dim = input.shape.dims[j];
-            let normalized = if raw < 0 { raw + dim } else { raw };
-            if normalized < 0 || normalized >= dim {
-                return Err(OpError::ShapeMismatch(alloc::format!(
-                    "ScatterND index {} out of range [0,{})",
-                    raw,
-                    dim
-                )));
-            }
-            in_off += (normalized as usize) * in_strides[j];
-        }
-        let upd_off = t * slice_size;
-        for s in 0..slice_size {
-            let v = read_f32(&updates.raw_data, upd_off + s);
-            // Write into out_raw at position in_off + s (in float32 element idx).
-            let byte_off = (in_off + s) * F32_SIZE;
-            out_raw[byte_off..byte_off + F32_SIZE].copy_from_slice(&v.to_le_bytes());
-        }
+        let in_off = gather_index_offset(
+            &indices.raw_data,
+            t * k,
+            k,
+            0,
+            &input.shape.dims,
+            &in_strides,
+            "ScatterND",
+        )?;
+        scatter_nd_write_slice(
+            &mut out_raw,
+            &updates.raw_data,
+            in_off,
+            t * slice_size,
+            slice_size,
+        );
     }
     Ok(Tensor {
         data_type: DataType::Float,

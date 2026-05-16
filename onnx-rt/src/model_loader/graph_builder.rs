@@ -408,73 +408,13 @@ impl GraphBuilder {
             next_tensor_id: _,
         } = self;
 
-        // Validate every node's inputs resolve. Because nodes are
-        // appended in dependency order, we only need to check that the
-        // name is either a graph input, an initializer, or an earlier
-        // node's output. We also build each node's `dependencies` list
-        // so topological_sort has something to chew on.
-        let mut output_to_node: BTreeMap<String, NodeIndex> = BTreeMap::new();
         let initializer_names: BTreeSet<String> = initializers.keys().cloned().collect();
         let input_set: BTreeSet<String> = input_names.iter().cloned().collect();
 
-        let node_count = nodes.len();
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..node_count {
-            let node_inputs = nodes[i].inputs.clone();
-            let mut deps: Vec<NodeIndex> = Vec::new();
-            for input in &node_inputs {
-                if input.is_empty() {
-                    // ONNX optional-input convention.
-                    continue;
-                }
-                if input_set.contains(input) {
-                    continue;
-                }
-                if initializer_names.contains(input) {
-                    continue;
-                }
-                match output_to_node.get(input) {
-                    Some(&prod) => {
-                        if !deps.iter().any(|d| d.index() == prod.index()) {
-                            deps.push(prod);
-                        }
-                    }
-                    None => {
-                        return Err(LoaderError::InvalidConfig(format!(
-                            "node '{}' references unknown input '{}'",
-                            nodes[i].name, input
-                        )));
-                    }
-                }
-            }
-            nodes[i].dependencies = deps;
+        let output_to_node = resolve_node_dependencies(&mut nodes, &input_set, &initializer_names)?;
+        validate_declared_outputs(&output_names, &output_to_node, &input_set)?;
 
-            // Register this node's outputs so later nodes can reference them.
-            for out in &nodes[i].outputs {
-                if !out.is_empty() {
-                    output_to_node.insert(out.clone(), nodes[i].node_index);
-                }
-            }
-        }
-
-        // Validate declared outputs are all produced.
-        for out in &output_names {
-            if !output_to_node.contains_key(out) && !input_set.contains(out) {
-                return Err(LoaderError::InvalidConfig(format!(
-                    "declared graph output '{out}' is not produced by any node"
-                )));
-            }
-        }
-
-        // Topo-sort (also surfaces any cycles — should never trigger
-        // for a well-formed sequential build, but we run it anyway to
-        // match the ONNX loader's invariants).
-        let topological_order = topological_sort(&nodes).map_err(|e| match e {
-            GraphError::CyclicGraph => {
-                LoaderError::InvalidConfig("graph contains a cycle".to_string())
-            }
-            other => LoaderError::InvalidConfig(format!("graph build failed: {other}")),
-        })?;
+        let topological_order = run_topo_sort(&nodes)?;
 
         let graph = ExecutionGraph {
             nodes,
@@ -537,6 +477,111 @@ impl GraphBuilder {
 // Attribute helpers — shape-compatible with the protobuf parser's
 // output so the existing executor can read them transparently.
 // ─────────────────────────────────────────────────────────────────────
+
+// ─────────────────────────────────────────────────────────────────────
+// `build()` helpers — extracted to keep cognitive complexity bounded.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Walk each node, resolve its input names against graph inputs,
+/// initializers, and prior-node outputs, and populate `dependencies`.
+/// Returns a `name -> producing node` map used for later checks.
+fn resolve_node_dependencies(
+    nodes: &mut [ExecutionNode],
+    input_set: &BTreeSet<String>,
+    initializer_names: &BTreeSet<String>,
+) -> Result<BTreeMap<String, NodeIndex>, LoaderError> {
+    let mut output_to_node: BTreeMap<String, NodeIndex> = BTreeMap::new();
+    let node_count = nodes.len();
+    #[allow(clippy::needless_range_loop)]
+    for i in 0..node_count {
+        let node_inputs = nodes[i].inputs.clone();
+        let deps = compute_node_deps(
+            &node_inputs,
+            &nodes[i].name,
+            input_set,
+            initializer_names,
+            &output_to_node,
+        )?;
+        nodes[i].dependencies = deps;
+        register_node_outputs(&mut output_to_node, &nodes[i].outputs, nodes[i].node_index);
+    }
+    Ok(output_to_node)
+}
+
+/// Resolve a single node's input list into a deduplicated dependency
+/// vector. Returns an error if any input name is unknown.
+fn compute_node_deps(
+    node_inputs: &[String],
+    node_name: &str,
+    input_set: &BTreeSet<String>,
+    initializer_names: &BTreeSet<String>,
+    output_to_node: &BTreeMap<String, NodeIndex>,
+) -> Result<Vec<NodeIndex>, LoaderError> {
+    let mut deps: Vec<NodeIndex> = Vec::new();
+    for input in node_inputs {
+        if is_externally_provided(input, input_set, initializer_names) {
+            continue;
+        }
+        let prod = output_to_node.get(input).copied().ok_or_else(|| {
+            LoaderError::InvalidConfig(format!(
+                "node '{node_name}' references unknown input '{input}'"
+            ))
+        })?;
+        if !deps.iter().any(|d| d.index() == prod.index()) {
+            deps.push(prod);
+        }
+    }
+    Ok(deps)
+}
+
+/// True if `input` is empty (ONNX optional-input convention), a graph
+/// input, or an initializer — i.e. not produced by a prior node.
+fn is_externally_provided(
+    input: &str,
+    input_set: &BTreeSet<String>,
+    initializer_names: &BTreeSet<String>,
+) -> bool {
+    input.is_empty() || input_set.contains(input) || initializer_names.contains(input)
+}
+
+/// Insert this node's non-empty outputs into the producer map.
+fn register_node_outputs(
+    output_to_node: &mut BTreeMap<String, NodeIndex>,
+    outputs: &[String],
+    node_index: NodeIndex,
+) {
+    for out in outputs {
+        if !out.is_empty() {
+            output_to_node.insert(out.clone(), node_index);
+        }
+    }
+}
+
+/// Ensure every declared graph output is either produced by a node or
+/// is a passthrough graph input.
+fn validate_declared_outputs(
+    output_names: &[String],
+    output_to_node: &BTreeMap<String, NodeIndex>,
+    input_set: &BTreeSet<String>,
+) -> Result<(), LoaderError> {
+    for out in output_names {
+        if !output_to_node.contains_key(out) && !input_set.contains(out) {
+            return Err(LoaderError::InvalidConfig(format!(
+                "declared graph output '{out}' is not produced by any node"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Run topological sort and translate any errors back into the loader's
+/// `InvalidConfig` family.
+fn run_topo_sort(nodes: &[ExecutionNode]) -> Result<Vec<NodeIndex>, LoaderError> {
+    topological_sort(nodes).map_err(|e| match e {
+        GraphError::CyclicGraph => LoaderError::InvalidConfig("graph contains a cycle".to_string()),
+        other => LoaderError::InvalidConfig(format!("graph build failed: {other}")),
+    })
+}
 
 fn float_attr(name: &str, value: f32) -> AttributeProto {
     AttributeProto {
