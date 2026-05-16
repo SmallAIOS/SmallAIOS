@@ -16,7 +16,19 @@ name = "smallaios-x86_64"
 path = "src/main.rs"
 
 [features]
-default = []
+# `spec-exec-x86` is default-ON: this is the only x86_64-targeted crate, so
+# enabling it here is equivalent to a target-conditional default for the
+# whole x86_64 kernel image. Release builds (`just build-kernel-x86`) get the
+# mitigations automatically; an explicit `--no-default-features` is required
+# to opt out (documented residual-risk trade-off).
+default = ["spec-exec-x86"]
+# Speculative-execution mitigations (Spectre v1/v2). Forwards to the kernel
+# feature of the same name (gates the `lfence` capability barrier) and is
+# read by `build.rs` to emit Retpoline + SLH compiler flags for the kernel
+# binary. See docs/spec-exec-audit.md and src/security/spec_exec.rs.
+spec-exec-x86 = ["smallaios-kernel/spec-exec-x86"]
+# Opt-out of per-syscall-entry IBPB; forwards to the kernel feature.
+spec-exec-ibpb-off = ["smallaios-kernel/spec-exec-ibpb-off"]
 # virtio-blk MMIO driver — `BlockDevice` impl over the modern (1.0+)
 # virtio-blk transport. Built on by `embedded-filesystem-v1` Phase 1.
 fs-block-virtio = ["dep:smallaios-fs", "smallaios-fs/fs-on-disk-mounts", "smallaios-fs/fs-block-virtio"]

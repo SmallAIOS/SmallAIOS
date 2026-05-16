@@ -105,14 +105,40 @@ pub unsafe fn init() {
     }
 }
 
+/// Re-assert legacy IBRS on kernel entry (spec-exec-mitigations-v1 Phase 2,
+/// task 1.6).
+///
+/// On Enhanced-IBRS / no-IBRS parts this is a single relaxed-atomic compare
+/// and immediate return (IBRS is sticky / unused there), so the trampoline
+/// calls it unconditionally. On legacy-IBRS parts it re-writes
+/// `IA32_SPEC_CTRL` so the indirect-branch predictor is in the protected
+/// state *before* the kernel takes any indirect branch in `dispatch`.
+///
+/// IBPB is intentionally NOT issued here: per the audit it must fire *after*
+/// the capability check (so it cannot be used as an unconditional pre-auth
+/// DoS amplifier and so it brackets exactly the privileged window). That call
+/// site lives kernel-side in `smallaios_kernel::state::check_capability`.
+///
+/// `extern "C"` + no-mangle-free `sym` reference so the naked entry can `call`
+/// it with the SysV ABI; it preserves no syscall-arg registers itself because
+/// the trampoline calls it before marshalling `SyscallArgs`... see the call
+/// placement below.
+extern "C" fn spec_exec_on_entry() {
+    // SAFETY: ring-0 syscall entry context.
+    unsafe {
+        crate::security::spec_exec::legacy_ibrs_on_entry();
+    }
+}
+
 /// Low-level syscall entry point.
 ///
 /// This is the target of IA32_LSTAR. It:
 /// 1. Saves caller-saved registers
-/// 2. Builds a SyscallArgs struct
-/// 3. Calls the kernel dispatch function
-/// 4. Restores registers
-/// 5. Returns via `sysretq`
+/// 2. Re-asserts legacy IBRS (no-op on Enhanced-IBRS hardware)
+/// 3. Builds a SyscallArgs struct
+/// 4. Calls the kernel dispatch function
+/// 5. Restores registers
+/// 6. Returns via `sysretq`
 ///
 /// Register state on entry:
 /// - RAX = syscall number
@@ -146,6 +172,13 @@ extern "C" fn syscall_entry() {
         "push rdi",      // args[0]
         "push rax",      // number
 
+        // spec-exec-mitigations-v1 Phase 2 (task 1.6): re-assert legacy IBRS
+        // BEFORE the indirect call into `dispatch`. All syscall-argument
+        // registers are now safely marshalled onto the stack, so this
+        // `call` clobbering SysV caller-saved registers is harmless. The
+        // shim is a cheap no-op on Enhanced-IBRS / no-IBRS hardware.
+        "call {spec_exec_entry}",
+
         // Call dispatch with pointer to SyscallArgs on stack
         // RDI = pointer to SyscallArgs (first arg in SysV ABI)
         "mov rdi, rsp",
@@ -173,6 +206,7 @@ extern "C" fn syscall_entry() {
         "sysretq",
 
         dispatch = sym smallaios_kernel::syscall::dispatch,
+        spec_exec_entry = sym spec_exec_on_entry,
     );
 }
 

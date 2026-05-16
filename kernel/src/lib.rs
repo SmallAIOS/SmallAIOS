@@ -19,6 +19,7 @@ pub mod hal;
 pub mod mem;
 pub mod safety;
 pub mod sched;
+pub mod spec_exec;
 pub mod state;
 pub mod syscall;
 

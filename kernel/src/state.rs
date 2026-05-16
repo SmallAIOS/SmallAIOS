@@ -246,13 +246,43 @@ pub unsafe fn csprng_generate(buf: &mut [u8]) -> Result<(), CsprngError> {
 ///
 /// Returns `Ok(cap_id)` if the task has the required capability, or
 /// `Err(SyscallError::PermissionDenied)` if not.
+///
+/// # Speculative-execution hardening (spec-exec-mitigations-v1 Phase 2)
+///
+/// This is the single chokepoint every capability-gated syscall funnels
+/// through (`syscall::memory::require_capability`, the direct check in
+/// `syscall::system`, …). On the *success* path — and only after the
+/// architectural decision is known — we:
+///
+/// 1. Issue an IBPB (`spec_exec::predictor_barrier_ibpb`, task 1.8) so a
+///    poisoned indirect-branch predictor from the pre-syscall context cannot
+///    steer the kernel's subsequent handler dispatch / handle decode.
+/// 2. Emit a speculation barrier (`spec_exec::speculation_barrier`, an
+///    `lfence` on x86-64, task 1.10) so a mispredicted "capability granted"
+///    branch cannot let the following attacker-controlled-address
+///    tensor/device-handle load execute transiently.
+///
+/// Both are placed *after* the check (never before — see the rationale in
+/// `crate::spec_exec` and `docs/spec-exec-audit.md`) and centralized here so
+/// no individual syscall handler can forget the barrier. They compile to
+/// nothing on non-x86 targets / with `spec-exec-ibpb-off` respectively.
 pub fn check_capability(
     task_id: u64,
     resource: &smallaios_security::capability::ResourceRef,
     required: smallaios_security::capability::Permissions,
 ) -> Result<u64, i64> {
-    with_cap_registry_ref(|registry| registry.check(task_id, resource, required, 0))
-        .map_err(cap_error_to_syscall)
+    let result = with_cap_registry_ref(|registry| registry.check(task_id, resource, required, 0))
+        .map_err(cap_error_to_syscall);
+
+    if result.is_ok() {
+        // Order matters: flush the predictor first, then serialize so the
+        // attacker-controlled handle decode that follows in the caller cannot
+        // run transiently past this point.
+        crate::spec_exec::predictor_barrier_ibpb();
+        crate::spec_exec::speculation_barrier();
+    }
+
+    result
 }
 
 #[cfg(test)]
