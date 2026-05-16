@@ -115,7 +115,25 @@ fn require_capability(
     perm: Permissions,
 ) -> Result<(), i64> {
     let resource = ResourceRef::new(resource_type, instance);
-    state::check_capability(current_task_id(), &resource, perm).map(|_| ())
+    let outcome = state::check_capability(current_task_id(), &resource, perm).map(|_| ());
+
+    // spec-exec-mitigations-v1 (Phase 3 — aarch64): emit a Consumption of
+    // Speculative Data Barrier (`csdb`) here, after the capability comparison
+    // has committed and before the caller decodes the attacker-supplied
+    // handle/tensor/device argument. This is the canonical post-check
+    // insertion point (the aarch64 mirror of the x86 `LFENCE`): the naked
+    // SVC vector (`arch/aarch64/src/syscall.rs`) dispatches to `dispatch`
+    // wholesale, so the only architecturally-meaningful "after the cap check"
+    // site is inside this shared helper rather than in the entry trampoline.
+    //
+    // The call is `cfg(target_arch = "aarch64")`-gated and isolated to a
+    // single line so it composes cleanly with the parallel x86 barrier hook
+    // landing in this same function on a sibling branch (do not touch x86
+    // cfg blocks here; conflict resolution, if any, is centralized).
+    #[cfg(target_arch = "aarch64")]
+    crate::syscall::spec_exec::speculation_barrier();
+
+    outcome
 }
 
 /// Convert a `Result<(), MemError>` into a `0`-on-success syscall return
@@ -363,6 +381,16 @@ pub fn sys_tensor_map_gpu(args: &SyscallArgs) -> SyscallResult {
         return e;
     }
 
+    // spec-exec-mitigations-v1 (Phase 3 — aarch64): this is a
+    // capability-gated DMA-setup boundary — mapping a tensor across the GPU
+    // boundary ultimately programs an SMMU stream-table / DMA descriptor with
+    // caller-influenced state. Emit a full-system `dsb sy` so no
+    // speculatively-issued memory access can be observed by the DMA engine
+    // before the (already-committed) capability gate. Cross-references
+    // `tegra-smmu-isolation-v1`, which owns the downstream SMMU setup.
+    #[cfg(target_arch = "aarch64")]
+    crate::syscall::spec_exec::dma_barrier();
+
     // GPU mapping requires the NVIDIA HAL which is not yet integrated.
     SyscallError::NotSupported.as_i64()
 }
@@ -375,6 +403,13 @@ pub fn sys_tensor_unmap_gpu(args: &SyscallArgs) -> SyscallResult {
     if let Err(e) = validate_tensor_gpu_request(args.args[0], args.args[1]) {
         return e;
     }
+
+    // spec-exec-mitigations-v1 (Phase 3 — aarch64): tearing down a GPU
+    // mapping also touches DMA/SMMU state; mirror the `dsb sy` from
+    // `sys_tensor_map_gpu` so the unmap is fully ordered before any
+    // descriptor invalidation the NVIDIA HAL will perform here.
+    #[cfg(target_arch = "aarch64")]
+    crate::syscall::spec_exec::dma_barrier();
 
     // GPU unmapping requires the NVIDIA HAL which is not yet integrated.
     SyscallError::NotSupported.as_i64()
