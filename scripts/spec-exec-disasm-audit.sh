@@ -12,7 +12,11 @@
 set -uo pipefail
 
 STRICT="${STRICT:-0}"
-ARCHES=("${@:-x86_64 aarch64 riscv64}")
+if [ "$#" -eq 0 ]; then
+  ARCHES=(x86_64 aarch64 riscv64)
+else
+  ARCHES=("$@")
+fi
 FAIL=0
 
 note()  { echo "[spec-exec-audit] $*"; }
@@ -27,8 +31,8 @@ audit_x86_64() {
     return 0
   fi
   local bin
-  bin=$(find target/"$tgt"/release -maxdepth 1 -type f -name '*.elf' -o \
-        -maxdepth 1 -type f -perm -u+x 2>/dev/null | head -1)
+  bin=$(find target/"$tgt"/release -maxdepth 1 -type f \( -name '*.elf' -o -perm -u+x \) \
+        2>/dev/null | head -1)
   [ -z "$bin" ] && { note "no x86_64 kernel binary found — skip"; return 0; }
   local d; d=$(objdump -d "$bin" 2>/dev/null)
   echo "$d" | grep -qiE '\blfence\b'        || miss "x86_64: lfence (Spectre v1 barrier after cap-check)"
@@ -71,7 +75,7 @@ audit_riscv64() {
   note "riscv64: scaffolding phase — fence.i placeholder only, full CFI pending Zicfilp ratification"
 }
 
-for a in $ARCHES; do
+for a in "${ARCHES[@]}"; do
   case "$a" in
     x86_64)  audit_x86_64  ;;
     aarch64) audit_aarch64 ;;
