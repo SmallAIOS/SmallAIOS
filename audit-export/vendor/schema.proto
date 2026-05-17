@@ -1,0 +1,160 @@
+/*
+Vendored from https://github.com/codenotary/immudb at commit
+f07d3ac01c068e3d6e760afaaf1f1db20b36d0bc (tag v1.11.0),
+file pkg/api/schema/schema.proto.
+
+This file is read-only provenance. It is NOT compiled. The
+authority for what bytes go on the wire is
+audit-export/src/immudb/schema.rs, which is hand-translated
+from this file. The CI pin-checker (tasks.md task 12.x)
+verifies that audit-export/vendor/IMMUDB_SCHEMA_SHA matches a
+SHA in codenotary/immudb's history and that this file matches
+that SHA's content.
+
+------- BEGIN UPSTREAM CONTENT -------
+*/
+
+/*
+Copyright 2022 Codenotary Inc. All rights reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+syntax = "proto3";
+
+package immudb.schema;
+
+// NOTE: only the message definitions used by the SmallAIOS
+// audit-export client are reproduced here. The full upstream
+// proto file additionally defines authentication, SQL,
+// replication, snapshot, sorted-set and database-admin
+// surfaces that the SmallAIOS image never touches. When you
+// re-vendor, copy only the messages referenced by
+// audit-export/src/immudb/schema.rs.
+
+message KVMetadata {
+  bool deleted = 1;
+  Expiration expiration = 2;
+  bool nonIndexable = 3;
+}
+
+message Expiration {
+  int64 expiresAt = 1;
+}
+
+message KeyValue {
+  bytes key = 1;
+  bytes value = 2;
+  KVMetadata metadata = 3;
+}
+
+message SetRequest {
+  repeated KeyValue KVs = 1;
+  bool noWait = 2;
+  repeated Precondition preconditions = 3;
+}
+
+message Precondition {
+  // We never emit preconditions; layout reproduced for SHA pinning only.
+  reserved 1, 2, 3;
+}
+
+message VerifiableSetRequest {
+  SetRequest setRequest = 1;
+  uint64 proveSinceTx = 2;
+}
+
+message Signature {
+  bytes publicKey = 1;
+  bytes signature = 2;
+}
+
+message TxHeader {
+  uint64 id = 1;
+  bytes prevAlh = 2;
+  int64 ts = 3;
+  int32 nentries = 4;
+  bytes eH = 5;
+  uint64 blTxId = 6;
+  bytes blRoot = 7;
+  int32 version = 8;
+  TxMetadata metadata = 9;
+}
+
+message TxMetadata {
+  uint64 truncatedTxID = 1;
+  bytes extra = 2;
+}
+
+message TxEntry {
+  bytes key = 1;
+  bytes hValue = 2;
+  int32 vLen = 3;
+  KVMetadata metadata = 4;
+  bytes value = 5;
+}
+
+message Tx {
+  TxHeader header = 1;
+  repeated TxEntry entries = 2;
+  // We do not decode kvEntries (3) or zEntries (4); the
+  // forward-compat decoder skips them.
+}
+
+message LinearProof {
+  uint64 sourceTxId = 1;
+  uint64 TargetTxId = 2;
+  repeated bytes terms = 3;
+}
+
+message InclusionProof {
+  int32 leaf = 1;
+  int32 width = 2;
+  repeated bytes terms = 3;
+}
+
+message DualProof {
+  TxHeader sourceTxHeader = 1;
+  TxHeader targetTxHeader = 2;
+  repeated bytes inclusionProof = 3;
+  repeated bytes consistencyProof = 4;
+  bytes targetBlTxAlh = 5;
+  repeated bytes lastInclusionProof = 6;
+  LinearProof linearProof = 7;
+  LinearAdvanceProof LinearAdvanceProof = 8;
+}
+
+message LinearAdvanceProof {
+  repeated bytes linearProofTerms = 1;
+  repeated InclusionProof inclusionProofs = 2;
+}
+
+message ImmutableState {
+  string db = 1;
+  uint64 txId = 2;
+  bytes txHash = 3;
+  Signature signature = 4;
+  // Fields 5 and 6 (precommittedTxId, precommittedTxHash) are
+  // accepted by the decoder via skip_field but not surfaced to
+  // the verifier — they are not covered by the signature.
+}
+
+message VerifiableTx {
+  Tx tx = 1;
+  DualProof dualProof = 2;
+  Signature signature = 3;
+}
+
+/*
+------- END UPSTREAM CONTENT -------
+*/

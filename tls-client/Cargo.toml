@@ -1,0 +1,22 @@
+[package]
+name = "smallaios-tls-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "TLS 1.3 over TCP client for SmallAIOS — clean-room `#![no_std]`"
+publish = false
+
+# Layer 1 — Core Service. Depends on Layer 0 only.
+# See openspec/changes/tls-tcp-client-v1/design.md for the
+# decisions backing this crate.
+
+[dependencies]
+smallaios-security = { path = "../security" }
+smallaios-kernel = { path = "../kernel" }
+
+[features]
+default = []
+# Operator-facing knob for the deferred mTLS path.
+mtls = []
+formal-gate = []

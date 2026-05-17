@@ -7,6 +7,9 @@
 //! as a container (Docker/K8s). It bootstraps the unikernel subsystems
 //! using the host kernel's syscall interface via musl libc.
 
+#[cfg(feature = "audit-export")]
+#[allow(dead_code)]
+mod audit_export_runtime;
 #[allow(dead_code)]
 mod handlers;
 #[allow(dead_code)]

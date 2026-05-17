@@ -94,12 +94,12 @@ Install with `just setup-hooks`. Run manually with `just check` (quick) or `just
 
 ## Workspace Architecture
 
-21-crate Rust workspace (`#![no_std]`, edition 2021). Strict 4-layer acyclic dependency model (see `docs/architecture.md` for full details):
+23-crate Rust workspace (`#![no_std]`, edition 2021). Strict 4-layer acyclic dependency model (see `docs/architecture.md` for full details):
 
 ```
 Layer 3 — Integration:  container, bench
 Layer 2 — HAL/Drivers:  arch/{x86_64,aarch64,riscv64,nvidia,intel_gpu,amd,apple}, peripheral, bus, sdr
-Layer 1 — Core Services: net, ipc, posix, onnx-rt, usb
+Layer 1 — Core Services: net, ipc, posix, onnx-rt, usb, auth, mgmt, fs, audit-export, tls-client
 Layer 0 — Foundation:    kernel → security, compute, sched-types
 ```
 
@@ -267,8 +267,9 @@ See `docs/can-inference.md` for the CAN bus inference bridge and
 - `kernel`: `verbose-boot`, `no-global-alloc`, `large-memory` (64 GiB page tracking; default 1 GiB), `verified-boot` (boot integrity verification + measurement log)
 - `security`: `pqc-hybrid` (default), `pqc-only`, `classical-only`, `formal-gate`, `verified-boot` (boot signature verification APIs)
 - `onnx-rt`: `cpu` (default), `cuda`, `formal-gate`, `verified-boot` (model signature verification at load time), `gpu-profile` (per-op timing + memcpy byte counters for the hybrid GPU executor; dumps a summary to stderr at `CudaRuntime::drop`; off by default — production builds pay zero overhead)
-- `net`: `ipv4`, `ipv6` (both default)
+- `net`: `ipv4`, `ipv6` (both default), `http2` (off; enables the HTTP/2 + gRPC subset used by `audit-export`)
 - `container`: `nvidia_gpu`, `formal-gate`, `bus-zenoh`, `bus-dds` (pub/sub dataflow runner placeholders — see `docs/inference-bus.md`)
 - `ipc`: `formal-gate`, `onnx` (opt-in ONNX runtime integration for the dataflow runner)
+- `audit-export`: `bearer` (default v1 auth), `mtls` (v2 stub — refused by config validator), `formal-gate`. Compile-time opt-in to immudb verifiable-audit-log export (`verifiable-audit-log-v1`); when off, zero code is linked.
 - `arch/nvidia`: `cc_53` through `cc_100` (CUDA compute capabilities)
 - `peripheral`: `i2c`, `spi`, `gpio`, `uart`, `camera-csi`, `audio-i2s`. Bundles: `sensor-io`, `vision`, `audio`, `full-peripheral`. All default OFF.
