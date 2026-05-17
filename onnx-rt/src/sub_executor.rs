@@ -75,6 +75,7 @@ pub const MAX_LOOP_ITERATIONS: i64 = 1_000_000;
 /// threaded through: per §6 of the design doc, the parent `Loop`/`If`/`Scan`
 /// is the single budget unit. Inner-operator measurement is a follow-up
 /// work-item.
+///
 /// Inserts the body's initializers into `value_map` without overwriting
 /// already-seeded entries (loop-carried values shadow same-named weights).
 fn seed_initializers(value_map: &mut BTreeMap<String, Tensor>, initializers: &[TensorProto]) {

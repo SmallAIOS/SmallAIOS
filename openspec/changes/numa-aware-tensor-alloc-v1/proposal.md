@@ -18,7 +18,7 @@ The kernel-side change is bounded: extend the tensor pool API with an optional `
 | Class | Examples | NUMA topology |
 |-------|----------|----------------|
 | Multi-socket x86-64 | 2P AMD EPYC Genoa/Bergamo, 2P/4P Intel Xeon Sapphire Rapids / Emerald Rapids | 1 node per socket (or per CCD for "NPS4" mode on EPYC) |
-| Multi-die ARM64 | Ampere Altra Max (128c, 1-2 sockets), NVIDIA Grace (72c, single CPU but with multi-die LPDDR5X memory controllers), Grace-Hopper GH200 | 1-2 nodes per socket; Grace exposes UMA externally but micro-architecturally has internal NUMA |
+| Multi-die ARM64 | Ampere Altra Max (128c, 1-2 sockets), NVIDIA Grace (72c, single CPU but with multi-die LPDDR5X memory controllers), Grace-Hopper GH200 | 1-2 nodes per socket when firmware exposes them; some Grace-class systems may appear as a single UMA node to the OS despite internal locality, so this proposal follows discovered topology (SRAT/DT) and uses single-node fallback when only one node is visible |
 | Single-socket x86-64 / single-die ARM64 | Jetson Orin, Apple M-series, Ryzen 7000, Xeon Bronze single-socket | 1 node — NUMA hint is a no-op |
 
 The Jetson Orin production target falls in the last row. NUMA is observable but not exploitable on it.
