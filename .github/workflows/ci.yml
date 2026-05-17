@@ -344,15 +344,13 @@ jobs:
   #     but the bin target lives in `arch/aarch64/Cargo.toml` (`-p
   #     smallaios-arch-aarch64 --bin smallaios-uefi`). Same correction
   #     that landed in sub-PR 2c's `build-kernel-uefi` Justfile recipe.
-  #   - OVMF QEMU smoke (task 2.22) is left as a follow-up:
-  #     `qemu-system-aarch64 -M virt -cpu cortex-a78 -bios edk2-aarch64-code.fd
-  #     -drive file=fat:rw:build/efi-root` would give us a "boot the .efi
-  #     under emulated UEFI and assert the banner" gate. Wiring it up
-  #     requires choosing an OVMF source (Tianocore's prebuilt vs the
-  #     `edk2-arm` package vs building from source) and a baseline that
-  #     handles the firewalled-MMIO interim-mode quirks. That's another
-  #     30-60 min of CI plumbing — skipping for now to keep this PR
-  #     focused on "the .efi compiles in CI without a Jetson."
+  #   - OVMF QEMU smoke (task 2.22) is implemented as the sibling
+  #     `jetson-orin-ovmf-smoke` job below: it boots this same .efi under
+  #     emulated UEFI and asserts the `efi_main` banner reaches the
+  #     serial console — catching PE/COFF + UEFI-entry regressions a
+  #     compile-only check cannot. The OVMF source was resolved to the
+  #     `qemu-efi-aarch64` Ubuntu package (AAVMF); see that job's header
+  #     for the firmware/CPU/image rationale.
   build-jetson-orin-uefi:
     name: Build Jetson Orin UEFI (advisory)
     runs-on: ubuntu-latest
@@ -386,6 +384,106 @@ jobs:
             exit 1
           }
           echo "PASS: smallaios-uefi.efi built and recognized as PE32+ EFI (Aarch64)"
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Jetson Orin OVMF QEMU smoke — advisory (task 2.22).
+  #
+  # Boots the `smallaios-uefi.efi` PE32+ artifact under emulated UEFI on
+  # `qemu-system-aarch64 -M virt` and asserts the early `efi_main` banner
+  # reaches the serial console. Catches PE/COFF layout + UEFI entry-point
+  # regressions in CI without a self-hosted Jetson runner — the on-J4012
+  # boot is task 2.16 (a later on-hardware sub-PR).
+  #
+  # Why this is meaningful even though the kernel is interim-mode:
+  # `efi_main` prints "Hello, world from SmallAIOS on Tegra234" via UEFI
+  # `con_out` *before* DTB lookup / GetMemoryMap / ExitBootServices and
+  # before any Tegra234 MMIO. OVMF routes con_out to the serial line, so
+  # the assertion exercises firmware → PE loader → our `efi_main`
+  # independent of the firewalled-MMIO post-EBS quirks that gate
+  # real-hardware output (tasks 2.10/2.11).
+  #
+  # Design decisions resolved for this sub-PR (the task left these open):
+  #   - OVMF source: the `qemu-efi-aarch64` Ubuntu package (AAVMF) —
+  #     pinned by the runner image, no download or from-source build.
+  #     Booted as the canonical CODE(ro)+VARS(rw) pflash pair.
+  #   - Disk: the same FAT32 superfloppy the real USB stick uses, built
+  #     inline with mtools (mirrors the `build-jetson-usb-image` Justfile
+  #     recipe; CI never invokes `just`, so the steps are inlined).
+  #     Highest fidelity — identical artifact + layout to hardware.
+  #   - CPU: `cortex-a76`, not the Orin's `cortex-a78`. A banner smoke is
+  #     silicon-agnostic and a76 is the newest core reliably supported
+  #     across the QEMU TCG versions on `ubuntu-latest`.
+  #
+  # `continue-on-error: true` keeps this advisory while Phase 2 is in
+  # interim mode. Promote to a gate (remove continue-on-error + add to
+  # `change-gates.needs`) once the post-EBS UART lands and the whole
+  # boot path is "real" — same promotion seam as build-jetson-orin-uefi.
+  jetson-orin-ovmf-smoke:
+    name: Jetson Orin OVMF Smoke (advisory)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-02-01
+          components: rust-src, llvm-tools
+          targets: aarch64-unknown-uefi
+      - name: Install QEMU + AArch64 UEFI firmware + mtools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-arm qemu-efi-aarch64 mtools
+      - name: Build smallaios-uefi.efi
+        run: >-
+          cargo build --release --target aarch64-unknown-uefi
+          -p smallaios-arch-aarch64 --bin smallaios-uefi
+          --no-default-features --features tegra234
+          $BUILD_STD
+        env:
+          RUSTFLAGS: "-D warnings"
+      - name: Build bootable FAT32 image (mtools — matches the USB-stick path)
+        run: |
+          set -euo pipefail
+          EFI=target/aarch64-unknown-uefi/release/smallaios-uefi.efi
+          file "$EFI" | grep -qE "PE32\+ executable.*EFI" || {
+            echo "FAIL: $EFI is not a recognized PE32+ EFI binary" >&2
+            exit 1
+          }
+          mkdir -p build
+          IMG=build/smallaios-jetson-usb.img
+          rm -f "$IMG"
+          # 64 MB is ample for a sub-MB .efi and boots faster than the
+          # 256 MB default the Justfile recipe uses for real USB sticks.
+          dd if=/dev/zero of="$IMG" bs=1M count=64 status=none
+          mformat -F -v SMALLAIOS -i "$IMG" ::
+          mmd  -i "$IMG" ::/EFI
+          mmd  -i "$IMG" ::/EFI/BOOT
+          mcopy -i "$IMG" "$EFI" ::/EFI/BOOT/BOOTAA64.EFI
+          mdir -i "$IMG" ::/EFI/BOOT
+      - name: Boot under OVMF on QEMU virt (TCG, timeout 120s)
+        run: |
+          set -uo pipefail
+          # Canonical AArch64 UEFI pflash pair: CODE read-only, a
+          # writable copy of VARS (fresh NVRAM → edk2 default boot
+          # enumerates FAT volumes and runs \EFI\BOOT\BOOTAA64.EFI).
+          cp /usr/share/AAVMF/AAVMF_VARS.fd vars.fd
+          timeout 120 qemu-system-aarch64 \
+            -M virt -cpu cortex-a76 -m 1G -nographic \
+            -drive if=pflash,format=raw,readonly=on,file=/usr/share/AAVMF/AAVMF_CODE.fd \
+            -drive if=pflash,format=raw,file=vars.fd \
+            -drive if=none,format=raw,file=build/smallaios-jetson-usb.img,id=hd0 \
+            -device virtio-blk-pci,drive=hd0 \
+            -serial mon:stdio -no-reboot 2>&1 | tee boot.log || true
+          echo "=== Boot log ==="
+          cat boot.log
+          echo "=== Asserting efi_main UEFI banner ==="
+          grep -q "Hello, world from SmallAIOS on Tegra234" boot.log || {
+            echo "FAIL: efi_main banner missing — PE/COFF load or UEFI entry regressed under emulated UEFI"
+            exit 1
+          }
+          echo "PASS: smallaios-uefi.efi boots under emulated UEFI; efi_main banner observed"
 
   image-size:
     name: Image Size Check (<15 MB)
