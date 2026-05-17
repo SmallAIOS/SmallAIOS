@@ -3,8 +3,10 @@
 
 //! ARM64 interrupt handling: GIC, Generic Timer, exception vectors.
 //!
-//! GICv3 functions are available under `qemu-virt`.
-//! GICv2 functions live in the separate `gicv2` module under `tegra-x1`.
+//! GIC drivers live in separate modules: [`crate::gicv3`] for the
+//! GICv3 platforms (`qemu-virt`, `tegra234`) and [`crate::gicv2`] for
+//! `tegra-x1`. The GICv3 entry points are re-exported here so callers
+//! using the `interrupts::` path keep working.
 //!
 //! Timer, VBAR, and PSCI are platform-independent (same on both).
 //!
@@ -15,101 +17,20 @@
 
 use core::arch::asm;
 
-#[cfg(feature = "qemu-virt")]
-use crate::platform;
-
 /// Interrupt IDs.
 pub const TIMER_IRQ: u32 = 30; // EL1 physical timer PPI
 pub const IPI_IRQ: u32 = 0; // SGI 0
 
-// ─── GICv3 (QEMU virt only) ─────────────────────────────────────────────────
-
-#[cfg(feature = "qemu-virt")]
-mod gicv3 {
-    use super::*;
-
-    const GICD_BASE: usize = platform::GICD_BASE;
-    const GICR_BASE: usize = platform::GICR_BASE;
-
-    const GICD_CTLR: usize = 0x000;
-
-    const GICR_ISENABLER0: usize = 0x10100;
-    const GICR_IPRIORITYR0: usize = 0x10400;
-    const GICR_WAKER: usize = 0x14;
-
-    unsafe fn gicd_write(offset: usize, value: u32) {
-        let ptr = (GICD_BASE + offset) as *mut u32;
-        core::ptr::write_volatile(ptr, value);
-    }
-
-    unsafe fn gicr_read(offset: usize) -> u32 {
-        let ptr = (GICR_BASE + offset) as *const u32;
-        core::ptr::read_volatile(ptr)
-    }
-
-    unsafe fn gicr_write(offset: usize, value: u32) {
-        let ptr = (GICR_BASE + offset) as *mut u32;
-        core::ptr::write_volatile(ptr, value);
-    }
-
-    /// # Safety
-    /// Must be called with GICD mapped and accessible.
-    pub unsafe fn init_gicd() {
-        gicd_write(GICD_CTLR, 0);
-        // Enable with affinity routing: group 0, group 1, ARE_S
-        gicd_write(GICD_CTLR, (1 << 0) | (1 << 1) | (1 << 4));
-    }
-
-    /// # Safety
-    /// Must be called with GICR mapped and accessible.
-    pub unsafe fn init_gicr() {
-        let waker = gicr_read(GICR_WAKER);
-        gicr_write(GICR_WAKER, waker & !(1 << 1));
-        while gicr_read(GICR_WAKER) & (1 << 2) != 0 {
-            core::hint::spin_loop();
-        }
-        gicr_write(GICR_ISENABLER0, 1 << TIMER_IRQ);
-        let prio_offset = GICR_IPRIORITYR0 + (TIMER_IRQ as usize);
-        let ptr = (GICR_BASE + prio_offset) as *mut u8;
-        core::ptr::write_volatile(ptr, 0x20);
-    }
-
-    /// # Safety
-    /// Must be called at EL1 with ICC system registers accessible.
-    pub unsafe fn init_icc() {
-        let icc_sre: u64;
-        asm!("mrs {}, S3_0_C12_C12_5", out(reg) icc_sre, options(nomem, nostack));
-        asm!("msr S3_0_C12_C12_5, {}", in(reg) icc_sre | 1, options(nomem, nostack));
-        asm!("msr S3_0_C4_C6_0, {}", in(reg) 0xFFu64, options(nomem, nostack));
-        asm!("msr S3_0_C12_C12_7, {}", in(reg) 1u64, options(nomem, nostack));
-        asm!("msr S3_0_C12_C12_3, {}", in(reg) 0u64, options(nomem, nostack));
-    }
-
-    pub fn icc_iar() -> u32 {
-        let irq: u64;
-        unsafe {
-            asm!("mrs {}, S3_0_C12_C12_0", out(reg) irq, options(nomem, nostack));
-        }
-        irq as u32
-    }
-
-    pub fn icc_eoir(irq: u32) {
-        unsafe {
-            asm!("msr S3_0_C12_C12_1, {}", in(reg) irq as u64, options(nomem, nostack));
-        }
-    }
-
-    /// # Safety
-    /// Must be called with ICC system registers accessible.
-    pub unsafe fn send_sgi(target_list: u16, intid: u8) {
-        let val: u64 = (target_list as u64) | ((intid as u64) << 24);
-        asm!("msr S3_0_C12_C11_5, {}", in(reg) val, options(nomem, nostack));
-    }
-}
-
-// Re-export GICv3 functions under qemu-virt
-#[cfg(feature = "qemu-virt")]
-pub use gicv3::{icc_eoir, icc_iar, init_gicd, init_gicr, init_icc, send_sgi};
+// ─── GICv3 re-export ─────────────────────────────────────────────────────────
+//
+// The GICv3 driver was extracted to `crate::gicv3` (OpenSpec
+// `unikernel-orin-bringup-v1` task 2.13) so the `tegra234` platform can
+// share the exact same code path as `qemu-virt`. Re-exported here, on
+// the GICv3 platforms only, so existing `interrupts::`-path callers
+// keep resolving (task 2.14: `gicv3` for `qemu-virt` + `tegra234`,
+// `gicv2` stays for `tegra-x1`).
+#[cfg(any(feature = "qemu-virt", feature = "tegra234"))]
+pub use crate::gicv3::{icc_eoir, icc_iar, init_gicd, init_gicr, init_icc, send_sgi};
 
 // ─── ARM64 Generic Timer (platform-independent) ─────────────────────────────
 

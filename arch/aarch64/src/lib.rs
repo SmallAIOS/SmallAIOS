@@ -25,6 +25,8 @@ pub mod console;
 pub mod fb_console;
 #[cfg(feature = "tegra-x1")]
 pub mod gicv2;
+#[cfg(any(feature = "qemu-virt", feature = "tegra234"))]
+pub mod gicv3;
 pub mod interrupts;
 pub mod paging;
 pub mod platform;
