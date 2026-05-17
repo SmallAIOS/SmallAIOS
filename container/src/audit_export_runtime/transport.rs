@@ -161,11 +161,7 @@ struct ResponseState {
 impl<S: TlsStreamLike> TlsGrpcTransport<S> {
     /// Build the HEADERS block: pseudo-headers in fixed order
     /// (per RFC 7540 § 8.1.2.3) followed by user headers.
-    fn build_request_headers(
-        &self,
-        full_method: &str,
-        headers: &[GrpcHeader],
-    ) -> Vec<HpackHeader> {
+    fn build_request_headers(&self, full_method: &str, headers: &[GrpcHeader]) -> Vec<HpackHeader> {
         let mut all_headers: Vec<HpackHeader> = Vec::with_capacity(4 + headers.len());
         all_headers.push(HpackHeader {
             name: ":method".into(),
