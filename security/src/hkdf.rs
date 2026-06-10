@@ -187,6 +187,14 @@ mod tests {
         );
         let mut max_ok = alloc::vec![0u8; 255 * DIGEST_LEN];
         hkdf_expand_sha256(&prk, &INFO, &mut max_ok).unwrap();
+
+        // Same cap on the SHA-384 path.
+        let prk384 = hkdf_extract_sha384(&SALT, &IKM);
+        let mut too_big = alloc::vec![0u8; 255 * SHA384_DIGEST_LEN + 1];
+        assert_eq!(
+            hkdf_expand_sha384(&prk384, &INFO, &mut too_big),
+            Err(HkdfLengthError)
+        );
     }
 
     #[test]

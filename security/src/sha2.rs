@@ -650,6 +650,18 @@ hijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu";
     }
 
     #[test]
+    fn sha384_default_equals_new() {
+        let mut a = Sha384::default();
+        let mut b = Sha384::new();
+        a.update(b"abc");
+        b.update(b"abc");
+        assert_eq!(a.finalize(), b.finalize());
+        let mut c = Sha256::default();
+        c.update(b"abc");
+        assert_eq!(c.finalize(), sha256(b"abc"));
+    }
+
+    #[test]
     fn sha384_block_boundary_lengths() {
         // Exercise the padding paths around the 128-byte block
         // boundary (111/112/127/128/129 bytes) against the
