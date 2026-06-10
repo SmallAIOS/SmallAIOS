@@ -201,45 +201,10 @@ pub fn verify_certificate_verify(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handshake::test_util::{
+        build_certificate, build_certificate_verify as build_cert_verify,
+    };
     use smallaios_security::crypto::ed25519::{ed25519_keygen, ed25519_sign};
-
-    pub(crate) fn build_certificate(certs: &[&[u8]]) -> Vec<u8> {
-        let mut list = Vec::new();
-        for c in certs {
-            list.extend_from_slice(&(*c).len().to_be_bytes()[5..]); // u24
-            list.extend_from_slice(c);
-            list.extend_from_slice(&[0, 0]); // no per-entry extensions
-        }
-        let mut body = Vec::new();
-        body.push(0); // empty certificate_request_context
-        body.extend_from_slice(&list.len().to_be_bytes()[5..]); // u24
-        body.extend_from_slice(&list);
-        let mut out = Vec::new();
-        HandshakeHeader {
-            msg_type: HandshakeType::Certificate,
-            length: body.len() as u32,
-        }
-        .encode(&mut out)
-        .unwrap();
-        out.extend_from_slice(&body);
-        out
-    }
-
-    fn build_cert_verify(scheme: u16, sig: &[u8]) -> Vec<u8> {
-        let mut body = Vec::new();
-        body.extend_from_slice(&scheme.to_be_bytes());
-        body.extend_from_slice(&(sig.len() as u16).to_be_bytes());
-        body.extend_from_slice(sig);
-        let mut out = Vec::new();
-        HandshakeHeader {
-            msg_type: HandshakeType::CertificateVerify,
-            length: body.len() as u32,
-        }
-        .encode(&mut out)
-        .unwrap();
-        out.extend_from_slice(&body);
-        out
-    }
 
     #[test]
     fn certificate_round_trip() {

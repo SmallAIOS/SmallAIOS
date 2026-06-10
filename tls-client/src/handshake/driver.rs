@@ -627,100 +627,23 @@ mod tests {
         build_server_hello_custom(suite.wire_value(), Some(TLS_1_3), group, share, [0xaa; 32])
     }
 
-    fn build_server_hello_custom(
-        suite_code: u16,
-        version: Option<u16>,
-        group: u16,
-        share: &[u8],
-        random: [u8; 32],
-    ) -> Vec<u8> {
-        let mut body = Vec::new();
-        body.extend_from_slice(&[0x03, 0x03]);
-        body.extend_from_slice(&random);
-        body.push(0); // empty session_id_echo
-        body.extend_from_slice(&suite_code.to_be_bytes());
-        body.push(0); // compression
-        let mut exts = Vec::new();
-        if let Some(v) = version {
-            exts.extend_from_slice(&ext_type::SUPPORTED_VERSIONS.to_be_bytes());
-            exts.extend_from_slice(&2u16.to_be_bytes());
-            exts.extend_from_slice(&v.to_be_bytes());
-        }
-        let mut ks = Vec::new();
-        ks.extend_from_slice(&group.to_be_bytes());
-        ks.extend_from_slice(&(share.len() as u16).to_be_bytes());
-        ks.extend_from_slice(share);
-        exts.extend_from_slice(&ext_type::KEY_SHARE.to_be_bytes());
-        exts.extend_from_slice(&(ks.len() as u16).to_be_bytes());
-        exts.extend_from_slice(&ks);
-        body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
-        body.extend_from_slice(&exts);
-        let mut out = Vec::new();
-        HandshakeHeader {
-            msg_type: HandshakeType::ServerHello,
-            length: body.len() as u32,
-        }
-        .encode(&mut out)
-        .unwrap();
-        out.extend_from_slice(&body);
-        out
-    }
+    use crate::handshake::test_util::build_certificate as build_certificate_raw;
+    use crate::handshake::test_util::build_server_hello as build_server_hello_custom;
+    use crate::handshake::test_util::{build_certificate_verify, build_encrypted_extensions};
 
     fn build_ee_msg() -> Vec<u8> {
         // EncryptedExtensions with an SNI ack.
-        let mut block = Vec::new();
-        block.extend_from_slice(&ext_type::SERVER_NAME.to_be_bytes());
-        block.extend_from_slice(&0u16.to_be_bytes());
-        let mut body = Vec::new();
-        body.extend_from_slice(&(block.len() as u16).to_be_bytes());
-        body.extend_from_slice(&block);
-        let mut out = Vec::new();
-        HandshakeHeader {
-            msg_type: HandshakeType::EncryptedExtensions,
-            length: body.len() as u32,
-        }
-        .encode(&mut out)
-        .unwrap();
-        out.extend_from_slice(&body);
-        out
+        build_encrypted_extensions(&[(ext_type::SERVER_NAME, &[])])
     }
 
     fn build_certificate_msg(leaf: &[u8]) -> Vec<u8> {
-        let mut list = Vec::new();
-        list.extend_from_slice(&(leaf.len() as u32).to_be_bytes()[1..]);
-        list.extend_from_slice(leaf);
-        list.extend_from_slice(&[0, 0]);
-        let mut body = Vec::new();
-        body.push(0);
-        body.extend_from_slice(&(list.len() as u32).to_be_bytes()[1..]);
-        body.extend_from_slice(&list);
-        let mut out = Vec::new();
-        HandshakeHeader {
-            msg_type: HandshakeType::Certificate,
-            length: body.len() as u32,
-        }
-        .encode(&mut out)
-        .unwrap();
-        out.extend_from_slice(&body);
-        out
+        build_certificate_raw(&[leaf])
     }
 
     fn build_cv_msg(kp: &Ed25519KeyPair, transcript_hash: &[u8]) -> Vec<u8> {
         let content = certificate_verify_content(transcript_hash);
         let sig = ed25519_sign(&kp.secret_key, &content);
-        let mut body = Vec::new();
-        body.extend_from_slice(&sig_scheme::ED25519.to_be_bytes());
-        body.extend_from_slice(&64u16.to_be_bytes());
-        body.extend_from_slice(sig.as_bytes());
-        let mut out = Vec::new();
-        HandshakeHeader {
-            msg_type: HandshakeType::CertificateVerify,
-            length: body.len() as u32,
-        }
-        .encode(&mut out)
-        .unwrap();
-        out.extend_from_slice(&body);
-        out
+        build_certificate_verify(sig_scheme::ED25519, sig.as_bytes())
     }
 
     /// Everything the server produced for its flight, plus the
@@ -1145,14 +1068,10 @@ mod tests {
         // CertificateRequest: context len 0 + empty extensions.
         let mut cr_body = alloc::vec![0u8];
         cr_body.extend_from_slice(&0u16.to_be_bytes());
-        let mut cr = Vec::new();
-        HandshakeHeader {
-            msg_type: HandshakeType::CertificateRequest,
-            length: cr_body.len() as u32,
-        }
-        .encode(&mut cr)
-        .unwrap();
-        cr.extend_from_slice(&cr_body);
+        let cr = crate::handshake::test_util::wrap_handshake(
+            HandshakeType::CertificateRequest,
+            &cr_body,
+        );
         let mut payload = ee;
         payload.extend_from_slice(&cr);
         records.extend_from_slice(

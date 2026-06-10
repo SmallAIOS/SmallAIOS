@@ -516,15 +516,7 @@ pub fn sha384(data: &[u8]) -> [u8; SHA384_DIGEST_LEN] {
 mod tests {
     use super::*;
 
-    fn hex(bytes: &[u8]) -> alloc::string::String {
-        use alloc::string::String;
-        let mut s = String::with_capacity(bytes.len() * 2);
-        for b in bytes {
-            s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-            s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
-        }
-        s
-    }
+    use crate::test_util::hex;
 
     // NIST FIPS 180-4 published test vectors.
     #[test]

@@ -28,6 +28,8 @@ pub mod extensions;
 pub mod finished;
 pub mod key_schedule;
 pub mod server_hello;
+#[cfg(test)]
+pub(crate) mod test_util;
 
 use crate::{Result, TlsClientError};
 use alloc::vec::Vec;

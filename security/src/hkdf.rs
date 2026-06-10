@@ -109,15 +109,7 @@ mod tests {
     use super::test_vectors::*;
     use super::*;
 
-    fn hex(bytes: &[u8]) -> alloc::string::String {
-        use alloc::string::String;
-        let mut s = String::with_capacity(bytes.len() * 2);
-        for b in bytes {
-            s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-            s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
-        }
-        s
-    }
+    use crate::test_util::hex;
 
     // RFC 5869 A.1 (test case 1) inputs live in `test_vectors`.
     // SHA-256 expected values are the RFC's published vectors;

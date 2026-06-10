@@ -133,15 +133,7 @@ define_hmac!(
 mod tests {
     use super::*;
 
-    fn hex(bytes: &[u8]) -> alloc::string::String {
-        use alloc::string::String;
-        let mut s = String::with_capacity(bytes.len() * 2);
-        for b in bytes {
-            s.push(char::from_digit((b >> 4) as u32, 16).unwrap());
-            s.push(char::from_digit((b & 0xf) as u32, 16).unwrap());
-        }
-        s
-    }
+    use crate::test_util::hex;
 
     // RFC 4231 test-case inputs. Expected outputs cross-validated
     // against two independent oracles (Python `hmac` stdlib and

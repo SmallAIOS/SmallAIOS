@@ -68,28 +68,7 @@ pub fn parse_encrypted_extensions(buf: &[u8]) -> Result<EncryptedExtensions> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec::Vec;
-
-    fn build_ee(exts: &[(u16, &[u8])]) -> Vec<u8> {
-        let mut block = Vec::new();
-        for (t, data) in exts {
-            block.extend_from_slice(&t.to_be_bytes());
-            block.extend_from_slice(&(data.len() as u16).to_be_bytes());
-            block.extend_from_slice(data);
-        }
-        let mut body = Vec::new();
-        body.extend_from_slice(&(block.len() as u16).to_be_bytes());
-        body.extend_from_slice(&block);
-        let mut out = Vec::new();
-        HandshakeHeader {
-            msg_type: HandshakeType::EncryptedExtensions,
-            length: body.len() as u32,
-        }
-        .encode(&mut out)
-        .unwrap();
-        out.extend_from_slice(&body);
-        out
-    }
+    use crate::handshake::test_util::build_encrypted_extensions as build_ee;
 
     #[test]
     fn empty_ee_parses() {

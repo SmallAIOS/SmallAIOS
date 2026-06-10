@@ -424,16 +424,7 @@ impl KeySchedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::format;
-    use alloc::string::String;
-
-    fn hex(bytes: &[u8]) -> String {
-        let mut s = String::with_capacity(bytes.len() * 2);
-        for b in bytes {
-            s.push_str(&format!("{b:02x}"));
-        }
-        s
-    }
+    use crate::handshake::test_util::hex;
 
     fn h(s: &str) -> Vec<u8> {
         (0..s.len())
