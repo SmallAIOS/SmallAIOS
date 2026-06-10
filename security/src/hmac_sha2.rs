@@ -16,6 +16,9 @@
 //! - `B` is the hash block length (64 bytes for SHA-256, 128 for SHA-384);
 //! - `ipad = 0x36 * B` and `opad = 0x5C * B`.
 //!
+//! Both variants are generated from one `define_hmac!` template so
+//! the construction is written (and audited) exactly once.
+//!
 //! ## Why HMAC-SHA-2?
 //!
 //! TLS 1.3 (RFC 8446) keys its entire key schedule with HKDF
@@ -39,117 +42,92 @@ const IPAD: u8 = 0x36;
 // lgtm[rust/hard-coded-cryptographic-value] — RFC 2104 §2 opad, public constant
 const OPAD: u8 = 0x5C;
 
-/// Streaming HMAC-SHA-256 context.
-///
-/// Construct with [`HmacSha256::new`]; absorb message bytes via
-/// [`HmacSha256::update`]; finalise with [`HmacSha256::finalize`].
-#[derive(Clone)]
-pub struct HmacSha256 {
-    /// Inner SHA-256, primed with `K' XOR ipad`.
-    inner: Sha256,
-    /// Outer key (`K' XOR opad`), kept for finalise.
-    outer_key: [u8; BLOCK_LEN],
-}
-
-impl HmacSha256 {
-    /// Construct a fresh HMAC-SHA-256 instance for the given key.
-    pub fn new(key: &[u8]) -> Self {
-        let mut working = [0u8; BLOCK_LEN];
-        if key.len() > BLOCK_LEN {
-            let mut h = Sha256::new();
-            h.update(key);
-            working[..DIGEST_LEN].copy_from_slice(&h.finalize());
-        } else {
-            working[..key.len()].copy_from_slice(key);
+/// Generate a streaming HMAC context + one-shot helper for one
+/// SHA-2 hash. `$hash` is the hasher type, `$block`/`$digest` its
+/// block and digest lengths.
+macro_rules! define_hmac {
+    (
+        $(#[$ctx_doc:meta])* $name:ident,
+        $(#[$fn_doc:meta])* $oneshot:ident,
+        $hash:ident, $block:expr, $digest:expr
+    ) => {
+        $(#[$ctx_doc])*
+        ///
+        /// Construct with `new`; absorb message bytes via `update`;
+        /// finalise with `finalize`.
+        #[derive(Clone)]
+        pub struct $name {
+            /// Inner hash, primed with `K' XOR ipad`.
+            inner: $hash,
+            /// Outer key (`K' XOR opad`), kept for finalise.
+            outer_key: [u8; $block],
         }
-        let mut inner = Sha256::new();
-        let mut ipad_block = [0u8; BLOCK_LEN];
-        let mut outer_key = [0u8; BLOCK_LEN];
-        for i in 0..BLOCK_LEN {
-            ipad_block[i] = working[i] ^ IPAD;
-            outer_key[i] = working[i] ^ OPAD;
+
+        impl $name {
+            /// Construct a fresh instance for the given key.
+            pub fn new(key: &[u8]) -> Self {
+                let mut working = [0u8; $block];
+                if key.len() > $block {
+                    let mut h = $hash::new();
+                    h.update(key);
+                    working[..$digest].copy_from_slice(&h.finalize());
+                } else {
+                    working[..key.len()].copy_from_slice(key);
+                }
+                let mut inner = $hash::new();
+                let mut ipad_block = [0u8; $block];
+                let mut outer_key = [0u8; $block];
+                for i in 0..$block {
+                    ipad_block[i] = working[i] ^ IPAD;
+                    outer_key[i] = working[i] ^ OPAD;
+                }
+                inner.update(&ipad_block);
+                Self { inner, outer_key }
+            }
+
+            /// Absorb message bytes.
+            pub fn update(&mut self, data: &[u8]) {
+                self.inner.update(data);
+            }
+
+            /// Finalise and return the MAC.
+            pub fn finalize(self) -> [u8; $digest] {
+                let inner_digest = self.inner.finalize();
+                let mut outer = $hash::new();
+                outer.update(&self.outer_key);
+                outer.update(&inner_digest);
+                outer.finalize()
+            }
         }
-        inner.update(&ipad_block);
-        Self { inner, outer_key }
-    }
 
-    /// Absorb message bytes.
-    pub fn update(&mut self, data: &[u8]) {
-        self.inner.update(data);
-    }
-
-    /// Finalise and return the 32-byte MAC.
-    pub fn finalize(self) -> [u8; DIGEST_LEN] {
-        let inner_digest = self.inner.finalize();
-        let mut outer = Sha256::new();
-        outer.update(&self.outer_key);
-        outer.update(&inner_digest);
-        outer.finalize()
-    }
-}
-
-/// One-shot HMAC-SHA-256.
-pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; DIGEST_LEN] {
-    let mut mac = HmacSha256::new(key);
-    mac.update(message);
-    mac.finalize()
-}
-
-/// Streaming HMAC-SHA-384 context.
-///
-/// Construct with [`HmacSha384::new`]; absorb message bytes via
-/// [`HmacSha384::update`]; finalise with [`HmacSha384::finalize`].
-#[derive(Clone)]
-pub struct HmacSha384 {
-    /// Inner SHA-384, primed with `K' XOR ipad`.
-    inner: Sha384,
-    /// Outer key (`K' XOR opad`), kept for finalise.
-    outer_key: [u8; SHA384_BLOCK_LEN],
-}
-
-impl HmacSha384 {
-    /// Construct a fresh HMAC-SHA-384 instance for the given key.
-    pub fn new(key: &[u8]) -> Self {
-        let mut working = [0u8; SHA384_BLOCK_LEN];
-        if key.len() > SHA384_BLOCK_LEN {
-            let mut h = Sha384::new();
-            h.update(key);
-            working[..SHA384_DIGEST_LEN].copy_from_slice(&h.finalize());
-        } else {
-            working[..key.len()].copy_from_slice(key);
+        $(#[$fn_doc])*
+        pub fn $oneshot(key: &[u8], message: &[u8]) -> [u8; $digest] {
+            let mut mac = $name::new(key);
+            mac.update(message);
+            mac.finalize()
         }
-        let mut inner = Sha384::new();
-        let mut ipad_block = [0u8; SHA384_BLOCK_LEN];
-        let mut outer_key = [0u8; SHA384_BLOCK_LEN];
-        for i in 0..SHA384_BLOCK_LEN {
-            ipad_block[i] = working[i] ^ IPAD;
-            outer_key[i] = working[i] ^ OPAD;
-        }
-        inner.update(&ipad_block);
-        Self { inner, outer_key }
-    }
-
-    /// Absorb message bytes.
-    pub fn update(&mut self, data: &[u8]) {
-        self.inner.update(data);
-    }
-
-    /// Finalise and return the 48-byte MAC.
-    pub fn finalize(self) -> [u8; SHA384_DIGEST_LEN] {
-        let inner_digest = self.inner.finalize();
-        let mut outer = Sha384::new();
-        outer.update(&self.outer_key);
-        outer.update(&inner_digest);
-        outer.finalize()
-    }
+    };
 }
 
-/// One-shot HMAC-SHA-384.
-pub fn hmac_sha384(key: &[u8], message: &[u8]) -> [u8; SHA384_DIGEST_LEN] {
-    let mut mac = HmacSha384::new(key);
-    mac.update(message);
-    mac.finalize()
-}
+define_hmac!(
+    /// Streaming HMAC-SHA-256 context.
+    HmacSha256,
+    /// One-shot HMAC-SHA-256.
+    hmac_sha256,
+    Sha256,
+    BLOCK_LEN,
+    DIGEST_LEN
+);
+
+define_hmac!(
+    /// Streaming HMAC-SHA-384 context.
+    HmacSha384,
+    /// One-shot HMAC-SHA-384.
+    hmac_sha384,
+    Sha384,
+    SHA384_BLOCK_LEN,
+    SHA384_DIGEST_LEN
+);
 
 #[cfg(test)]
 mod tests {
