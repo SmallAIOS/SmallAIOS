@@ -21,3 +21,29 @@
 
 pub mod der;
 pub mod hostname;
+
+use crate::Result;
+use alloc::vec::Vec;
+
+/// The leaf certificate's SubjectPublicKeyInfo key, in the
+/// algorithms the workspace can verify CertificateVerify with
+/// today. ECDSA-P256 and RSA-PSS variants join when their
+/// `security/` primitives land (tasks 5.5 note).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LeafPublicKey {
+    Ed25519([u8; 32]),
+}
+
+/// Chain verification seam between the handshake driver (Phase 4)
+/// and the X.509 chain verifier (Phase 5).
+///
+/// `certs` is the server's chain exactly as received — leaf
+/// first, raw DER. Implementations MUST verify the chain anchors
+/// in the operator trust store, the validity windows, and that
+/// the leaf's SAN matches `server_name`, returning the leaf's
+/// public key for CertificateVerify checking. The production
+/// implementation lands with Phase 5's structure parser; until
+/// then the only impls are test doubles inside this crate.
+pub trait ServerCertVerifier {
+    fn verify_chain(&self, certs: &[Vec<u8>], server_name: Option<&str>) -> Result<LeafPublicKey>;
+}
