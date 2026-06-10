@@ -1,20 +1,29 @@
-# SmallAIOS GPU Container Build (ARM64 + NVIDIA CUDA)
+# SmallAIOS GPU Container Build (x86-64 / ARM64 + NVIDIA CUDA)
 # Usage: docker build -f Dockerfile.cuda -t smallaios:gpu .
 #
 # Requires: NVIDIA Container Toolkit (nvidia-ctk) for GPU runtime
 # Run:   docker run --gpus all smallaios:gpu
 #
-# NOTE: This image is ~200-500 MB due to CUDA runtime libraries.
-# For the <15 MB CPU-only image, use the standard Dockerfile.
+# NOTE: This image is multi-GB due to the CUDA runtime + cuDNN libraries.
+# For the <15 MB static CPU-only image, use the standard Dockerfile.
+#
+# Unlike the CPU image, this build targets *-unknown-linux-gnu (glibc,
+# dynamically linked): NVIDIA ships its CUDA libraries as glibc shared
+# objects, which cannot be linked into a self-contained static-pie musl
+# binary. The runtime stage is a glibc (Ubuntu) CUDA image, so a
+# dynamically linked binary is correct here.
 
 # === Builder stage (CUDA devel for linking) ===
 FROM nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 AS builder
 
 ARG TARGETARCH
 
-# Install Rust nightly + musl cross-compilation tools.
+# Install Rust toolchain prerequisites plus the cuDNN dev package
+# (libcudnn.so link-time symlink — the runtime stage installs the
+# matching libcudnn9-cuda-13 runtime package).
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends curl musl-tools ca-certificates && \
+    apt-get install -y --no-install-recommends \
+      curl ca-certificates build-essential libcudnn9-dev-cuda-13 && \
     rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
@@ -23,8 +32,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN case "$TARGETARCH" in \
-      arm64) RUST_TARGET=aarch64-unknown-linux-musl ;; \
-      *)     RUST_TARGET=x86_64-unknown-linux-musl ;; \
+      arm64) RUST_TARGET=aarch64-unknown-linux-gnu ;; \
+      *)     RUST_TARGET=x86_64-unknown-linux-gnu ;; \
     esac && \
     echo "$RUST_TARGET" > /rust_target
 
@@ -34,10 +43,17 @@ WORKDIR /app
 COPY . .
 
 # Build with CUDA feature. The #[link(name = "cudart")] etc. directives
-# resolve against the CUDA devel libs in this stage. The resulting binary
-# dynamically links libcudart/cublas/cudnn at runtime.
+# resolve against the CUDA devel libs in this stage, so the linker needs
+# -L /usr/local/cuda/lib64 (cudart/cublas/cublasLt/nvrtc) and
+# -L /usr/local/cuda/lib64/stubs (libcuda.so driver stub — the real
+# libcuda.so.1 is injected at runtime by the NVIDIA container runtime).
+# The search paths are passed via `cargo --config target.<triple>.rustflags`
+# to stay scoped to this target: a global RUSTFLAGS env var would override
+# the target-specific rustflags in .cargo/config.toml for every target.
+# The resulting binary dynamically links libcudart/cublas/cudnn at runtime.
 RUN RUST_TARGET=$(cat /rust_target) && \
     cargo build --release --target "$RUST_TARGET" \
+      --config "target.${RUST_TARGET}.rustflags=['-L', '/usr/local/cuda/lib64', '-L', '/usr/local/cuda/lib64/stubs']" \
       -p smallaios-container --features cuda,nvidia_gpu && \
     cp "/app/target/${RUST_TARGET}/release/smallaios-container" /app/smallaios
 
