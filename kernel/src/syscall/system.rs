@@ -383,7 +383,14 @@ mod tests {
 
     #[test]
     fn test_sys_random_valid() {
-        let args = SyscallArgs::new(0x54, [0x1000, 32, 0, 0, 0, 0]);
+        // Use a real buffer: `sys_random` materializes `&mut [u8]` from the
+        // pointer arg before the CSPRNG call, so a fabricated address like
+        // 0x1000 is undefined behavior (caught by Miri) even though the
+        // uninitialized CSPRNG never writes through it.
+        let mut buf = [0u8; 32];
+        let args = SyscallArgs::new(0x54, [buf.as_mut_ptr() as usize, 32, 0, 0, 0, 0]);
+        // CSPRNG is uninitialized in unit tests, so the syscall reports
+        // NotSupported without touching the buffer.
         assert_eq!(sys_random(&args), SyscallError::NotSupported.as_i64());
     }
 
