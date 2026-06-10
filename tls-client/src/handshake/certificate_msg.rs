@@ -269,9 +269,13 @@ mod tests {
 
     #[test]
     fn certificate_truncated_rejected() {
+        // No format message on the asserts: CodeQL's
+        // rust/cleartext-logging taints the message via
+        // `bytes.len()` because `bytes` derives from certificate
+        // material (synthetic here, but the query can't know that).
         let bytes = build_certificate(&[b"leaf-der-bytes"]);
         for cut in [5, 8, 12, bytes.len() - 1] {
-            assert!(parse_certificate(&bytes[..cut]).is_err(), "cut={cut}");
+            assert!(parse_certificate(&bytes[..cut]).is_err());
         }
     }
 

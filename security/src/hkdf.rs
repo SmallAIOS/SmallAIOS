@@ -101,7 +101,12 @@ define_hkdf!(
 );
 
 #[cfg(test)]
+#[path = "hkdf_test_vectors.rs"]
+mod test_vectors;
+
+#[cfg(test)]
 mod tests {
+    use super::test_vectors::*;
     use super::*;
 
     fn hex(bytes: &[u8]) -> alloc::string::String {
@@ -114,14 +119,11 @@ mod tests {
         s
     }
 
-    // RFC 5869 A.1 (test case 1) inputs. SHA-256 expected values are
-    // the RFC's published vectors; SHA-384 values were generated from
-    // the same inputs and cross-validated against two independent
-    // oracles (Python stdlib HKDF construction and OpenSSL 3.0
-    // `openssl kdf ... HKDF`).
-    const IKM: [u8; 22] = [0x0b; 22];
-    const SALT: [u8; 13] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0x0a, 0x0b, 0x0c];
-    const INFO: [u8; 10] = [0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9];
+    // RFC 5869 A.1 (test case 1) inputs live in `test_vectors`.
+    // SHA-256 expected values are the RFC's published vectors;
+    // SHA-384 values were generated from the same inputs and
+    // cross-validated against two independent oracles (Python
+    // stdlib HKDF construction and OpenSSL 3.0 `openssl kdf HKDF`).
 
     #[test]
     fn rfc5869_tc1_sha256() {
@@ -159,9 +161,9 @@ mod tests {
     #[test]
     fn empty_salt_means_zero_block() {
         // RFC 5869 §2.2: salt defaults to HashLen zero bytes.
-        let explicit256 = hkdf_extract_sha256(&[0u8; DIGEST_LEN], b"ikm");
+        let explicit256 = hkdf_extract_sha256(&ZERO_SALT_SHA256, b"ikm");
         assert_eq!(hkdf_extract_sha256(&[], b"ikm"), explicit256);
-        let explicit384 = hkdf_extract_sha384(&[0u8; SHA384_DIGEST_LEN], b"ikm");
+        let explicit384 = hkdf_extract_sha384(&ZERO_SALT_SHA384, b"ikm");
         assert_eq!(hkdf_extract_sha384(&[], b"ikm"), explicit384);
     }
 
