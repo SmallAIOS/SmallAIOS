@@ -547,9 +547,9 @@ mod tests {
     #[test]
     fn nist_kat_one_million_a() {
         let mut h = Sha256::new();
-        let chunk = alloc::vec![b'a'; 1024];
+        let chunk = alloc::vec![b'a'; 1000];
         for _ in 0..1000 {
-            h.update(&chunk[..1000.min(1024)]);
+            h.update(&chunk);
         }
         // 1000 iterations × 1000 bytes = 1,000,000.
         assert_eq!(

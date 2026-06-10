@@ -48,12 +48,35 @@ pub(crate) fn build_server_hello(
     key_share_pk: &[u8],
     random: [u8; 32],
 ) -> Vec<u8> {
+    build_server_hello_with_session_id(
+        cipher_suite_code,
+        selected_version,
+        key_share_group,
+        key_share_pk,
+        random,
+        &[],
+    )
+}
+
+/// [`build_server_hello`] with a caller-chosen
+/// `legacy_session_id_echo`. The client under test always sends an
+/// empty `legacy_session_id`, so tests pass a non-empty echo here
+/// to provoke the RFC 8446 §4.1.3 mismatch abort.
+pub(crate) fn build_server_hello_with_session_id(
+    cipher_suite_code: u16,
+    selected_version: Option<u16>,
+    key_share_group: u16,
+    key_share_pk: &[u8],
+    random: [u8; 32],
+    session_id_echo: &[u8],
+) -> Vec<u8> {
     let mut body = Vec::new();
     // legacy_version
     body.extend_from_slice(&[0x03, 0x03]);
     body.extend_from_slice(&random);
-    // session_id_echo: empty
-    body.push(0);
+    // session_id_echo
+    body.push(session_id_echo.len() as u8);
+    body.extend_from_slice(session_id_echo);
     body.extend_from_slice(&cipher_suite_code.to_be_bytes());
     // legacy_compression_method
     body.push(0);

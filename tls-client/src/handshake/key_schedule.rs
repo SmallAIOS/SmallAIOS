@@ -613,6 +613,33 @@ f9a41999316e6976c96bf12e533324c925948512b0892b12d121825a216dd3d7",
     }
 
     #[test]
+    fn rfc8448_section3_handshake_traffic_secrets() {
+        // RFC 8448 §3 ("Simple 1-RTT Handshake") known-answer test
+        // — the only published end-to-end TLS 1.3 key-schedule
+        // vectors. The schedule is hash-generic, so we drive it
+        // with SHA-256 directly even though RFC 8448's
+        // TLS_AES_128_GCM_SHA256 suite is outside this client's
+        // suite allow-list.
+        //
+        // Inputs (RFC 8448 §3):
+        //   "{server} extract secret 'handshake'" IKM = the x25519
+        //   shared secret; transcript hash = Transcript-Hash(CH..SH)
+        //   from the "derive secret 'tls13 c hs traffic'" step.
+        let ecdhe = h("8bd4054fb55b9d63fdfbacf9f04b9f0d35e6d63f537563efd46272900f89492d");
+        let t_ch_sh = h("860c06edc07858ee8e78f0e7428c58edd6b43f2ca3e6e95f02ed063cf0e1cad8");
+        let mut ks = KeySchedule::new(HashAlg::Sha256);
+        ks.derive_handshake_secrets(&ecdhe, &t_ch_sh).unwrap();
+        assert_eq!(
+            hex(ks.client_hs_traffic_secret().unwrap().as_bytes()),
+            "b3eddb126e067f35a780b3abf45e2d8f3b1a950738f52e9600746a0e27a55a21"
+        );
+        assert_eq!(
+            hex(ks.server_hs_traffic_secret().unwrap().as_bytes()),
+            "b67b7d690cc16c4e75e54213cb2d37b4e9c912bcded9105d42befd59d391ad38"
+        );
+    }
+
+    #[test]
     fn early_secret_matches_known_value() {
         // HKDF-Extract(0, 0^32) over SHA-256 — the universal TLS 1.3
         // no-PSK early secret, also OpenSSL-confirmed.

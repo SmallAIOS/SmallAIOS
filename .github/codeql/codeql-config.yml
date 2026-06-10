@@ -54,17 +54,6 @@ paths-ignore:
 #     or as fresh-CSPRNG-source buffers (salt: filled by the kernel
 #     CSPRNG immediately after declaration). Neither is a secret.
 #
-# - `tls-client/src/handshake/key_schedule.rs`
-#     The TLS 1.3 key schedule (RFC 8446 §7.1) zero-initialises
-#     fixed-size output buffers that HKDF-Expand-Label fills before any
-#     use (`Secret::new`'s `[0u8; MAX_HASH_LEN]`, `traffic_keys`'
-#     `key`/`iv` arrays — flagged as "salt"/"nonce"), and §7.1 itself
-#     mandates literal zero inputs at two schedule points (zero IKM for
-#     the Early Secret and Master Secret extracts). Same
-#     filled-immediately-after-declaration pattern as the
-#     `kernel/src/syscall/auth.rs` salt buffers above. Production code,
-#     so the `_test_vectors.rs` convention does not apply.
-#
 # Adding a new entry MUST cite (a) the file, (b) the spec/RFC section that
 # governs the constant, and (c) why moving to a `_test_vectors.rs` sibling
 # is not applicable.
@@ -74,4 +63,3 @@ query-filters:
       paths:
         - security/src/argon2id.rs
         - kernel/src/syscall/auth.rs
-        - tls-client/src/handshake/key_schedule.rs

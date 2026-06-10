@@ -59,6 +59,24 @@ pub(crate) const HRR_RANDOM: [u8; 32] = [
     0xc2, 0xa2, 0x11, 0x16, 0x7a, 0xbb, 0x8c, 0x5e, 0x07, 0x9e, 0x09, 0xe2, 0xc8, 0xa8, 0x33, 0x9c,
 ];
 
+/// Maximum number of unencrypted middlebox-compatibility
+/// ChangeCipherSpec records tolerated per handshake (RFC 8446 §5
+/// says drop them; we additionally bound how much of that junk we
+/// tolerate so a peer cannot stream CCS records indefinitely).
+const MAX_CCS_RECORDS: u8 = 2;
+
+/// Cap on the claimed 24-bit length of a Certificate message.
+/// Real chains can be tens of KiB (several certificates plus
+/// per-entry extensions), so this cap is generous.
+const MAX_CERTIFICATE_MSG_LEN: usize = 128 * 1024;
+
+/// Cap on the claimed 24-bit length of every other handshake
+/// message. ServerHello/EncryptedExtensions/CertificateVerify/
+/// Finished are all well under a few KiB in practice; 32 KiB
+/// leaves slack without letting a forged header pin multiple
+/// records' worth of heap (see `drain_messages`).
+const MAX_HANDSHAKE_MSG_LEN: usize = 32 * 1024;
+
 /// Operator-facing handshake policy (subset of the `immudb.toml`
 /// `tls.*` surface that Phase 4 consumes).
 #[derive(Debug, Clone, Copy)]
@@ -145,6 +163,9 @@ pub struct ClientHandshake<'a, V: ServerCertVerifier> {
     /// Server handshake-traffic keys + record sequence number.
     server_keys: Option<TrafficKeys>,
     read_seq: u64,
+    /// Unencrypted CCS records seen so far (bounded by
+    /// [`MAX_CCS_RECORDS`]).
+    ccs_count: u8,
     /// Leaf public key returned by the chain verifier.
     leaf_key: Option<LeafPublicKey>,
     /// Transcript-Hash(CH..Certificate) for CertificateVerify.
@@ -215,6 +236,7 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
                 schedule: None,
                 server_keys: None,
                 read_seq: 0,
+                ccs_count: 0,
                 leaf_key: None,
                 hash_at_cert: Vec::new(),
                 hash_at_cv: Vec::new(),
@@ -316,8 +338,21 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
         match header.content_type {
             // Middlebox-compatibility ChangeCipherSpec — RFC 8446
             // §5: drop unencrypted CCS received during the
-            // handshake.
-            ContentType::ChangeCipherSpec => Ok(()),
+            // handshake, but only the genuine compatibility form
+            // (exactly one payload byte, value 0x01); any other
+            // length or value is a protocol violation. Tolerance is
+            // also capped at MAX_CCS_RECORDS so a peer cannot
+            // stream junk CCS records at us indefinitely.
+            ContentType::ChangeCipherSpec => {
+                if record[RECORD_HEADER_LEN..] != [0x01] {
+                    return Err(TlsClientError::BadHandshake);
+                }
+                self.ccs_count += 1;
+                if self.ccs_count > MAX_CCS_RECORDS {
+                    return Err(TlsClientError::BadHandshake);
+                }
+                Ok(())
+            }
             ContentType::Alert if self.server_keys.is_none() => {
                 // Plaintext alert during the first flight (e.g.
                 // handshake_failure). Surface as handshake failure.
@@ -325,6 +360,15 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
             }
             ContentType::Handshake if self.server_keys.is_none() => {
                 // Plaintext handshake record (ServerHello flight).
+                //
+                // Deliberate deviation, on record: RFC 8446 §5.1
+                // says receivers MUST NOT pay attention to
+                // legacy_record_version ("MUST be ignored for all
+                // purposes"), but no conformant TLS 1.3 peer sends
+                // anything other than 0x0303 here, so we pin it
+                // defensively and reject everything else — it
+                // shrinks the unauthenticated parsing surface at
+                // zero interop cost.
                 header.enforce_legacy_version()?;
                 self.hs_buf.extend_from_slice(&record[RECORD_HEADER_LEN..]);
                 Ok(())
@@ -358,6 +402,21 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
                 return Ok(());
             }
             let header = HandshakeHeader::parse(&self.hs_buf)?;
+            // DoS bound: cap the claimed 24-bit length BEFORE the
+            // reassembly buffer is allowed to grow toward it. A
+            // forged header can claim up to 16 MiB and would
+            // otherwise make us accumulate records on the no_std
+            // kernel heap during the unauthenticated phase.
+            // Certificate is the only legitimately large message
+            // (a real chain can be tens of KiB), so it gets a
+            // wider cap than everything else.
+            let cap = match header.msg_type {
+                HandshakeType::Certificate => MAX_CERTIFICATE_MSG_LEN,
+                _ => MAX_HANDSHAKE_MSG_LEN,
+            };
+            if header.length as usize > cap {
+                return Err(TlsClientError::BadHandshake);
+            }
             let total = HandshakeHeader::LEN + header.length as usize;
             if self.hs_buf.len() < total {
                 return Ok(());
@@ -423,6 +482,25 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
 
     fn on_server_hello(&mut self, msg: &[u8]) -> Result<()> {
         let sh = parse_server_hello(msg)?;
+        // RFC 8446 §4.1.3: legacy_session_id_echo MUST echo the
+        // ClientHello's legacy_session_id, and a client MUST abort
+        // on a mismatch. This client always sends an EMPTY
+        // legacy_session_id (see client_hello.rs), so any non-empty
+        // echo is a violation.
+        if !sh.session_id_echo.is_empty() {
+            return Err(TlsClientError::BadHandshake);
+        }
+        // Downgrade-sentinel note: the RFC 8446 §4.1.3 "DOWNGRD"
+        // check on the last 8 bytes of ServerHello.random protects
+        // clients that are willing to negotiate TLS 1.2 or below.
+        // It is deliberately omitted here: this client pins
+        // supported_versions to 0x0304 (parse_server_hello aborts
+        // on anything else) and never offers a lower version, which
+        // structurally subsumes the sentinel check — a downgraded
+        // ServerHello cannot get past the version pinning. Anyone
+        // adding TLS 1.2 fallback later MUST add the sentinel check
+        // here.
+        //
         // HelloRetryRequest is a ServerHello whose random is the
         // fixed SHA-256("HelloRetryRequest") sentinel — refused in
         // v1 (design.md D7).
@@ -487,6 +565,15 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
         self.suite = Some(sh.cipher_suite);
         self.transcript = Some(transcript);
         self.schedule = Some(schedule);
+        // RFC 8446 §5.1 key-change boundary: ServerHello is the
+        // last plaintext handshake message — everything after it
+        // travels under the handshake keys just installed. Any
+        // bytes still sitting in the reassembly buffer arrived in
+        // plaintext records coalesced past the ServerHello and must
+        // not be processed as if they had been protected.
+        if !self.hs_buf.is_empty() {
+            return Err(TlsClientError::BadHandshake);
+        }
         self.state = State::ExpectEncryptedExtensions;
         Ok(())
     }
@@ -529,6 +616,16 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
             &fin_msg,
         )?;
         send.extend_from_slice(&sealed);
+        // Same RFC 8446 §5.1 key-change rule at the handshake's
+        // end: the server Finished closes the handshake key epoch.
+        // Leftover bytes in the reassembly buffer (e.g. junk
+        // coalesced into the Finished record) would otherwise be
+        // silently retained across the boundary — post-handshake
+        // messages must arrive in their own records under the
+        // application keys.
+        if !self.hs_buf.is_empty() {
+            return Err(TlsClientError::BadHandshake);
+        }
         self.state = State::Complete;
         Ok(())
     }
@@ -657,11 +754,16 @@ mod tests {
 
     /// Run the server side: consume the ClientHello record, emit
     /// SH + encrypted {EE+Cert} {CV} {Fin} records.
+    ///
+    /// `junk_after_finished` coalesces trailing bytes into the
+    /// Finished record — they land beyond the RFC 8446 §5.1
+    /// key-change boundary and must abort the client.
     fn server_respond(
         ch_record: &[u8],
         suite: CipherSuite,
         cert_kp: &Ed25519KeyPair,
         tamper_finished: bool,
+        junk_after_finished: bool,
     ) -> ServerFlight {
         let ch_msg = &ch_record[RECORD_HEADER_LEN..];
         let (group, client_share) = parse_ch_key_share(ch_msg);
@@ -748,7 +850,11 @@ mod tests {
         }
         let fin_msg = build_finished(&vd).unwrap();
         transcript.update(&fin_msg);
-        records.extend_from_slice(&seal_hs(&fin_msg, &mut seq));
+        let mut fin_payload = fin_msg;
+        if junk_after_finished {
+            fin_payload.extend_from_slice(&[0u8; 7]);
+        }
+        records.extend_from_slice(&seal_hs(&fin_payload, &mut seq));
 
         ServerFlight {
             records,
@@ -782,7 +888,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut server = server_respond(&flight, suite, &cert_kp, false);
+        let mut server = server_respond(&flight, suite, &cert_kp, false, false);
 
         // Feed the server flight to the client — all at once, or
         // byte-by-byte to exercise the reassembly paths.
@@ -962,6 +1068,7 @@ mod tests {
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
             true, // tamper the Finished verify_data
+            false,
         );
         assert_eq!(
             client.push(&server.records).unwrap_err(),
@@ -986,6 +1093,7 @@ mod tests {
             &flight,
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
+            false,
             false,
         );
         assert_eq!(
@@ -1017,6 +1125,7 @@ mod tests {
             &flight,
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
+            false,
             false,
         );
         assert_eq!(
@@ -1112,6 +1221,7 @@ mod tests {
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
             false,
+            false,
         );
         // Inject a middlebox-compat CCS record between the
         // ServerHello and the encrypted flight.
@@ -1128,5 +1238,147 @@ mod tests {
     fn app_keys_gated_until_complete() {
         let (client, _flight) = start_classical();
         assert!(client.app_keys().is_err());
+    }
+
+    /// A valid classical ServerHello message answering
+    /// `start_classical`'s ClientHello (any well-formed x25519
+    /// public key works — the client just runs DH with it).
+    fn classical_server_hello_msg() -> Vec<u8> {
+        let x = x25519_keygen(&[0x55u8; 32]);
+        build_server_hello_msg(
+            CipherSuite::ChaCha20Poly1305Sha256,
+            named_group::X25519,
+            x.public_key.as_bytes(),
+        )
+    }
+
+    #[test]
+    fn plaintext_bytes_coalesced_after_server_hello_abort() {
+        // RFC 8446 §5.1 key-change boundary: one PLAINTEXT record
+        // carrying ServerHello || EncryptedExtensions. The EE bytes
+        // sit on the wrong side of the key change and must not be
+        // processed as if they had been encrypted.
+        let (mut client, _flight) = start_classical();
+        let mut payload = classical_server_hello_msg();
+        payload.extend_from_slice(&build_ee_msg());
+        let rec = build_plaintext_record(ContentType::Handshake, &payload).unwrap();
+        assert_eq!(client.push(&rec).unwrap_err(), TlsClientError::BadHandshake);
+    }
+
+    #[test]
+    fn leftover_bytes_at_server_finished_abort() {
+        // Junk coalesced into the (encrypted) server Finished
+        // record must abort instead of being silently retained
+        // across the handshake-end key boundary.
+        let cert_kp = ed25519_keygen(&[9u8; 32]);
+        let verifier = TestVerifier {
+            expected_leaf: LEAF_DER,
+            pubkey: *cert_kp.public_key.as_bytes(),
+        };
+        let (mut client, flight) = ClientHandshake::new(
+            ClientConfig {
+                server_name: Some("immudb.example.com"),
+                require_pqc: false,
+            },
+            &entropy(),
+            &verifier,
+        )
+        .unwrap();
+        let server = server_respond(
+            &flight,
+            CipherSuite::ChaCha20Poly1305Sha256,
+            &cert_kp,
+            false,
+            true, // coalesce junk bytes after Finished
+        );
+        assert_eq!(
+            client.push(&server.records).unwrap_err(),
+            TlsClientError::BadHandshake
+        );
+    }
+
+    #[test]
+    fn non_empty_session_id_echo_aborts() {
+        // RFC 8446 §4.1.3: the echo must match our (always empty)
+        // legacy_session_id.
+        let (mut client, _flight) = start_classical();
+        let x = x25519_keygen(&[0x55u8; 32]);
+        let sh = crate::handshake::test_util::build_server_hello_with_session_id(
+            CipherSuite::ChaCha20Poly1305Sha256.wire_value(),
+            Some(TLS_1_3),
+            named_group::X25519,
+            x.public_key.as_bytes(),
+            [0xaa; 32],
+            &[0xde, 0xad, 0xbe, 0xef],
+        );
+        let rec = build_plaintext_record(ContentType::Handshake, &sh).unwrap();
+        assert_eq!(client.push(&rec).unwrap_err(), TlsClientError::BadHandshake);
+    }
+
+    #[test]
+    fn ccs_with_wrong_payload_byte_aborts() {
+        // RFC 8446 §5: the compat CCS is exactly one 0x01 byte.
+        let (mut client, _flight) = start_classical();
+        assert_eq!(
+            client.push(&[20, 0x03, 0x03, 0, 1, 2]).unwrap_err(),
+            TlsClientError::BadHandshake
+        );
+    }
+
+    #[test]
+    fn ccs_with_wrong_length_aborts() {
+        let (mut client, _flight) = start_classical();
+        assert_eq!(
+            client.push(&[20, 0x03, 0x03, 0, 2, 1, 1]).unwrap_err(),
+            TlsClientError::BadHandshake
+        );
+    }
+
+    #[test]
+    fn ccs_flood_aborts() {
+        let (mut client, _flight) = start_classical();
+        // Up to MAX_CCS_RECORDS well-formed CCS records are
+        // dropped per RFC 8446 §5...
+        for _ in 0..MAX_CCS_RECORDS {
+            client.push(&[20, 0x03, 0x03, 0, 1, 1]).unwrap();
+        }
+        // ...but the junk tolerance is bounded.
+        assert_eq!(
+            client.push(&[20, 0x03, 0x03, 0, 1, 1]).unwrap_err(),
+            TlsClientError::BadHandshake
+        );
+    }
+
+    #[test]
+    fn oversized_handshake_length_claim_aborts() {
+        // A ServerHello header claiming 2^24 - 1 bytes is rejected
+        // from the 4 header bytes alone — the driver never
+        // accumulates records toward the bogus claim.
+        let (mut client, _flight) = start_classical();
+        let rec = build_plaintext_record(ContentType::Handshake, &[2, 0xff, 0xff, 0xff]).unwrap();
+        assert_eq!(client.push(&rec).unwrap_err(), TlsClientError::BadHandshake);
+    }
+
+    #[test]
+    fn certificate_length_cap_wider_but_enforced() {
+        // Certificate (type 11) gets the wider cap; one byte over
+        // it still aborts.
+        let (mut client, _flight) = start_classical();
+        let over = ((MAX_CERTIFICATE_MSG_LEN + 1) as u32).to_be_bytes();
+        let rec = build_plaintext_record(ContentType::Handshake, &[11, over[1], over[2], over[3]])
+            .unwrap();
+        assert_eq!(client.push(&rec).unwrap_err(), TlsClientError::BadHandshake);
+
+        // A claim at the cap is not rejected at the header stage —
+        // the driver just waits for the rest of the message.
+        let (mut client2, _flight2) = start_classical();
+        let at_cap = (MAX_CERTIFICATE_MSG_LEN as u32).to_be_bytes();
+        let rec2 = build_plaintext_record(
+            ContentType::Handshake,
+            &[11, at_cap[1], at_cap[2], at_cap[3]],
+        )
+        .unwrap();
+        let p = client2.push(&rec2).unwrap();
+        assert_eq!(p.status, HandshakeStatus::InProgress);
     }
 }
