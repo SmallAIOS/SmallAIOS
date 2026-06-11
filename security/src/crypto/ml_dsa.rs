@@ -1749,6 +1749,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "two full ML-DSA-65 keygens take ~3 min under Miri's interpreter; keygen UB coverage comes from ml_dsa_keygen_succeeds / native runs"
+    )]
     fn ml_dsa_keygen_deterministic() {
         let seed = [0x42u8; 32];
         let kp1 = ml_dsa_65_keygen(&seed).unwrap();
@@ -1773,6 +1777,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "full ML-DSA-65 sign+verify takes many minutes under Miri's interpreter; UB coverage comes from the fast component tests (encode/decode, NTT) / native runs"
+    )]
     fn ml_dsa_sign_verify_roundtrip() {
         let seed = [0x42u8; 32];
         let keypair = ml_dsa_65_keygen(&seed).unwrap();
@@ -1792,6 +1800,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "full ML-DSA-65 keygen+sign+verify takes many minutes under Miri's interpreter; UB coverage comes from the fast component tests (encode/decode, NTT) / native runs"
+    )]
     fn ml_dsa_verify_wrong_message_fails() {
         let seed = [0x42u8; 32];
         let keypair = ml_dsa_65_keygen(&seed).unwrap();
@@ -1808,6 +1820,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "two full ML-DSA-65 keygens take ~3 min under Miri's interpreter; keygen UB coverage comes from ml_dsa_keygen_succeeds / native runs"
+    )]
     fn ml_dsa_different_seeds_different_keys() {
         let kp1 = ml_dsa_65_keygen(&[0x01u8; 32]).unwrap();
         let kp2 = ml_dsa_65_keygen(&[0x02u8; 32]).unwrap();
