@@ -354,7 +354,13 @@ mod tests {
 
     #[test]
     fn test_task_poll_pending_then_ready() {
-        let fut = Box::leak(Box::new(TwoPollFuture { polled: false }));
+        // `Task` requires a `'static` future; allocate manually so the
+        // test can reclaim it at the end (Miri's leak checker reports
+        // `Box::leak` allocations at process exit).
+        let fut_raw: *mut TwoPollFuture = Box::into_raw(Box::new(TwoPollFuture { polled: false }));
+        // SAFETY: `fut_raw` came from `Box::into_raw` above — non-null,
+        // aligned, and uniquely owned until `Box::from_raw` below.
+        let fut: &'static mut TwoPollFuture = unsafe { &mut *fut_raw };
         let fut_pin = Pin::new(fut);
         let mut task = Task::new(TaskType::IpcRouter, fut_pin);
 
@@ -373,6 +379,15 @@ mod tests {
         let done = task.poll(&mut cx);
         assert!(done);
         assert_eq!(task.state, TaskState::Done);
+
+        // Reclaim the future: `task` holds the only reference to it.
+        // (`Task` has no `Drop` impl; the drop is still semantically
+        // load-bearing — it ends the borrow of the future.)
+        #[allow(clippy::drop_non_drop)]
+        drop(task);
+        // SAFETY: `task` was dropped above, so no reference into the
+        // allocation remains and `fut_raw` still uniquely owns it.
+        unsafe { drop(Box::from_raw(fut_raw)) };
     }
 
     #[test]
@@ -387,7 +402,11 @@ mod tests {
 
     #[test]
     fn test_task_state_waiting_transition() {
-        let fut = Box::leak(Box::new(TwoPollFuture { polled: false }));
+        // Manually managed allocation — see test_task_poll_pending_then_ready.
+        let fut_raw: *mut TwoPollFuture = Box::into_raw(Box::new(TwoPollFuture { polled: false }));
+        // SAFETY: `fut_raw` came from `Box::into_raw` above — non-null,
+        // aligned, and uniquely owned until `Box::from_raw` below.
+        let fut: &'static mut TwoPollFuture = unsafe { &mut *fut_raw };
         let fut_pin = Pin::new(fut);
         let mut task = Task::new(TaskType::Tcp, fut_pin);
 
@@ -398,5 +417,14 @@ mod tests {
 
         task.make_ready(); // Waiting → Ready
         assert_eq!(task.state, TaskState::Ready);
+
+        // Reclaim the future: `task` holds the only reference to it.
+        // (`Task` has no `Drop` impl; the drop is still semantically
+        // load-bearing — it ends the borrow of the future.)
+        #[allow(clippy::drop_non_drop)]
+        drop(task);
+        // SAFETY: `task` was dropped above, so no reference into the
+        // allocation remains and `fut_raw` still uniquely owns it.
+        unsafe { drop(Box::from_raw(fut_raw)) };
     }
 }

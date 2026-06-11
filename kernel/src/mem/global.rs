@@ -212,11 +212,17 @@ unsafe impl GlobalAlloc for KernelAllocator {
 /// (i.e. not used as a library dependency). Dependent crates should enable
 /// the `no-global-alloc` feature so their test binaries use the host
 /// system allocator instead of the (uninitialized) kernel allocator.
-#[cfg(not(any(test, feature = "no-global-alloc")))]
+///
+/// Also disabled under Miri: integration-test binaries (and dependent
+/// crates tested without `no-global-alloc`) compile this crate without
+/// `cfg(test)`, so the uninitialized kernel allocator would otherwise
+/// become the test harness's global allocator and fail its very first
+/// allocation. Under Miri the host interpreter's allocator is used.
+#[cfg(not(any(test, miri, feature = "no-global-alloc")))]
 #[global_allocator]
 static ALLOCATOR: KernelAllocator = KernelAllocator::new();
 
-#[cfg(not(any(test, feature = "no-global-alloc")))]
+#[cfg(not(any(test, miri, feature = "no-global-alloc")))]
 /// Get a reference to the global allocator.
 pub fn global_allocator() -> &'static KernelAllocator {
     &ALLOCATOR

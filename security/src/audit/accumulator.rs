@@ -226,6 +226,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "seals two full 256-entry batches (~2.5 min under Miri's interpreter); UB coverage comes from the single-batch accumulator tests / native runs"
+    )]
     fn multiple_batches_chain_correctly() {
         let mut acc = BatchAccumulator::new();
         let mut batches = alloc::vec::Vec::new();

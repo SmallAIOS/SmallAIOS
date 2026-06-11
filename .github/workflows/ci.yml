@@ -1115,6 +1115,10 @@ jobs:
   miri:
     name: Miri UB Detection
     runs-on: ubuntu-latest
+    # Fail visibly well before GitHub's hard 6-hour job cancellation so a
+    # pathologically slow test (e.g. a memory-hard KDF under Miri's
+    # interpreter) shows up as a timeout failure, not a silent cancel.
+    timeout-minutes: 330
     permissions:
       contents: read
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'

@@ -272,6 +272,58 @@ pub fn sys_boot_success(_args: &SyscallArgs) -> SyscallResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::boot_success::{KernelBootSuccessProvider, MockBootSuccessProvider};
+
+    extern crate std;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Serializes the `boot_success_*` tests: they share the global
+    /// provider slot and the audit-capture mirror, and
+    /// [`reclaim_provider`] frees the previously installed mock —
+    /// concurrent readers would otherwise race on the slot or read
+    /// freed memory (same pattern as `syscall::memory::tests` /
+    /// `syscall::device::test_sync`). Poison is ignored so one
+    /// panicking test does not cascade into unrelated failures.
+    static BOOT_SUCCESS_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_boot_success() -> MutexGuard<'static, ()> {
+        BOOT_SUCCESS_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Allocate and install a fresh mock provider. Returns the
+    /// `'static` reference used by the test body plus the raw pointer
+    /// [`reclaim_provider`] needs to free it. Caller must hold
+    /// [`BOOT_SUCCESS_LOCK`].
+    fn install_mock_provider() -> (
+        &'static MockBootSuccessProvider,
+        *mut MockBootSuccessProvider,
+    ) {
+        let raw =
+            alloc::boxed::Box::into_raw(alloc::boxed::Box::new(MockBootSuccessProvider::new()));
+        // SAFETY: `raw` came from `Box::into_raw` above — non-null,
+        // aligned, and uniquely owned until `reclaim_provider` frees it.
+        let provider: &'static MockBootSuccessProvider = unsafe { &*raw };
+        crate::boot_success::install_provider(provider);
+        (provider, raw)
+    }
+
+    /// Swap the global provider slot back to a static stub and free the
+    /// mock installed by [`install_mock_provider`], so the test binary
+    /// exits without leaking (Miri's leak checker runs at process
+    /// exit). Caller must hold [`BOOT_SUCCESS_LOCK`] and must not touch
+    /// the mock afterwards.
+    fn reclaim_provider(raw: *mut MockBootSuccessProvider) {
+        // `install_provider` documents re-installation for test
+        // harnesses; after this call the slot no longer references the
+        // mock.
+        static RESET_STUB: KernelBootSuccessProvider = KernelBootSuccessProvider::new();
+        crate::boot_success::install_provider(&RESET_STUB);
+        // SAFETY: the slot now points at `RESET_STUB`, the caller holds
+        // `BOOT_SUCCESS_LOCK` (so no concurrent `with_provider` reader
+        // exists), and `raw` is the uniquely-owned allocation produced
+        // by `install_mock_provider`.
+        unsafe { drop(alloc::boxed::Box::from_raw(raw)) };
+    }
 
     #[test]
     fn test_sys_info_null_ptr_returns_size() {
@@ -383,7 +435,14 @@ mod tests {
 
     #[test]
     fn test_sys_random_valid() {
-        let args = SyscallArgs::new(0x54, [0x1000, 32, 0, 0, 0, 0]);
+        // Use a real buffer: `sys_random` materializes `&mut [u8]` from the
+        // pointer arg before the CSPRNG call, so a fabricated address like
+        // 0x1000 is undefined behavior (caught by Miri) even though the
+        // uninitialized CSPRNG never writes through it.
+        let mut buf = [0u8; 32];
+        let args = SyscallArgs::new(0x54, [buf.as_mut_ptr() as usize, 32, 0, 0, 0, 0]);
+        // CSPRNG is uninitialized in unit tests, so the syscall reports
+        // NotSupported without touching the buffer.
         assert_eq!(sys_random(&args), SyscallError::NotSupported.as_i64());
     }
 
@@ -417,11 +476,12 @@ mod tests {
     #[test]
     fn boot_success_handler_signature_returns_i64() {
         // Smoke: the handler function exists and has the SyscallResult
-        // (i64) return shape required by the dispatch table. We can't
-        // assert the no-provider-installed → -ENOSYS path here because
-        // sibling tests in this binary install a provider that
-        // persists for the rest of the binary's lifetime, but this
-        // test guards against accidental signature regressions.
+        // (i64) return shape required by the dispatch table. Sibling
+        // tests in this binary install (and later reclaim) mock
+        // providers, so depending on ordering the slot holds nothing,
+        // a mock, or the reset stub — this test only guards against
+        // accidental signature regressions.
+        let _guard = lock_boot_success();
         let args = SyscallArgs::zero(0x57);
         let r: i64 = sys_boot_success(&args);
         // -38 (ENOSYS) before any test installs, OR 0 (Success) after
@@ -432,10 +492,9 @@ mod tests {
 
     #[test]
     fn boot_success_with_mock_provider_returns_zero() {
-        use crate::boot_success::{audit_capture, install_provider, MockBootSuccessProvider};
-        let provider =
-            alloc::boxed::Box::leak(alloc::boxed::Box::new(MockBootSuccessProvider::new()));
-        install_provider(provider as &dyn crate::boot_success::BootSuccessProvider);
+        use crate::boot_success::audit_capture;
+        let _guard = lock_boot_success();
+        let (provider, provider_raw) = install_mock_provider();
         audit_capture::clear();
 
         let args = SyscallArgs::zero(0x57);
@@ -450,14 +509,14 @@ mod tests {
         let (outcome, tag) = audit.unwrap();
         assert_eq!(tag, "boot_success_committed");
         assert!(!outcome.idempotent);
+        reclaim_provider(provider_raw);
     }
 
     #[test]
     fn boot_success_idempotent_returns_zero() {
-        use crate::boot_success::{audit_capture, install_provider, MockBootSuccessProvider};
-        let provider =
-            alloc::boxed::Box::leak(alloc::boxed::Box::new(MockBootSuccessProvider::new()));
-        install_provider(provider as &dyn crate::boot_success::BootSuccessProvider);
+        use crate::boot_success::audit_capture;
+        let _guard = lock_boot_success();
+        let (provider, provider_raw) = install_mock_provider();
         audit_capture::clear();
 
         let args = SyscallArgs::zero(0x57);
@@ -471,71 +530,69 @@ mod tests {
 
         let audit = audit_capture::last().unwrap();
         assert!(audit.0.idempotent);
+        reclaim_provider(provider_raw);
     }
 
     #[test]
     fn boot_success_storage_error_returns_eio() {
-        use crate::boot_success::{install_provider, BootSuccessError, MockBootSuccessProvider};
-        let provider =
-            alloc::boxed::Box::leak(alloc::boxed::Box::new(MockBootSuccessProvider::new()));
-        install_provider(provider as &dyn crate::boot_success::BootSuccessProvider);
+        use crate::boot_success::BootSuccessError;
+        let _guard = lock_boot_success();
+        let (provider, provider_raw) = install_mock_provider();
 
         provider.fail_next(BootSuccessError::Storage("media"));
         let args = SyscallArgs::zero(0x57);
         assert_eq!(sys_boot_success(&args), SyscallError::IoError.as_i64());
+        reclaim_provider(provider_raw);
     }
 
     #[test]
     fn boot_success_retry_returns_busy() {
-        use crate::boot_success::{install_provider, BootSuccessError, MockBootSuccessProvider};
-        let provider =
-            alloc::boxed::Box::leak(alloc::boxed::Box::new(MockBootSuccessProvider::new()));
-        install_provider(provider as &dyn crate::boot_success::BootSuccessProvider);
+        use crate::boot_success::BootSuccessError;
+        let _guard = lock_boot_success();
+        let (provider, provider_raw) = install_mock_provider();
 
         provider.fail_next(BootSuccessError::Retry("watchdog"));
         let args = SyscallArgs::zero(0x57);
         assert_eq!(sys_boot_success(&args), SyscallError::Busy.as_i64());
+        reclaim_provider(provider_raw);
     }
 
     #[test]
     fn boot_success_already_committed_variant_returns_zero() {
         // The `AlreadyCommitted` variant is rare (mock-only) but the
         // handler must collapse it to success.
-        use crate::boot_success::{install_provider, BootSuccessError, MockBootSuccessProvider};
-        let provider =
-            alloc::boxed::Box::leak(alloc::boxed::Box::new(MockBootSuccessProvider::new()));
-        install_provider(provider as &dyn crate::boot_success::BootSuccessProvider);
+        use crate::boot_success::BootSuccessError;
+        let _guard = lock_boot_success();
+        let (provider, provider_raw) = install_mock_provider();
 
         provider.fail_next(BootSuccessError::AlreadyCommitted);
         let args = SyscallArgs::zero(0x57);
         assert_eq!(sys_boot_success(&args), SyscallError::Success.as_i64());
+        reclaim_provider(provider_raw);
     }
 
     #[test]
     fn boot_success_dispatches_through_table() {
-        use crate::boot_success::{install_provider, MockBootSuccessProvider};
         use crate::syscall::dispatch;
         use crate::syscall::nr;
 
-        let provider =
-            alloc::boxed::Box::leak(alloc::boxed::Box::new(MockBootSuccessProvider::new()));
-        install_provider(provider as &dyn crate::boot_success::BootSuccessProvider);
+        let _guard = lock_boot_success();
+        let (_provider, provider_raw) = install_mock_provider();
 
         let args = SyscallArgs::zero(nr::SYS_BOOT_SUCCESS);
         // dispatch returns 0 (Success) when auth_gate is off (boot
         // default), regardless of role.
         let r = dispatch(&args);
         assert_eq!(r, SyscallError::Success.as_i64());
+        reclaim_provider(provider_raw);
     }
 
     #[test]
     fn boot_success_non_root_denied_when_auth_gate_on() {
-        use crate::boot_success::{install_provider, MockBootSuccessProvider};
         use crate::syscall::{dispatch, nr, set_auth_gate_enabled};
 
-        let provider =
-            alloc::boxed::Box::leak(alloc::boxed::Box::new(MockBootSuccessProvider::new()));
-        install_provider(provider as &dyn crate::boot_success::BootSuccessProvider);
+        let _guard = lock_boot_success();
+        let (_provider, provider_raw) = install_mock_provider();
 
         // Enable the auth gate. With no live session, current_role()
         // returns None, which fails the Root gate → -EACCES.
@@ -546,6 +603,7 @@ mod tests {
         // leave the gate flipped for sibling tests.
         let _ = set_auth_gate_enabled(prev);
         assert_eq!(r, crate::auth::ERRNO_EACCES);
+        reclaim_provider(provider_raw);
     }
 
     #[test]

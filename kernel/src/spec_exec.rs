@@ -52,8 +52,11 @@ pub fn speculation_barrier() {
     // explicit `--no-default-features` build (documented residual-risk
     // opt-out, see `kernel/Cargo.toml`) truly removes the `lfence`, while the
     // default x86_64 kernel image (feature default-ON via
-    // `smallaios-arch-x86_64`) always carries it.
-    #[cfg(all(target_arch = "x86_64", feature = "spec-exec-x86"))]
+    // `smallaios-arch-x86_64`) always carries it. Additionally gated on
+    // `not(miri)`: Miri cannot execute inline assembly, and a speculation
+    // barrier has no semantics under interpretation — the compiler fence
+    // below preserves the ordering intent for Miri runs.
+    #[cfg(all(target_arch = "x86_64", feature = "spec-exec-x86", not(miri)))]
     {
         // SAFETY: `lfence` is an unprivileged, side-effect-free serializing
         // fence. `nomem`/`nostack`/`preserves_flags` are all accurate.
@@ -61,7 +64,7 @@ pub fn speculation_barrier() {
             core::arch::asm!("lfence", options(nomem, nostack, preserves_flags));
         }
     }
-    #[cfg(not(all(target_arch = "x86_64", feature = "spec-exec-x86")))]
+    #[cfg(not(all(target_arch = "x86_64", feature = "spec-exec-x86", not(miri))))]
     {
         // Keep the optimizer from hoisting the post-check load above the
         // architectural check on arches/configs without a Phase-2 hardware
@@ -85,10 +88,14 @@ pub fn speculation_barrier() {
 /// `kernel/Cargo.toml`).
 #[inline]
 pub fn predictor_barrier_ibpb() {
+    // `not(miri)`: Miri cannot execute inline assembly (and `wrmsr` is a
+    // hardware command with no interpretable semantics) — under Miri this
+    // microarchitectural barrier is correctly a no-op.
     #[cfg(all(
         target_arch = "x86_64",
         feature = "spec-exec-x86",
-        not(feature = "spec-exec-ibpb-off")
+        not(feature = "spec-exec-ibpb-off"),
+        not(miri)
     ))]
     {
         // IA32_PRED_CMD (MSR 0x49), bit 0 = IBPB. Write-only command MSR.
@@ -165,7 +172,16 @@ mod tests {
     /// hosts; on the aarch64 macOS dev/CI host this is compiled out (the
     /// `x86_64-unknown-none` kernel build *does* exercise it under `cargo
     /// test --target x86_64-unknown-none` / objdump — see PR Verification).
+    ///
+    /// Ignored under Miri: the test inspects native machine code through a
+    /// function pointer, but Miri function pointers are zero-sized
+    /// allocations with no code bytes behind them (Miri flags the 3-byte
+    /// read as UB). The encoding check is only meaningful on real hardware.
     #[cfg(target_arch = "x86_64")]
+    #[cfg_attr(
+        miri,
+        ignore = "reads native machine code; no code bytes exist under Miri"
+    )]
     #[test]
     fn lfence_opcode_is_emitted() {
         // SAFETY: reading the first 3 bytes of our own planted code symbol.

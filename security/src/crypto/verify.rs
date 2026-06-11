@@ -669,6 +669,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "ML-DSA-65 keygen+sign+verify takes many minutes under Miri's interpreter; UB coverage comes from the fast negative-path verify tests / native runs"
+    )]
     fn verify_model_ml_dsa_end_to_end() {
         let model = b"fake ONNX model binary data";
         let model_hash = hash_model(model).unwrap();
@@ -742,6 +746,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "hybrid keygen+sign+verify takes ~5 min under Miri's interpreter; UB coverage comes from the fast negative-path verify tests / native runs"
+    )]
     fn verify_model_hybrid_end_to_end() {
         let model = b"fake ONNX model binary data for hybrid";
         let model_hash = hash_model(model).unwrap();
