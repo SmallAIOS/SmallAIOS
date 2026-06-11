@@ -761,6 +761,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "hybrid (Ed25519+ML-DSA-65) keygen+sign+verify takes many minutes under Miri's interpreter; UB coverage comes from the hybrid KEM tests / native runs"
+    )]
     fn hybrid_sig_keygen_sign_verify_roundtrip() {
         let seed = [0x42u8; 64];
         let kp = hybrid_sig_keygen(&seed).expect("keygen should succeed");
@@ -777,6 +781,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "hybrid (Ed25519+ML-DSA-65) keygen+sign+verify takes many minutes under Miri's interpreter; UB coverage comes from the hybrid KEM tests / native runs"
+    )]
     fn hybrid_sig_wrong_message_fails() {
         let seed = [0x42u8; 64];
         let kp = hybrid_sig_keygen(&seed).unwrap();
@@ -787,6 +795,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "two hybrid (Ed25519+ML-DSA-65) keygens take ~3.5 min under Miri's interpreter; UB coverage comes from the hybrid KEM tests / native runs"
+    )]
     fn hybrid_sig_deterministic_keygen() {
         let seed = [0xAAu8; 64];
         let kp1 = hybrid_sig_keygen(&seed).unwrap();

@@ -63,19 +63,20 @@ impl Timestamp {
     /// Get the current timestamp.
     ///
     /// On x86-64, this reads TSC. On ARM64, this reads CNTPCT_EL0.
-    /// In test mode, it falls back to the tick counter.
+    /// In test mode (under Miri, or on other architectures), it falls
+    /// back to the tick counter — Miri cannot interpret inline assembly.
     pub fn now() -> Self {
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", not(miri)))]
         {
             Self(read_tsc())
         }
-        #[cfg(target_arch = "aarch64")]
+        #[cfg(all(target_arch = "aarch64", not(miri)))]
         {
             Self(read_cntpct())
         }
-        #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+        #[cfg(any(miri, not(any(target_arch = "x86_64", target_arch = "aarch64"))))]
         {
-            // Fallback for host testing
+            // Fallback for host testing and Miri (no inline-asm support)
             Self(tick_count())
         }
     }
@@ -97,7 +98,10 @@ impl Timestamp {
 }
 
 /// Read x86-64 TSC (Time Stamp Counter).
-#[cfg(target_arch = "x86_64")]
+///
+/// Not compiled under Miri: Miri cannot interpret inline assembly, so
+/// [`Timestamp::now`] falls back to [`tick_count`] there instead.
+#[cfg(all(target_arch = "x86_64", not(miri)))]
 #[inline]
 fn read_tsc() -> u64 {
     let lo: u32;
@@ -114,7 +118,10 @@ fn read_tsc() -> u64 {
 }
 
 /// Read ARM64 generic timer counter.
-#[cfg(target_arch = "aarch64")]
+///
+/// Not compiled under Miri: Miri cannot interpret inline assembly, so
+/// [`Timestamp::now`] falls back to [`tick_count`] there instead.
+#[cfg(all(target_arch = "aarch64", not(miri)))]
 #[inline]
 fn read_cntpct() -> u64 {
     let val: u64;
@@ -238,13 +245,15 @@ mod tests {
 
     #[test]
     fn test_timestamp_now() {
-        // Timestamp::now() should return a non-zero value on any platform
-        // On x86_64 it reads TSC, on aarch64 it reads CNTPCT, otherwise tick_count
+        // Timestamp::now() should return a non-zero value on any platform.
+        // On x86_64 it reads TSC, on aarch64 it reads CNTPCT; under Miri
+        // (no inline-asm support) it falls back to tick_count().
         let ts = Timestamp::now();
-        // On x86_64 host, TSC is always > 0 after boot; on fallback, tick_count may be 0
-        #[cfg(target_arch = "x86_64")]
+        // On x86_64 host, TSC is always > 0 after boot; on the tick-counter
+        // fallback (Miri / other arches), the count may be 0.
+        #[cfg(all(target_arch = "x86_64", not(miri)))]
         assert!(ts.as_u64() > 0);
-        #[cfg(not(target_arch = "x86_64"))]
+        #[cfg(any(miri, not(target_arch = "x86_64")))]
         {
             let _ = ts; // just verify it doesn't panic
         }

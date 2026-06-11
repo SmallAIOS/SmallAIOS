@@ -545,6 +545,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "hashing 1 MB takes >5 min under Miri's interpreter; UB coverage comes from the small-input KATs / native runs"
+    )]
     fn nist_kat_one_million_a() {
         let mut h = Sha256::new();
         let chunk = alloc::vec![b'a'; 1000];

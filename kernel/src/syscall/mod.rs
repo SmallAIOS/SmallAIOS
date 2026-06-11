@@ -572,6 +572,16 @@ mod tests {
         assert_eq!(SYSCALL_TABLE.len(), SYSCALL_TABLE_SIZE);
     }
 
+    /// Ignored under Miri: `registered_count()` detects unregistered slots
+    /// by comparing stored handler pointers against `sys_nosys`'s address
+    /// with `ptr::eq`. Function-pointer address identity is not a language
+    /// guarantee, and Miri deliberately gives functions unstable addresses
+    /// to flush out such comparisons — the count is only meaningful for a
+    /// natively linked image.
+    #[cfg_attr(
+        miri,
+        ignore = "fn-pointer identity (ptr::eq vs sys_nosys) is not stable under Miri"
+    )]
     #[test]
     fn test_registered_count() {
         // 8 memory + 7 task + 8 ipc + 6 onnx + 5 device + 7 system + 5
@@ -1353,7 +1363,9 @@ mod tests {
 
         // Syscalls that do NOT dereference user pointers after validation passes.
         // Excluded: TENSOR_ALLOC (reads shape_ptr), SYS_INFO (writes buf_ptr),
-        // SYS_RANDOM (writes buf_ptr), CAP_LIST (writes buf_ptr in fill mode).
+        // SYS_RANDOM (writes buf_ptr), CAP_LIST (writes buf_ptr in fill mode),
+        // DEV_ENUMERATE (materializes `&mut [buf_len]` from buf_ptr whenever
+        // buf_ptr != 0 — UB on a fabricated pointer, caught by Miri).
         let safe_registered = [
             nr::MEM_ALLOC,
             nr::MEM_FREE,
@@ -1383,7 +1395,6 @@ mod tests {
             nr::ONNX_RUN,
             nr::ONNX_GET_METADATA,
             nr::ONNX_LIST_PROVIDERS,
-            nr::DEV_ENUMERATE,
             nr::DEV_OPEN,
             nr::DEV_CLOSE,
             nr::DEV_IOCTL,
@@ -1565,8 +1576,21 @@ mod tests {
         let result = dispatch(&args);
         assert_ne!(result, SyscallError::InvalidArgument.as_i64());
 
-        // sys_random: len exactly at MAX
-        let args = SyscallArgs::new(nr::SYS_RANDOM, [0x1000, system::MAX_RANDOM_LEN, 0, 0, 0, 0]);
+        // sys_random: len exactly at MAX. Use a real buffer — the handler
+        // materializes `&mut [u8]` from the pointer before the CSPRNG call,
+        // so a fabricated address would be UB (caught by Miri).
+        let mut random_buf = [0u8; system::MAX_RANDOM_LEN];
+        let args = SyscallArgs::new(
+            nr::SYS_RANDOM,
+            [
+                random_buf.as_mut_ptr() as usize,
+                system::MAX_RANDOM_LEN,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
         let result = dispatch(&args);
         assert_ne!(result, SyscallError::InvalidArgument.as_i64());
 
@@ -2138,8 +2162,15 @@ mod tests {
         );
         assert_eq!(dispatch(&args), SyscallError::InvalidArgument.as_i64());
 
-        // Valid args → NotSupported (CSPRNG not initialized)
-        let args = SyscallArgs::new(nr::SYS_RANDOM, [0x1000, 32, 0, 0, 0, 0]);
+        // Valid args → NotSupported (CSPRNG not initialized). Use a real
+        // buffer — the handler materializes `&mut [u8]` from the pointer
+        // before the CSPRNG call, so a fabricated address would be UB
+        // (caught by Miri).
+        let mut random_buf = [0u8; 32];
+        let args = SyscallArgs::new(
+            nr::SYS_RANDOM,
+            [random_buf.as_mut_ptr() as usize, 32, 0, 0, 0, 0],
+        );
         assert_eq!(dispatch(&args), SyscallError::NotSupported.as_i64());
     }
 
@@ -2568,6 +2599,13 @@ mod tests {
         assert_eq!(SyscallError::from_i64(i64::MIN), None);
     }
 
+    /// Ignored under Miri: see `test_registered_count` — fn-pointer address
+    /// identity is intentionally unstable under Miri, so the nosys-pointer
+    /// comparison inside `registered_count()` is only meaningful natively.
+    #[cfg_attr(
+        miri,
+        ignore = "fn-pointer identity (ptr::eq vs sys_nosys) is not stable under Miri"
+    )]
     #[test]
     fn test_mcdc_registered_count_equals_expected() {
         // Verify the exact count of non-nosys handlers.

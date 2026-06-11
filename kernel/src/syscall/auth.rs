@@ -960,6 +960,22 @@ mod tests {
     use alloc::string::ToString;
     use smallaios_security::argon2id::{argon2id_format_phc, argon2id_hash, Argon2idParams};
 
+    extern crate std;
+    use std::sync::{Mutex, MutexGuard};
+
+    /// Serializes tests that touch the process-global current-session
+    /// slot (`crate::auth::current_session`). Without this, parallel
+    /// tests race between `clear_current_session()` and the
+    /// session-state assertions (same pattern as
+    /// `syscall::memory::tests::TENSOR_STATE_LOCK` and
+    /// `syscall::device::test_sync`). Poison is ignored so one
+    /// panicking test does not cascade into unrelated failures.
+    static SESSION_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_session() -> MutexGuard<'static, ()> {
+        SESSION_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Deterministic test salt source. Returns sequential bytes so the
     /// resulting Argon2id PHC is reproducible across runs. NOT a CSPRNG
     /// — only used to keep auth tests independent of the kernel's
@@ -980,7 +996,20 @@ mod tests {
     fn make_phc(password: &[u8]) -> alloc::string::String {
         // 16-byte zero salt — see `auth_test_vectors.rs::ZERO_SALT_16`.
         let salt = ZERO_SALT_16;
-        let params = Argon2idParams::tiny();
+        // Under Miri the memory-hard mixing is interpreted instruction by
+        // instruction, so even the 8 MiB `tiny` tier takes on the order of
+        // an hour per hash. Use the RFC 9106 minimum parameters there so
+        // the login/verify code paths still get real Argon2id UB coverage;
+        // native runs keep the `tiny` tier.
+        let params = if cfg!(miri) {
+            Argon2idParams {
+                m_cost_kib: 8,
+                t_cost: 1,
+                p_cost: 1,
+            }
+        } else {
+            Argon2idParams::tiny()
+        };
         let tag = argon2id_hash(password, &salt, params);
         argon2id_format_phc(&salt, &tag, params)
     }
@@ -1017,6 +1046,7 @@ mod tests {
 
     #[test]
     fn login_success_returns_session_id() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Operator, PASSWORD_CORRECT_HORSE);
@@ -1035,6 +1065,7 @@ mod tests {
 
     #[test]
     fn login_wrong_password_returns_eacces() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Operator, PASSWORD_CORRECT_HORSE);
@@ -1050,7 +1081,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "dummy verify uses the hardcoded m=8192 DUMMY_PHC: memory-hard KDF takes hours under Miri's interpreter; UB coverage comes from the fast-parameter tests / native runs"
+    )]
     fn login_unknown_user_returns_eacces_after_dummy_verify() {
+        let _guard = lock_session();
         // Spec: "Constant-time-equivalent reject on user-not-found"
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
@@ -1065,6 +1101,7 @@ mod tests {
 
     #[test]
     fn login_locked_out_user_returns_eagain() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         provider.seed(ShadowProviderEntry {
@@ -1089,6 +1126,7 @@ mod tests {
 
     #[test]
     fn login_factor2_ignored_for_non_enrolled_user() {
+        let _guard = lock_session();
         // Phase 9 spec: when `totp_required = false`, `factor2_*` is
         // ignored — a syntactically valid code on a non-enrolled
         // user logs them in normally. (Pre-Phase-9 behaviour was to
@@ -1114,6 +1152,7 @@ mod tests {
 
     #[test]
     fn login_factor2_malformed_returns_einval() {
+        let _guard = lock_session();
         // Non-digit bytes in factor2 SHALL produce `-EINVAL` even
         // before the lookup, regardless of enrolment state.
         crate::auth::clear_current_session();
@@ -1136,6 +1175,7 @@ mod tests {
 
     #[test]
     fn login_factor2_too_long_returns_einval() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Viewer, PASSWORD_CORRECT_HORSE);
@@ -1151,6 +1191,7 @@ mod tests {
 
     #[test]
     fn login_table_full_returns_enospc() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Viewer, PASSWORD_PW);
@@ -1171,6 +1212,7 @@ mod tests {
 
     #[test]
     fn logout_clears_current_session() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Operator, PASSWORD_PW);
@@ -1190,6 +1232,7 @@ mod tests {
 
     #[test]
     fn logout_without_session_returns_eacces() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         let mut table = SessionTable::new();
@@ -1202,7 +1245,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "generate_new_phc hashes with the 64 MiB default tier: memory-hard KDF takes hours under Miri's interpreter; UB coverage comes from the fast-parameter tests / native runs"
+    )]
     fn change_password_self_rotate_clears_must_change_flag() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         provider.seed(ShadowProviderEntry {
@@ -1239,6 +1287,7 @@ mod tests {
 
     #[test]
     fn change_password_wrong_old_returns_eacces() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Viewer, PASSWORD_CORRECT_OLD);
@@ -1255,6 +1304,7 @@ mod tests {
 
     #[test]
     fn change_password_cross_rotate_requires_root() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "operator-1", Role::Operator, PASSWORD_OP_PW);
@@ -1271,7 +1321,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "generate_new_phc hashes with the 64 MiB default tier: memory-hard KDF takes hours under Miri's interpreter; UB coverage comes from the fast-parameter tests / native runs"
+    )]
     fn change_password_cross_rotate_force_logout_other_sessions() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
@@ -1307,6 +1362,7 @@ mod tests {
 
     #[test]
     fn create_user_root_only() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "operator-1", Role::Operator, PASSWORD_PW);
@@ -1322,7 +1378,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "create_user hashes with the 64 MiB default tier: memory-hard KDF takes hours under Miri's interpreter; UB coverage comes from the fast-parameter tests / native runs"
+    )]
     fn create_user_with_root_succeeds_and_sets_must_change_flag() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
@@ -1347,6 +1408,7 @@ mod tests {
 
     #[test]
     fn create_user_invalid_role_returns_einval() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
@@ -1362,7 +1424,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "create_user hashes with the 64 MiB default tier before the duplicate check: memory-hard KDF takes hours under Miri's interpreter; UB coverage comes from the fast-parameter tests / native runs"
+    )]
     fn create_user_duplicate_returns_eexist() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
@@ -1380,6 +1447,7 @@ mod tests {
 
     #[test]
     fn whoami_writes_struct() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Operator, PASSWORD_PW);
@@ -1411,6 +1479,7 @@ mod tests {
 
     #[test]
     fn whoami_without_session_returns_eacces() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         let mut table = SessionTable::new();
@@ -1432,6 +1501,7 @@ mod tests {
 
     #[test]
     fn whoami_null_pointer_returns_efault() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "alice", Role::Viewer, PASSWORD_PW);
@@ -1447,6 +1517,7 @@ mod tests {
 
     #[test]
     fn totp_setup_writes_random_secret_to_shadow_and_out_buffer() {
+        let _guard = lock_session();
         // Phase 9 spec: `auth_totp_setup` generates a 20-byte secret
         // via the kernel CSPRNG (mocked by `deterministic_salt`),
         // persists to the shadow, and writes the bytes to the
@@ -1482,6 +1553,7 @@ mod tests {
 
     #[test]
     fn totp_setup_validates_args() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         let mut table = SessionTable::new();
@@ -1501,6 +1573,7 @@ mod tests {
 
     #[test]
     fn totp_setup_requires_authenticated_session() {
+        let _guard = lock_session();
         // No active session ⇒ -EACCES.
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
@@ -1518,6 +1591,7 @@ mod tests {
 
     #[test]
     fn totp_setup_self_enrol_succeeds_for_non_root() {
+        let _guard = lock_session();
         // Operator can enrol themselves without root override.
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
@@ -1536,6 +1610,7 @@ mod tests {
 
     #[test]
     fn totp_setup_cross_enrol_requires_root() {
+        let _guard = lock_session();
         // Operator cannot enrol another user.
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
@@ -1555,6 +1630,7 @@ mod tests {
 
     #[test]
     fn totp_setup_root_can_cross_enrol() {
+        let _guard = lock_session();
         // Root may enrol another user on their behalf.
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
@@ -1576,6 +1652,7 @@ mod tests {
 
     #[test]
     fn totp_setup_unknown_user_returns_enoent() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         seed_user(&provider, "root-1", Role::Root, PASSWORD_ROOT_PW);
@@ -1615,6 +1692,7 @@ mod tests {
 
     #[test]
     fn login_totp_required_missing_factor2_returns_eauthexpired() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         // 20-byte synthetic secret — see security crate test vectors
@@ -1634,6 +1712,7 @@ mod tests {
 
     #[test]
     fn login_totp_required_wrong_code_returns_eacces() {
+        let _guard = lock_session();
         crate::auth::clear_current_session();
         let provider = MockShadowProvider::new();
         // lgtm[rust/hard-coded-cryptographic-value] — synthetic test fixture, not a real credential
@@ -1653,6 +1732,7 @@ mod tests {
 
     #[test]
     fn login_totp_required_correct_code_succeeds() {
+        let _guard = lock_session();
         // Spec scenario "TOTP enrolled — correct code accepted".
         // We compute the expected code via the security crate, feed
         // it back as factor2, and assert a session is returned.
@@ -1688,6 +1768,7 @@ mod tests {
 
     #[test]
     fn login_totp_required_user_without_secret_fails_closed() {
+        let _guard = lock_session();
         // Operator marked the user `totp_required = true` but
         // never finished enrolment (`totp_secret = None`). The
         // kernel SHALL fail closed (reject), not fail open.
@@ -1718,7 +1799,12 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "dummy verify uses the hardcoded m=8192 DUMMY_PHC: memory-hard KDF takes hours under Miri's interpreter; UB coverage comes from the fast-parameter tests / native runs"
+    )]
     fn login_totp_unknown_user_runs_dummy_verify_for_timing() {
+        let _guard = lock_session();
         // Spec: "constant-time-equivalent: timing of user-not-found
         // indistinguishable from TOTP-wrong". We can't measure
         // wall-clock here without flakiness, but we *can* assert

@@ -292,6 +292,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        miri,
+        ignore = "hashing 1 MB takes >5 min under Miri's interpreter; UB coverage comes from the small-input KATs / native runs"
+    )]
     fn million_a_kat() {
         // FIPS 180-4 §A.3: SHA1("a"*1_000_000) =
         // 34aa973cd4c4daa4f61eeb2bdbad27316534016f
