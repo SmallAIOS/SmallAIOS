@@ -53,6 +53,10 @@ jobs:
           -p smallaios-usb
           -p smallaios-sdr
           -p smallaios-bench
+          -p smallaios-auth
+          -p smallaios-mgmt
+          -p smallaios-fs
+          -p xtask
           -- -D warnings
 
   build-x86_64:
@@ -147,6 +151,10 @@ jobs:
           -p smallaios-usb
           -p smallaios-sdr
           -p smallaios-bench
+          -p smallaios-auth
+          -p smallaios-mgmt
+          -p smallaios-fs
+          -p xtask
 
   cuda-check:
     name: CUDA Feature Check (cargo check --features cuda)
@@ -622,7 +630,7 @@ jobs:
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate per-crate coverage reports
         run: |
-          CRATES=(kernel security onnx-rt ipc net posix container bus peripheral usb sdr)
+          CRATES=(kernel security onnx-rt ipc net posix container bus peripheral usb sdr auth mgmt fs)
           EXTRA_FLAGS=""
           for crate in "${CRATES[@]}"; do
             pkg="smallaios-${crate}"
@@ -1370,6 +1378,9 @@ jobs:
             -p smallaios-container \
             -p smallaios-bus \
             -p smallaios-bench \
+            -p smallaios-auth \
+            -p smallaios-mgmt \
+            -p smallaios-fs \
             2>&1 | tee coverage-threshold.txt
       - name: Upload coverage report
         if: always()
