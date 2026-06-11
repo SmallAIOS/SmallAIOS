@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -31,14 +32,22 @@ jobs:
       - name: Build HTML
         run: sphinx-build -b html docs/ docs/_build/html
       - name: Upload artifact
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: >-
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+          && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v5
         with:
           path: docs/_build/html
 
+  # NOTE: the github-pages environment's deployment branch policy must allow
+  # "main" (Settings -> Environments -> github-pages -> Deployment branches),
+  # otherwise this job is rejected with "Branch 'main' is not allowed to
+  # deploy to github-pages due to environment protection rules".
   deploy:
     name: Deploy to GitHub Pages
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/main'
     needs: build
     runs-on: ubuntu-latest
     permissions:
