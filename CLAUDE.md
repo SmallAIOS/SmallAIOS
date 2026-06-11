@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SmallAIOS is a minimal, secure, Rust-based OS kernel purpose-built for AI inference workloads. It boots directly to ONNX inference with ~46 syscalls (vs Linux ~450). Targets x86-64, ARM64, and RISC-V. Deploys as either a container (Docker/K8s) or bare-metal/VM via QEMU.
 
-**Current state:** Prototype phase — 4,143 tests passing. Production-quality networking (IPv4/IPv6/TCP/ARP/NDP), QUIC/HTTP3 with TLS 1.3, protobuf parser, ONNX runtime with 29+ real operators, full PQC crypto stack (SHA-3, AES-256-GCM, ML-KEM-768, ML-DSA-65, Ed25519, X25519), capability system. NVIDIA CUDA container path validated on Jetson Orin NX (compute 8.7) via `Dockerfile.jetson` — cuDNN-backed Conv, cuBLAS-backed GEMM, captured CUDA Graphs, multi-stream overlap. AMD and Intel GPU crates remain architectural stubs. Jetson Orin **unikernel** path: Phase 1 (`unikernel-orin-bringup-v1`) lands a KVM-on-L4T smoke-test workflow — `just run-jetson-kvm SSH_HOST=user@orin` cross-builds the AArch64 kernel from any host and boots it under `qemu-system-aarch64 -accel kvm -cpu host` on the Orin's Cortex-A78AE cores; CI gate `aarch64-qemu-smoke` validates the same path under TCG. Phase 2 (Tegra234 BSP + UEFI USB boot) is planned but not started.
+**Current state:** Prototype phase — 5,916 tests passing (`just test`, 2026-06-11). Production-quality networking (IPv4/IPv6/TCP/ARP/NDP), QUIC/HTTP3 with TLS 1.3, protobuf parser, ONNX runtime with 29+ real operators, full PQC crypto stack (SHA-3, AES-256-GCM, ML-KEM-768, ML-DSA-65, Ed25519, X25519), capability system. NVIDIA CUDA container path validated on Jetson Orin NX (compute 8.7) via `Dockerfile.jetson` — cuDNN-backed Conv, cuBLAS-backed GEMM, captured CUDA Graphs, multi-stream overlap. AMD and Intel GPU crates remain architectural stubs. Jetson Orin **unikernel** path: Phase 1 (`unikernel-orin-bringup-v1`) lands a KVM-on-L4T smoke-test workflow — `just run-jetson-kvm SSH_HOST=user@orin` cross-builds the AArch64 kernel from any host and boots it under `qemu-system-aarch64 -accel kvm -cpu host` on the Orin's Cortex-A78AE cores; CI gate `aarch64-qemu-smoke` validates the same path under TCG. Phase 2 (Tegra234 UEFI boot) is in progress — ExitBootServices → `kernel_main` handoff verified on Orin NX hardware, GICv3 driver extracted and feature-gated, OVMF QEMU smoke job in CI; the AArch64 IRQ exception path + Generic Timer tick remain (paired with an on-hardware session).
 
 ## Build Commands
 
@@ -199,14 +199,18 @@ Each active branch gets its own worktree for parallel development. Worktrees liv
 
 ## OpenSpec Changes
 
-Active specs in `openspec/changes/`, archived specs in `openspec/changes/archive/` (with `YYYY-MM-DD-` date prefixes). Reference specs in `openspec/smallaios-kernel/`.
+Active specs in `openspec/changes/`, archived specs in `openspec/changes/archive/` (with `YYYY-MM-DD-` date prefixes). Reference specs in `openspec/smallaios-kernel/`. **`openspec/changes/` is the source of truth — this snapshot (2026-06-11) goes stale.**
 
-| Change | Status | Tasks | Focus |
-|--------|--------|-------|-------|
-| `architecture-documentation-v1` | Active | In progress | DSM tooling, architecture docs, archive consolidation |
-| `smallaios-kernel-v1` | Archived | 143/144 | Core kernel — 1 task DEFERRED (sphinx-needs) |
-| `platform-expansion-v2` | Archived | 191/198 | RISC-V, buses — 7 tasks DEFERRED (hardware-dependent) |
-| `codeql-remediation-v1` | Archived | 23/25 | CodeQL fixes — 2 tasks DEFERRED (admin gates) |
+Implementation in flight (per each change's `tasks.md`):
+
+| Change | Tasks | Focus |
+|--------|-------|-------|
+| `verifiable-audit-log-v1` | 59/76 | immudb audit-export bridge — remaining: live-immudb proof fixtures, ALH recomputation, e2e + CI follow-ons |
+| `embedded-flash-fs-v1` | 32/71 | littlefs-compatible raw-NAND/NOR flash filesystem |
+| `unikernel-orin-bringup-v1` | 30/38 | Jetson Orin bare-metal boot — remaining: AArch64 IRQ exception path + Generic Timer tick (on-hardware session), Phase 2 PR |
+| `tls-tcp-client-v1` | 21/63 | TLS 1.3-over-TCP client crate — Phase 4 handshake in PR #217; Phase 5 X.509 verify blocked on `security-ecdsa-p256-v1` / `security-rsa-pss-v1` |
+
+~30 further changes sit at proposal stage (DO-178C DAL A / confidential-AI-edge roadmap, PRs #200–#204): boot-root-of-trust, op-tee-bridge, remote-attestation, confidential-compute, tegra-smmu-isolation, aarch64-mte-pac-hardening, ecc-scrubbing, deterministic-scheduling, watchdog-lockstep, dynamic-batching, llm-api-translation, the fpga-* series, and more — many gated on hardware access or prerequisite changes. 55 changes are archived.
 
 Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:verify`, `/opsx:archive`) to manage changes. The workflow is: proposal → design → specs → tasks → implementation → verification → archive.
 
