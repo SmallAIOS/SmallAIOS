@@ -152,7 +152,7 @@ pub fn parse_server_hello(buf: &[u8]) -> Result<ServerHello> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handshake::extensions::{ext_type, named_group};
+    use crate::handshake::extensions::named_group;
 
     /// Build a synthetic ServerHello for testing the parser.
     fn build_server_hello(
@@ -161,46 +161,13 @@ mod tests {
         key_share_group: u16,
         key_share_pk: &[u8],
     ) -> Vec<u8> {
-        let mut body = Vec::new();
-        // legacy_version
-        body.extend_from_slice(&[0x03, 0x03]);
-        // random
-        body.extend_from_slice(&[0xaa; 32]);
-        // session_id_echo: empty
-        body.push(0);
-        // cipher_suite
-        body.extend_from_slice(&cipher_suite_code.to_be_bytes());
-        // legacy_compression_method
-        body.push(0);
-        // extensions block
-        let mut exts = Vec::new();
-        if let Some(v) = selected_version {
-            // supported_versions extension (server form: bare u16)
-            exts.extend_from_slice(&ext_type::SUPPORTED_VERSIONS.to_be_bytes());
-            exts.extend_from_slice(&2u16.to_be_bytes());
-            exts.extend_from_slice(&v.to_be_bytes());
-        }
-        // key_share
-        let mut ks_body = Vec::new();
-        ks_body.extend_from_slice(&key_share_group.to_be_bytes());
-        ks_body.extend_from_slice(&(key_share_pk.len() as u16).to_be_bytes());
-        ks_body.extend_from_slice(key_share_pk);
-        exts.extend_from_slice(&ext_type::KEY_SHARE.to_be_bytes());
-        exts.extend_from_slice(&(ks_body.len() as u16).to_be_bytes());
-        exts.extend_from_slice(&ks_body);
-        // outer length
-        body.extend_from_slice(&(exts.len() as u16).to_be_bytes());
-        body.extend_from_slice(&exts);
-
-        // 4-byte handshake header
-        let mut out = Vec::new();
-        let hdr = HandshakeHeader {
-            msg_type: HandshakeType::ServerHello,
-            length: body.len() as u32,
-        };
-        hdr.encode(&mut out).unwrap();
-        out.extend_from_slice(&body);
-        out
+        crate::handshake::test_util::build_server_hello(
+            cipher_suite_code,
+            selected_version,
+            key_share_group,
+            key_share_pk,
+            [0xaa; 32],
+        )
     }
 
     #[test]

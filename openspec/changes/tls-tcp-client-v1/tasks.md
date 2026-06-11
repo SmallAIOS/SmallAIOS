@@ -15,6 +15,12 @@
 - [x] 2.4 NIST + RFC 8439 KAT tests (≥4 vectors) including the canonical RFC 8439 § 2.8 example *(11 tests pass: § 2.3.2, § 2.4.2, § 2.5.2, § 2.8.2 + tamper-rejection variants + empty round-trips)*
 - [ ] 2.5 `cargo-fuzz` target on `Aead::open` against arbitrary bytes *(deferred — added with the rest of the tls-client fuzz targets in Phase 10)*
 
+## 2b. `security` hash/KDF primitives (scope discovered during Phase 4 — see design.md D12)
+
+- [x] 2b.1 `security/src/sha2.rs` — add `Sha384` (SHA-512 core, FIPS 180-4) alongside the existing `Sha256`; required by `TLS_AES_256_GCM_SHA384`'s transcript/HKDF hash *(KATs: FIPS examples incl. empty/abc/two-block/1M-a + block-boundary padding sweep)*
+- [x] 2b.2 `security/src/hmac_sha2.rs` — streaming HMAC-SHA-256 + HMAC-SHA-384 (RFC 2104), mirroring the existing `hmac_sha1` shape *(RFC 4231 vectors tc1/tc2/tc3/tc6/tc7 for both hashes)*
+- [x] 2b.3 `security/src/hkdf.rs` — HKDF-Extract/Expand (RFC 5869) over both hashes, alloc-free API, 255×HashLen cap enforced *(RFC 5869 A.1 vectors; SHA-384 variants cross-validated against Python stdlib + OpenSSL 3.0 `openssl kdf HKDF`)*
+
 ## 3. Record layer
 
 - [x] 3.1 `tls-client/src/record.rs` — `ContentType`, `TLSPlaintext`, `TLSCiphertext` encoders + decoders
@@ -29,12 +35,12 @@
 - [x] 4.1 `tls-client/src/handshake/` — message types: HandshakeType (ClientHello/ServerHello/EncryptedExtensions/Certificate/CertificateRequest/CertificateVerify/Finished/NewSessionTicket/KeyUpdate); 4-byte HandshakeHeader (type + 24-bit length); extension encoders/parsers for supported_versions, supported_groups, signature_algorithms, key_share, server_name
 - [x] 4.2 Build ClientHello: legacy_version=0x0303, supported_versions=[0x0304], supported_groups configurable (PQC hybrid first when `require_pqc`), key_share matching primary supported_group, signature_algorithms allow-list per spec, server_name when DNS endpoint
 - [x] 4.3 Parse ServerHello: pin `supported_versions = 0x0304`; pin `legacy_version = 0x0303`; pin `legacy_compression_method = 0`; refuse unsupported cipher_suite; surface (cipher_suite, group, public_key, selected_version)
-- [ ] 4.4 Derive handshake-traffic keys via `net::quic::tls::TlsKeySchedule::derive_handshake_secrets` *(state-machine driver — follow-on commit; the message layer it consumes is ready)*
-- [ ] 4.5 Parse EncryptedExtensions; check SNI ack *(state-machine driver follow-on)*
-- [ ] 4.6 Parse Certificate; pass each cert to the cert-chain verifier *(needs Phase 5)*
-- [ ] 4.7 Parse CertificateVerify; verify signature against the leaf's pubkey + transcript hash; enforce the signature-suite allow-list *(needs Phase 5)*
-- [ ] 4.8 Parse server Finished; verify HMAC over transcript *(state-machine driver follow-on)*
-- [ ] 4.9 Send client Finished; derive application-traffic keys; transition to data phase *(state-machine driver follow-on)*
+- [x] 4.4 Derive handshake-traffic keys per RFC 8446 §7.1 — **task text deviation**: the original task said to reuse `net::quic::tls::TlsKeySchedule::derive_handshake_secrets`, but that type turned out to be an XOR-based placeholder ("Simplified: XOR-based derivation for stub" in `net/src/quic/tls.rs`) that cannot interoperate with any real TLS 1.3 peer. A real HKDF key schedule landed instead in `tls-client/src/handshake/key_schedule.rs` (suite-generic over SHA-256/SHA-384, incl. transcript hash, Expand-Label, traffic keys, Finished keys), on the new `security` primitives of section 2b. Every schedule vector is cross-validated against two independent oracles (OpenSSL 3.0 `TLS13-KDF` + Python stdlib HMAC construction). See design.md D12.
+- [x] 4.5 Parse EncryptedExtensions; check SNI ack *(`handshake/encrypted_extensions.rs`; also refuses key_share/supported_versions/pre_shared_key in EE per RFC 8446 §4.2)*
+- [x] 4.6 Parse Certificate; pass each cert to the cert-chain verifier *(`handshake/certificate_msg.rs` wire parsing + the `cert::ServerCertVerifier` seam the driver calls; the production trust-store verifier behind that trait is Phase 5 — tracked by 5.4/5.5)*
+- [x] 4.7 Parse CertificateVerify; verify signature against the leaf's pubkey + transcript hash; enforce the signature-suite allow-list *(allow-list per spec incl. SHA-1 refusal; Ed25519 verification over the §4.4.3 content is live; the leaf pubkey arrives via `ServerCertVerifier` — X.509 SPKI extraction is Phase 5; ECDSA-P256/RSA-PSS verification deferred with their primitives per 5.5)*
+- [x] 4.8 Parse server Finished; verify HMAC over transcript *(constant-time compare via `security::crypto::constant_time::ct_eq`)*
+- [x] 4.9 Send client Finished; derive application-traffic keys; transition to data phase *(`handshake/driver.rs` `ClientHandshake` — synchronous step-machine per design D7; refuses HRR, CertificateRequest, TLS 1.2 selection; tolerates CCS + coalesced/fragmented records; e2e-tested against an in-test TLS 1.3 server for both suites + PQC hybrid, incl. tampered-Finished, wrong-CV-signature, downgrade and byte-at-a-time cases)*
 - [x] 4.10 Unit tests for the message layer: ServerHello selecting TLS 1.2 → `Version` error; missing supported_versions → `Version`; unsupported cipher_suite → `BadHandshake`; non-zero compression method → reject; wrong legacy_version → `Version`; truncated → reject. (PqcDowngrade and SHA-1 CertificateVerify cases land with their respective phases.)
 
 ## 5. X.509v3 parser + chain verifier

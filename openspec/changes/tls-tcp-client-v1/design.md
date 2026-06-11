@@ -364,6 +364,57 @@ flag already covers the "zero overhead when off" rule.
 If future code wants TLS without audit-export, the
 feature graph can be revisited.
 
+### D12. Real RFC 8446 key schedule in `tls-client`; the QUIC stub stays out
+
+**Decision:** Implement the TLS 1.3 key schedule (RFC 8446
+§7.1), transcript hash, HKDF-Expand-Label, traffic-key and
+Finished-key derivations in
+`tls-client/src/handshake/key_schedule.rs`, suite-generic
+over SHA-256/SHA-384. Add the missing primitives to
+`security/`: `Sha384` (in `sha2`), `hmac_sha2`
+(HMAC-SHA-256/384), and `hkdf` (RFC 5869 Extract/Expand over
+both hashes). Do **not** route through
+`net::quic::tls::TlsKeySchedule`.
+
+**Why:** The Context section above (and task 4.4 as
+originally written) assumed `net::quic::tls` shipped real
+HKDF derivations. Implementation found it is an XOR-based
+placeholder — `net/src/quic/tls.rs` says "Simplified:
+XOR-based derivation for stub" — with QUIC-specific labels
+("quic key") and a fake transcript hash. Keys derived from it
+cannot interoperate with any RFC 8446 peer, which would
+defeat this change's headline goal ("one real working
+chain"). The SHA-384 path is not optional either:
+`TLS_AES_256_GCM_SHA384` is the client's first-preference
+suite per D2 and its schedule mathematically requires
+HMAC/HKDF-SHA-384, which existed nowhere in the workspace.
+
+**Validation:** every key-schedule vector checked in is
+cross-validated against two independent oracles — OpenSSL
+3.0's `TLS13-KDF` (EXTRACT_ONLY/EXPAND_ONLY modes, which
+encode the "tls13 " label prefix and the internal
+Derive-Secret-on-extract semantics) and a Python-stdlib
+HMAC/HKDF reference — plus published RFC 4231 / RFC 5869 /
+FIPS 180-4 vectors for the primitives.
+
+**Alternative considered:** Fix `net::quic::tls` and share
+it. Rejected for this change: the QUIC module's stub is
+load-bearing for the QUIC test suite's deterministic
+expectations, its `PacketProtectionKeys` carry QUIC header
+protection with no TLS counterpart (same reasoning as D1),
+and rewriting QUIC key derivation is its own change with its
+own interop test surface. A follow-on can migrate `quic::tls`
+onto `security::hkdf`.
+
+**Hybrid-group wire format note:** the handshake driver
+follows draft-ietf-tls-ecdhe-mlkem for `X25519MLKEM768`
+(codepoint 0x11ec): client share = ML-KEM-768 encapsulation
+key ‖ X25519 key; server share = ML-KEM-768 ciphertext ‖
+X25519 key; shared secret = ML-KEM ss ‖ X25519 ss fed raw to
+HKDF-Extract. This deviates from `quic::tls`'s internal
+SHA-3 combiner — required for interop with standard hybrid
+deployments (OpenSSL 3.5+, BoringSSL).
+
 ## Risks / Trade-offs
 
 - **[X.509 parser CVEs]** Even minimal X.509 parsers

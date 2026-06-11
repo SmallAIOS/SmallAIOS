@@ -20,9 +20,16 @@
 //! follow-on commit alongside Phase 5's cert verifier and
 //! Phase 7's `TcpTlsStream`.
 
+pub mod certificate_msg;
 pub mod client_hello;
+pub mod driver;
+pub mod encrypted_extensions;
 pub mod extensions;
+pub mod finished;
+pub mod key_schedule;
 pub mod server_hello;
+#[cfg(test)]
+pub(crate) mod test_util;
 
 use crate::{Result, TlsClientError};
 use alloc::vec::Vec;

@@ -34,7 +34,9 @@ pub mod enforcement;
 pub mod gate;
 #[cfg(not(feature = "formal-gate"))]
 pub mod gate_noop;
+pub mod hkdf;
 pub mod hmac_sha1;
+pub mod hmac_sha2;
 pub mod incident;
 #[cfg(feature = "formal-gate")]
 pub mod labels;
@@ -47,4 +49,6 @@ pub mod policy;
 pub mod sha1;
 pub mod sha2;
 pub mod supply_chain;
+#[cfg(test)]
+pub(crate) mod test_util;
 pub mod totp;
