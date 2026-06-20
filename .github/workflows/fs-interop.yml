@@ -24,7 +24,7 @@ jobs:
     name: Mount round-trip (Ubuntu LTS)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install squashfs + f2fs userland
         run: |
           sudo apt-get update
@@ -85,7 +85,7 @@ jobs:
     container:
       image: fedora:latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install squashfs + f2fs userland
         run: |
           dnf install -y squashfs-tools f2fs-tools util-linux diffutils coreutils
@@ -118,7 +118,7 @@ jobs:
     name: Mount round-trip (macOS / FUSE)
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install squashfs + f2fs userland (Homebrew)
         run: |
           # macOS does not ship squashfs / f2fs by default. Homebrew
@@ -154,7 +154,7 @@ jobs:
     name: SmallAIOS-produced squashfs sanity check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
