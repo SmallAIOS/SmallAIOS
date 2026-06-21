@@ -21,6 +21,7 @@
 
 pub mod der;
 pub mod hostname;
+pub mod verify;
 pub mod x509;
 
 #[cfg(test)]

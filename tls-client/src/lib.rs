@@ -42,7 +42,7 @@ extern crate alloc;
 pub mod cert;
 pub mod handshake;
 pub mod record;
-// pub mod trust;      // Phase 6
+pub mod trust;
 // pub mod std_io;     // Phase 7
 
 /// Errors surfaced by the TLS client.
