@@ -148,6 +148,18 @@ impl<'a> Reader<'a> {
         Ok(Tlv { tag, value })
     }
 
+    /// Decode the next TLV, returning both the parsed view and the
+    /// complete raw encoding (header + value). Needed when an outer
+    /// signature is computed over a nested element's exact DER — e.g.
+    /// a certificate's `signatureValue` covers the full
+    /// `tbsCertificate` TLV, not just its contents.
+    pub fn next_tlv_with_raw(&mut self) -> Result<(Tlv<'a>, &'a [u8])> {
+        let start = self.input;
+        let tlv = self.next_tlv()?;
+        let consumed = start.len() - self.input.len();
+        Ok((tlv, &start[..consumed]))
+    }
+
     /// Decode the next TLV and assert it matches `expected_tag`.
     pub fn expect_tlv(&mut self, expected_tag: u8) -> Result<&'a [u8]> {
         let tlv = self.next_tlv()?;
