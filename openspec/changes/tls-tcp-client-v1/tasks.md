@@ -65,12 +65,12 @@
 
 ## 7. `std`-IO adapter (`TcpTlsStream`)
 
-- [ ] 7.1 `tls-client/src/std_io/mod.rs` — `TcpTlsStream` wrapping `std::net::TcpStream`
-- [ ] 7.2 `TcpTlsStream::connect(host, port, config) -> Result<Self, TlsClientError>` — drives the handshake state machine over the TCP socket
-- [ ] 7.3 Implement `Read`, `Write`, and the existing `container::audit_export_runtime::transport::TlsStreamLike` trait (with `close()` sending `close_notify`)
-- [ ] 7.4 Map `TlsClientError` → `TransportError`: TcpConnect / Io / BadHandshake → `Retry`; everything else → `HardFail`
-- [ ] 7.5 Unit tests with a `Vec<u8>`-backed mock socket exercising the handshake state machine end-to-end
-- [ ] 7.6 `tls-client/tests/e2e.rs` — `#[ignore]`-gated test against `TLS_E2E_URL` (real https endpoint) when the env var is set
+- [x] 7.1 `tls-client/src/std_io/mod.rs` — `TcpTlsStream` wrapping `std::net::TcpStream` *(behind a new `std` feature; the crate core stays `#![no_std]`. Generic `TlsStream<T: Read + Write>` carries the data-phase logic so it's testable over a mock socket; `TcpTlsStream` is the `TcpStream` alias)*
+- [x] 7.2 `TcpTlsStream::connect(host, port, config) -> Result<Self, TlsClientError>` — drives the handshake state machine over the TCP socket *(entropy drawn from the hardware-seeded `security` CSPRNG)*
+- [x] 7.3 Implement `Read`, `Write`, and the existing `container::audit_export_runtime::transport::TlsStreamLike` trait (with `close()` sending `close_notify`) *(`Read`/`Write`/`close` live here; the `TlsStreamLike` bridge impl belongs in `container` per the layer model — Layer 1 `tls-client` cannot depend on Layer 3 `container` — so it lands with Phase 8)*
+- [ ] 7.4 Map `TlsClientError` → `TransportError`: TcpConnect / Io / BadHandshake → `Retry`; everything else → `HardFail` *(Phase 8 — `TransportError` is a `container` type)*
+- [x] 7.5 Unit tests with a `Vec<u8>`-backed mock socket exercising the handshake state machine end-to-end *(8 `std_io` tests over a mock socket: app-data seal-on-write, open-on-read, multi-record seq increment, post-handshake handshake-record skip, server `close_notify` → EOF, TCP EOF → `read` 0, `close` emits `close_notify` + idempotent, partial-record reassembly. The handshake state machine itself is end-to-end tested in `driver.rs` against an in-test server)*
+- [ ] 7.6 `tls-client/tests/e2e.rs` — `#[ignore]`-gated test against `TLS_E2E_URL` (real https endpoint) when the env var is set *(follow-on: a real public endpoint serves an ECDSA/RSA chain, which the verifier cannot validate until `security-ecdsa-p256-v1` / `security-rsa-pss-v1` land)*
 
 ## 8. `audit-export` integration
 
