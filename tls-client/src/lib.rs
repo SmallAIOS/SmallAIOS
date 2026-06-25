@@ -39,11 +39,16 @@
 
 extern crate alloc;
 
+#[cfg(feature = "std")]
+extern crate std;
+
 pub mod cert;
 pub mod handshake;
 pub mod record;
-// pub mod trust;      // Phase 6
-// pub mod std_io;     // Phase 7
+pub mod trust;
+
+#[cfg(feature = "std")]
+pub mod std_io;
 
 /// Errors surfaced by the TLS client.
 ///

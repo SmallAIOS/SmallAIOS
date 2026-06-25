@@ -48,29 +48,29 @@
 - [x] 5.1 `tls-client/src/cert/der.rs` — minimal DER TLV decoder. Accepts short-form length (≤127), long-form length (1-4 octets, value ≤ 1 MiB cap); refuses indefinite-length, multi-byte tag forms, non-minimal long forms, length exceeding enclosing structure
 - [x] 5.3 Length-bound every OCTET STRING / SEQUENCE before allocation *(landed with 5.1)*
 - [x] 5.7 RFC 6125 hostname matcher (`tls-client/src/cert/hostname.rs`): DNS-ID with exact + wildcard matching (leftmost-label, ≥3-label cert, no mid-label `*`, no multi-label span); iPAddress SAN (IPv4 + IPv6 with `::` elision); refuses DNS-ID for IP literals and vice versa
-- [ ] 5.2 Refuse `version != v3`, SHA-1 signatures, missing SAN *(follow-on: full X.509v3 structure parser — needs RSA-PSS + ECDSA-P256 primitives in security/, both deferred)*
-- [ ] 5.4 Chain construction: leaf → intermediate(s) → anchor in trust store; each intermediate must have `BasicConstraints.CA = true` + `KeyUsage.keyCertSign` *(follow-on)*
-- [ ] 5.5 Signature verification on every link (Ed25519, ECDSA-P256, RSA-PSS) *(follow-on; Ed25519 ready in security/crypto/ed25519; ECDSA-P256 and RSA-PSS deferred to their own primitive sub-adds)*
-- [ ] 5.6 Validity-window check with `kernel::clock()`; unsynced-clock sentinel handling; audit `audit_export_unsynced_clock` on bypass *(follow-on)*
-- [ ] 5.8 Cross-vector tests in `tls-client/tests/corpus/`: ≥10 known-good cert chains + ≥6 known-bad *(follow-on; requires the full structure parser + a synthetic Ed25519-signed cert generator harness)*
+- [x] 5.2 Refuse `version != v3`, SHA-1 signatures, missing SAN *(`cert/x509.rs` — full X.509v3 structure parser: version/serial/sig-alg/issuer/subject/validity/SPKI + SAN/BasicConstraints/KeyUsage/ExtKeyUsage; v3-only, SHA-1 refused, SAN required by the chain verifier. RSA-PSS/PKCS#1 and ECDSA-P256 OIDs are recognized for precise "unsupported" reporting but their verification is deferred to their primitive sub-adds.)*
+- [x] 5.4 Chain construction: leaf → intermediate(s) → anchor in trust store; each intermediate must have `BasicConstraints.CA = true` + `KeyUsage.keyCertSign` *(`cert/verify.rs` `TrustStoreVerifier`; depth-bounded issuer walk)*
+- [ ] 5.5 Signature verification on every link (Ed25519, ECDSA-P256, RSA-PSS) *(Ed25519 link verification is **live** in `cert/verify.rs`; ECDSA-P256 and RSA-PSS remain blocked on `security-ecdsa-p256-v1` / `security-rsa-pss-v1` — a chain needing one is refused with `ChainUntrusted`, never silently accepted)*
+- [x] 5.6 Validity-window check with `kernel::clock()`; unsynced-clock sentinel handling; audit `audit_export_unsynced_clock` on bypass *(validity window + 2026 unsynced-clock sentinel with `require_synced_clock` policy in `cert/verify.rs`; `now` is injected by the caller to keep `tls-client` decoupled from the kernel allocator — the `kernel::clock()` read + `audit_export_unsynced_clock` record land in the Phase 8 container integration)*
+- [ ] 5.8 Cross-vector tests in `tls-client/tests/corpus/`: ≥10 known-good cert chains + ≥6 known-bad *(synthetic Ed25519 cert generator landed in `cert/test_certs.rs`; in-module good/bad cross-vectors cover direct/two-link chains, tampered sig, unknown anchor, hostname mismatch, expiry, no-SAN, non-CA intermediate, pinning, IP-SAN. The external `tests/corpus/` files + RSA/ECDSA cases remain follow-on)*
 - [ ] 5.9 `cargo-fuzz` target on the X.509 parser *(follow-on; the DER decoder landed in this commit is the largest attacker-controlled surface and is fuzz-ready)*
 
 ## 6. Trust store
 
-- [ ] 6.1 `tls-client/src/trust.rs` — PEM bundle loader (base64-decode each `BEGIN CERTIFICATE` / `END CERTIFICATE` block)
-- [ ] 6.2 Reject empty bundles, non-CA certs, duplicate Subjects
-- [ ] 6.3 Optional pin verification: when `tls.trust_store_pin` is set, refuse chains anchored elsewhere
-- [ ] 6.4 Wire `Config::validate` in `audit-export::config` to enforce: `enabled = true && trust_store_path = ""` → `ConfigError::TrustStoreRequired`
-- [ ] 6.5 Tests: empty bundle, non-CA cert, duplicate Subjects, valid bundle, pinned vs non-pinned chain accept/reject
+- [x] 6.1 `tls-client/src/trust.rs` — PEM bundle loader (base64-decode each `BEGIN CERTIFICATE` / `END CERTIFICATE` block)
+- [x] 6.2 Reject empty bundles, non-CA certs, duplicate Subjects
+- [x] 6.3 Optional pin verification: when `tls.trust_store_pin` is set, refuse chains anchored elsewhere *(per-anchor SHA-256 fingerprint pin enforced in `TrustStoreVerifier`)*
+- [ ] 6.4 Wire `Config::validate` in `audit-export::config` to enforce: `enabled = true && trust_store_path = ""` → `ConfigError::TrustStoreRequired` *(Phase 8 — `audit-export` integration)*
+- [x] 6.5 Tests: empty bundle, non-CA cert, duplicate Subjects, valid bundle, pinned vs non-pinned chain accept/reject
 
 ## 7. `std`-IO adapter (`TcpTlsStream`)
 
-- [ ] 7.1 `tls-client/src/std_io/mod.rs` — `TcpTlsStream` wrapping `std::net::TcpStream`
-- [ ] 7.2 `TcpTlsStream::connect(host, port, config) -> Result<Self, TlsClientError>` — drives the handshake state machine over the TCP socket
-- [ ] 7.3 Implement `Read`, `Write`, and the existing `container::audit_export_runtime::transport::TlsStreamLike` trait (with `close()` sending `close_notify`)
-- [ ] 7.4 Map `TlsClientError` → `TransportError`: TcpConnect / Io / BadHandshake → `Retry`; everything else → `HardFail`
-- [ ] 7.5 Unit tests with a `Vec<u8>`-backed mock socket exercising the handshake state machine end-to-end
-- [ ] 7.6 `tls-client/tests/e2e.rs` — `#[ignore]`-gated test against `TLS_E2E_URL` (real https endpoint) when the env var is set
+- [x] 7.1 `tls-client/src/std_io/mod.rs` — `TcpTlsStream` wrapping `std::net::TcpStream` *(behind a new `std` feature; the crate core stays `#![no_std]`. Generic `TlsStream<T: Read + Write>` carries the data-phase logic so it's testable over a mock socket; `TcpTlsStream` is the `TcpStream` alias)*
+- [x] 7.2 `TcpTlsStream::connect(host, port, config) -> Result<Self, TlsClientError>` — drives the handshake state machine over the TCP socket *(entropy drawn from the hardware-seeded `security` CSPRNG)*
+- [x] 7.3 Implement `Read`, `Write`, and the existing `container::audit_export_runtime::transport::TlsStreamLike` trait (with `close()` sending `close_notify`) *(`Read`/`Write`/`close` live here; the `TlsStreamLike` bridge impl belongs in `container` per the layer model — Layer 1 `tls-client` cannot depend on Layer 3 `container` — so it lands with Phase 8)*
+- [ ] 7.4 Map `TlsClientError` → `TransportError`: TcpConnect / Io / BadHandshake → `Retry`; everything else → `HardFail` *(Phase 8 — `TransportError` is a `container` type)*
+- [x] 7.5 Unit tests with a `Vec<u8>`-backed mock socket exercising the handshake state machine end-to-end *(8 `std_io` tests over a mock socket: app-data seal-on-write, open-on-read, multi-record seq increment, post-handshake handshake-record skip, server `close_notify` → EOF, TCP EOF → `read` 0, `close` emits `close_notify` + idempotent, partial-record reassembly. The handshake state machine itself is end-to-end tested in `driver.rs` against an in-test server)*
+- [ ] 7.6 `tls-client/tests/e2e.rs` — `#[ignore]`-gated test against `TLS_E2E_URL` (real https endpoint) when the env var is set *(follow-on: a real public endpoint serves an ECDSA/RSA chain, which the verifier cannot validate until `security-ecdsa-p256-v1` / `security-rsa-pss-v1` land)*
 
 ## 8. `audit-export` integration
 
