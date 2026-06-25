@@ -21,6 +21,11 @@
 
 pub mod der;
 pub mod hostname;
+pub mod verify;
+pub mod x509;
+
+#[cfg(test)]
+pub(crate) mod test_certs;
 
 use crate::Result;
 use alloc::vec::Vec;
