@@ -17,6 +17,11 @@ smallaios-kernel = { path = "../kernel" }
 
 [features]
 default = []
+# Enables the std-IO adapter (`std_io::TcpTlsStream`) that drives the
+# handshake over a real TCP socket. Off for the bare-metal kernel
+# build; the `container` crate turns it on. The crate core stays
+# `#![no_std]`; only the `std_io` module pulls `std`.
+std = []
 # Operator-facing knob for the deferred mTLS path.
 mtls = []
 formal-gate = []
