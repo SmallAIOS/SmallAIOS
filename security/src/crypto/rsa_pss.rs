@@ -97,10 +97,18 @@ impl RsaPublicKey {
             return Err(RsaPssError::MalformedDer);
         }
 
-        // RSAPublicKey ::= SEQUENCE { INTEGER n, INTEGER e }
-        let mut rsa = Der::new(bitstring);
-        let inner = rsa.seq()?;
-        if !rsa.at_end() {
+        // The BIT STRING content is a PKCS#1 RSAPublicKey.
+        Self::from_pkcs1_der(bitstring)
+    }
+
+    /// Parse a PKCS#1 `RSAPublicKey ::= SEQUENCE { INTEGER n, INTEGER e }`
+    /// DER blob — the form an X.509 parser holds after stripping the SPKI
+    /// envelope (e.g. `tls-client`'s `SubjectPublicKey::Rsa`). Refuses
+    /// moduli under 2048 bits and malformed DER.
+    pub fn from_pkcs1_der(der: &[u8]) -> Result<Self, RsaPssError> {
+        let mut outer = Der::new(der);
+        let inner = outer.seq()?;
+        if !outer.at_end() {
             return Err(RsaPssError::MalformedDer);
         }
         let (n, used_n) =
@@ -110,7 +118,6 @@ impl RsaPublicKey {
         if used_n + used_e != inner.len() {
             return Err(RsaPssError::MalformedDer);
         }
-
         let mod_bits = n.bit_len();
         if mod_bits < MIN_MODULUS_BITS {
             return Err(RsaPssError::ModulusTooSmall);
@@ -629,6 +636,34 @@ mod tests {
         assert_eq!(
             RsaPublicKey::from_spki_der(&der).unwrap_err(),
             RsaPssError::MalformedDer
+        );
+    }
+
+    #[test]
+    fn from_pkcs1_der_parses_and_refuses() {
+        // Build a bare RSAPublicKey SEQUENCE { INTEGER n, INTEGER e } — the
+        // form X.509 carries inside the SPKI BIT STRING.
+        let n = alloc::vec![0xC1u8; 256];
+        let mut body = der_int(&n);
+        body.extend(der_int(&[0x01, 0x00, 0x01]));
+        let der = der_tlv(0x30, &body);
+        let pk = RsaPublicKey::from_pkcs1_der(&der).unwrap();
+        assert_eq!(pk.mod_bits, 2048);
+
+        // Trailing bytes after the SEQUENCE are rejected.
+        let mut trailing = der.clone();
+        trailing.push(0x00);
+        assert_eq!(
+            RsaPublicKey::from_pkcs1_der(&trailing).unwrap_err(),
+            RsaPssError::MalformedDer
+        );
+        // Small modulus refused.
+        let mut small = der_int(&alloc::vec![0xC1u8; 128]);
+        small.extend(der_int(&[0x01, 0x00, 0x01]));
+        let small = der_tlv(0x30, &small);
+        assert_eq!(
+            RsaPublicKey::from_pkcs1_der(&small).unwrap_err(),
+            RsaPssError::ModulusTooSmall
         );
     }
 
