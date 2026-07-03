@@ -934,7 +934,7 @@ mod onnx_wiring_tests {
     }
 
     fn ready_session() -> Session {
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(SessionConfig::default()).unwrap();
         session.initialize(&relu_model()).unwrap();
         session
     }
@@ -1040,7 +1040,7 @@ mod onnx_wiring_tests {
 
     #[test]
     fn handle_run_inference_uninitialized_session_maps_to_not_found() {
-        let session = Session::new(SessionConfig::default());
+        let session = Session::new(SessionConfig::default()).unwrap();
         let request = InferenceRequest {
             request_type: InferenceRequestType::RunInference,
             request_id: 1,

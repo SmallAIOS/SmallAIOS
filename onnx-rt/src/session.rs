@@ -243,6 +243,34 @@ impl Default for SessionConfig {
     }
 }
 
+impl SessionConfig {
+    /// Maximum `transfer_streams` for [`StreamConfig::Overlap`]. Beyond
+    /// this, contention on the PCIe / NVLink fabric dominates and
+    /// throughput regresses.
+    pub const MAX_TRANSFER_STREAMS: usize = 2;
+
+    /// Validate the configuration, returning [`SessionError::InvalidConfig`]
+    /// for any out-of-range field.
+    ///
+    /// This is the single validation authority for a `SessionConfig` and
+    /// is **feature-independent**: the constraints hold whether or not the
+    /// `cuda` feature is enabled, so an invalid config is rejected at
+    /// [`Session::new`] on every build (not only when a CUDA stream pool
+    /// is later constructed from it).
+    pub fn validate(&self) -> Result<(), SessionError> {
+        if let StreamConfig::Overlap { transfer_streams } = self.stream_config {
+            if transfer_streams > Self::MAX_TRANSFER_STREAMS {
+                return Err(SessionError::InvalidConfig(alloc::format!(
+                    "transfer_streams must be <= {} (got {})",
+                    Self::MAX_TRANSFER_STREAMS,
+                    transfer_streams
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Inference I/O types
 // ---------------------------------------------------------------------------
@@ -570,10 +598,17 @@ fn layer_kinds_for_gemma(config: &crate::model_loader::GemmaConfig) -> Vec<crate
 impl Session {
     /// Creates a new uninitialized session with the given configuration.
     ///
+    /// The `config` is validated eagerly via [`SessionConfig::validate`];
+    /// an invalid configuration (e.g. `StreamConfig::Overlap {
+    /// transfer_streams: 5 }`) returns [`SessionError::InvalidConfig`]
+    /// here rather than failing later at first inference.
+    ///
     /// The session must be initialized with [`Session::initialize`] before
     /// inference can be run. A unique session ID is assigned using a
     /// monotonic counter.
-    pub fn new(config: SessionConfig) -> Self {
+    pub fn new(config: SessionConfig) -> Result<Self, SessionError> {
+        config.validate()?;
+
         use core::sync::atomic::{AtomicU64, Ordering};
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -590,7 +625,7 @@ impl Session {
             None
         };
 
-        Self {
+        Ok(Self {
             id: SessionId(NEXT_ID.fetch_add(1, Ordering::Relaxed)),
             config,
             model_name: String::new(),
@@ -616,12 +651,15 @@ impl Session {
             #[cfg(feature = "cuda")]
             stream_pool: std::sync::Mutex::new(None),
             kind: SessionKind::Onnx,
-        }
+        })
     }
 
     /// Lazily allocate the per-Session [`StreamPool`] on the first
-    /// multi-stream inference. Validates `transfer_streams <= 2`
-    /// (returns [`SessionError::InvalidConfig`] if exceeded).
+    /// multi-stream inference. Backstop `transfer_streams <= 2` check
+    /// (returns [`SessionError::InvalidConfig`] if exceeded); construction
+    /// via [`Session::new`] is the primary gate and validates the same
+    /// invariant eagerly and feature-independently, so this branch is
+    /// unreachable for any session that was constructed normally.
     /// Returns immediately if the pool is already initialized or if
     /// `stream_config` is `SingleStream`.
     #[cfg(feature = "cuda")]
@@ -670,7 +708,9 @@ impl Session {
             gpu_config: Some(gpu_config),
             ..SessionConfig::default()
         };
-        Self::new(config)
+        // Only gpu_config is set; stream_config is the default SingleStream,
+        // which always validates.
+        Self::new(config).expect("with_gpu config is always valid")
     }
 
     /// Initializes the session with a parsed ONNX model.
@@ -1284,7 +1324,7 @@ mod tests {
 
     #[test]
     fn test_session_new_defaults() {
-        let session = Session::new(SessionConfig::default());
+        let session = Session::new(SessionConfig::default()).unwrap();
         assert!(!session.is_initialized());
         assert!(session.input_names().is_empty());
         assert!(session.output_names().is_empty());
@@ -1294,7 +1334,7 @@ mod tests {
 
     #[test]
     fn test_session_kind_defaults_to_onnx() {
-        let session = Session::new(SessionConfig::default());
+        let session = Session::new(SessionConfig::default()).unwrap();
         assert_eq!(session.kind(), SessionKind::Onnx);
         assert!(
             !session.manages_kv_cache_internally(),
@@ -1307,14 +1347,14 @@ mod tests {
         // Contract: Session::kind() must always return the same value
         // as the public `kind` field. `llm-api-translation-v1`
         // branches on this to decide KV cache threading.
-        let session = Session::new(SessionConfig::default());
+        let session = Session::new(SessionConfig::default()).unwrap();
         assert_eq!(session.kind(), session.kind);
     }
 
     #[test]
     fn test_session_unique_ids() {
-        let s1 = Session::new(SessionConfig::default());
-        let s2 = Session::new(SessionConfig::default());
+        let s1 = Session::new(SessionConfig::default()).unwrap();
+        let s2 = Session::new(SessionConfig::default()).unwrap();
         assert_ne!(s1.id, s2.id);
         // IDs should be monotonically increasing.
         assert!(s2.id.0 > s1.id.0);
@@ -1358,6 +1398,68 @@ mod tests {
             StreamConfig::Overlap { transfer_streams } => assert_eq!(transfer_streams, 2),
             other => panic!("expected Overlap, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn validate_accepts_in_range_configs() {
+        // SingleStream and Overlap up to the cap are valid. This holds
+        // regardless of the `cuda` feature — validate() is not gated.
+        assert!(SessionConfig::default().validate().is_ok());
+        for n in 0..=SessionConfig::MAX_TRANSFER_STREAMS {
+            let cfg = SessionConfig {
+                stream_config: StreamConfig::Overlap {
+                    transfer_streams: n,
+                },
+                ..SessionConfig::default()
+            };
+            assert!(
+                cfg.validate().is_ok(),
+                "transfer_streams={n} should be valid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_excess_transfer_streams() {
+        let cfg = SessionConfig {
+            stream_config: StreamConfig::Overlap {
+                transfer_streams: SessionConfig::MAX_TRANSFER_STREAMS + 1,
+            },
+            ..SessionConfig::default()
+        };
+        match cfg.validate() {
+            Err(SessionError::InvalidConfig(_)) => {}
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn new_rejects_invalid_config_eagerly() {
+        // The whole point of the change: construction fails, without
+        // needing a first inference to trip the lazy stream-pool check,
+        // and on every build (this test is not cuda-gated).
+        let cfg = SessionConfig {
+            stream_config: StreamConfig::Overlap {
+                transfer_streams: 5,
+            },
+            ..SessionConfig::default()
+        };
+        assert!(matches!(
+            Session::new(cfg),
+            Err(SessionError::InvalidConfig(_))
+        ));
+    }
+
+    #[test]
+    fn new_accepts_valid_config() {
+        assert!(Session::new(SessionConfig::default()).is_ok());
+        let cfg = SessionConfig {
+            stream_config: StreamConfig::Overlap {
+                transfer_streams: 2,
+            },
+            ..SessionConfig::default()
+        };
+        assert!(Session::new(cfg).is_ok());
     }
 
     #[test]
@@ -1474,7 +1576,7 @@ mod tests {
 
     #[test]
     fn test_run_without_init_returns_error() {
-        let session = Session::new(SessionConfig::default());
+        let session = Session::new(SessionConfig::default()).unwrap();
         let input = InferenceInput {
             name: String::from("input"),
             tensor: Tensor::new(
@@ -1495,7 +1597,7 @@ mod tests {
 
     #[test]
     fn test_session_not_initialized_by_default() {
-        let session = Session::new(SessionConfig::default());
+        let session = Session::new(SessionConfig::default()).unwrap();
         assert!(!session.is_initialized());
     }
 
@@ -1660,7 +1762,7 @@ mod tests {
     #[test]
     fn test_session_initialize_valid_model() {
         let model = make_simple_model();
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(SessionConfig::default()).unwrap();
         let result = session.initialize(&model);
         assert!(result.is_ok());
         assert!(session.is_initialized());
@@ -1677,7 +1779,7 @@ mod tests {
             graph: None,
             ..ModelProto::default()
         };
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(SessionConfig::default()).unwrap();
         let result = session.initialize(&model);
         assert!(result.is_err());
         assert!(!session.is_initialized());
@@ -1686,7 +1788,7 @@ mod tests {
     #[test]
     fn test_session_run_after_init_executes_relu() {
         let model = make_simple_model();
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(SessionConfig::default()).unwrap();
         session.initialize(&model).unwrap();
 
         // Create input tensor with actual data
@@ -1732,7 +1834,7 @@ mod tests {
     #[test]
     fn test_session_run_invalid_input_name() {
         let model = make_simple_model();
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(SessionConfig::default()).unwrap();
         session.initialize(&model).unwrap();
 
         let input = InferenceInput {

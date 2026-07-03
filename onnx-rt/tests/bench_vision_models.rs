@@ -167,7 +167,7 @@ fn load_vision_model_with(
     let bytes = std::fs::read(&path).expect("read fixture");
     let model = session::load_model(&bytes).expect("load_model");
 
-    let mut session = Session::new(config);
+    let mut session = Session::new(config).unwrap();
     session.initialize(&model).expect("initialize");
 
     Some((session, input_name.to_string(), input_shape.to_vec()))

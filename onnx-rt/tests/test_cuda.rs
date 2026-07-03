@@ -3956,7 +3956,7 @@ fn test_cuda_graph_cache_lazy_init_when_off() {
     let mut config = SessionConfig::default();
     config.gpu_residency = smallaios_onnx_rt::session::GpuResidency::Hybrid;
     // cuda_graph stays Off (default).
-    let session = Session::new(config);
+    let session = Session::new(config).unwrap();
     // Cache slot exists but is empty.
     assert!(session.cuda_graph_cache.borrow().is_none());
 }
@@ -4008,7 +4008,7 @@ fn test_stream_config_caps_transfer_streams_at_2() {
     config.stream_config = StreamConfig::Overlap {
         transfer_streams: 5,
     };
-    let session = Session::new(config);
+    let session = Session::new(config).unwrap();
     let err = session
         .ensure_stream_pool()
         .expect_err("should reject transfer_streams=5");
@@ -4033,7 +4033,7 @@ fn test_ensure_stream_pool_noop_on_single_stream() {
         return;
     }
 
-    let session = Session::new(SessionConfig::default());
+    let session = Session::new(SessionConfig::default()).unwrap();
     session.ensure_stream_pool().expect("noop ok");
     assert!(session.stream_pool.borrow().is_none());
 }
