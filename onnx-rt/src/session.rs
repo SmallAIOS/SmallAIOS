@@ -11,6 +11,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
+use crate::backend::{BackendError, BackendList, DispatchTable, OpDescriptor, TensorMeta};
 use crate::graph::{build_execution_graph, ExecutionGraph};
 use crate::onnx_types::{ModelProto, TensorProto, CURRENT_IR_VERSION};
 use crate::operators::OperatorRegistry;
@@ -46,6 +47,27 @@ pub enum SessionError {
     /// The model failed security policy validation (formal-gate).
     #[cfg(feature = "formal-gate")]
     PolicyViolation(String),
+    /// No registered backend reported `can_run = true` for an operator
+    /// at session-build time. Carries the offending operator's
+    /// `(op_type, op_name)` so callers can fix the backend list or
+    /// graph. Raised by [`Session::initialize`] when the configured
+    /// [`SessionConfig::backends`] list does not collectively cover
+    /// every op in the loaded graph.
+    NoBackendForOp {
+        /// The ONNX operator type (e.g., `"Conv"`).
+        op_type: String,
+        /// The graph node's human-readable name (or empty string).
+        op_name: String,
+    },
+    /// All registered backends exhausted their fallback options for an
+    /// operator at runtime. Returned from [`Session::run`] without a
+    /// panic so the caller may choose how to recover.
+    DispatchExhausted {
+        /// The ONNX operator type that exhausted dispatch.
+        op_type: String,
+        /// The graph node's human-readable name (or empty string).
+        op_name: String,
+    },
 }
 
 impl fmt::Display for SessionError {
@@ -78,6 +100,33 @@ impl fmt::Display for SessionError {
             #[cfg(feature = "formal-gate")]
             SessionError::PolicyViolation(msg) => {
                 write!(f, "policy violation: {}", msg)
+            }
+            SessionError::NoBackendForOp { op_type, op_name } => {
+                write!(
+                    f,
+                    "no backend registered can run op '{}' (node '{}')",
+                    op_type, op_name
+                )
+            }
+            SessionError::DispatchExhausted { op_type, op_name } => {
+                write!(
+                    f,
+                    "all backends exhausted for op '{}' (node '{}')",
+                    op_type, op_name
+                )
+            }
+        }
+    }
+}
+
+impl From<BackendError> for SessionError {
+    fn from(err: BackendError) -> Self {
+        match err {
+            BackendError::NoBackendForOp { op_type, op_name } => {
+                SessionError::NoBackendForOp { op_type, op_name }
+            }
+            BackendError::DispatchExhausted { op_type, op_name } => {
+                SessionError::DispatchExhausted { op_type, op_name }
             }
         }
     }
@@ -225,6 +274,13 @@ pub struct SessionConfig {
     /// stream so adjacent inferences can overlap input upload, GPU
     /// compute, and output download.
     pub stream_config: StreamConfig,
+    /// Ordered list of [`crate::backend::ExecutionBackend`]
+    /// implementations the runtime walks during session-build dispatch
+    /// binding and per-op fallback. Position 0 is highest-priority.
+    /// The default is a single
+    /// [`crate::backend::CpuBackend`], preserving pre-refactor
+    /// CPU-only behavior for existing callers.
+    pub backends: BackendList,
 }
 
 impl Default for SessionConfig {
@@ -239,6 +295,7 @@ impl Default for SessionConfig {
             gpu_residency: GpuResidency::default(),
             cuda_graph: CudaGraphMode::default(),
             stream_config: StreamConfig::default(),
+            backends: BackendList::default(),
         }
     }
 }
@@ -326,6 +383,11 @@ pub struct Session {
     pub initializers: Vec<TensorProto>,
     /// Whether the session has been fully initialized with a model.
     is_initialized: bool,
+    /// Per-node binding from node index -> backend index, computed
+    /// once at [`Session::initialize`]. Populated for non-control-flow
+    /// nodes; control-flow ops (`If`/`Loop`/`Scan`) execute outside
+    /// the trait via the inner-graph executor.
+    dispatch_table: Option<DispatchTable>,
     /// Optional GPU backend for accelerated operator dispatch.
     #[cfg(feature = "gpu")]
     pub gpu_backend: Option<smallaios_compute::GpuBackend>,
@@ -506,6 +568,90 @@ pub fn validate_model(model: &ModelProto) -> Result<(), SessionError> {
 }
 
 // ---------------------------------------------------------------------------
+// Dispatch table builder
+// ---------------------------------------------------------------------------
+
+/// Walks the execution graph and binds each non-control-flow node to
+/// the highest-priority backend whose `can_run` returns true.
+///
+/// Returns `Err(SessionError::NoBackendForOp)` for the first op no
+/// backend covers — matching the
+/// `accelerator-hal/spec.md::Session-Build Validation` requirement
+/// that an uncovered op fails at session creation, not at first
+/// inference.
+///
+/// Backends whose [`crate::backend::ExecutionBackend::probe`] reports
+/// `Err(ExecError::BackendUnavailable)` are skipped during binding —
+/// this lets a stub or accelerator backend fail gracefully on a host
+/// that lacks the underlying device without aborting the session.
+pub(crate) fn build_dispatch_table(
+    graph: &ExecutionGraph,
+    backends: &BackendList,
+) -> Result<DispatchTable, SessionError> {
+    use crate::backend::ExecError;
+
+    // Probe each backend once. Backends reporting BackendUnavailable
+    // are excluded from the binding pool; any other error is fatal at
+    // session creation since it indicates a misconfigured backend.
+    let mut available: Vec<bool> = Vec::with_capacity(backends.len());
+    for b in backends.as_slice() {
+        match b.probe() {
+            Ok(()) => available.push(true),
+            Err(ExecError::BackendUnavailable) => available.push(false),
+            Err(other) => {
+                return Err(SessionError::ExecutionFailed(alloc::format!(
+                    "backend '{}' probe failed: {}",
+                    b.name(),
+                    other
+                )));
+            }
+        }
+    }
+
+    let mut table = DispatchTable::new(graph.nodes.len());
+
+    for (idx, node) in graph.nodes.iter().enumerate() {
+        // Control-flow ops dispatch outside the trait. Leave them
+        // unbound; the runtime branches on `is_control_flow_op` before
+        // consulting the table.
+        if crate::executor::is_control_flow_op(&node.op_type) {
+            continue;
+        }
+
+        let inputs: Vec<Option<TensorMeta>> = node.inputs.iter().map(|_| None).collect();
+        let descriptor = OpDescriptor {
+            op_type: &node.op_type,
+            domain: &node.domain,
+            node_name: &node.name,
+            attributes: &node.attributes,
+            output_count: node.outputs.len(),
+            inputs: &inputs,
+        };
+
+        let mut bound = false;
+        for (b_idx, backend) in backends.as_slice().iter().enumerate() {
+            if !available[b_idx] {
+                continue;
+            }
+            if backend.can_run(&descriptor) {
+                table.bind(idx, b_idx);
+                bound = true;
+                break;
+            }
+        }
+
+        if !bound {
+            return Err(SessionError::NoBackendForOp {
+                op_type: node.op_type.clone(),
+                op_name: node.name.clone(),
+            });
+        }
+    }
+
+    Ok(table)
+}
+
+// ---------------------------------------------------------------------------
 // Top-level model loading
 // ---------------------------------------------------------------------------
 
@@ -599,6 +745,7 @@ impl Session {
             output_names: Vec::new(),
             initializers: Vec::new(),
             is_initialized: false,
+            dispatch_table: None,
             #[cfg(feature = "gpu")]
             gpu_backend: None,
             #[cfg(all(feature = "metal", target_os = "macos"))]
@@ -701,12 +848,20 @@ impl Session {
         };
         let _opt_result = optimize(&mut exec_graph, &opt_config);
 
+        // Build the per-node dispatch table over the configured
+        // backend list. Control-flow ops (`If`/`Loop`/`Scan`) are
+        // executed outside the trait via the inner-graph executor and
+        // are deliberately left unbound; the runtime branches on
+        // `is_control_flow_op` before consulting the table.
+        let table = build_dispatch_table(&exec_graph, &self.config.backends)?;
+
         // Store graph metadata
         self.model_name = graph.name.clone();
         self.input_names = graph.input.iter().map(|vi| vi.name.clone()).collect();
         self.output_names = graph.output.iter().map(|vi| vi.name.clone()).collect();
         self.initializers = graph.initializer.clone();
         self.graph = Some(exec_graph);
+        self.dispatch_table = Some(table);
         self.is_initialized = true;
 
         Ok(())
@@ -844,6 +999,12 @@ impl Session {
                 #[cfg(all(feature = "metal", target_os = "macos"))]
                 let mut metal_guard = self.metal_dispatcher.borrow_mut();
 
+                let table = self.dispatch_table.as_ref().ok_or_else(|| {
+                    SessionError::ExecutionFailed(String::from(
+                        "session has no dispatch table; was Session::initialize called?",
+                    ))
+                })?;
+
                 crate::executor::execute_graph(
                     graph,
                     &input_pairs,
@@ -852,6 +1013,8 @@ impl Session {
                     None,
                     &crate::profile::OperatorBudget::DEFAULT,
                     &crate::profile::NullTimeSource,
+                    &self.config.backends,
+                    table,
                     #[cfg(feature = "gpu")]
                     self.gpu_backend.as_ref(),
                     #[cfg(feature = "cuda")]
@@ -1047,6 +1210,12 @@ impl Session {
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let mut metal_guard = self.metal_dispatcher.borrow_mut();
 
+        let table = self.dispatch_table.as_ref().ok_or_else(|| {
+            SessionError::ExecutionFailed(String::from(
+                "session has no dispatch table; was Session::initialize called?",
+            ))
+        })?;
+
         let outputs = crate::executor::execute_graph(
             graph,
             &input_pairs,
@@ -1055,6 +1224,8 @@ impl Session {
             Some(&mut profile),
             &budget,
             &time_source,
+            &self.config.backends,
+            table,
             #[cfg(feature = "gpu")]
             self.gpu_backend.as_ref(),
             #[cfg(feature = "cuda")]
@@ -1177,6 +1348,7 @@ impl Session {
             output_names,
             initializers: built.initializers,
             is_initialized: true,
+            dispatch_table: None,
             #[cfg(feature = "gpu")]
             gpu_backend: None,
             cuda_runtime: Some(cuda_runtime),

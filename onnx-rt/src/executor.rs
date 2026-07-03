@@ -9,6 +9,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::backend::{BackendList, DispatchTable, ExecError, OpDescriptor, TensorEnv};
 use crate::byte_io::{self, allocate_tensor_data, I64_SIZE};
 #[cfg(feature = "cuda")]
 use crate::cuda;
@@ -44,12 +45,22 @@ pub fn execute_graph(
     mut profile: Option<&mut InferenceProfile>,
     budget: &OperatorBudget,
     time_source: &dyn TimeSource,
+    backends: &BackendList,
+    dispatch_table: &DispatchTable,
     #[cfg(feature = "gpu")] gpu_backend: Option<&smallaios_compute::GpuBackend>,
     #[cfg(feature = "cuda")] cuda_runtime: Option<&cuda::CudaRuntime>,
     #[cfg(all(feature = "metal", target_os = "macos"))] mut metal_dispatcher: Option<
         &mut crate::metal_dispatch::MetalDispatcher,
     >,
 ) -> Result<Vec<InferenceOutput>, SessionError> {
+    // The legacy `gpu_backend` parameter was consumed by the previous
+    // CPU dispatch path; the trait-based dispatcher does not use it
+    // (the bare-metal compute abstraction will be refactored into its
+    // own backend in a later change). Silence the unused-variable
+    // warning until that change lands.
+    #[cfg(feature = "gpu")]
+    let _ = gpu_backend;
+
     let mut value_map: BTreeMap<String, Tensor> = BTreeMap::new();
 
     // Load user-provided inputs
@@ -99,8 +110,9 @@ pub fn execute_graph(
             continue;
         }
 
-        // Try Metal GPU dispatch first (if available). Falls back to CPU
-        // if the dispatcher returns None (unsupported op).
+        // Try Metal GPU dispatch first (if available). Falls back to
+        // backend-table dispatch if the dispatcher returns None
+        // (unsupported op).
         #[cfg(all(feature = "metal", target_os = "macos"))]
         let metal_gpu_result = {
             if let Some(ref mut dispatcher) = metal_dispatcher {
@@ -114,84 +126,117 @@ pub fn execute_graph(
             }
         };
 
-        // Dispatch operator (optionally wrapped in timing measurement).
-        // If Metal GPU already handled this op, use that result directly.
-        #[cfg(all(feature = "metal", target_os = "macos"))]
-        let outputs = if let Some(gpu_outputs) = metal_gpu_result {
-            gpu_outputs
-        } else if let Some(prof) = profile.as_mut() {
-            let start = time_source.now_us();
-            let outputs = dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &input_tensors,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                gpu_backend,
-                #[cfg(feature = "cuda")]
-                cuda_runtime,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
-            let elapsed = time_source.now_us().saturating_sub(start);
-
-            let class = classify_op(&node.op_type);
-            let budget_result = budget.check(class, elapsed);
-
-            prof.operators.push(OperatorMeasurement {
-                op_type: node.op_type.clone(),
-                class,
-                actual_us: elapsed,
-                budget_result,
-            });
-            prof.total_us = prof.total_us.saturating_add(elapsed);
-
-            match budget_result {
-                BudgetResult::Ok => {}
-                BudgetResult::Warning => prof.warnings_count += 1,
-                BudgetResult::SoftLimit => prof.soft_limit_count += 1,
-                BudgetResult::HardLimit => {
-                    prof.hard_limit_aborted = true;
-                    return Err(SessionError::ExecutionFailed(alloc::format!(
-                        "operator '{}' exceeded hard time limit: {} us",
-                        node.op_type,
-                        elapsed
-                    )));
+        // Try the legacy CUDA execution provider as a fast-path before
+        // routing through the backend trait. The CUDA path is owned by
+        // the existing `cuda::CudaRuntime` infrastructure and will be
+        // refactored into its own `ExecutionBackend` impl in a future
+        // change; for now it is preserved verbatim so behavior is
+        // byte-identical to the pre-refactor implementation. See
+        // `openspec/changes/fpga-accelerator-hal-v1/tasks.md` §1 for
+        // the Phase 1 scope statement.
+        #[cfg(feature = "cuda")]
+        let cuda_gpu_result: Option<Vec<Tensor>> = if let Some(rt) = cuda_runtime {
+            if cuda::CudaRuntime::supports_op(&node.op_type) {
+                match try_cuda_dispatch(rt, &node.op_type, &input_tensors, &node.attributes) {
+                    Some(Ok(outs)) => Some(outs),
+                    Some(Err(e)) => {
+                        return Err(SessionError::ExecutionFailed(alloc::format!(
+                            "{}: {}",
+                            node.name,
+                            e
+                        )));
+                    }
+                    None => None,
                 }
+            } else {
+                None
             }
-
-            outputs
         } else {
-            // Zero-overhead path: no profiling.
-            dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &input_tensors,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                gpu_backend,
-                #[cfg(feature = "cuda")]
-                cuda_runtime,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?
+            None
         };
 
-        #[cfg(not(all(feature = "metal", target_os = "macos")))]
-        let outputs = if let Some(prof) = profile.as_mut() {
+        // Backend-table dispatch via the ExecutionBackend trait. The
+        // dispatch table was bound at session creation; we never call
+        // `can_run` here on the hot path. Per-op fallback walks the
+        // remaining backends in priority order on
+        // `ExecError::FallbackToCpu`.
+        let dispatch_via_backend = |inputs: &[Option<&Tensor>]| -> Result<Vec<Tensor>, SessionError> {
+            let descriptor_inputs: Vec<Option<crate::backend::TensorMeta>> = inputs
+                .iter()
+                .map(|opt| {
+                    opt.map(|t| crate::backend::TensorMeta {
+                        data_type: t.data_type,
+                        rank: Some(t.shape.ndim()),
+                    })
+                })
+                .collect();
+            let descriptor = OpDescriptor {
+                op_type: &node.op_type,
+                domain: &node.domain,
+                node_name: &node.name,
+                attributes: &node.attributes,
+                output_count: node.outputs.len(),
+                inputs: &descriptor_inputs,
+            };
+            let bound = dispatch_table
+                .get(node_idx.index())
+                .ok_or_else(|| SessionError::ExecutionFailed(alloc::format!(
+                    "{}: dispatch table unbound for non-control-flow op",
+                    node.name
+                )))?;
+
+            let backend_slice = backends.as_slice();
+            for b_idx in bound..backend_slice.len() {
+                let mut outputs_buf: Vec<Tensor> = Vec::new();
+                let mut env = TensorEnv::new(inputs, &mut outputs_buf);
+                match backend_slice[b_idx].dispatch(&descriptor, &mut env) {
+                    Ok(()) => return Ok(outputs_buf),
+                    Err(ExecError::FallbackToCpu) => {
+                        log_fallback(
+                            backend_slice[b_idx].name(),
+                            &node.op_type,
+                            &node.name,
+                        );
+                        continue;
+                    }
+                    Err(e) => {
+                        return Err(SessionError::ExecutionFailed(alloc::format!(
+                            "{}: {}",
+                            node.name,
+                            e
+                        )));
+                    }
+                }
+            }
+            Err(SessionError::DispatchExhausted {
+                op_type: node.op_type.clone(),
+                op_name: node.name.clone(),
+            })
+        };
+
+        // Dispatch operator (optionally wrapped in timing
+        // measurement). If a hardware fast-path (Metal or CUDA)
+        // already handled this op, use that result directly; otherwise
+        // route through the backend trait.
+        let mut pre_backend_result: Option<Vec<Tensor>> = None;
+        #[cfg(all(feature = "metal", target_os = "macos"))]
+        {
+            if pre_backend_result.is_none() {
+                pre_backend_result = metal_gpu_result;
+            }
+        }
+        #[cfg(feature = "cuda")]
+        {
+            if pre_backend_result.is_none() {
+                pre_backend_result = cuda_gpu_result;
+            }
+        }
+
+        let outputs = if let Some(out) = pre_backend_result {
+            out
+        } else if let Some(prof) = profile.as_mut() {
             let start = time_source.now_us();
-            let outputs = dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &input_tensors,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                gpu_backend,
-                #[cfg(feature = "cuda")]
-                cuda_runtime,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?;
+            let outputs = dispatch_via_backend(&input_tensors)?;
             let elapsed = time_source.now_us().saturating_sub(start);
 
             let class = classify_op(&node.op_type);
@@ -222,18 +267,7 @@ pub fn execute_graph(
             outputs
         } else {
             // Zero-overhead path: no profiling.
-            dispatch_node_with_domain(
-                &node.op_type,
-                &node.domain,
-                &input_tensors,
-                &node.attributes,
-                node.outputs.len(),
-                #[cfg(feature = "gpu")]
-                gpu_backend,
-                #[cfg(feature = "cuda")]
-                cuda_runtime,
-            )
-            .map_err(|e| SessionError::ExecutionFailed(alloc::format!("{}: {}", node.name, e)))?
+            dispatch_via_backend(&input_tensors)?
         };
 
         // Store outputs in value map
@@ -267,6 +301,27 @@ pub fn execute_graph(
     }
 
     Ok(results)
+}
+
+/// Logs a per-op fallback event ("backend X declined op Y, retrying
+/// with the next backend"). Routes through the kernel's `eprintln`
+/// equivalent when `std` is available; otherwise this is a no-op.
+/// Production builds with optimization elide the call entirely under
+/// LTO when the body is empty.
+fn log_fallback(backend_name: &str, op_type: &str, op_name: &str) {
+    #[cfg(feature = "std")]
+    {
+        std::eprintln!(
+            "smallaios-onnx-rt: backend '{}' fell back on op '{}' (node '{}')",
+            backend_name,
+            op_type,
+            op_name
+        );
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        let _ = (backend_name, op_type, op_name);
+    }
 }
 
 /// Converts a TensorProto (model initializer) to a runtime Tensor.

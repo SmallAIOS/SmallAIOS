@@ -20,6 +20,7 @@ extern crate alloc;
 #[cfg(feature = "cuda")]
 extern crate std;
 
+pub mod backend;
 pub mod byte_io;
 #[cfg(feature = "cuda")]
 pub mod cuda;
