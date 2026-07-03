@@ -14,6 +14,9 @@
 //! - Constant-time utilities
 
 pub mod aes_gcm;
+/// Private big-integer arithmetic backing RSA (`rsa_pss`); not part of the
+/// public crypto surface.
+mod big_int;
 pub mod blake2b;
 pub mod chacha20;
 pub mod chacha20_poly1305;
@@ -23,9 +26,13 @@ pub mod ed25519;
 pub mod field25519;
 pub mod hybrid;
 pub mod key_manager;
+pub mod mgf1;
 pub mod ml_dsa;
 pub mod ml_kem;
 pub mod poly1305;
+pub mod rsa_pss;
+#[cfg(test)]
+mod rsa_pss_test_vectors;
 pub mod sha3;
 pub mod verify;
 pub mod x25519;
