@@ -10,6 +10,7 @@
 //! - CSPRNG (SHAKE256-based, seeded from RDRAND/RNDR)
 //! - ML-KEM-768 (FIPS 203) — key encapsulation
 //! - ML-DSA-65 (FIPS 204) — digital signatures
+//! - ECDSA-P256/SHA-256 signature verification (X9.62, verify-only)
 //! - Hybrid modes (classical + PQC)
 //! - Constant-time utilities
 
@@ -22,6 +23,9 @@ pub mod chacha20;
 pub mod chacha20_poly1305;
 pub mod constant_time;
 pub mod csprng;
+pub mod ecdsa_p256;
+#[cfg(test)]
+mod ecdsa_p256_test_vectors;
 pub mod ed25519;
 pub mod field25519;
 pub mod hybrid;
@@ -29,6 +33,7 @@ pub mod key_manager;
 pub mod mgf1;
 pub mod ml_dsa;
 pub mod ml_kem;
+pub mod p256;
 pub mod poly1305;
 pub mod rsa_pss;
 #[cfg(test)]
