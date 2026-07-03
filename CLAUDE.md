@@ -118,6 +118,7 @@ just arch           # Full dependency analysis suite
 - **AMP multi-core** — Core 0 for System/IPC, Cores 1-N for inference data parallelism; no SMP
 - **Clean-room ONNX runtime** — from-scratch `#![no_std]` Rust, no external C deps
 - **Post-quantum crypto default** — ML-KEM-768 + ML-DSA-65 hybrid mode
+- **Clean-room crypto policy** — no C/C++ crypto libraries (cargo-deny enforced); every primitive replays an official vector corpus. See `docs/crypto-validation.md`
 - **DO-178C DAL A compliance target** — MC/DC 100% coverage on safety-critical paths
 - **Formal verification** — TLA+ (19 protocol models for concurrency/safety invariants)
 - **Size goals** — <8 MB base, <15 MB container, <50ms container boot

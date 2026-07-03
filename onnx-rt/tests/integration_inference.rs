@@ -42,7 +42,7 @@ fn session_custom_config() {
         thread_count: 4,
         ..SessionConfig::default()
     };
-    let session = Session::new(config);
+    let session = Session::new(config).unwrap();
     assert!(!session.is_initialized());
     assert!(session.input_names().is_empty());
     assert!(session.output_names().is_empty());
@@ -51,9 +51,9 @@ fn session_custom_config() {
 
 #[test]
 fn session_ids_are_unique_and_monotonic() {
-    let s1 = Session::new(SessionConfig::default());
-    let s2 = Session::new(SessionConfig::default());
-    let s3 = Session::new(SessionConfig::default());
+    let s1 = Session::new(SessionConfig::default()).unwrap();
+    let s2 = Session::new(SessionConfig::default()).unwrap();
+    let s3 = Session::new(SessionConfig::default()).unwrap();
     assert_ne!(s1.id, s2.id);
     assert_ne!(s2.id, s3.id);
     assert!(s2.id.0 > s1.id.0);
@@ -73,7 +73,7 @@ fn session_no_optimization_config() {
         cuda_graph: smallaios_onnx_rt::session::CudaGraphMode::default(),
         stream_config: smallaios_onnx_rt::session::StreamConfig::default(),
     };
-    let session = Session::new(config);
+    let session = Session::new(config).unwrap();
     assert!(!session.is_initialized());
 }
 
@@ -313,7 +313,7 @@ fn validate_model_without_graph_fails() {
 
 #[test]
 fn session_run_without_init_fails() {
-    let session = Session::new(SessionConfig::default());
+    let session = Session::new(SessionConfig::default()).unwrap();
     let input = InferenceInput {
         name: String::from("x"),
         tensor: Tensor::new(

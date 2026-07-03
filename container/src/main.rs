@@ -260,7 +260,9 @@ fn load_onnx_session(
             return None;
         }
     };
-    let mut s = Session::new(SessionConfig::default());
+    // SessionConfig::default() is SingleStream, which always validates.
+    let mut s =
+        Session::new(SessionConfig::default()).expect("SessionConfig::default() is always valid");
     #[cfg(feature = "cuda")]
     {
         s.cuda_runtime = cuda_runtime.clone();
