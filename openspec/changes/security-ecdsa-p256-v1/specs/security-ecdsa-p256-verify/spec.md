@@ -2,7 +2,7 @@
 
 ### Requirement: ECDSA-P256 Verify Module Is a Verify-Only Layer-0 Primitive
 
-The `security` crate SHALL provide a `security::crypto::ecdsa_p256` module implementing ECDSA signature **verification** on NIST P-256 (secp256r1) paired with SHA-256, matching the TLS 1.3 `ecdsa_secp256r1_sha256` signature scheme. The module SHALL be `#![no_std]`, SHALL live at Layer 0 (`security/src/crypto/p256.rs` for curve/field/point operations, `security/src/crypto/ecdsa_p256.rs` for DER parse + verify), and SHALL be verify-only in v1: no key generation and no signing. SHA-256 SHALL be provided by the existing `security/crypto/sha2` module; the change SHALL add no new external production dependencies.
+The `security` crate SHALL provide a `security::crypto::ecdsa_p256` module implementing ECDSA signature **verification** on NIST P-256 (secp256r1) paired with SHA-256, matching the TLS 1.3 `ecdsa_secp256r1_sha256` signature scheme. The module SHALL be `#![no_std]`, SHALL live at Layer 0 (`security/src/crypto/p256.rs` for curve/field/point operations, `security/src/crypto/ecdsa_p256.rs` for DER parse + verify), and SHALL be verify-only in v1: no key generation and no signing. SHA-256 SHALL be provided by the existing `security::sha2` (`security/src/sha2.rs`) module; the change SHALL add no new external production dependencies.
 
 #### Scenario: Public API is verify-only
 
@@ -21,7 +21,7 @@ The `security` crate SHALL provide a `security::crypto::ecdsa_p256` module imple
 
 - **WHEN** the `security` crate's `Cargo.toml` is diffed against its pre-change state
 - **THEN** no new external production dependency SHALL appear
-- **AND** message hashing inside `ecdsa_p256` SHALL call the existing `security/crypto/sha2` SHA-256 implementation
+- **AND** message hashing inside `ecdsa_p256` SHALL call the existing `security::sha2` (`security/src/sha2.rs`) SHA-256 implementation
 - **AND** the crate SHALL continue to build for `#![no_std]` bare-metal targets (`x86_64-unknown-none`, `aarch64-unknown-none`, `riscv64gc-unknown-none-elf`)
 
 ### Requirement: ECDSA Verification Follows ANSI X9.62
