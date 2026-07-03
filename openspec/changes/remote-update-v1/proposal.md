@@ -42,6 +42,11 @@ update pipeline.
   - `tries_remaining: u8` — decremented on each boot attempt;
     zero ⇒ boot loader falls back to `active`
   - `manifest_hash: [u8; 32]` of the active image
+- The boot-pointer record is **not a new format**: it is the
+  existing `fs-ab-boot` double-buffered `BootConfigRecord`
+  (SHA3-256 `record_hash`, monotonic `generation`), extended
+  with `tries_remaining` and `manifest_hash`. `pending` maps to
+  the record's existing `tentative` flag.
 - The boot loader (UEFI app on Orin / x86-EFI, board-specific on
   bare-metal) reads this record before each boot.
 
@@ -134,10 +139,13 @@ update pipeline.
 
 ### Health-check / commit endpoint
 
-- `system_update_confirm()` — syscall (#47). Called by the
-  user-space process responsible for "did the new image
-  actually come up correctly," typically the inference server
-  after one successful inference round-trip.
+- `system_update_confirm()` — syscall
+  (`SYS_SYSTEM_UPDATE_CONFIRM = 0x58`, System category, next to
+  the existing `SYS_BOOT_SUCCESS = 0x57` and driving the same
+  `fs-ab-boot` commit path). Called by the user-space process
+  responsible for "did the new image actually come up
+  correctly," typically the inference server after one
+  successful inference round-trip.
 - `smallaios/admin/system/healthy` — Zenoh equivalent for
   remote operators to mark the boot good.
 
@@ -161,8 +169,10 @@ update pipeline.
 
 - `update-image-format`: manifest schema, payload-hash rules,
   signature algorithm (ML-DSA-65 over manifest+payload).
-- `update-boot-slots`: A/B slot layout, boot-pointer record,
-  atomic-switch rules, `tries_remaining` semantics.
+- `update-boot-slots`: A/B image-slot layout, update-time
+  boot-pointer rules, atomic-switch rules, `tries_remaining`
+  semantics (the boot-pointer record itself reuses
+  `fs-ab-boot`).
 - `update-watchdog-rollback`: confirm window, watchdog wiring
   per arch, rollback decision tree.
 - `update-tty-ymodem`: YMODEM-1K state machine, CRC-16, block
@@ -174,7 +184,13 @@ update pipeline.
 
 ### Modified Capabilities
 
-- `kernel-syscalls`: adds `system_update_confirm` (#47).
+- `kernel-syscalls`: adds `system_update_confirm`
+  (`SYS_SYSTEM_UPDATE_CONFIRM = 0x58`), sharing the `fs-ab-boot`
+  boot-good commit path with the existing `boot_success`
+  (`0x57`).
+- `fs-ab-boot`: extends `BootConfigRecord` with
+  `tries_remaining` and `manifest_hash` (record version 2) and
+  replaces first-failure rollback with try-exhaustion rollback.
 - `mgmt-zenoh-admin`: adds the `smallaios/admin/update/**`
   keyspace.
 - `verified-boot`: extends the existing boot-time signature
@@ -219,8 +235,10 @@ update pipeline.
   TOML / TTY / Zenoh `ConfigSurface` impls — no new transport
   plumbing. `system-power-control-v1` is also a dependency
   (the post-update reboot uses `system_power`).
-- **Risks:** (1) Boot-pointer corruption is fatal — must be
-  CRC-protected and written with a journaled-replace scheme.
+- **Risks:** (1) Boot-pointer corruption is fatal — handled by
+  reusing `fs-ab-boot`'s double-buffered, SHA3-256-hashed
+  journaled-replace record scheme rather than inventing a new
+  one.
   (2) Watchdog tuning per platform: too short and false
   rollbacks; too long and bricked-update window grows. v1
   targets 60 s confirm window across all platforms.
@@ -233,8 +251,9 @@ update pipeline.
    sectors at a known offset (simplest, breaks if disk geometry
    changes), (b) a small dedicated FAT partition (Orin EFI
    partition is convenient), (c) UEFI variable (atomic, durable,
-   but bare-metal-only). Leaning per-platform: UEFI variable on
-   Orin/x86-EFI, dedicated raw region on bare-metal.
+   but bare-metal-only). **Resolved:** reuse the `fs-ab-boot`
+   dedicated GPT boot-config partition, which already carries a
+   UEFI-variable mirror on UEFI-capable arches.
 2. Should `update` over TTY *also* require the bearer-token from
    `management-login-v1`, or is "physical access to the serial
    port" considered sufficient authorization on its own? Leaning

@@ -58,3 +58,7 @@ sonar-coverage.xml
 # ONNX coverage probe fixture downloads (large; see
 # tools/coverage-probe/REPORT.md for re-download instructions).
 tests/fixtures/onnx-models/
+
+# Local agent worktrees and MCP logs (session-local, never committed)
+.claude/worktrees/
+proxmox_mcp.log
