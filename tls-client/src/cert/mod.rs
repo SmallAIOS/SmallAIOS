@@ -31,12 +31,14 @@ use crate::Result;
 use alloc::vec::Vec;
 
 /// The leaf certificate's SubjectPublicKeyInfo key, in the
-/// algorithms the workspace can verify CertificateVerify with
-/// today. ECDSA-P256 and RSA-PSS variants join when their
-/// `security/` primitives land (tasks 5.5 note).
+/// algorithms the workspace can verify CertificateVerify with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LeafPublicKey {
     Ed25519([u8; 32]),
+    /// Uncompressed SEC1 point (`0x04 || X || Y`, 65 bytes).
+    EcdsaP256(Vec<u8>),
+    /// DER `RSAPublicKey ::= SEQUENCE { INTEGER n, INTEGER e }`.
+    Rsa(Vec<u8>),
 }
 
 /// Chain verification seam between the handshake driver (Phase 4)

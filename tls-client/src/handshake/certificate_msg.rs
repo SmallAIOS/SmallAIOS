@@ -29,9 +29,13 @@
 
 use super::extensions::sig_scheme;
 use super::{HandshakeHeader, HandshakeType};
+use crate::cert::LeafPublicKey;
 use crate::{Result, TlsClientError};
 use alloc::vec::Vec;
+use smallaios_security::crypto::ecdsa_p256::{ecdsa_p256_verify, EcdsaP256PublicKey};
 use smallaios_security::crypto::ed25519::{ed25519_verify, Ed25519PublicKey, Ed25519Signature};
+use smallaios_security::crypto::mgf1::PssHash;
+use smallaios_security::crypto::rsa_pss::{rsa_pss_verify, RsaPublicKey};
 
 /// Parsed Certificate message: the server's chain, leaf first,
 /// as raw DER blobs.
@@ -171,31 +175,66 @@ pub fn certificate_verify_content(transcript_hash: &[u8]) -> Vec<u8> {
     content
 }
 
-/// Verify a CertificateVerify signature against the leaf's
-/// public key and the transcript hash at the Certificate message
-/// (task 4.7's signature step).
+/// Verify a CertificateVerify signature against the leaf's public key
+/// and the transcript hash at the Certificate message (task 4.7's
+/// signature step).
 ///
-/// Only `ed25519` is verifiable today — ECDSA-P256 and RSA-PSS
-/// primitives are deferred to their own `security/` sub-adds
-/// (tasks 5.5 note). A chain whose leaf needs one of those
-/// surfaces `BadCertificate` rather than silently passing.
+/// Dispatches on the announced signature scheme and the leaf key type:
+/// `ed25519`, `ecdsa_secp256r1_sha256`, and
+/// `rsa_pss_rsae_sha256/384/512` are verified. A scheme/key mismatch,
+/// a wrong-length signature, or a failed check surfaces
+/// `BadCertificate` rather than silently passing.
 pub fn verify_certificate_verify(
     msg: &CertificateVerifyMsg,
-    leaf_pubkey_ed25519: &[u8; 32],
+    leaf_key: &LeafPublicKey,
     transcript_hash: &[u8],
 ) -> Result<()> {
-    if msg.scheme != sig_scheme::ED25519 {
-        return Err(TlsClientError::BadCertificate);
-    }
-    if msg.signature.len() != 64 {
-        return Err(TlsClientError::BadCertificate);
-    }
     let content = certificate_verify_content(transcript_hash);
-    let pk = Ed25519PublicKey::from_bytes(*leaf_pubkey_ed25519);
-    let mut sig = [0u8; 64];
-    sig.copy_from_slice(&msg.signature);
-    ed25519_verify(&pk, &content, &Ed25519Signature::from_bytes(sig))
-        .map_err(|_| TlsClientError::BadCertificate)
+    match (msg.scheme, leaf_key) {
+        (sig_scheme::ED25519, LeafPublicKey::Ed25519(pk)) => {
+            if msg.signature.len() != 64 {
+                return Err(TlsClientError::BadCertificate);
+            }
+            let mut sig = [0u8; 64];
+            sig.copy_from_slice(&msg.signature);
+            ed25519_verify(
+                &Ed25519PublicKey::from_bytes(*pk),
+                &content,
+                &Ed25519Signature::from_bytes(sig),
+            )
+            .map_err(|_| TlsClientError::BadCertificate)
+        }
+        (sig_scheme::ECDSA_SECP256R1_SHA256, LeafPublicKey::EcdsaP256(point)) => {
+            let pk_bytes: &[u8; 65] = point
+                .as_slice()
+                .try_into()
+                .map_err(|_| TlsClientError::BadCertificate)?;
+            let pk = EcdsaP256PublicKey::from_uncompressed(pk_bytes)
+                .map_err(|_| TlsClientError::BadCertificate)?;
+            // CertificateVerify carries the DER SEQUENCE { r, s } signature.
+            ecdsa_p256_verify(&pk, &content, &msg.signature)
+                .map_err(|_| TlsClientError::BadCertificate)
+        }
+        (
+            sig_scheme::RSA_PSS_RSAE_SHA256
+            | sig_scheme::RSA_PSS_RSAE_SHA384
+            | sig_scheme::RSA_PSS_RSAE_SHA512,
+            LeafPublicKey::Rsa(key),
+        ) => {
+            let hash = match msg.scheme {
+                sig_scheme::RSA_PSS_RSAE_SHA256 => PssHash::Sha256,
+                sig_scheme::RSA_PSS_RSAE_SHA384 => PssHash::Sha384,
+                _ => PssHash::Sha512,
+            };
+            let pk =
+                RsaPublicKey::from_pkcs1_der(key).map_err(|_| TlsClientError::BadCertificate)?;
+            rsa_pss_verify(&pk, hash, &content, &msg.signature)
+                .map_err(|_| TlsClientError::BadCertificate)
+        }
+        // Scheme not on the allow-list for this leaf key type, or a
+        // scheme/key-type mismatch.
+        _ => Err(TlsClientError::BadCertificate),
+    }
 }
 
 #[cfg(test)]
@@ -287,7 +326,8 @@ mod tests {
         let sig = ed25519_sign(&kp.secret_key, &content);
         let msg = parse_certificate_verify(&build_cert_verify(sig_scheme::ED25519, sig.as_bytes()))
             .unwrap();
-        verify_certificate_verify(&msg, kp.public_key.as_bytes(), &transcript_hash).unwrap();
+        let leaf = LeafPublicKey::Ed25519(*kp.public_key.as_bytes());
+        verify_certificate_verify(&msg, &leaf, &transcript_hash).unwrap();
     }
 
     #[test]
@@ -297,10 +337,60 @@ mod tests {
         let sig = ed25519_sign(&kp.secret_key, &content);
         let msg = parse_certificate_verify(&build_cert_verify(sig_scheme::ED25519, sig.as_bytes()))
             .unwrap();
+        let leaf = LeafPublicKey::Ed25519(*kp.public_key.as_bytes());
         assert_eq!(
-            verify_certificate_verify(&msg, kp.public_key.as_bytes(), &[0x45u8; 32]).unwrap_err(),
+            verify_certificate_verify(&msg, &leaf, &[0x45u8; 32]).unwrap_err(),
             TlsClientError::BadCertificate
         );
+    }
+
+    #[test]
+    fn cert_verify_ecdsa_p256_real_signature() {
+        use crate::handshake::cert_verify_test_vectors as v;
+        let msg = parse_certificate_verify(&build_cert_verify(
+            sig_scheme::ECDSA_SECP256R1_SHA256,
+            v::ECDSA_CV_SIG,
+        ))
+        .unwrap();
+        let leaf = LeafPublicKey::EcdsaP256(v::ECDSA_LEAF_POINT.to_vec());
+        // The real openssl ECDSA-P256/SHA-256 CertificateVerify verifies.
+        verify_certificate_verify(&msg, &leaf, v::CV_TRANSCRIPT_HASH).unwrap();
+        // Wrong transcript rejects.
+        assert!(verify_certificate_verify(&msg, &leaf, &[0u8; 32]).is_err());
+        // Scheme/key-type mismatch (RSA scheme, ECDSA leaf) rejects.
+        let mismatched = parse_certificate_verify(&build_cert_verify(
+            sig_scheme::RSA_PSS_RSAE_SHA256,
+            v::ECDSA_CV_SIG,
+        ))
+        .unwrap();
+        assert!(verify_certificate_verify(&mismatched, &leaf, v::CV_TRANSCRIPT_HASH).is_err());
+    }
+
+    #[test]
+    fn cert_verify_rsa_pss_real_signatures_all_hashes() {
+        use crate::handshake::cert_verify_test_vectors as v;
+        let leaf = LeafPublicKey::Rsa(v::RSA_LEAF_PKCS1_DER.to_vec());
+        for (scheme, sig) in [
+            (sig_scheme::RSA_PSS_RSAE_SHA256, v::RSA_CV_SIG_SHA256),
+            (sig_scheme::RSA_PSS_RSAE_SHA384, v::RSA_CV_SIG_SHA384),
+            (sig_scheme::RSA_PSS_RSAE_SHA512, v::RSA_CV_SIG_SHA512),
+        ] {
+            let msg = parse_certificate_verify(&build_cert_verify(scheme, sig)).unwrap();
+            verify_certificate_verify(&msg, &leaf, v::CV_TRANSCRIPT_HASH).unwrap();
+            // Tampered signature rejects.
+            let mut bad = sig.to_vec();
+            bad[100] ^= 0x01;
+            let bad_msg = parse_certificate_verify(&build_cert_verify(scheme, &bad)).unwrap();
+            assert!(verify_certificate_verify(&bad_msg, &leaf, v::CV_TRANSCRIPT_HASH).is_err());
+        }
+        // Announced hash not matching the signature's hash rejects
+        // (SHA-256 signature presented as rsa_pss_rsae_sha384).
+        let wrong_hash = parse_certificate_verify(&build_cert_verify(
+            sig_scheme::RSA_PSS_RSAE_SHA384,
+            v::RSA_CV_SIG_SHA256,
+        ))
+        .unwrap();
+        assert!(verify_certificate_verify(&wrong_hash, &leaf, v::CV_TRANSCRIPT_HASH).is_err());
     }
 
     #[test]
