@@ -21,7 +21,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -34,7 +34,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -65,7 +65,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -81,7 +81,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -97,7 +97,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -116,7 +116,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -132,7 +132,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -175,7 +175,7 @@ jobs:
     # dependency edge — adding a new crate that imports `cuda::*`
     # means adding it here too.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -200,7 +200,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
       - name: Build Dockerfile.jetson under QEMU (linux/arm64)
@@ -220,7 +220,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -246,7 +246,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -272,7 +272,7 @@ jobs:
       contents: read
     needs: build-riscv64
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -305,7 +305,7 @@ jobs:
     # quickstart documents. Running independently lets it parallel with
     # `build-aarch64` rather than serialize behind it.
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -366,7 +366,7 @@ jobs:
       contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -433,7 +433,7 @@ jobs:
       contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -500,7 +500,7 @@ jobs:
       contents: read
     needs: [build-x86_64, build-aarch64, build-riscv64, build-jetson]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -546,7 +546,7 @@ jobs:
       contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -621,7 +621,7 @@ jobs:
       contents: read
     needs: test
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -648,77 +648,77 @@ jobs:
             cargo llvm-cov --lcov --output-path "$outfile" -p "$pkg" $flags
           done
       - name: Upload per-crate coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-kernel.info
           flags: kernel
           fail_ci_if_error: false
       - name: Upload security coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-security.info
           flags: security
           fail_ci_if_error: false
       - name: Upload onnx-rt coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-onnx-rt.info
           flags: onnx-rt
           fail_ci_if_error: false
       - name: Upload net coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-net.info
           flags: net
           fail_ci_if_error: false
       - name: Upload ipc coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-ipc.info
           flags: ipc
           fail_ci_if_error: false
       - name: Upload container coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-container.info
           flags: container
           fail_ci_if_error: false
       - name: Upload bus coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-bus.info
           flags: bus
           fail_ci_if_error: false
       - name: Upload peripheral coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-peripheral.info
           flags: peripheral
           fail_ci_if_error: false
       - name: Upload usb coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-usb.info
           flags: usb
           fail_ci_if_error: false
       - name: Upload sdr coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-sdr.info
           flags: sdr
           fail_ci_if_error: false
       - name: Upload posix coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-posix.info
@@ -744,7 +744,7 @@ jobs:
     needs: coverage
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Download coverage artifact
@@ -763,7 +763,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Build Docker image (CPU-only)
         run: docker build -t smallaios:ci-test .
       - name: Check image size
@@ -784,7 +784,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up QEMU for ARM64 emulation
         uses: docker/setup-qemu-action@v4
         with:
@@ -836,7 +836,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
       - name: Build GPU Dockerfile (full build)
@@ -856,7 +856,7 @@ jobs:
       pull-requests: write
       issues: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Validate PR title follows conventional commits
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -909,7 +909,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
@@ -922,7 +922,7 @@ jobs:
       contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -948,7 +948,7 @@ jobs:
       contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -968,7 +968,7 @@ jobs:
       contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -990,7 +990,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -1005,7 +1005,7 @@ jobs:
     continue-on-error: true
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install Kani
         run: |
           cargo install --locked kani-verifier
@@ -1028,7 +1028,7 @@ jobs:
       contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install SPIN
         run: |
           sudo apt-get update
@@ -1100,7 +1100,7 @@ jobs:
       contents: read
     if: github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -1131,7 +1131,7 @@ jobs:
       contents: read
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -1155,7 +1155,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -1192,7 +1192,7 @@ jobs:
       contents: read
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -1215,7 +1215,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -1253,7 +1253,7 @@ jobs:
       contents: read
     if: github.event_name == 'pull_request'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@nightly
@@ -1303,7 +1303,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -1319,7 +1319,7 @@ jobs:
       contents: read
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01
@@ -1353,7 +1353,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           toolchain: nightly-2026-02-01

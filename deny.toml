@@ -36,6 +36,23 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
+# C/C++ crypto libraries are banned at any layer: SmallAIOS crypto is
+# clean-room #![no_std] Rust validated against official vector corpora.
+# See docs/crypto-validation.md for the policy, rationale (memory safety,
+# licensing, FIPS operational-environment boundaries, DO-178C evidence),
+# and the revisit triggers. Spec: crypto-validation-policy.
+deny = [
+    { crate = "openssl", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "openssl-sys", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "wolfssl", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "wolfssl-sys", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "boring", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "boring-sys", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "mbedtls", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "mbedtls-sys-auto", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "libsodium-sys", reason = "C crypto banned — docs/crypto-validation.md" },
+    { crate = "sodiumoxide", reason = "C crypto banned — docs/crypto-validation.md" },
+]
 
 # Sources — crates.io only for production deps
 [sources]
