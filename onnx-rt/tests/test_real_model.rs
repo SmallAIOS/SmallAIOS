@@ -68,7 +68,7 @@ fn test_load_and_validate_real_relu_model() {
 #[test]
 fn test_full_inference_real_relu_model() {
     let model = session::load_model(RELU_MODEL).expect("load_model should succeed");
-    let mut session = Session::new(SessionConfig::default());
+    let mut session = Session::new(SessionConfig::default()).unwrap();
     session
         .initialize(&model)
         .expect("initialize should succeed");

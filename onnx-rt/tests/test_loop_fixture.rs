@@ -228,7 +228,7 @@ fn graph_builder_compiles_loop_body() {
 fn loop_model_runs_end_to_end_via_session() {
     let model = build_loop_model();
 
-    let mut session = Session::new(SessionConfig::default());
+    let mut session = Session::new(SessionConfig::default()).unwrap();
     session.initialize(&model).expect("initialize must succeed");
 
     let inputs = vec![
@@ -266,7 +266,7 @@ fn loop_model_runs_end_to_end_via_session() {
 #[test]
 fn loop_model_m_zero_returns_initial() {
     let model = build_loop_model();
-    let mut session = Session::new(SessionConfig::default());
+    let mut session = Session::new(SessionConfig::default()).unwrap();
     session.initialize(&model).unwrap();
 
     let inputs = vec![
@@ -379,7 +379,7 @@ fn if_model_selects_correct_branch() {
         ..ModelProto::default()
     };
 
-    let mut session = Session::new(SessionConfig::default());
+    let mut session = Session::new(SessionConfig::default()).unwrap();
     session.initialize(&model).unwrap();
 
     // cond = true → then_branch → Relu(-5) = 0

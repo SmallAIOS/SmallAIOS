@@ -349,7 +349,7 @@ mod tests {
                 initializer: Vec::new(),
             }),
         };
-        let mut session = Session::new(SessionConfig::default());
+        let mut session = Session::new(SessionConfig::default()).unwrap();
         session.initialize(&model).unwrap();
         session
     }
