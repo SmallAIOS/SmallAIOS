@@ -5,3 +5,9 @@
 who = "Evan Montgomery-Recht <montge@mianetworks.net>"
 criteria = "safe-to-deploy"
 version = "0.9.10"
+
+[[audits.memmap2]]
+who = "Evan Montgomery-Recht <montge@mianetworks.net>"
+criteria = "safe-to-deploy"
+delta = "0.9.10 -> 0.9.11"
+notes = "Delta review (full source diff, by Claude session 2026-07-03, approved workflow): fixes RUSTSEC-2026-0186 by adding offset/len bounds checks before pointer arithmetic in advise_range/unchecked_advise_range/flush_range/flush_async_range (unix + windows); adopts deny(unsafe_op_in_unsafe_fn) with scoped unsafe + SAFETY comments; MmapInner::advise correctly marked unsafe. No new dependencies, no build scripts, no I/O additions."
