@@ -277,6 +277,12 @@ pub const SHA384_DIGEST_LEN: usize = 48;
 /// SHA-384 block length in bytes (the SHA-512 core block).
 pub const SHA384_BLOCK_LEN: usize = 128;
 
+/// SHA-512 digest length in bytes.
+pub const SHA512_DIGEST_LEN: usize = 64;
+
+/// SHA-512 block length in bytes (same 512-core block as SHA-384).
+pub const SHA512_BLOCK_LEN: usize = 128;
+
 // FIPS 180-4 §5.3.4 initial hash value H(0) for SHA-384.
 // lgtm[rust/hard-coded-cryptographic-value] — FIPS 180-4 IV, public constant.
 const H0_384: [u64; 8] = [
@@ -288,6 +294,19 @@ const H0_384: [u64; 8] = [
     0x8eb4_4a87_6858_1511,
     0xdb0c_2e0d_64f9_8fa7,
     0x47b5_481d_befa_4fa4,
+];
+
+// FIPS 180-4 §5.3.5 initial hash value H(0) for SHA-512.
+// lgtm[rust/hard-coded-cryptographic-value] — FIPS 180-4 IV, public constant.
+const H0_512: [u64; 8] = [
+    0x6a09_e667_f3bc_c908,
+    0xbb67_ae85_84ca_a73b,
+    0x3c6e_f372_fe94_f82b,
+    0xa54f_f53a_5f1d_36f1,
+    0x510e_527f_ade6_82d1,
+    0x9b05_688c_2b3e_6c1f,
+    0x1f83_d9ab_fb41_bd6b,
+    0x5be0_cd19_137e_2179,
 ];
 
 // FIPS 180-4 §4.2.3 round constants K[0..79] (shared SHA-512 core).
@@ -375,53 +394,48 @@ const K512: [u64; 80] = [
     0x6c44_198c_4a47_5817,
 ];
 
-/// Incremental SHA-384 hasher (SHA-512 core, truncated output).
+/// The SHA-512 compression core shared by SHA-384 and SHA-512. Both
+/// differ only in initial hash value (IV) and output width, so the
+/// 128-byte block machinery and the `K512` 80-round compression live
+/// here once and each hasher is a thin wrapper (`Sha384`, `Sha512`).
 #[derive(Clone, Debug)]
-pub struct Sha384 {
+struct Sha512Core {
     state: [u64; 8],
-    buffer: [u8; SHA384_BLOCK_LEN],
+    buffer: [u8; SHA512_BLOCK_LEN],
     buffered: usize,
     total_bits: u128,
 }
 
-impl Default for Sha384 {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Sha384 {
-    /// Create a fresh hasher.
-    pub const fn new() -> Self {
+impl Sha512Core {
+    const fn new(iv: [u64; 8]) -> Self {
         Self {
-            state: H0_384,
-            buffer: [0u8; SHA384_BLOCK_LEN],
+            state: iv,
+            buffer: [0u8; SHA512_BLOCK_LEN],
             buffered: 0,
             total_bits: 0,
         }
     }
 
-    /// Absorb bytes into the hasher.
-    pub fn update(&mut self, mut data: &[u8]) {
+    fn update(&mut self, mut data: &[u8]) {
         self.total_bits = self
             .total_bits
             .wrapping_add((data.len() as u128).wrapping_mul(8));
         if self.buffered > 0 {
-            let take = (SHA384_BLOCK_LEN - self.buffered).min(data.len());
+            let take = (SHA512_BLOCK_LEN - self.buffered).min(data.len());
             self.buffer[self.buffered..self.buffered + take].copy_from_slice(&data[..take]);
             self.buffered += take;
             data = &data[take..];
-            if self.buffered == SHA384_BLOCK_LEN {
+            if self.buffered == SHA512_BLOCK_LEN {
                 let block = self.buffer;
                 self.compress(&block);
                 self.buffered = 0;
             }
         }
-        while data.len() >= SHA384_BLOCK_LEN {
-            let mut block = [0u8; SHA384_BLOCK_LEN];
-            block.copy_from_slice(&data[..SHA384_BLOCK_LEN]);
+        while data.len() >= SHA512_BLOCK_LEN {
+            let mut block = [0u8; SHA512_BLOCK_LEN];
+            block.copy_from_slice(&data[..SHA512_BLOCK_LEN]);
             self.compress(&block);
-            data = &data[SHA384_BLOCK_LEN..];
+            data = &data[SHA512_BLOCK_LEN..];
         }
         if !data.is_empty() {
             self.buffer[..data.len()].copy_from_slice(data);
@@ -429,13 +443,14 @@ impl Sha384 {
         }
     }
 
-    /// Finalize the hash and return the 48-byte digest.
-    pub fn finalize(mut self) -> [u8; SHA384_DIGEST_LEN] {
+    /// Pad, run the final compression(s), and return the raw 512-bit
+    /// state. Each wrapper truncates to its output width.
+    fn finish(mut self) -> [u64; 8] {
         // Pad: 0x80 byte, zeros to ≡ 112 (mod 128), then 16-byte BE length.
         let bits = self.total_bits;
         self.buffer[self.buffered] = 0x80;
         self.buffered += 1;
-        if self.buffered > SHA384_BLOCK_LEN - 16 {
+        if self.buffered > SHA512_BLOCK_LEN - 16 {
             for b in &mut self.buffer[self.buffered..] {
                 *b = 0;
             }
@@ -443,22 +458,16 @@ impl Sha384 {
             self.compress(&block);
             self.buffered = 0;
         }
-        for b in &mut self.buffer[self.buffered..SHA384_BLOCK_LEN - 16] {
+        for b in &mut self.buffer[self.buffered..SHA512_BLOCK_LEN - 16] {
             *b = 0;
         }
-        self.buffer[SHA384_BLOCK_LEN - 16..].copy_from_slice(&bits.to_be_bytes());
+        self.buffer[SHA512_BLOCK_LEN - 16..].copy_from_slice(&bits.to_be_bytes());
         let block = self.buffer;
         self.compress(&block);
-
-        // SHA-384 truncates the 512-bit state to the first 6 words.
-        let mut out = [0u8; SHA384_DIGEST_LEN];
-        for (i, w) in self.state.iter().take(6).enumerate() {
-            out[i * 8..i * 8 + 8].copy_from_slice(&w.to_be_bytes());
-        }
-        out
+        self.state
     }
 
-    fn compress(&mut self, block: &[u8; SHA384_BLOCK_LEN]) {
+    fn compress(&mut self, block: &[u8; SHA512_BLOCK_LEN]) {
         let mut w = [0u64; 80];
         for i in 0..16 {
             let mut bytes = [0u8; 8];
@@ -505,9 +514,89 @@ impl Sha384 {
     }
 }
 
+/// Incremental SHA-384 hasher (SHA-512 core, output truncated to 6 words).
+#[derive(Clone, Debug)]
+pub struct Sha384 {
+    core: Sha512Core,
+}
+
+impl Default for Sha384 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha384 {
+    /// Create a fresh hasher.
+    pub const fn new() -> Self {
+        Self {
+            core: Sha512Core::new(H0_384),
+        }
+    }
+
+    /// Absorb bytes into the hasher.
+    pub fn update(&mut self, data: &[u8]) {
+        self.core.update(data);
+    }
+
+    /// Finalize the hash and return the 48-byte digest.
+    pub fn finalize(self) -> [u8; SHA384_DIGEST_LEN] {
+        // SHA-384 truncates the 512-bit state to the first 6 words.
+        let state = self.core.finish();
+        let mut out = [0u8; SHA384_DIGEST_LEN];
+        for (i, w) in state.iter().take(6).enumerate() {
+            out[i * 8..i * 8 + 8].copy_from_slice(&w.to_be_bytes());
+        }
+        out
+    }
+}
+
 /// One-shot SHA-384 over `data`.
 pub fn sha384(data: &[u8]) -> [u8; SHA384_DIGEST_LEN] {
     let mut h = Sha384::new();
+    h.update(data);
+    h.finalize()
+}
+
+/// Incremental SHA-512 hasher (full 512-bit output).
+#[derive(Clone, Debug)]
+pub struct Sha512 {
+    core: Sha512Core,
+}
+
+impl Default for Sha512 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha512 {
+    /// Create a fresh hasher.
+    pub const fn new() -> Self {
+        Self {
+            core: Sha512Core::new(H0_512),
+        }
+    }
+
+    /// Absorb bytes into the hasher.
+    pub fn update(&mut self, data: &[u8]) {
+        self.core.update(data);
+    }
+
+    /// Finalize the hash and return the 64-byte digest.
+    pub fn finalize(self) -> [u8; SHA512_DIGEST_LEN] {
+        let state = self.core.finish();
+        let mut out = [0u8; SHA512_DIGEST_LEN];
+        for (i, w) in state.iter().enumerate() {
+            out[i * 8..i * 8 + 8].copy_from_slice(&w.to_be_bytes());
+        }
+        out
+    }
+}
+
+/// One-shot SHA-512 over `data`.
+pub fn sha512(data: &[u8]) -> [u8; SHA512_DIGEST_LEN] {
+    let mut h = Sha512::new();
     h.update(data);
     h.finalize()
 }
@@ -671,5 +760,87 @@ hijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu";
             }
             assert_eq!(oneshot, h.finalize(), "len={len}");
         }
+    }
+
+    // ── SHA-512 (FIPS 180-4 / NIST CAVP known-answer vectors) ───────────────
+
+    #[test]
+    fn sha512_kat_empty() {
+        assert_eq!(
+            hex(&sha512(b"")),
+            "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce\
+             47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e"
+        );
+    }
+
+    #[test]
+    fn sha512_kat_abc() {
+        assert_eq!(
+            hex(&sha512(b"abc")),
+            "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a\
+             2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+        );
+    }
+
+    #[test]
+    fn sha512_kat_two_block_message() {
+        // FIPS 180-4 §D.2 112-byte two-block example.
+        let msg = b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmn\
+hijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu";
+        assert_eq!(
+            hex(&sha512(msg)),
+            "8e959b75dae313da8cf4f72814fc143f8f7779c6eb9f7fa17299aeadb6889018\
+             501d289e4900f7e4331b99dec4b5433ac7d329eeb6dd26545e96e55b874be909"
+        );
+    }
+
+    #[test]
+    fn sha512_kat_one_million_a() {
+        let mut h = Sha512::new();
+        let chunk = alloc::vec![b'a'; 1000];
+        for _ in 0..1000 {
+            h.update(&chunk);
+        }
+        assert_eq!(
+            hex(&h.finalize()),
+            "e718483d0ce769644e2e42c7bc15b4638e1f98b13b2044285632a803afa973eb\
+             de0ff244877ea60a4cb0432ce577c31beb009c5c2c49aa2e4eadb217ad8cc09b"
+        );
+    }
+
+    #[test]
+    fn sha512_incremental_equals_oneshot_and_block_boundaries() {
+        let msg = b"The quick brown fox jumps over the lazy dog";
+        let oneshot = sha512(msg);
+        assert_eq!(
+            hex(&oneshot),
+            "07e547d9586f6a73f73fbac0435ed76951218fb7d0c8d788a309d785436bbb64\
+             2e93a252a954f23912547d1e8a3b5ed6e1bfd7097821233fa0538f3db854fee6"
+        );
+        let mut h = Sha512::new();
+        for chunk in msg.chunks(13) {
+            h.update(chunk);
+        }
+        assert_eq!(oneshot, h.finalize());
+
+        // Padding paths around the 128-byte block boundary.
+        for len in [111usize, 112, 127, 128, 129, 240, 256] {
+            let m = alloc::vec![0x5au8; len];
+            let os = sha512(&m);
+            let mut hh = Sha512::new();
+            for chunk in m.chunks(7) {
+                hh.update(chunk);
+            }
+            assert_eq!(os, hh.finalize(), "len={len}");
+        }
+    }
+
+    #[test]
+    fn sha512_default_equals_new() {
+        let mut a = Sha512::default();
+        let mut b = Sha512::new();
+        a.update(b"abc");
+        b.update(b"abc");
+        assert_eq!(a.finalize(), b.finalize());
     }
 }
