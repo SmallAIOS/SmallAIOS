@@ -648,77 +648,77 @@ jobs:
             cargo llvm-cov --lcov --output-path "$outfile" -p "$pkg" $flags
           done
       - name: Upload per-crate coverage to Codecov
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-kernel.info
           flags: kernel
           fail_ci_if_error: false
       - name: Upload security coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-security.info
           flags: security
           fail_ci_if_error: false
       - name: Upload onnx-rt coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-onnx-rt.info
           flags: onnx-rt
           fail_ci_if_error: false
       - name: Upload net coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-net.info
           flags: net
           fail_ci_if_error: false
       - name: Upload ipc coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-ipc.info
           flags: ipc
           fail_ci_if_error: false
       - name: Upload container coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-container.info
           flags: container
           fail_ci_if_error: false
       - name: Upload bus coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-bus.info
           flags: bus
           fail_ci_if_error: false
       - name: Upload peripheral coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-peripheral.info
           flags: peripheral
           fail_ci_if_error: false
       - name: Upload usb coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-usb.info
           flags: usb
           fail_ci_if_error: false
       - name: Upload sdr coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-sdr.info
           flags: sdr
           fail_ci_if_error: false
       - name: Upload posix coverage
-        uses: codecov/codecov-action@v6
+        uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov-posix.info
