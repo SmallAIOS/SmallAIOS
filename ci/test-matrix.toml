@@ -1,0 +1,111 @@
+# ci/test-matrix.toml — single source of truth for the host test matrix.
+#
+# Spec: openspec/changes/ci-test-gates-v1/specs/ci-test-matrix/spec.md
+# Consumers: scripts/test_matrix.py (--run/--emit/--verify), Justfile
+# (`just test`, `just test-all`, `just test-group`), .github/workflows/ci.yml
+# (unit-test + clippy matrix), .github/workflows/fs-interop.yml
+# (fs-conformance group), .github/workflows/release.yml (pre-flight).
+#
+# Every cargo workspace member MUST be covered by at least one group or
+# listed under [[exclusion]] with a reason — `--verify` enforces this in CI.
+#
+# Format constraints (parsed by a stdlib-only TOML subset reader on
+# Python < 3.11): one key per line, arrays on a single line, strings
+# double-quoted. Keys per [[group]]:
+#   name        group id (matrix job name)
+#   crates      workspace members tested together
+#   features    crate-qualified feature flags passed as one --features arg
+#   cargo_args  extra cargo test args (e.g. ["--lib"] to skip bare-metal bins)
+#   test_targets  restrict to named integration test targets (--test <t>)
+#   min_tests   fail the group if fewer tests execute (0 always fails)
+#   runner      GitHub runner label (default "ubuntu-latest")
+#   ci          false = not part of the ci.yml matrix (run by another
+#               workflow or locally only); still counts for --verify
+#   clippy      include this group's crates+features in `--emit clippy-args`
+#               (default true; disable for groups needing special runners)
+
+schema = 1
+
+[[group]]
+name = "default"
+crates = ["smallaios-kernel", "smallaios-security", "smallaios-compute", "smallaios-sched-types", "smallaios-onnx-rt", "smallaios-ipc", "smallaios-net", "smallaios-posix", "smallaios-container", "smallaios-bus", "smallaios-peripheral", "smallaios-usb", "smallaios-sdr", "smallaios-bench", "smallaios-auth", "smallaios-mgmt", "smallaios-fs", "xtask"]
+features = ["smallaios-net/tegra-net", "smallaios-peripheral/full-peripheral"]
+min_tests = 5000
+
+[[group]]
+name = "fs-features"
+crates = ["smallaios-fs"]
+features = ["smallaios-fs/fs-flash", "smallaios-fs/fs-flash-mock", "smallaios-fs/fs-on-disk-mounts", "smallaios-fs/fs-overlay-mounts", "smallaios-fs/fs-squashfs-zstd", "smallaios-fs/fs-squashfs-xz", "smallaios-fs/fs-squashfs-gzip", "smallaios-fs/fs-squashfs-lz4", "smallaios-fs/fs-test-helpers", "smallaios-fs/fs-block-virtio", "smallaios-fs/fs-block-nvme", "smallaios-fs/fs-block-ahci", "smallaios-fs/fs-block-sdhci"]
+min_tests = 1200
+
+[[group]]
+# Consumed by .github/workflows/fs-interop.yml (image round-trip job);
+# same features as fs-features but only the on-disk conformance targets.
+name = "fs-conformance"
+crates = ["smallaios-fs"]
+features = ["smallaios-fs/fs-flash", "smallaios-fs/fs-flash-mock", "smallaios-fs/fs-on-disk-mounts", "smallaios-fs/fs-overlay-mounts", "smallaios-fs/fs-squashfs-zstd", "smallaios-fs/fs-squashfs-xz", "smallaios-fs/fs-squashfs-gzip", "smallaios-fs/fs-squashfs-lz4", "smallaios-fs/fs-test-helpers", "smallaios-fs/fs-block-virtio", "smallaios-fs/fs-block-nvme", "smallaios-fs/fs-block-ahci", "smallaios-fs/fs-block-sdhci"]
+test_targets = ["squashfs_conformance", "f2fs_conformance", "f2fs_write_conformance", "f2fs_fsync_fuzz"]
+# 195 observed 2026-07-03 (the old fs-interop invocation executed 0)
+min_tests = 170
+ci = false
+clippy = false
+
+[[group]]
+name = "posix-features"
+crates = ["smallaios-posix"]
+features = ["smallaios-posix/fs-flash", "smallaios-posix/fs-flash-mock", "smallaios-posix/fs-on-disk-mounts"]
+# 174 observed 2026-07-03
+min_tests = 150
+
+[[group]]
+name = "tls-client"
+crates = ["smallaios-tls-client"]
+features = ["smallaios-tls-client/std"]
+min_tests = 150
+
+[[group]]
+name = "audit-export"
+crates = ["smallaios-audit-export"]
+features = ["smallaios-audit-export/bearer"]
+min_tests = 120
+
+[[group]]
+name = "tools"
+crates = ["smallaios-coverage-probe"]
+features = ["smallaios-coverage-probe/json"]
+min_tests = 25
+
+[[group]]
+# GPU device-model crates: pure Rust, host-runnable on any architecture
+# (verified on arm64 macOS; run on x86_64 linux in CI).
+name = "gpu-models"
+crates = ["smallaios-arch-nvidia", "smallaios-arch-amd", "smallaios-arch-intel-gpu"]
+min_tests = 470
+
+[[group]]
+# Metal-backed modules are cfg(target_os = "macos"); the tests only exist
+# on a macOS host.
+name = "arch-apple"
+crates = ["smallaios-arch-apple"]
+min_tests = 8
+runner = "macos-latest"
+clippy = false
+
+[[group]]
+# --lib skips the bare-metal bin target (which cannot link against
+# libtest); the lib's panic handler is #[cfg(not(test))]-gated for this.
+# x86 inline asm requires an x86_64 runner.
+name = "arch-x86_64"
+crates = ["smallaios-arch-x86_64"]
+cargo_args = ["--lib"]
+min_tests = 4
+host_arch = "x86_64"
+clippy = false
+
+[[exclusion]]
+crate = "smallaios-arch-aarch64"
+reason = "lib unit tests crash on host (hardware register access during tests, no summary emitted); bins are bare-metal entry points. Triage tests for host-safety, then add an ubuntu-24.04-arm group."
+
+[[exclusion]]
+crate = "smallaios-arch-riscv64"
+reason = "RISC-V inline asm (sbi.rs ecall wrappers) is not target_arch-gated, so the crate cannot compile on any CI host architecture. Bare-metal coverage comes from the RISC-V QEMU smoke test."
