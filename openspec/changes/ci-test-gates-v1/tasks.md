@@ -27,8 +27,10 @@
 
 ## 4. Coverage + verification
 
-- [ ] 4.1 Extend the cargo-llvm-cov invocation with the recovered feature groups; record the new coverage baseline in this tasks file (was: 80% gate, ratcheting to 93%)
-- [ ] 4.2 If the gate dips: exclude generated `*_test_vectors.rs` from the coverage denominator (Sonar-exclusion precedent) — do not touch the threshold; document outcome either way
+- [x] 4.1 Extend the cargo-llvm-cov invocation with the recovered feature groups; record the new coverage baseline in this tasks file (was: 80% gate, ratcheting to 93%)
+  - Observed on PR #234 CI (2026-07-04): **93.20% lines** (248,214 lines, 95.08% functions) — the recovered suites raised coverage past the final 93% ratchet target; the gate could ratchet 80→93 in a follow-up
+- [x] 4.2 If the gate dips: exclude generated `*_test_vectors.rs` from the coverage denominator (Sonar-exclusion precedent) — do not touch the threshold; document outcome either way
+  - Outcome: no dip — coverage rose to 93.20%; no exclusions needed
 - [ ] 4.3 Full pipeline green run on the PR with every group executing nonzero tests (screenshot/log links in PR description)
 - [x] 4.4 Update CLAUDE.md "Known quirks" (CI omits tls-client/audit-export; fs-flash never enabled — now stale) and the CI section's gate list
 - [ ] 4.5 `openspec validate ci-test-gates-v1` clean; run `/opsx:verify` before archive
