@@ -21,6 +21,7 @@ pub mod syscall;
 #[cfg(feature = "fs-block-virtio")]
 pub mod virtio_blk;
 
+#[cfg(not(test))]
 use core::panic::PanicInfo;
 
 /// Kernel entry point called from assembly boot code.
