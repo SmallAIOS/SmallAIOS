@@ -58,20 +58,11 @@ jobs:
         with:
           toolchain: nightly-2026-02-01
           components: rust-src
-      - run: >-
-          cargo test
-          -p smallaios-kernel
-          -p smallaios-security
-          -p smallaios-onnx-rt
-          -p smallaios-ipc
-          -p smallaios-net
-          -p smallaios-posix
-          -p smallaios-container
-          -p smallaios-bus
-          -p smallaios-peripheral --features smallaios-peripheral/full-peripheral
-          -p smallaios-usb
-          -p smallaios-sdr
-          -p smallaios-bench
+      # Crate/feature groups single-sourced in ci/test-matrix.toml
+      # (spec: ci-test-matrix): verify workspace classification, then run
+      # every host-compatible group before releasing.
+      - run: python3 scripts/test_matrix.py --verify
+      - run: python3 scripts/test_matrix.py --run-all
 
   release:
     name: Create GitHub Release

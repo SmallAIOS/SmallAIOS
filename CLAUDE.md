@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SmallAIOS is a minimal, secure, Rust-based OS kernel purpose-built for AI inference workloads. It boots directly to ONNX inference with ~46 syscalls (vs Linux ~450). Targets x86-64, ARM64, and RISC-V. Deploys as either a container (Docker/K8s) or bare-metal/VM via QEMU.
 
-**Current state:** Prototype phase — 5,916 tests passing (`just test`, 2026-06-11). Production-quality networking (IPv4/IPv6/TCP/ARP/NDP), QUIC/HTTP3 with TLS 1.3, protobuf parser, ONNX runtime with 29+ real operators, full PQC crypto stack (SHA-3, AES-256-GCM, ML-KEM-768, ML-DSA-65, Ed25519, X25519), capability system. NVIDIA CUDA container path validated on Jetson Orin NX (compute 8.7) via `Dockerfile.jetson` — cuDNN-backed Conv, cuBLAS-backed GEMM, captured CUDA Graphs, multi-stream overlap. AMD and Intel GPU crates remain architectural stubs. Jetson Orin **unikernel** path: Phase 1 (`unikernel-orin-bringup-v1`) lands a KVM-on-L4T smoke-test workflow — `just run-jetson-kvm SSH_HOST=user@orin` cross-builds the AArch64 kernel from any host and boots it under `qemu-system-aarch64 -accel kvm -cpu host` on the Orin's Cortex-A78AE cores; CI gate `aarch64-qemu-smoke` validates the same path under TCG. Phase 2 (Tegra234 UEFI boot) is in progress — ExitBootServices → `kernel_main` handoff verified on Orin NX hardware, GICv3 driver extracted and feature-gated, OVMF QEMU smoke job in CI; the AArch64 IRQ exception path + Generic Timer tick remain (paired with an on-hardware session).
+**Current state:** Prototype phase — ~9,300 test executions passing across the CI matrix (`just test-all`, 2026-07-03; 6,917 in the default group, the rest in feature-gated groups that were dark before `ci-test-gates-v1`). Production-quality networking (IPv4/IPv6/TCP/ARP/NDP), QUIC/HTTP3 with TLS 1.3, protobuf parser, ONNX runtime with 29+ real operators, full PQC crypto stack (SHA-3, AES-256-GCM, ML-KEM-768, ML-DSA-65, Ed25519, X25519), capability system. NVIDIA CUDA container path validated on Jetson Orin NX (compute 8.7) via `Dockerfile.jetson` — cuDNN-backed Conv, cuBLAS-backed GEMM, captured CUDA Graphs, multi-stream overlap. AMD and Intel GPU crates remain architectural stubs. Jetson Orin **unikernel** path: Phase 1 (`unikernel-orin-bringup-v1`) lands a KVM-on-L4T smoke-test workflow — `just run-jetson-kvm SSH_HOST=user@orin` cross-builds the AArch64 kernel from any host and boots it under `qemu-system-aarch64 -accel kvm -cpu host` on the Orin's Cortex-A78AE cores; CI gate `aarch64-qemu-smoke` validates the same path under TCG. Phase 2 (Tegra234 UEFI boot) is in progress — ExitBootServices → `kernel_main` handoff verified on Orin NX hardware, GICv3 driver extracted and feature-gated, OVMF QEMU smoke job in CI; the AArch64 IRQ exception path + Generic Timer tick remain (paired with an on-hardware session).
 
 ## Build Commands
 
@@ -21,9 +21,11 @@ just build-container-arm    # aarch64-unknown-linux-musl
 just build-kernel-x86       # x86_64-unknown-none
 just build-kernel-arm       # aarch64-unknown-none
 
-# Testing
-just test                   # cargo test --workspace
-just clippy                 # cargo clippy -- -D warnings
+# Testing — crate/feature groups are single-sourced in ci/test-matrix.toml
+just test                   # default test group (mirrors the CI "Unit Tests" gate)
+just test-all               # every host-compatible group (incl. feature-gated suites)
+just test-group fs-features # one named group; `just test-matrix` lists groups + floors
+just clippy                 # cargo clippy -- -D warnings (matrix-derived crate list)
 just fmt                    # cargo fmt
 just fmt-check              # cargo fmt -- --check
 
@@ -221,8 +223,10 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` an
 
 **Gate Jobs (block PR merge):**
 - **Format Check** — `cargo fmt --check`
-- **Clippy Lint** — all host-testable crates
-- **Unit Tests** — all host-testable crates (default, formal-gate, verified-boot)
+- **Clippy Lint** — matrix-derived crate/feature set (`ci/test-matrix.toml`)
+- **Test Matrix Verify** — every workspace member classified in `ci/test-matrix.toml` (group or documented exclusion)
+- **Unit Tests** — the `default` group (formal-gate and verified-boot variants unchanged), executed-test counts enforced (zero-test runs fail)
+- **Unit Tests (\<group\>)** — feature-gated matrix groups: fs-features, posix-features, tls-client, audit-export, tools, gpu-models, arch-apple (macOS runner), arch-x86_64
 - **Build** — x86-64, AArch64, RISC-V, Jetson bare-metal kernels
 - **Docker Build** — container image build
 - **Semver PR Title Check** — validates conventional commit PR titles
