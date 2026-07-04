@@ -104,7 +104,7 @@ clippy = false
 
 [[exclusion]]
 crate = "smallaios-arch-aarch64"
-reason = "lib unit tests crash on host (hardware register access during tests, no summary emitted); bins are bare-metal entry points. Triage tests for host-safety, then add an ubuntu-24.04-arm group."
+reason = "test binary links the kernel crate uninitialized #[global_allocator] and SIGABRTs on first allocation; the no-global-alloc dev-dep fix (used by arch-x86_64) does not apply because aarch64 boot code calls kernel global_allocator() directly. Needs cfg(not(test)) gating of boot stages + an arm64 runner (ubuntu-24.04-arm). Diagnosed 2026-07-04."
 
 [[exclusion]]
 crate = "smallaios-arch-riscv64"
