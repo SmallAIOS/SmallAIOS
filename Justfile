@@ -449,7 +449,11 @@ modgraph crate="":
     @mkdir -p build/analysis/modules
     {{ if crate != "" { "cargo modules dependencies --package " + crate + " --layout dot > build/analysis/modules/" + crate + ".dot && echo 'Generated build/analysis/modules/" + crate + ".dot'" } else { "for c in " + host_crates + "; do echo \"--- $c ---\"; cargo modules dependencies --package $c --layout dot > build/analysis/modules/$c.dot 2>/dev/null && echo \"  -> build/analysis/modules/$c.dot\" || echo \"  WARNING: $c module graph failed\"; done" } }}
 
-# Check module-level acyclicity for all host crates
+# Check module-level acyclicity for all host crates.
+# NOTE: cargo-modules' own `--acyclic` checks the raw item graph (every
+# inherent method forms a trivial Type<->method cycle there), so we parse the
+# filtered module-only DOT output and detect real cross-module cycles in
+# scripts/module-cycles.py instead.
 arch-check:
     @echo "Checking module-level acyclicity..."
     @command -v cargo-modules >/dev/null 2>&1 || { \
@@ -458,12 +462,13 @@ arch-check:
     }
     @fail=0; \
     for crate in {{host_crates}}; do \
-        echo -n "  $crate: "; \
-        if out=$(cargo modules dependencies --package $crate --acyclic 2>&1); then \
-            echo "OK"; \
-        else \
-            echo "CYCLE/ERROR"; \
+        if ! out=$(cargo modules dependencies --package $crate --lib \
+                --no-fns --no-types --no-traits --no-externs --no-sysroot \
+                --layout dot 2>&1); then \
+            echo "  $crate: ERROR running cargo-modules"; \
             printf '%s\n' "$out" | sed 's/^/    /' || true; \
+            fail=1; \
+        elif ! printf '%s\n' "$out" | python3 scripts/module-cycles.py $crate; then \
             fail=1; \
         fi; \
     done; \
