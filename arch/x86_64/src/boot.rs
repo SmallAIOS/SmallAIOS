@@ -51,6 +51,7 @@ extern "C" {
 ///
 /// Since we target QEMU `-kernel` which loads ELF directly in 64-bit mode,
 /// we assume long mode is already active.
+#[cfg(not(test))] // host test binaries link the C runtime's _start
 #[unsafe(naked)]
 #[no_mangle]
 #[link_section = ".text.boot"]
