@@ -916,7 +916,6 @@ version = "0.2.1"
 dependencies = [
  "smallaios-auth",
  "smallaios-kernel",
- "smallaios-mgmt",
  "smallaios-security",
 ]
 
@@ -981,7 +980,6 @@ version = "0.2.1"
 dependencies = [
  "smallaios-fs",
  "smallaios-kernel",
- "smallaios-net",
 ]
 
 [[package]]

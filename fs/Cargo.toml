@@ -8,12 +8,12 @@ description = "On-disk and raw-flash filesystem stack for SmallAIOS"
 publish = false
 
 [dependencies]
-# Layer 1 — depends on kernel (block I/O traits), security (SHA-3-256
-# integrity, ML-DSA-65 signature verification on manifests/deltas),
-# and mgmt (audit-ring integration + config fields).
+# Layer 1 — depends on kernel (block I/O traits) and security (SHA-3-256
+# integrity, ML-DSA-65 signature verification on manifests/deltas).
+# NOTE: no mgmt dependency yet — the audit-ring integration is a future
+# embedded-flash-fs-v1 phase; re-add `smallaios-mgmt` when that lands.
 smallaios-kernel = { path = "../kernel" }
 smallaios-security = { path = "../security" }
-smallaios-mgmt = { path = "../mgmt" }
 # Phase 7 (embedded-filesystem-v1): fs implements `auth::FsWriteBackend`
 # so the kernel's `KernelAtomicWriter` can drive `create → write →
 # fsync → rename` on F2FS without auth depending on fs. Both crates
