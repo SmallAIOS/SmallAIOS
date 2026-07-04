@@ -452,18 +452,24 @@ modgraph crate="":
 # Check module-level acyclicity for all host crates
 arch-check:
     @echo "Checking module-level acyclicity..."
+    @command -v cargo-modules >/dev/null 2>&1 || { \
+        echo "ERROR: cargo-modules not installed (cargo install cargo-modules --locked)"; \
+        exit 1; \
+    }
     @fail=0; \
     for crate in {{host_crates}}; do \
         echo -n "  $crate: "; \
-        if cargo modules dependencies --package $crate --acyclic 2>&1 | grep -q "error\|cycle"; then \
-            echo "CYCLE DETECTED"; \
-            fail=1; \
-        else \
+        if out=$(cargo modules dependencies --package $crate --acyclic 2>&1); then \
             echo "OK"; \
+        else \
+            echo "CYCLE/ERROR"; \
+            printf '%s\n' "$out" | sed 's/^/    /' || true; \
+            fail=1; \
         fi; \
     done; \
     if [ "$fail" -eq 1 ]; then \
-        echo "WARNING: some crates have module-level cycles"; \
+        echo "FAIL: module-level cycles (or cargo-modules errors) detected above"; \
+        exit 1; \
     else \
         echo "All crates are acyclic at module level."; \
     fi
@@ -478,7 +484,8 @@ dsm:
 dsm-analyze: dsm
     @echo "Running DSM analysis..."
     @if [ -f tools/dsm/Cargo.toml ]; then \
-        cargo run --manifest-path tools/dsm/Cargo.toml -- build/analysis/dsm-matrix.json --output build/analysis/dsm-metrics.json; \
+        cargo run --manifest-path tools/dsm/Cargo.toml -- build/analysis/dsm-matrix.json build/analysis/dsm-metrics.json; \
+        test -f build/analysis/dsm-metrics.json || { echo "ERROR: build/analysis/dsm-metrics.json was not produced"; exit 1; }; \
     else \
         echo "WARNING: tools/dsm/ crate not found, skipping DSM analysis"; \
     fi
