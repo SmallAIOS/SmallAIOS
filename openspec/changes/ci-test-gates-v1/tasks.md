@@ -31,6 +31,7 @@
   - Observed on PR #234 CI (2026-07-04): **93.20% lines** (248,214 lines, 95.08% functions) — the recovered suites raised coverage past the final 93% ratchet target; the gate could ratchet 80→93 in a follow-up
 - [x] 4.2 If the gate dips: exclude generated `*_test_vectors.rs` from the coverage denominator (Sonar-exclusion precedent) — do not touch the threshold; document outcome either way
   - Outcome: no dip — coverage rose to 93.20%; no exclusions needed
-- [ ] 4.3 Full pipeline green run on the PR with every group executing nonzero tests (screenshot/log links in PR description)
+- [x] 4.3 Full pipeline green run on the PR with every group executing nonzero tests (screenshot/log links in PR description)
+  - PR #234: all 64 checks green (2026-07-04). arch-x86_64 required 4 host-testability fixes, each documented in its commit: cfg(not(test)) panic handler + import, cfg-gated _start (CRT symbol collision), naked_asm import, and the kernel global-allocator dev-dep trick per kernel/src/mem/global.rs
 - [x] 4.4 Update CLAUDE.md "Known quirks" (CI omits tls-client/audit-export; fs-flash never enabled — now stale) and the CI section's gate list
 - [ ] 4.5 `openspec validate ci-test-gates-v1` clean; run `/opsx:verify` before archive
