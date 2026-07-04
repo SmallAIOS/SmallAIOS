@@ -593,15 +593,22 @@ pub struct MountTable {
     in_memory: VfsTree,
     #[cfg(feature = "fs-flash")]
     flash: Option<FlashMount>,
+    // The read side of these on-disk mount slots lands when the kernel
+    // boot sequencer plugs `fs::mount::mount_all` results in here
+    // (embedded-filesystem-v1 follow-on); until then they are staged
+    // write-only state.
     #[cfg(feature = "fs-on-disk-mounts")]
+    #[allow(dead_code)]
     squashfs: Option<SquashfsMount>,
     #[cfg(feature = "fs-on-disk-mounts")]
+    #[allow(dead_code)]
     f2fs: Option<F2fsMount>,
     /// `true` iff both squashfs A/B slots failed signature verification
     /// at mount-time. While this flag is set the syscall layer SHALL
     /// reject `model_load` with `-EROFS` per `fs-integrity`. Login,
     /// audit, and `/data/` continue to work unchanged.
     #[cfg(feature = "fs-on-disk-mounts")]
+    #[allow(dead_code)]
     models_disabled: bool,
 }
 

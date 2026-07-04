@@ -84,6 +84,7 @@ pub fn halt_loop() -> ! {
     }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     serial::puts("[SmallAIOS] PANIC: ");
