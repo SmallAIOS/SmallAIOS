@@ -9,6 +9,7 @@
 //! 3. Sets up the stack
 //! 4. Calls kernel_main with the Multiboot2 info pointer
 
+#[cfg(not(test))]
 use core::arch::naked_asm;
 
 // Multiboot2 constants
