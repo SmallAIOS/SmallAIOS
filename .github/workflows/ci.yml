@@ -1351,7 +1351,7 @@ jobs:
           retention-days: 30
 
   coverage-threshold:
-    name: Coverage Threshold (80%)
+    name: Coverage Threshold (93%)
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -1366,15 +1366,15 @@ jobs:
       - name: Check coverage threshold
         # Threshold ratcheting schedule:
         #   80% — initial (2026-04-05)
-        #   85% — after onnx-cpu-runtime-v1 tests complete
-        #   90% — after cpu-parallel-inference-v1
-        #   93% — parity with Codecov target
+        #   93% — parity with Codecov target (reached 2026-07-16 via
+        #         ci-test-gates-v1: recovered feature-gated suites lifted
+        #         observed coverage to 93.20%, skipping the 85/90 steps)
         # Crate/feature list is single-sourced in ci/test-matrix.toml
         # (spec: ci-test-matrix) so the recovered feature-gated suites
         # count toward coverage.
         run: |
           cargo llvm-cov \
-            --fail-under-lines 80 \
+            --fail-under-lines 93 \
             $(python3 scripts/test_matrix.py --emit cov-args) \
             2>&1 | tee coverage-threshold.txt
       - name: Upload coverage report
