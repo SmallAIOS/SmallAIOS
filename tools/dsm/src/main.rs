@@ -501,6 +501,17 @@ fn main() {
         "dsm-metrics.json".to_string()
     };
 
+    // Positional arguments only: a flag-like value here means a caller bug
+    // (e.g. `-- input.json --output metrics.json` silently writing a file
+    // literally named `--output`).
+    for arg in [input_path.as_str(), output_path.as_str()] {
+        if arg.starts_with("--") {
+            eprintln!("Error: unexpected flag-like argument {arg:?}");
+            eprintln!("Usage: dsm-analysis <dsm.json> [output.json]");
+            process::exit(2);
+        }
+    }
+
     let dsm = DsmMatrix::from_json(input_path);
     let output = build_output(&dsm);
 
@@ -561,11 +572,7 @@ mod tests {
     fn test_dag_propagation_cost() {
         let dsm = make_dsm(
             &["A", "B", "C"],
-            vec![
-                vec![0, 1, 0],
-                vec![0, 0, 1],
-                vec![0, 0, 0],
-            ],
+            vec![vec![0, 1, 0], vec![0, 0, 1], vec![0, 0, 0]],
         );
 
         let costs = propagation_cost(&dsm);
@@ -639,10 +646,7 @@ mod tests {
         // Two L2 crates depending on each other — same-layer violation.
         let dsm = make_dsm(
             &["smallaios-arch-x86_64", "smallaios-peripheral"],
-            vec![
-                vec![0, 1],
-                vec![0, 0],
-            ],
+            vec![vec![0, 1], vec![0, 0]],
         );
 
         let violations = find_layering_violations(&dsm);
@@ -656,10 +660,7 @@ mod tests {
         // kernel <-> security is allowed (both L0).
         let dsm = make_dsm(
             &["smallaios-kernel", "smallaios-security"],
-            vec![
-                vec![0, 1],
-                vec![1, 0],
-            ],
+            vec![vec![0, 1], vec![1, 0]],
         );
 
         let violations = find_layering_violations(&dsm);
@@ -670,11 +671,7 @@ mod tests {
     fn test_no_clusters_in_dag() {
         let dsm = make_dsm(
             &["A", "B", "C"],
-            vec![
-                vec![0, 1, 0],
-                vec![0, 0, 1],
-                vec![0, 0, 0],
-            ],
+            vec![vec![0, 1, 0], vec![0, 0, 1], vec![0, 0, 0]],
         );
 
         let clusters = find_clusters(&dsm);
@@ -683,13 +680,7 @@ mod tests {
 
     #[test]
     fn test_json_output_structure() {
-        let dsm = make_dsm(
-            &["A", "B"],
-            vec![
-                vec![0, 1],
-                vec![0, 0],
-            ],
-        );
+        let dsm = make_dsm(&["A", "B"], vec![vec![0, 1], vec![0, 0]]);
 
         let output = build_output(&dsm);
         assert_eq!(output.summary.total_crates, 2);
