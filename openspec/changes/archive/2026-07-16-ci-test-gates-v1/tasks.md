@@ -34,4 +34,5 @@
 - [x] 4.3 Full pipeline green run on the PR with every group executing nonzero tests (screenshot/log links in PR description)
   - PR #234: all 64 checks green (2026-07-04). arch-x86_64 required 4 host-testability fixes, each documented in its commit: cfg(not(test)) panic handler + import, cfg-gated _start (CRT symbol collision), naked_asm import, and the kernel global-allocator dev-dep trick per kernel/src/mem/global.rs
 - [x] 4.4 Update CLAUDE.md "Known quirks" (CI omits tls-client/audit-export; fs-flash never enabled — now stale) and the CI section's gate list
-- [ ] 4.5 `openspec validate ci-test-gates-v1` clean; run `/opsx:verify` before archive
+- [x] 4.5 `openspec validate ci-test-gates-v1` clean; run `/opsx:verify` before archive
+  - Validated `--strict` clean 2026-07-16 pre-archive; implementation evidence: PR #234 merged with all checks green including the new Test Matrix Verify and per-group Unit Tests gates
