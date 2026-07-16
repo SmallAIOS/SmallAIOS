@@ -20,6 +20,8 @@
 //! follow-on commit alongside Phase 5's cert verifier and
 //! Phase 7's `TcpTlsStream`.
 
+#[cfg(test)]
+mod cert_verify_test_vectors;
 pub mod certificate_msg;
 pub mod client_hello;
 pub mod driver;

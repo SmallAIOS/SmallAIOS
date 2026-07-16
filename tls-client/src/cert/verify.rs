@@ -29,7 +29,10 @@ use super::{LeafPublicKey, ServerCertVerifier};
 use crate::trust::TrustStore;
 use crate::{Result, TlsClientError};
 use alloc::vec::Vec;
+use smallaios_security::crypto::ecdsa_p256::{ecdsa_p256_verify, EcdsaP256PublicKey};
 use smallaios_security::crypto::ed25519::{ed25519_verify, Ed25519PublicKey, Ed25519Signature};
+use smallaios_security::crypto::mgf1::PssHash;
+use smallaios_security::crypto::rsa_pss::{rsa_pss_verify, RsaPublicKey};
 
 /// Wall-clock sentinel (design.md): a "now" earlier than
 /// 2026-01-01T00:00:00Z is treated as an unsynchronized clock.
@@ -176,8 +179,10 @@ fn is_ca(cert: &Certificate<'_>) -> bool {
 }
 
 /// Verify `cert`'s outer signature over its `tbs_der` using the
-/// issuer's public key. Only Ed25519 is supported today; other
-/// algorithms are refused as `ChainUntrusted`.
+/// issuer's public key over the certificate's `tbs_der`. Ed25519,
+/// ECDSA-P256/SHA-256, and RSA-PSS/SHA-256 are verified; RSA-PKCS#1
+/// v1.5 (deliberately unsupported) and any algorithm/key mismatch are
+/// refused as `ChainUntrusted`.
 fn verify_signature(cert: &Certificate<'_>, issuer_key: &SubjectPublicKey) -> Result<()> {
     match (cert.signature_algorithm, issuer_key) {
         (SignatureAlgorithm::Ed25519, SubjectPublicKey::Ed25519(pk)) => {
@@ -193,18 +198,36 @@ fn verify_signature(cert: &Certificate<'_>, issuer_key: &SubjectPublicKey) -> Re
             )
             .map_err(|_| TlsClientError::ChainUntrusted)
         }
-        // Algorithm/key mismatch, or an algorithm whose primitive is
-        // not yet available (ECDSA-P256, RSA-PSS/PKCS#1).
+        (SignatureAlgorithm::EcdsaP256Sha256, SubjectPublicKey::EcdsaP256(point)) => {
+            let pk_bytes: &[u8; 65] = point
+                .as_slice()
+                .try_into()
+                .map_err(|_| TlsClientError::BadCertificate)?;
+            let pk = EcdsaP256PublicKey::from_uncompressed(pk_bytes)
+                .map_err(|_| TlsClientError::ChainUntrusted)?;
+            // The X.509 ECDSA signature is a DER SEQUENCE { r, s }.
+            ecdsa_p256_verify(&pk, cert.tbs_der, cert.signature)
+                .map_err(|_| TlsClientError::ChainUntrusted)
+        }
+        (SignatureAlgorithm::RsaPssSha256, SubjectPublicKey::Rsa(key)) => {
+            let pk =
+                RsaPublicKey::from_pkcs1_der(key).map_err(|_| TlsClientError::ChainUntrusted)?;
+            rsa_pss_verify(&pk, PssHash::Sha256, cert.tbs_der, cert.signature)
+                .map_err(|_| TlsClientError::ChainUntrusted)
+        }
+        // Algorithm/key mismatch, or RSA-PKCS#1 v1.5 (unsupported by
+        // policy — verify-only RSA-PSS).
         _ => Err(TlsClientError::ChainUntrusted),
     }
 }
 
 /// Map the leaf's SPKI to the [`LeafPublicKey`] the driver uses for
-/// CertificateVerify. Non-Ed25519 leaves cannot be used yet.
+/// CertificateVerify.
 fn leaf_public_key(leaf: &Certificate<'_>) -> Result<LeafPublicKey> {
     match &leaf.public_key {
         SubjectPublicKey::Ed25519(pk) => Ok(LeafPublicKey::Ed25519(*pk)),
-        _ => Err(TlsClientError::ChainUntrusted),
+        SubjectPublicKey::EcdsaP256(point) => Ok(LeafPublicKey::EcdsaP256(point.clone())),
+        SubjectPublicKey::Rsa(key) => Ok(LeafPublicKey::Rsa(key.clone())),
     }
 }
 
