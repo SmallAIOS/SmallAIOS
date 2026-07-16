@@ -202,7 +202,7 @@ Each active branch gets its own worktree for parallel development. Worktrees liv
 
 ## OpenSpec Changes
 
-Active specs in `openspec/changes/`, archived specs in `openspec/changes/archive/` (with `YYYY-MM-DD-` date prefixes). Reference specs in `openspec/smallaios-kernel/`. **`openspec/changes/` is the source of truth — this snapshot (2026-06-11) goes stale.**
+Active specs in `openspec/changes/`, archived specs in `openspec/changes/archive/` (with `YYYY-MM-DD-` date prefixes). Reference specs in `openspec/smallaios-kernel/`. **`openspec/changes/` is the source of truth — this snapshot (2026-07-16) goes stale.**
 
 Implementation in flight (per each change's `tasks.md`):
 
@@ -211,9 +211,9 @@ Implementation in flight (per each change's `tasks.md`):
 | `verifiable-audit-log-v1` | 59/76 | immudb audit-export bridge — remaining: live-immudb proof fixtures, ALH recomputation, e2e + CI follow-ons |
 | `embedded-flash-fs-v1` | 32/71 | littlefs-compatible raw-NAND/NOR flash filesystem |
 | `unikernel-orin-bringup-v1` | 30/38 | Jetson Orin bare-metal boot — remaining: AArch64 IRQ exception path + Generic Timer tick (on-hardware session), Phase 2 PR |
-| `tls-tcp-client-v1` | 21/63 | TLS 1.3-over-TCP client crate — Phase 4 handshake in PR #217; Phase 5 X.509 verify blocked on `security-ecdsa-p256-v1` / `security-rsa-pss-v1` |
+| `tls-tcp-client-v1` | 42/66 | TLS 1.3-over-TCP client crate — real-CA ECDSA-P256/RSA-PSS chain + CertificateVerify verification landed (#231); remaining: 5.8 cross-vectors, 7.6 real-endpoint e2e (now unblocked), phases 8–11 |
 
-~30 further changes sit at proposal stage (DO-178C DAL A / confidential-AI-edge roadmap, PRs #200–#204): boot-root-of-trust, op-tee-bridge, remote-attestation, confidential-compute, tegra-smmu-isolation, aarch64-mte-pac-hardening, ecc-scrubbing, deterministic-scheduling, watchdog-lockstep, dynamic-batching, llm-api-translation, the fpga-* series, and more — many gated on hardware access or prerequisite changes. 55 changes are archived.
+~33 further changes sit at proposal stage (DO-178C DAL A / confidential-AI-edge roadmap, PRs #200–#204): boot-root-of-trust, op-tee-bridge, remote-attestation, confidential-compute, tegra-smmu-isolation, aarch64-mte-pac-hardening, ecc-scrubbing, deterministic-scheduling, watchdog-lockstep, dynamic-batching, llm-api-translation, the fpga-* series, and more — many gated on hardware access or prerequisite changes. 60 changes are archived (most recently the 2026-07-16 batch: `security-ecdsa-p256-v1`, `security-rsa-pss-v1`, `session-config-eager-validation-v1`, `crypto-validation-strategy-v1`, `ci-test-gates-v1` — main specs now carry `security-ecdsa-p256-verify`, `security-rsa-pss-verify`, `crypto-validation-policy`, `ci-test-matrix`).
 
 Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:verify`, `/opsx:archive`) to manage changes. The workflow is: proposal → design → specs → tasks → implementation → verification → archive.
 
