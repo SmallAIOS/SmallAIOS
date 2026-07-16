@@ -14,4 +14,4 @@
 ## 3. Land
 
 - [x] 3.1 `openspec validate crypto-validation-strategy-v1 --type change --strict` passes
-- [ ] 3.2 PR against `develop` titled `docs(security): crypto validation strategy — clean-room policy, corpus replay, C-crypto bans (crypto-validation-strategy-v1)`
+- [x] 3.2 PR against `develop` titled `docs(security): crypto validation strategy — clean-room policy, corpus replay, C-crypto bans (crypto-validation-strategy-v1)` (landed as #228, merged 2026-07-03)
