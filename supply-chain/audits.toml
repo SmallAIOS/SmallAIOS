@@ -1,6 +1,12 @@
 
 # cargo-vet audits file
 
+[[audits.crossbeam-epoch]]
+who = "Evan Montgomery-Recht <montge@mianetworks.net>"
+criteria = "safe-to-run"
+delta = "0.9.18 -> 0.9.20"
+notes = "Delta review (full source diff, by Claude session 2026-07-16, approved workflow): fixes RUSTSEC-2026-0204 — fmt::Pointer for Atomic/Shared now formats the raw pointer value without dereferencing it (unsound T::deref removed, format_null regression tests added). Also: Atomic::fetch_update returns prev on success (#1197), epoch counters widen to AtomicU64 where target_has_atomic=64 (#1230), defer_destroy accepts unsized Pointable (#1201), ThreadSanitizer fence workaround gated behind crossbeam_sanitize_thread cfg (#998). New build.rs only reads CARGO_CFG_SANITIZE and emits rustc-check-cfg/rustc-cfg; no new dependencies, no network or filesystem access, test-only changes elsewhere."
+
 [[audits.memmap2]]
 who = "Evan Montgomery-Recht <montge@mianetworks.net>"
 criteria = "safe-to-deploy"

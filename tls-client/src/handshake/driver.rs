@@ -463,9 +463,8 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
             }
             (State::ExpectCertificateVerify, HandshakeType::CertificateVerify) => {
                 let cv = parse_certificate_verify(msg)?;
-                let LeafPublicKey::Ed25519(pk) =
-                    self.leaf_key.as_ref().ok_or(TlsClientError::BadHandshake)?;
-                verify_certificate_verify(&cv, pk, &self.hash_at_cert)?;
+                let leaf_key = self.leaf_key.as_ref().ok_or(TlsClientError::BadHandshake)?;
+                verify_certificate_verify(&cv, leaf_key, &self.hash_at_cert)?;
                 self.transcript_update(msg);
                 self.hash_at_cv = self.transcript_current();
                 self.state = State::ExpectFinished;
