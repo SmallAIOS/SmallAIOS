@@ -234,7 +234,7 @@ GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` an
 - **Supply Chain Security** — `cargo-deny` license/advisory/ban checks
 - **Dependency Audit** — `cargo-vet` ensures all deps have audit trail (DO-178C traceability)
 - **Cyclic Dependency Check** — no crate-level cycles
-- **Coverage Threshold** — `cargo-llvm-cov --fail-under-lines 80` (ratchets to 93%)
+- **Coverage Threshold** — `cargo-llvm-cov --fail-under-lines 93` (ratcheted from 80% on 2026-07-16; observed 93.20%)
 - **Change Gates** — meta-job that gates PR mergeability on all above
 
 **Advisory Jobs (report only):**
