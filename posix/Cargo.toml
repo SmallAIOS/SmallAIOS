@@ -27,10 +27,11 @@ fs-on-disk-mounts = ["dep:smallaios-fs", "smallaios-fs/fs-on-disk-mounts"]
 
 [dependencies]
 smallaios-kernel = { path = "../kernel" }
-smallaios-net = { path = "../net" }
+# NOTE: no net dependency yet — socket data paths are ENOSYS stubs until
+# the network stack is wired up; re-add `smallaios-net` (the sanctioned
+# posix → net Layer-1 cross-edge) when the socket layer consumes it.
 # Layer-1 peer dep: opt-in `/flash/` mount routes through the littlefs
 # runtime in `smallaios-fs`. Default off, gated by the `fs-flash`
 # feature so the in-memory VFS path stays byte-identical when raw flash
-# hardware isn't present. Mirrors the existing `posix → net (L1)`
-# accepted cross-edge for the POSIX socket layer.
+# hardware isn't present.
 smallaios-fs = { path = "../fs", optional = true }

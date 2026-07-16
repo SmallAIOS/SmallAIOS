@@ -449,21 +449,32 @@ modgraph crate="":
     @mkdir -p build/analysis/modules
     {{ if crate != "" { "cargo modules dependencies --package " + crate + " --layout dot > build/analysis/modules/" + crate + ".dot && echo 'Generated build/analysis/modules/" + crate + ".dot'" } else { "for c in " + host_crates + "; do echo \"--- $c ---\"; cargo modules dependencies --package $c --layout dot > build/analysis/modules/$c.dot 2>/dev/null && echo \"  -> build/analysis/modules/$c.dot\" || echo \"  WARNING: $c module graph failed\"; done" } }}
 
-# Check module-level acyclicity for all host crates
+# Check module-level acyclicity for all host crates.
+# NOTE: cargo-modules' own `--acyclic` checks the raw item graph (every
+# inherent method forms a trivial Type<->method cycle there), so we parse the
+# filtered module-only DOT output and detect real cross-module cycles in
+# scripts/module-cycles.py instead.
 arch-check:
     @echo "Checking module-level acyclicity..."
+    @command -v cargo-modules >/dev/null 2>&1 || { \
+        echo "ERROR: cargo-modules not installed (cargo install cargo-modules --locked)"; \
+        exit 1; \
+    }
     @fail=0; \
     for crate in {{host_crates}}; do \
-        echo -n "  $crate: "; \
-        if cargo modules dependencies --package $crate --acyclic 2>&1 | grep -q "error\|cycle"; then \
-            echo "CYCLE DETECTED"; \
+        if ! out=$(cargo modules dependencies --package $crate --lib \
+                --no-fns --no-types --no-traits --no-externs --no-sysroot \
+                --layout dot 2>&1); then \
+            echo "  $crate: ERROR running cargo-modules"; \
+            printf '%s\n' "$out" | sed 's/^/    /' || true; \
             fail=1; \
-        else \
-            echo "OK"; \
+        elif ! printf '%s\n' "$out" | python3 scripts/module-cycles.py $crate; then \
+            fail=1; \
         fi; \
     done; \
     if [ "$fail" -eq 1 ]; then \
-        echo "WARNING: some crates have module-level cycles"; \
+        echo "FAIL: module-level cycles (or cargo-modules errors) detected above"; \
+        exit 1; \
     else \
         echo "All crates are acyclic at module level."; \
     fi
@@ -478,7 +489,8 @@ dsm:
 dsm-analyze: dsm
     @echo "Running DSM analysis..."
     @if [ -f tools/dsm/Cargo.toml ]; then \
-        cargo run --manifest-path tools/dsm/Cargo.toml -- build/analysis/dsm-matrix.json --output build/analysis/dsm-metrics.json; \
+        cargo run --manifest-path tools/dsm/Cargo.toml -- build/analysis/dsm-matrix.json build/analysis/dsm-metrics.json; \
+        test -f build/analysis/dsm-metrics.json || { echo "ERROR: build/analysis/dsm-metrics.json was not produced"; exit 1; }; \
     else \
         echo "WARNING: tools/dsm/ crate not found, skipping DSM analysis"; \
     fi
