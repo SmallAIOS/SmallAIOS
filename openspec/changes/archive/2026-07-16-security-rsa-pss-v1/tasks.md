@@ -44,4 +44,4 @@
 ## 7. Land
 
 - [x] 7.1 `openspec validate security-rsa-pss-v1 --type change --strict` passes
-- [ ] 7.2 PR against `develop` titled `feat(security): RSA-PSS signature verification + SHA-512 (security-rsa-pss-v1)`, noting the tls-client wiring is deferred to `tls-tcp-client-v1` task 5.5
+- [x] 7.2 PR against `develop` titled `feat(security): RSA-PSS signature verification + SHA-512 (security-rsa-pss-v1)`, noting the tls-client wiring is deferred to `tls-tcp-client-v1` task 5.5 (landed as #230, merged 2026-07-03; tls wiring landed as #231)

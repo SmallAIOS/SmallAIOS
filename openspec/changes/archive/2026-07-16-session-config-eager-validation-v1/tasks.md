@@ -20,9 +20,9 @@
 
 - [x] 4.1 `just fmt-check` and `just clippy` clean
 - [x] 4.2 `just test` green; `cargo test -p smallaios-onnx-rt` green (default + `cuda` where buildable)
-- [ ] 4.3 `cargo semver-checks` flags the `new` signature break as expected (PR title carries `!`)
+- [x] 4.3 `cargo semver-checks` flags the `new` signature break as expected (PR title carries `!`) (API Semver Check gate passed conditionally on #229's `feat(onnx-rt)!:` title)
 
 ## 5. Land
 
 - [x] 5.1 `openspec validate session-config-eager-validation-v1 --type change --strict` passes
-- [ ] 5.2 PR against `develop` titled `feat(onnx-rt)!: validate SessionConfig eagerly at Session::new (session-config-eager-validation-v1)`, closing #127
+- [x] 5.2 PR against `develop` titled `feat(onnx-rt)!: validate SessionConfig eagerly at Session::new (session-config-eager-validation-v1)`, closing #127 (landed as #229, merged 2026-07-03)

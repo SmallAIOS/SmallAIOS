@@ -47,5 +47,5 @@
 ## 7. Land
 
 - [x] 7.1 `openspec validate security-ecdsa-p256-v1 --type change --strict` passes
-- [ ] 7.2 Rebase `change/security-ecdsa-p256-v1` onto `develop` once PR #226 (spec baseline) merges, so the PR diff is implementation-only
-- [ ] 7.3 PR against `develop` titled `feat(security): ECDSA-P256 signature verification (security-ecdsa-p256-v1)`, noting the tls-client wiring is deferred to `tls-tcp-client-v1` task 5.5
+- [x] 7.2 Rebase `change/security-ecdsa-p256-v1` onto `develop` once PR #226 (spec baseline) merges, so the PR diff is implementation-only (done before #227 opened)
+- [x] 7.3 PR against `develop` titled `feat(security): ECDSA-P256 signature verification (security-ecdsa-p256-v1)`, noting the tls-client wiring is deferred to `tls-tcp-client-v1` task 5.5 (landed as #227, merged 2026-07-03; tls wiring landed as #231)
