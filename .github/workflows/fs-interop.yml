@@ -164,9 +164,9 @@ jobs:
           sudo apt-get install -y squashfs-tools f2fs-tools
 
       - name: Cargo test fs round-trip suite
-        run: |
-          cargo test -p smallaios-fs --features fs-on-disk-mounts \
-            --test squashfs_conformance \
-            --test f2fs_conformance \
-            --test f2fs_write_conformance \
-            --test f2fs_fsync_fuzz
+        # Group defined in ci/test-matrix.toml (spec: ci-test-matrix). The
+        # previous direct cargo invocation passed only fs-on-disk-mounts,
+        # which compiled the conformance suites down to 0 tests — a vacuous
+        # green gate. The matrix runner enforces a 170-test floor (195
+        # observed 2026-07-03).
+        run: python3 scripts/test_matrix.py --run fs-conformance

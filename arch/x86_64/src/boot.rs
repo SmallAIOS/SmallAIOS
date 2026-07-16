@@ -9,6 +9,7 @@
 //! 3. Sets up the stack
 //! 4. Calls kernel_main with the Multiboot2 info pointer
 
+#[cfg(not(test))]
 use core::arch::naked_asm;
 
 // Multiboot2 constants
@@ -51,6 +52,7 @@ extern "C" {
 ///
 /// Since we target QEMU `-kernel` which loads ELF directly in 64-bit mode,
 /// we assume long mode is already active.
+#[cfg(not(test))] // host test binaries link the C runtime's _start
 #[unsafe(naked)]
 #[no_mangle]
 #[link_section = ".text.boot"]

@@ -36,3 +36,10 @@ fs-block-virtio = ["dep:smallaios-fs", "smallaios-fs/fs-on-disk-mounts", "smalla
 [dependencies]
 smallaios-kernel = { path = "../../kernel" }
 smallaios-fs = { path = "../../fs", optional = true }
+
+[dev-dependencies]
+# Feature-unification trick (see kernel/src/mem/global.rs): host test
+# binaries must not link the kernel's uninitialized #[global_allocator]
+# (first allocation aborts with SIGABRT). Dev-deps only affect `cargo
+# test` feature resolution, so the bare-metal image keeps its heap.
+smallaios-kernel = { path = "../../kernel", features = ["no-global-alloc"] }

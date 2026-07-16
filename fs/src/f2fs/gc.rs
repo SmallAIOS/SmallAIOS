@@ -334,7 +334,7 @@ pub fn pick_victims(candidates: &[(u32, u16)], blocks_per_segment: u32, n: usize
         .collect();
     // Stable sort descending by score; for equal scores we keep input
     // order so callers can pre-sort for deterministic tie-breaking.
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|&(_, score)| core::cmp::Reverse(score));
     scored.into_iter().take(n).map(|(s, _)| s).collect()
 }
 

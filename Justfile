@@ -334,51 +334,34 @@ audit:
     @echo "=== Safety audit complete ==="
 
 # === Testing ===
+# Crate/feature groups are single-sourced in ci/test-matrix.toml
+# (spec: ci-test-matrix) — the same definition CI runs.
 
-# Run all unit tests
+# Run the default unit-test group (mirrors the CI "Unit Tests" gate)
 test:
-    {{cargo}} test \
-        -p smallaios-kernel \
-        -p smallaios-security \
-        -p smallaios-compute \
-        -p smallaios-onnx-rt \
-        -p smallaios-ipc \
-        -p smallaios-net \
-        -p smallaios-posix \
-        -p smallaios-container \
-        -p smallaios-bus \
-        -p smallaios-bench \
-        -p smallaios-auth \
-        -p smallaios-mgmt \
-        -p smallaios-fs \
-        -p xtask \
-        -p smallaios-peripheral --features smallaios-peripheral/uart
+    python3 scripts/test_matrix.py --run default
+
+# Run every host-compatible test group (skips incompatible ones loudly)
+test-all:
+    python3 scripts/test_matrix.py --run-all
+
+# Run one named test group, e.g. `just test-group fs-features`
+test-group group:
+    python3 scripts/test_matrix.py --run {{group}}
+
+# List test groups, floors, and exclusions
+test-matrix:
+    python3 scripts/test_matrix.py --list
 
 # Run Metal GPU tests (macOS only)
 test-metal:
     {{cargo}} test -p smallaios-onnx-rt --features metal --lib -- metal_dispatch
     {{cargo}} test -p smallaios-arch-apple
 
-# Run clippy lints
+# Run clippy lints (same crate/feature set as the CI "Clippy Lint" gate,
+# derived from ci/test-matrix.toml)
 clippy:
-    {{cargo}} clippy \
-        --all-targets \
-        -p smallaios-kernel \
-        -p smallaios-security \
-        -p smallaios-compute \
-        -p smallaios-onnx-rt \
-        -p smallaios-ipc \
-        -p smallaios-net \
-        -p smallaios-posix \
-        -p smallaios-container \
-        -p smallaios-bus \
-        -p smallaios-bench \
-        -p smallaios-auth \
-        -p smallaios-mgmt \
-        -p smallaios-fs \
-        -p xtask \
-        -p smallaios-peripheral --features smallaios-peripheral/uart \
-        -- -D warnings
+    {{cargo}} clippy $(python3 scripts/test_matrix.py --emit clippy-args) -- -D warnings
 
 # Format all code
 fmt:

@@ -21,6 +21,7 @@ pub mod syscall;
 #[cfg(feature = "fs-block-virtio")]
 pub mod virtio_blk;
 
+#[cfg(not(test))]
 use core::panic::PanicInfo;
 
 /// Kernel entry point called from assembly boot code.
@@ -84,6 +85,7 @@ pub fn halt_loop() -> ! {
     }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     serial::puts("[SmallAIOS] PANIC: ");
