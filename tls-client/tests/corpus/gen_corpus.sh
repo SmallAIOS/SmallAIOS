@@ -165,7 +165,9 @@ mkcert g12_leaf ec g12_root ec leaf "DNS:g12.corpus.test"
 mkroot g13_extroot ec384
 mkcert g13_ca ec g13_extroot ec384 ca
 mkcert g13_leaf ec g13_ca ec leaf "DNS:g13.corpus.test"
-rm g13_extroot.der                           # external root not part of the corpus
+# g13_extroot.der stays: g14 replays [g13_leaf, g13_ca, g13_extroot]
+# — the root's P-384 key is unparseable, and a server-appended root
+# must be skipped, not fatal (RFC 8446 §4.4.2; the GTS Root R4 case).
 
 echo "== bad chains =="
 mkroot b01_root ec                           # tampered ECDSA leaf sig

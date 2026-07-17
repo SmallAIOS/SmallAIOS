@@ -143,6 +143,20 @@ const GOOD: &[GoodCase] = &[
         &[corpus!("g13_leaf")],
         "g13.corpus.test",
     ),
+    (
+        // Server appends its root (P-384 key — unparseable) after
+        // the chain, as real servers do (GTS Root R4). The unusable
+        // extra must be skipped, not fatal (RFC 8446 §4.4.2): the
+        // walk anchors at g13_ca before ever needing it.
+        "g14 unparseable server-appended root skipped",
+        corpus!("g13_ca"),
+        &[
+            corpus!("g13_leaf"),
+            corpus!("g13_ca"),
+            corpus!("g13_extroot"),
+        ],
+        "g13.corpus.test",
+    ),
     // g12 (positive pin) runs in its own test — it needs set_pin.
 ];
 
