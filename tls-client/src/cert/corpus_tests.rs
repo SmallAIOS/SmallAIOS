@@ -258,7 +258,13 @@ fn corpus_meets_task_floor() {
 fn good_chains_verify() {
     for (name, anchor, chain, host) in GOOD {
         let got = run(&[anchor], None, chain, Some(host));
-        assert!(got.is_ok(), "{name}: expected Ok, got {got:?}");
+        // Format only the error arm: printing the Ok value would put
+        // key material in test output (rust/cleartext-logging).
+        assert!(
+            got.is_ok(),
+            "{name}: expected Ok, got {:?}",
+            got.as_ref().err()
+        );
     }
 }
 
@@ -278,7 +284,11 @@ fn pinned_anchor_accepts_matching_chain() {
         &[corpus!("g12_leaf")],
         Some("g12.corpus.test"),
     );
-    assert!(got.is_ok(), "g12 pin: expected Ok, got {got:?}");
+    assert!(
+        got.is_ok(),
+        "g12 pin: expected Ok, got {:?}",
+        got.as_ref().err()
+    );
 }
 
 #[test]
