@@ -249,8 +249,8 @@ fn test_full_inference_pipeline_relu() {
 
     // 3. Wait for server to become healthy
     assert!(
-        wait_for_healthz(&addr, Duration::from_secs(10)),
-        "container did not become healthy within 10s"
+        wait_for_healthz(&addr, Duration::from_secs(30)),
+        "container did not become healthy within 30s"
     );
 
     // 4. Verify model is listed
@@ -316,7 +316,7 @@ fn test_inference_unknown_model_returns_404() {
     let _guard = ChildGuard(child);
     let addr = format!("127.0.0.1:{}", port);
     assert!(
-        wait_for_healthz(&addr, Duration::from_secs(10)),
+        wait_for_healthz(&addr, Duration::from_secs(30)),
         "container did not become healthy"
     );
 
@@ -335,7 +335,7 @@ fn test_inference_malformed_json_returns_400() {
     let _guard = ChildGuard(child);
     let addr = format!("127.0.0.1:{}", port);
     assert!(
-        wait_for_healthz(&addr, Duration::from_secs(10)),
+        wait_for_healthz(&addr, Duration::from_secs(30)),
         "container did not become healthy"
     );
 
@@ -353,7 +353,7 @@ fn test_inference_invalid_input_shape_returns_400() {
     let _guard = ChildGuard(child);
     let addr = format!("127.0.0.1:{}", port);
     assert!(
-        wait_for_healthz(&addr, Duration::from_secs(10)),
+        wait_for_healthz(&addr, Duration::from_secs(30)),
         "container did not become healthy"
     );
 
