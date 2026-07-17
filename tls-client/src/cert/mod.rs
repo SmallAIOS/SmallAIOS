@@ -25,6 +25,8 @@ pub mod verify;
 pub mod x509;
 
 #[cfg(test)]
+mod corpus_tests;
+#[cfg(test)]
 pub(crate) mod test_certs;
 
 use crate::Result;

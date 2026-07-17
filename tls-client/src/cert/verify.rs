@@ -118,9 +118,17 @@ impl ServerCertVerifier for TrustStoreVerifier<'_> {
 
         // ── Chain construction ────────────────────────────────────
         // Parse the intermediates the peer offered (leaf excluded).
+        // An unparseable extra is skipped, not fatal: servers
+        // commonly append their root (e.g. GTS Root R4, a P-384 key
+        // this client cannot parse), and RFC 8446 §4.4.2 permits
+        // ignoring certificates that aren't needed. A skipped cert
+        // simply cannot participate in chain construction — if the
+        // chain NEEDED it, anchoring fails as ChainUntrusted below.
         let mut intermediates: Vec<Certificate<'_>> = Vec::new();
         for der in &certs[1..] {
-            intermediates.push(Certificate::parse(der)?);
+            if let Ok(cert) = Certificate::parse(der) {
+                intermediates.push(cert);
+            }
         }
 
         // Walk issuer links until we hit a trust-store anchor.

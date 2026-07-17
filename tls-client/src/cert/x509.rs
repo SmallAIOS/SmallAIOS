@@ -76,6 +76,13 @@ pub enum SignatureAlgorithm {
     EcdsaP256Sha256,
     RsaPkcs1Sha256,
     RsaPssSha256,
+    /// Parsed but not verifiable (e.g. `ecdsa-with-SHA384`, common
+    /// on WebPKI intermediates). Carried instead of refused at parse
+    /// so such a cert can still serve as a *trust anchor* — an
+    /// anchor's own signature is never verified. Any chain link
+    /// that actually needs this signature verified is refused in
+    /// `verify_signature`, exactly like `RsaPkcs1Sha256`.
+    Unsupported,
 }
 
 /// A subject public key, tagged by algorithm. Only Ed25519 can be
@@ -292,7 +299,9 @@ impl<'a> Certificate<'a> {
 }
 
 /// Parse an `AlgorithmIdentifier` SEQUENCE contents into a
-/// [`SignatureAlgorithm`], refusing SHA-1 and unknown OIDs.
+/// [`SignatureAlgorithm`], refusing SHA-1 (spec: parser MUST) and
+/// carrying other unknown OIDs as [`SignatureAlgorithm::Unsupported`]
+/// for `verify_signature` to refuse if the link needs verifying.
 fn parse_sig_alg(seq: &[u8]) -> Result<SignatureAlgorithm> {
     let mut r = Reader::new(seq);
     let alg_oid = r.expect_tlv(tag::OID)?;
@@ -306,7 +315,7 @@ fn parse_sig_alg(seq: &[u8]) -> Result<SignatureAlgorithm> {
         oid::RSA_PSS => Ok(SignatureAlgorithm::RsaPssSha256),
         // Explicitly refuse SHA-1 with a certificate-specific error.
         oid::RSA_PKCS1_SHA1 | oid::ECDSA_SHA1 => Err(TlsClientError::BadCertificate),
-        _ => Err(TlsClientError::BadCertificate),
+        _ => Ok(SignatureAlgorithm::Unsupported),
     }
 }
 

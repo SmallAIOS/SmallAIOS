@@ -25,3 +25,9 @@ std = []
 # Operator-facing knob for the deferred mTLS path.
 mtls = []
 formal-gate = []
+
+# Real-endpoint e2e (task 7.6): #[ignore]-gated, needs the std-IO
+# adapter. `cargo test` without `--features std` skips the target.
+[[test]]
+name = "e2e"
+required-features = ["std"]
