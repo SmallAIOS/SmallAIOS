@@ -37,9 +37,10 @@ trap 'rm -rf "$work"' EXIT
 serial=1000
 
 # ── key + signing helpers ───────────────────────────────────────────
-genkey() { # genkey <path> <ec|rsa2048|rsa3072|rsa4096|ed25519>
+genkey() { # genkey <path> <ec|ec384|rsa2048|rsa3072|rsa4096|ed25519>
   case "$2" in
     ec)      $OPENSSL genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$1" 2>/dev/null ;;
+    ec384)   $OPENSSL genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -out "$1" 2>/dev/null ;;
     rsa2048) $OPENSSL genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$1" 2>/dev/null ;;
     rsa3072) $OPENSSL genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out "$1" 2>/dev/null ;;
     rsa4096) $OPENSSL genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$1" 2>/dev/null ;;
@@ -49,9 +50,10 @@ genkey() { # genkey <path> <ec|rsa2048|rsa3072|rsa4096|ed25519>
 
 # Signature options for the *signing* key's algorithm. RSA always
 # signs PSS/SHA-256/salt32 except the explicit v1.5 bad case.
-sigopts() { # sigopts <ec|rsa*|ed25519|rsa_v15>
+sigopts() { # sigopts <ec|ec384|rsa*|ed25519|v15>
   case "$1" in
     ec)      echo "-sha256" ;;
+    ec384)   echo "-sha384" ;;
     rsa*)    echo "-sha256 -sigopt rsa_padding_mode:pss -sigopt rsa_pss_saltlen:32 -sigopt rsa_mgf1_md:sha256" ;;
     ed25519) echo "" ;;
     v15)     echo "-sha256" ;;
@@ -70,11 +72,12 @@ mkroot() { # mkroot <name> <keytype> -> $work/<name>.key/.pem + ./<name>.der
   $OPENSSL x509 -in "$work/$name.pem" -outform DER -out "$name.der"
 }
 
-# mkcert <name> <keytype> <issuer> <issuer-keytype> <kind> <ext...>
-#   kind: leaf | ca | leaf_v15 (leaf PKCS#1 v1.5-signed)
-#   ext:  for leaves, the subjectAltName value (e.g. DNS:a.corpus.test)
+# mkcert <name> <keytype> <issuer> <issuer-keytype> <kind> [san] [sigkt]
+#   kind:  leaf | ca | leaf_v15 (leaf PKCS#1 v1.5-signed) | ...
+#   san:   for leaves, the subjectAltName value (e.g. DNS:a.corpus.test)
+#   sigkt: optional sigopts() override (e.g. ec384 to force SHA-384)
 mkcert() {
-  local name=$1 kt=$2 issuer=$3 ikt=$4 kind=$5 san=${6:-}
+  local name=$1 kt=$2 issuer=$3 ikt=$4 kind=$5 san=${6:-} sigkt=${7:-}
   genkey "$work/$name.key" "$kt"
   $OPENSSL req -new -key "$work/$name.key" -subj "/CN=$name" -out "$work/$name.csr" 2>/dev/null
   local ext="$work/$name.ext" so days=3650
@@ -93,7 +96,7 @@ mkcert() {
     notca)
       printf 'basicConstraints=CA:FALSE\nkeyUsage=digitalSignature\n' > "$ext" ;;
   esac
-  if [ "$kind" = "leaf_v15" ]; then so=$(sigopts v15); else so=$(sigopts "$ikt"); fi
+  if [ "$kind" = "leaf_v15" ]; then so=$(sigopts v15); else so=$(sigopts "${sigkt:-$ikt}"); fi
   serial=$((serial + 1))
   # shellcheck disable=SC2046
   $OPENSSL x509 -req -in "$work/$name.csr" \
@@ -154,6 +157,16 @@ mkcert g11_leaf ed25519 g11_root ed25519 leaf "DNS:g11.corpus.test"
 mkroot g12_root ec                           # positive pin case
 mkcert g12_leaf ec g12_root ec leaf "DNS:g12.corpus.test"
 
+# g13: WebPKI intermediate-as-anchor shape (e.g. GTS WE1). A P-384
+# external root signs the P-256 intermediate with ecdsa-with-SHA384;
+# only the intermediate enters the trust store, so its own signature
+# is never verified — but it must PARSE (SignatureAlgorithm::
+# Unsupported), and the ECDSA-SHA256 leaf under it must verify.
+mkroot g13_extroot ec384
+mkcert g13_ca ec g13_extroot ec384 ca
+mkcert g13_leaf ec g13_ca ec leaf "DNS:g13.corpus.test"
+rm g13_extroot.der                           # external root not part of the corpus
+
 echo "== bad chains =="
 mkroot b01_root ec                           # tampered ECDSA leaf sig
 mkcert b01_leaf_ok ec b01_root ec leaf "DNS:b01.corpus.test"
@@ -189,5 +202,11 @@ mkcert b09_leaf ec b09_root ec leaf_noeku "DNS:b09.corpus.test"
 mkroot b10_root ec                           # wrong pin (test pins b10_other's print)
 mkroot b10_other ec
 mkcert b10_leaf ec b10_root ec leaf "DNS:b10.corpus.test"
+
+# b11: SHA-384-signed chain link. Parses (Unsupported) but a link
+# whose signature actually needs verifying must refuse — P-384/SHA-384
+# verification is not implemented.
+mkroot b11_root ec
+mkcert b11_leaf ec b11_root ec leaf "DNS:b11.corpus.test" ec384
 
 echo "== done: $(ls -1 *.der | wc -l | tr -d ' ') DER files =="

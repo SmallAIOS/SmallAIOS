@@ -133,6 +133,16 @@ const GOOD: &[GoodCase] = &[
         &[corpus!("g11_leaf")],
         "g11.corpus.test",
     ),
+    (
+        // WebPKI intermediate-as-anchor shape (e.g. GTS WE1): the
+        // anchor cert is itself SHA-384-signed by an external root —
+        // it must parse (SignatureAlgorithm::Unsupported) since an
+        // anchor's own signature is never verified.
+        "g13 sha384-signed intermediate as anchor",
+        corpus!("g13_ca"),
+        &[corpus!("g13_leaf")],
+        "g13.corpus.test",
+    ),
     // g12 (positive pin) runs in its own test — it needs set_pin.
 ];
 
@@ -208,6 +218,16 @@ const BAD: &[BadCase] = &[
         &[corpus!("b09_leaf")],
         "b09.corpus.test",
         TlsClientError::BadCertificate,
+    ),
+    (
+        // Parses as SignatureAlgorithm::Unsupported, but a link whose
+        // signature must actually be verified is refused — SHA-384
+        // verification is not implemented.
+        "b11 sha384-signed leaf refused at verify",
+        corpus!("b11_root"),
+        &[corpus!("b11_leaf")],
+        "b11.corpus.test",
+        TlsClientError::ChainUntrusted,
     ),
     // b10 (wrong pin) runs in its own test — it needs set_pin.
 ];
