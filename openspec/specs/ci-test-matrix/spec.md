@@ -6,8 +6,6 @@ Single-source crate/feature test matrix (ci/test-matrix.toml) driving the CI uni
 
 ## Requirements
 
-## ADDED Requirements
-
 ### Requirement: Single Source of Truth for the Test Matrix
 The workspace SHALL define its host-testable crate/feature matrix in exactly one checked-in file (`ci/test-matrix.toml`), and every consumer of a crate list for testing or linting (CI unit-test job, CI clippy job, Justfile test recipes, release pre-flight) SHALL derive its list from that file rather than carrying its own copy.
 
