@@ -221,36 +221,63 @@ Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:v
 
 GitHub Actions pipeline (`.github/workflows/ci.yml`) runs on pushes to `main` and `develop`, and on PRs targeting either branch.
 
-**Gate Jobs (block PR merge):**
+Whether a job **blocks a merge** is decided by branch protection's required-status-check
+list, not by anything in `ci.yml`. Verify with:
+
+```bash
+gh api repos/SmallAIOS/SmallAIOS/branches/develop/protection --jq '.required_status_checks.contexts[]'
+```
+
+**Enforced gates (required status checks on `develop`) — these block merge:**
 - **Format Check** — `cargo fmt --check`
 - **Clippy Lint** — matrix-derived crate/feature set (`ci/test-matrix.toml`)
-- **Test Matrix Verify** — every workspace member classified in `ci/test-matrix.toml` (group or documented exclusion)
-- **Unit Tests** — the `default` group (formal-gate and verified-boot variants unchanged), executed-test counts enforced (zero-test runs fail)
-- **Unit Tests (\<group\>)** — feature-gated matrix groups: fs-features, posix-features, tls-client, audit-export, tools, gpu-models, arch-apple (macOS runner), arch-x86_64
-- **Build** — x86-64, AArch64, RISC-V, Jetson bare-metal kernels
-- **Docker Build** — container image build
-- **Semver PR Title Check** — validates conventional commit PR titles
-- **API Semver Check** — `cargo-semver-checks` detects accidental API breakage (conditional: passes if PR title has `!`)
-- **Supply Chain Security** — `cargo-deny` license/advisory/ban checks
-- **Dependency Audit** — `cargo-vet` ensures all deps have audit trail (DO-178C traceability)
-- **Cyclic Dependency Check** — no crate-level cycles
-- **Coverage Threshold** — `cargo-llvm-cov --fail-under-lines 93` (ratcheted from 80% on 2026-07-16; observed 93.20%)
-- **Change Gates** — meta-job that gates PR mergeability on all above
-
-**Advisory Jobs (report only):**
-- **Careful UB Testing** — `cargo-careful` extra undefined behavior checks
-- **Unsafe Usage Report** — `cargo-geiger` counts unsafe blocks
-- **Kani Model Checking** — bounded model checking (scheduled/on-demand)
-- **Miri UB Detection** — memory safety verification (scheduled)
-- **SPIN Model Verification** — Promela protocol models
-- **TLA+ Verification** — TLC on 19 formal models
-- **Fuzz Testing** — `cargo-fuzz` on critical parsers
-- **Mutation Testing** — `cargo-mutants` test quality (on-demand)
+- **Unit Tests** — the `default` group, executed-test counts enforced (zero-test runs fail)
+- **Unit Tests (formal-gate)**, **Unit Tests (verified-boot)** — feature-flag variants
+- **Build x86-64 / AArch64 / RISC-V / Jetson Nano (Tegra X1) Kernel** — bare-metal targets
+- **Docker Build (Local)** — container image build
 - **Code Coverage** — `cargo-llvm-cov` uploaded to [Codecov](https://codecov.io)
 - **SonarCloud Analysis** — static analysis via [SonarCloud](https://sonarcloud.io)
-- **Dependency Analysis** — crate/module dependency graphs, DSM matrix, DSM metrics
+- **Image Size Check (<15 MB)** — binaries stay under budget
 - **RISC-V QEMU Smoke Test** — boots kernel in QEMU
-- **Image Size Check** — ensures binaries stay under 15 MB
+- **TLA+ Formal Verification** — TLC on 19 formal models. **Required but toothless:** the job sets
+  `continue-on-error: true`, so it reports success even when TLC fails. Drop that flag to make it real.
+
+Branch protection also sets `strict: true` (branch must be current before merge). It does **not**
+require approving reviews, and `enforce_admins` is off.
+
+**Runs on every PR but does NOT block merge** — these fail the workflow run without stopping a merge,
+because they are absent from the required-check list:
+- **Change Gates** — meta-job depending on 18 jobs. It is *not itself a required check*, so despite
+  the name it gates nothing; each of its dependencies blocks only if independently required. Adding
+  `Change Gates` to the required list would make the whole set enforcing in one step.
+- **Test Matrix Verify** — every workspace member classified in `ci/test-matrix.toml`
+- **Unit Tests (\<group\>)** — fs-features, posix-features, tls-client, audit-export, tools,
+  gpu-models, arch-apple (macOS runner), arch-x86_64
+- **Coverage Threshold (93%)** — `cargo-llvm-cov --fail-under-lines 93` (ratcheted from 80% on
+  2026-07-16; observed 93.20%)
+- **Supply Chain Security (cargo-deny)** — license/advisory/ban checks
+- **Cyclic Dependency Check** — no crate-level cycles
+- **Semver PR Title Check** / **API Semver Check** — conventional-commit titles; `cargo-semver-checks`
+- **CUDA Feature Check**, **AArch64 QEMU Smoke Test**, **Docker Build (ARM64 / GPU)**
+- **Miri UB Detection**, **Fuzz Testing**, **Mutation Testing**, **Benchmark Regression Check**,
+  **Dependency Analysis**
+
+**Advisory by design (`continue-on-error: true` — always report green):**
+- **Dependency Audit (cargo-vet)** — dependency audit trail (DO-178C traceability). Note the
+  exemptions in `supply-chain/config.toml` pin exact versions, so every dependency bump needs a new
+  entry or this job goes red.
+- **Careful UB Testing** (`cargo-careful`), **Unsafe Usage Report** (`cargo-geiger`)
+- **Kani Model Checking**, **SPIN Model Verification**
+- **Jetson Image Build**, **Build Jetson Orin UEFI**, **Jetson Orin OVMF Smoke**
+- **Spec-Exec Barrier Disasm Audit**, **Spec-Exec Default-On Smoke**
+
+> **Known gap:** the two gating mechanisms disagree. Nine jobs that `change-gates` treats as
+> mandatory — including `cargo-deny`, `Cyclic Dependency Check`, `API Semver Check`, and
+> `Coverage Threshold (93%)` — are not required checks, so none of them can currently stop a merge.
+> Conversely six required checks are absent from `change-gates`' `needs` — `Unit Tests
+> (verified-boot)`, `Code Coverage`, `SonarCloud Analysis`, `Image Size Check (<15 MB)`,
+> `RISC-V QEMU Smoke Test`, and `TLA+ Formal Verification`. Reconciling the two lists is tracked
+> work, not intended behaviour. Re-derive both with `tools/ci/check-gate-parity.sh`.
 
 **Required secrets:** `CODECOV_TOKEN`, `SONAR_TOKEN`
 
