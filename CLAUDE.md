@@ -215,7 +215,9 @@ Implementation in flight (per each change's `tasks.md`):
 
 ~33 further changes sit at proposal stage (DO-178C DAL A / confidential-AI-edge roadmap, PRs #200–#204): boot-root-of-trust, op-tee-bridge, remote-attestation, confidential-compute, tegra-smmu-isolation, aarch64-mte-pac-hardening, ecc-scrubbing, deterministic-scheduling, watchdog-lockstep, dynamic-batching, llm-api-translation, the fpga-* series, and more — many gated on hardware access or prerequisite changes. 60 changes are archived (most recently the 2026-07-16 batch: `security-ecdsa-p256-v1`, `security-rsa-pss-v1`, `session-config-eager-validation-v1`, `crypto-validation-strategy-v1`, `ci-test-gates-v1` — main specs now carry `security-ecdsa-p256-verify`, `security-rsa-pss-verify`, `crypto-validation-policy`, `ci-test-matrix`).
 
-Use OpenSpec skills (e.g. `/opsx:new`, `/opsx:continue`, `/opsx:apply`, `/opsx:verify`, `/opsx:archive`) to manage changes. The workflow is: proposal → design → specs → tasks → implementation → verification → archive.
+Use OpenSpec skills to manage changes. Start a change with `/opsx:propose` (scaffolds the change and generates every artifact in one step) or step through it with `/opsx:new` + `/opsx:continue`; then `/opsx:apply`, `/opsx:verify`, `/opsx:archive`. `/opsx:update` revises an in-flight change's artifacts and keeps them coherent; `/opsx:sync` syncs delta specs into main specs without archiving; `/opsx:bulk-archive` archives several completed changes at once. The workflow is: proposal → design → specs → tasks → implementation → verification → archive.
+
+Generated skills come from the `openspec` CLI — regenerate them with `openspec update` after upgrading it (`npm install -g @fission-ai/openspec@latest`). The workflow set is a global CLI setting, not a repo one; this project expects the full 12-workflow profile.
 
 ## CI/CD
 
