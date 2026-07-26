@@ -898,6 +898,7 @@ dependencies = [
  "smallaios-onnx-rt",
  "smallaios-posix",
  "smallaios-security",
+ "smallaios-tls-client",
  "tempfile",
 ]
 

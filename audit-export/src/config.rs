@@ -86,6 +86,12 @@ pub struct Config {
 
     pub require_pqc: bool,
     pub server_pubkey_fingerprint: String,
+    /// Path to a PEM bundle of trust anchors for the immudb server
+    /// chain (`[tls] trust_store_path`). Mandatory when `enabled`:
+    /// an empty trust store refuses every chain (design.md D5), so
+    /// starting the exporter without one could only ever fail at
+    /// connect time. `Config::validate` rejects that up front.
+    pub trust_store_path: String,
 
     pub include_actions: Vec<String>,
     pub exclude_actions: Vec<String>,
@@ -108,6 +114,7 @@ impl Default for Config {
             backoff_cap_ms: 300_000,
             require_pqc: false,
             server_pubkey_fingerprint: String::new(),
+            trust_store_path: String::new(),
             include_actions: Vec::new(),
             exclude_actions: alloc::vec![
                 String::from("audit_export_attempt"),
@@ -153,6 +160,10 @@ pub enum ConfigError {
     EndpointNotHttps,
     /// `auth_mode = "mtls"` requested but feature is off / v2.
     MtlsNotYetSupported,
+    /// `enabled = true` but `trust_store_path` is empty. An empty
+    /// trust store refuses every chain (design.md D5), so this
+    /// would fail at every connect attempt; refuse at config time.
+    TrustStoreRequired,
 }
 
 impl Config {
@@ -170,6 +181,9 @@ impl Config {
         if !self.server_pubkey_fingerprint.is_empty() && !is_hex_64(&self.server_pubkey_fingerprint)
         {
             return Err(ConfigError::PubkeyFingerprintMalformed);
+        }
+        if self.enabled && self.trust_store_path.is_empty() {
+            return Err(ConfigError::TrustStoreRequired);
         }
         if self.batch_size < BATCH_SIZE_MIN || self.batch_size > BATCH_SIZE_MAX {
             return Err(ConfigError::BatchSizeOutOfRange {
@@ -278,6 +292,10 @@ impl Config {
             "server_pubkey_fingerprint = \"{}\"\n",
             escape_toml(&self.server_pubkey_fingerprint)
         ));
+        s.push_str(&format!(
+            "trust_store_path = \"{}\"\n",
+            escape_toml(&self.trust_store_path)
+        ));
         s.push_str("\n[record_filter]\n");
         s.push_str("include_actions = [");
         for (i, a) in self.include_actions.iter().enumerate() {
@@ -348,6 +366,7 @@ mod tests {
             enabled: true,
             endpoint: "https://immudb.example.com:3322".into(),
             server_pubkey_fingerprint: "a".repeat(64),
+            trust_store_path: "/data/audit_export/anchors.pem".into(),
             ..Config::default()
         }
     }
@@ -385,6 +404,23 @@ mod tests {
             c.validate().unwrap_err(),
             ConfigError::EnabledRequiresPubkeyFingerprint
         );
+    }
+
+    #[test]
+    fn enabled_without_trust_store_rejected() {
+        let mut c = ok();
+        c.trust_store_path = String::new();
+        assert_eq!(c.validate().unwrap_err(), ConfigError::TrustStoreRequired);
+    }
+
+    #[test]
+    fn disabled_without_trust_store_is_fine() {
+        // The exporter is off, so there is nothing to connect to and
+        // no anchors to require.
+        let mut c = ok();
+        c.enabled = false;
+        c.trust_store_path = String::new();
+        c.validate().unwrap();
     }
 
     #[test]

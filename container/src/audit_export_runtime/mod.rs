@@ -239,6 +239,7 @@ fn apply_kv(cfg: &mut Config, key: &str, value: &str) -> Result<(), String> {
         "exporter.backoff_cap_ms" => cfg.backoff_cap_ms = parse_u64(value)?,
         "tls.require_pqc" => cfg.require_pqc = parse_bool(value)?,
         "tls.server_pubkey_fingerprint" => cfg.server_pubkey_fingerprint = parse_string(value)?,
+        "tls.trust_store_path" => cfg.trust_store_path = parse_string(value)?,
         "record_filter.include_actions" => cfg.include_actions = parse_string_array(value)?,
         "record_filter.exclude_actions" => cfg.exclude_actions = parse_string_array(value)?,
         other => return Err(format!("unknown key '{other}'")),
@@ -493,6 +494,28 @@ mod tests {
     }
 
     #[test]
+    fn load_config_enabled_without_trust_store_rejected() {
+        // tls-tcp-client-v1 task 6.4: an enabled exporter with no
+        // anchor bundle could only ever fail at connect time, so
+        // the loader refuses it up front.
+        let toml = br#"
+[exporter]
+enabled  = true
+endpoint = "https://immudb.example.com:3322"
+
+[tls]
+server_pubkey_fingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+"#;
+        match load_config(toml) {
+            Err(RuntimeError::BadConfig(msg)) => assert!(
+                msg.contains("TrustStoreRequired"),
+                "unexpected config error: {msg}"
+            ),
+            other => panic!("expected TrustStoreRequired, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn load_config_full_enabled() {
         let toml = br#"
 [exporter]
@@ -512,6 +535,7 @@ backoff_cap_ms = 300000
 [tls]
 require_pqc    = false
 server_pubkey_fingerprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+trust_store_path = "/data/audit_export/anchors.pem"
 
 [record_filter]
 include_actions = []
@@ -520,6 +544,7 @@ exclude_actions = ["audit_export_attempt", "immudb_state"]
         let c = load_config(toml).unwrap();
         assert!(c.enabled);
         assert_eq!(c.endpoint, "https://immudb.example.com:3322");
+        assert_eq!(c.trust_store_path, "/data/audit_export/anchors.pem");
         assert_eq!(c.database, "smallaios_audit");
         assert_eq!(c.token_path, DEFAULT_TOKEN_PATH);
         assert_eq!(c.state_path, DEFAULT_STATE_PATH);
