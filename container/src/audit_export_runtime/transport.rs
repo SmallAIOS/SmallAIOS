@@ -236,9 +236,12 @@ fn now_unix() -> i64 {
 /// treats a malformed endpoint or fingerprint as a hard error
 /// rather than re-reporting operator-config problems.
 ///
-/// On failure the [`TlsClientError`] is classified with
-/// [`tls_retry_class`] before being mapped, because the mapping
-/// itself is lossy — see [`map_tls_error`].
+/// On failure the [`TlsClientError`] is mapped straight to a
+/// [`TransportError`] by [`map_tls_error`]. That mapping is lossy:
+/// it collapses distinct TLS failures onto a smaller error set, so
+/// callers that need a retry decision must consult
+/// [`tls_retry_class`] on the original error instead of inferring
+/// one from the mapped value.
 pub fn connect_immudb(config: &Config) -> Result<TcpTlsStream, TransportError> {
     let (host, port) = parse_endpoint(&config.endpoint)?;
 
