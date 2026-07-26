@@ -53,14 +53,35 @@ use smallaios_net::http2::{
 };
 use smallaios_tls_client as tls_client;
 use std::io::{self, Read, Write};
+use std::time::Duration;
 use tls_client::cert::verify::TrustStoreVerifier;
 use tls_client::handshake::driver::ClientConfig;
-use tls_client::std_io::TcpTlsStream;
+use tls_client::std_io::{TcpTlsStream, TlsTimeouts};
 use tls_client::trust::TrustStore;
 use tls_client::TlsClientError;
 
 /// immudb's default gRPC port, used when `endpoint` omits one.
 const DEFAULT_IMMUDB_PORT: u16 = 3322;
+
+/// Deadlines for the immudb TLS connection.
+///
+/// The exporter is a background pipeline with its own backoff, so the
+/// right failure mode for an unresponsive endpoint is a prompt
+/// transient error, not a blocked thread. A timeout maps to the
+/// transient class, so the endpoint is retried under the operator's
+/// `backoff_*_ms` policy instead of wedging export.
+///
+/// These bound a *single* attempt and are deliberately independent of
+/// `backoff_*_ms`, which paces the interval *between* attempts.
+///
+/// Not operator-configurable yet: making these `immudb.toml` keys
+/// means new schema, validation bounds, and spec deltas, which is
+/// tracked as a follow-on rather than folded into Phase 8.
+const TLS_TIMEOUTS: TlsTimeouts = TlsTimeouts {
+    connect: Duration::from_secs(10),
+    read: Duration::from_secs(30),
+    write: Duration::from_secs(30),
+};
 
 /// Post-handshake TLS read/write contract.
 ///
@@ -242,6 +263,11 @@ fn now_unix() -> i64 {
 /// callers that need a retry decision must consult
 /// [`tls_retry_class`] on the original error instead of inferring
 /// one from the mapped value.
+///
+/// Every blocking stage is bounded by [`TLS_TIMEOUTS`]: an immudb
+/// endpoint that accepts the TCP connection and then goes silent
+/// fails on the read deadline and is retried under the operator's
+/// `backoff_*_ms` policy, rather than wedging the export pipeline.
 pub fn connect_immudb(config: &Config) -> Result<TcpTlsStream, TransportError> {
     let (host, port) = parse_endpoint(&config.endpoint)?;
 
@@ -256,7 +282,8 @@ pub fn connect_immudb(config: &Config) -> Result<TcpTlsStream, TransportError> {
         require_pqc: config.require_pqc,
     };
 
-    TcpTlsStream::connect(host, port, client_config, &verifier).map_err(map_tls_error)
+    TcpTlsStream::connect_with_timeouts(host, port, client_config, &verifier, TLS_TIMEOUTS)
+        .map_err(map_tls_error)
 }
 
 /// One client-side gRPC connection backed by a single
@@ -1022,6 +1049,31 @@ mod tests {
             tls_retry_class(&TlsClientError::BadHandshake),
             tls_retry_class(&TlsClientError::ChainUntrusted)
         );
+    }
+
+    /// `connect_immudb` must never hand the TLS client an unbounded
+    /// deadline: the exporter runs on a single pipeline thread, so a
+    /// silent immudb endpoint would otherwise stop export permanently
+    /// instead of failing into the backoff loop.
+    ///
+    /// Only boundedness is asserted, not any relation to
+    /// `backoff_*_ms` — the backoff paces retries *after* a failure,
+    /// while these bound one attempt, so the two are independent. The
+    /// upper bound just keeps a future edit from setting something
+    /// effectively-infinite.
+    #[test]
+    fn tls_timeouts_are_bounded() {
+        for (name, d) in [
+            ("connect", TLS_TIMEOUTS.connect),
+            ("read", TLS_TIMEOUTS.read),
+            ("write", TLS_TIMEOUTS.write),
+        ] {
+            assert!(!d.is_zero(), "{name} timeout must be bounded, got zero");
+            assert!(
+                d <= Duration::from_secs(120),
+                "{name} timeout {d:?} is long enough to look like a hang"
+            );
+        }
     }
 
     #[test]
