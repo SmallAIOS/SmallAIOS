@@ -7,11 +7,12 @@
 //! [`TlsStreamLike`] stream.
 //!
 //! This module is the integration seam between the audit-export
-//! pipeline and a TLS 1.3 client. The actual TLS 1.3
-//! over TCP client lands in a future change
-//! (`tls-tcp-client-v1`) that implements `TlsStreamLike`. Until
-//! that lands, this module is exercised against a mock stream
-//! in tests.
+//! pipeline and the TLS 1.3 client. The concrete implementation is
+//! [`tls_client::std_io::TcpTlsStream`] (`tls-tcp-client-v1`
+//! Phase 7), bridged onto [`TlsStreamLike`] by the `impl` below;
+//! [`connect_immudb`] builds one from an operator [`Config`].
+//! Tests still drive the trait over an in-memory mock stream so the
+//! HTTP/2 framing logic is exercised without a live peer.
 //!
 //! ## Wire protocol
 //!
@@ -39,6 +40,7 @@ use audit_export::immudb::transport::{
     GrpcTransport, Header as GrpcHeader, TransportError, UnaryResponse,
 };
 use smallaios_audit_export as audit_export;
+use smallaios_audit_export::config::Config;
 use smallaios_net::http2::{
     frame::{
         build_data, build_headers, build_settings, build_window_update, flags, FrameHeader,
@@ -49,9 +51,42 @@ use smallaios_net::http2::{
     stream::Stream,
     CONNECTION_PREFACE, DEFAULT_INITIAL_WINDOW_SIZE, MAX_FRAME_PAYLOAD,
 };
+use smallaios_tls_client as tls_client;
 use std::io::{self, Read, Write};
+use std::time::Duration;
+use tls_client::cert::verify::TrustStoreVerifier;
+use tls_client::handshake::driver::ClientConfig;
+use tls_client::std_io::{TcpTlsStream, TlsTimeouts};
+use tls_client::trust::TrustStore;
+use tls_client::TlsClientError;
+
+/// immudb's default gRPC port, used when `endpoint` omits one.
+const DEFAULT_IMMUDB_PORT: u16 = 3322;
+
+/// Deadlines for the immudb TLS connection.
+///
+/// The exporter is a background pipeline with its own backoff, so the
+/// right failure mode for an unresponsive endpoint is a prompt
+/// transient error, not a blocked thread. A timeout maps to the
+/// transient class, so the endpoint is retried under the operator's
+/// `backoff_*_ms` policy instead of wedging export.
+///
+/// These bound a *single* attempt and are deliberately independent of
+/// `backoff_*_ms`, which paces the interval *between* attempts.
+///
+/// Not operator-configurable yet: making these `immudb.toml` keys
+/// means new schema, validation bounds, and spec deltas, which is
+/// tracked as a follow-on rather than folded into Phase 8.
+const TLS_TIMEOUTS: TlsTimeouts = TlsTimeouts {
+    connect: Duration::from_secs(10),
+    read: Duration::from_secs(30),
+    write: Duration::from_secs(30),
+};
 
 /// Post-handshake TLS read/write contract.
+///
+/// The production implementor is
+/// [`tls_client::std_io::TcpTlsStream`]; see the `impl` below.
 ///
 /// Implementors guarantee:
 /// - TLS 1.3 minimum on the wire (TLS 1.2 and below MUST be
@@ -68,6 +103,187 @@ pub trait TlsStreamLike: Read + Write {
     /// underlying transport. After `close`, no further reads
     /// or writes are valid.
     fn close(&mut self) -> io::Result<()>;
+}
+
+/// Bridge the `tls-client` data-phase stream onto the transport's
+/// stream contract. `TcpTlsStream` already satisfies `Read + Write`
+/// and emits `close_notify` from its inherent `close`; this impl
+/// only re-exposes it through the trait.
+impl TlsStreamLike for TcpTlsStream {
+    fn close(&mut self) -> io::Result<()> {
+        TcpTlsStream::close(self)
+    }
+}
+
+/// How the audit pipeline should react to a TLS failure
+/// (`tls-tcp-client-v1` task 7.4).
+///
+/// A transient fault is worth another attempt after backoff; a
+/// policy failure — untrusted chain, expired cert, name mismatch,
+/// PQC downgrade — will fail identically on every retry and must
+/// not be retried.
+///
+/// This is reported separately from [`map_tls_error`] on purpose.
+/// [`TransportError`] collapses every TLS fault into
+/// `TlsHandshake`, so the retry/hard-fail distinction cannot
+/// survive the mapping; callers that need it must classify the
+/// [`TlsClientError`] *before* converting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TlsRetryClass {
+    /// Transient — back off and retry.
+    Retry,
+    /// Deterministic policy failure — do not retry.
+    HardFail,
+}
+
+/// Classify a TLS error per task 7.4: `TcpConnect` / `Io` /
+/// `BadHandshake` are transient; every other variant is a
+/// deterministic policy failure.
+pub fn tls_retry_class(e: &TlsClientError) -> TlsRetryClass {
+    match e {
+        TlsClientError::TcpConnect | TlsClientError::Io | TlsClientError::BadHandshake => {
+            TlsRetryClass::Retry
+        }
+        _ => TlsRetryClass::HardFail,
+    }
+}
+
+/// Map a [`TlsClientError`] onto the pipeline's [`TransportError`].
+///
+/// Note the lossy step: `TransportError` has a single
+/// `TlsHandshake` variant, so a retryable `BadHandshake` and a
+/// terminal `ChainUntrusted` both land there. Use
+/// [`tls_retry_class`] alongside this when the retry decision
+/// matters.
+pub fn map_tls_error(e: TlsClientError) -> TransportError {
+    match e {
+        TlsClientError::TcpConnect => TransportError::ConnectFailed,
+        TlsClientError::Io => TransportError::Io,
+        _ => TransportError::TlsHandshake,
+    }
+}
+
+/// Split an operator `endpoint` into a `(host, port)` pair.
+///
+/// Accepts `https://host[:port]`; the scheme is mandatory and
+/// already enforced by `Config::validate`, so a missing one is a
+/// caller bug rather than operator error. A bracketed IPv6 literal
+/// (`https://[::1]:3322`) keeps its brackets stripped so the host
+/// can be fed to `TcpStream::connect` and the SNI check.
+fn parse_endpoint(endpoint: &str) -> Result<(&str, u16), TransportError> {
+    let rest = endpoint
+        .strip_prefix("https://")
+        .ok_or(TransportError::ConnectFailed)?;
+    // Trim any path/query the operator appended.
+    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    if authority.is_empty() {
+        return Err(TransportError::ConnectFailed);
+    }
+
+    // Bracketed IPv6 literal.
+    if let Some(after) = authority.strip_prefix('[') {
+        let (host, tail) = after.split_once(']').ok_or(TransportError::ConnectFailed)?;
+        if host.is_empty() {
+            return Err(TransportError::ConnectFailed);
+        }
+        let port = match tail.strip_prefix(':') {
+            Some(p) => p.parse().map_err(|_| TransportError::ConnectFailed)?,
+            None if tail.is_empty() => DEFAULT_IMMUDB_PORT,
+            None => return Err(TransportError::ConnectFailed),
+        };
+        return Ok((host, port));
+    }
+
+    match authority.rsplit_once(':') {
+        Some((host, port)) if !host.is_empty() => Ok((
+            host,
+            port.parse().map_err(|_| TransportError::ConnectFailed)?,
+        )),
+        Some(_) => Err(TransportError::ConnectFailed),
+        None => Ok((authority, DEFAULT_IMMUDB_PORT)),
+    }
+}
+
+/// Decode the operator's 64-hex-char pinned SPKI fingerprint.
+/// `Config::validate` already enforces the length and alphabet, so
+/// a failure here means the caller skipped validation.
+fn parse_fingerprint(hex: &str) -> Result<[u8; 32], TransportError> {
+    if hex.len() != 64 {
+        return Err(TransportError::TlsHandshake);
+    }
+    let bytes = hex.as_bytes();
+    let mut out = [0u8; 32];
+    for (i, slot) in out.iter_mut().enumerate() {
+        let hi = (bytes[i * 2] as char)
+            .to_digit(16)
+            .ok_or(TransportError::TlsHandshake)?;
+        let lo = (bytes[i * 2 + 1] as char)
+            .to_digit(16)
+            .ok_or(TransportError::TlsHandshake)?;
+        *slot = ((hi << 4) | lo) as u8;
+    }
+    Ok(out)
+}
+
+/// SNI is omitted for IP literals (RFC 6066 §3).
+fn sni_for(host: &str) -> Option<&str> {
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        None
+    } else {
+        Some(host)
+    }
+}
+
+/// Seconds since the Unix epoch, or `0` when the host clock is
+/// before it. `TrustStoreVerifier` treats a low value as an
+/// unsynchronized clock and applies the design.md D8 policy.
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Open a TLS 1.3 connection to the configured immudb endpoint
+/// (`tls-tcp-client-v1` task 8.2).
+///
+/// Bridges three operator settings into the TLS client:
+/// - `endpoint` → TCP target and SNI name,
+/// - `trust_store_path` → PEM anchor bundle,
+/// - `server_pubkey_fingerprint` → pinned leaf SPKI hash,
+/// - `require_pqc` → hybrid X25519+ML-KEM-768 enforcement.
+///
+/// `Config::validate` must have been called first; this function
+/// treats a malformed endpoint or fingerprint as a hard error
+/// rather than re-reporting operator-config problems.
+///
+/// On failure the [`TlsClientError`] is mapped straight to a
+/// [`TransportError`] by [`map_tls_error`]. That mapping is lossy:
+/// it collapses distinct TLS failures onto a smaller error set, so
+/// callers that need a retry decision must consult
+/// [`tls_retry_class`] on the original error instead of inferring
+/// one from the mapped value.
+///
+/// Every blocking stage is bounded by [`TLS_TIMEOUTS`]: an immudb
+/// endpoint that accepts the TCP connection and then goes silent
+/// fails on the read deadline and is retried under the operator's
+/// `backoff_*_ms` policy, rather than wedging the export pipeline.
+pub fn connect_immudb(config: &Config) -> Result<TcpTlsStream, TransportError> {
+    let (host, port) = parse_endpoint(&config.endpoint)?;
+
+    let pem = std::fs::read_to_string(&config.trust_store_path)
+        .map_err(|_| TransportError::ConnectFailed)?;
+    let mut trust = TrustStore::from_pem(&pem).map_err(|_| TransportError::TlsHandshake)?;
+    trust.set_pin(parse_fingerprint(&config.server_pubkey_fingerprint)?);
+
+    let verifier = TrustStoreVerifier::new(&trust, now_unix(), false);
+    let client_config = ClientConfig {
+        server_name: sni_for(host),
+        require_pqc: config.require_pqc,
+    };
+
+    TcpTlsStream::connect_with_timeouts(host, port, client_config, &verifier, TLS_TIMEOUTS)
+        .map_err(map_tls_error)
 }
 
 /// One client-side gRPC connection backed by a single
@@ -695,6 +911,206 @@ mod tests {
         let err = t.unary_call("/a/b", &[], b"").unwrap_err();
         // EOF maps through io::Error to TransportError::Io.
         assert_eq!(err, TransportError::Io);
+    }
+
+    // ── Phase 8 bridging (tasks 7.4 / 8.2) ────────────────────
+
+    #[test]
+    fn endpoint_splits_host_and_port() {
+        assert_eq!(
+            parse_endpoint("https://immudb.example.com:3322").unwrap(),
+            ("immudb.example.com", 3322)
+        );
+    }
+
+    #[test]
+    fn endpoint_defaults_to_immudb_port() {
+        assert_eq!(
+            parse_endpoint("https://immudb.example.com").unwrap(),
+            ("immudb.example.com", DEFAULT_IMMUDB_PORT)
+        );
+    }
+
+    #[test]
+    fn endpoint_accepts_bracketed_ipv6() {
+        assert_eq!(parse_endpoint("https://[::1]:3322").unwrap(), ("::1", 3322));
+        assert_eq!(
+            parse_endpoint("https://[2001:db8::5]").unwrap(),
+            ("2001:db8::5", DEFAULT_IMMUDB_PORT)
+        );
+    }
+
+    #[test]
+    fn endpoint_trims_trailing_path() {
+        assert_eq!(
+            parse_endpoint("https://host:1234/ignored").unwrap(),
+            ("host", 1234)
+        );
+    }
+
+    #[test]
+    fn endpoint_rejects_non_https_and_malformed() {
+        for bad in [
+            "http://host:1",   // wrong scheme
+            "host:1",          // no scheme
+            "https://",        // empty authority
+            "https://host:xx", // non-numeric port
+            "https://:1234",   // empty host
+            "https://[::1",    // unterminated bracket
+            "https://[]:1",    // empty v6 host
+        ] {
+            assert!(parse_endpoint(bad).is_err(), "expected reject: {bad}");
+        }
+    }
+
+    #[test]
+    fn ipv6_port_overflow_is_rejected() {
+        // 70000 does not fit in u16 — must not wrap.
+        assert!(parse_endpoint("https://[::1]:70000").is_err());
+        assert!(parse_endpoint("https://host:70000").is_err());
+    }
+
+    #[test]
+    fn sni_omitted_for_ip_literals() {
+        assert_eq!(sni_for("immudb.example.com"), Some("immudb.example.com"));
+        assert_eq!(sni_for("192.0.2.10"), None);
+        assert_eq!(sni_for("::1"), None);
+    }
+
+    #[test]
+    fn fingerprint_decodes_64_hex_chars() {
+        let hex = "00ff".to_string() + &"a".repeat(60);
+        let fp = parse_fingerprint(&hex).unwrap();
+        assert_eq!(fp[0], 0x00);
+        assert_eq!(fp[1], 0xff);
+        assert_eq!(fp[31], 0xaa);
+    }
+
+    #[test]
+    fn fingerprint_rejects_bad_length_and_alphabet() {
+        assert!(parse_fingerprint(&"a".repeat(63)).is_err());
+        assert!(parse_fingerprint(&"a".repeat(65)).is_err());
+        assert!(parse_fingerprint(&"z".repeat(64)).is_err());
+    }
+
+    #[test]
+    fn tls_errors_classify_per_task_7_4() {
+        // Transient — worth a retry after backoff.
+        for e in [
+            TlsClientError::TcpConnect,
+            TlsClientError::Io,
+            TlsClientError::BadHandshake,
+        ] {
+            assert_eq!(tls_retry_class(&e), TlsRetryClass::Retry, "{e:?}");
+        }
+        // Deterministic policy failures — retrying cannot help.
+        for e in [
+            TlsClientError::Version,
+            TlsClientError::BadRecord,
+            TlsClientError::KeyExchange,
+            TlsClientError::BadCertificate,
+            TlsClientError::ChainUntrusted,
+            TlsClientError::Expired,
+            TlsClientError::NameMismatch,
+            TlsClientError::PqcDowngrade,
+            TlsClientError::Aead,
+        ] {
+            assert_eq!(tls_retry_class(&e), TlsRetryClass::HardFail, "{e:?}");
+        }
+    }
+
+    #[test]
+    fn tls_errors_map_onto_transport_errors() {
+        assert_eq!(
+            map_tls_error(TlsClientError::TcpConnect),
+            TransportError::ConnectFailed
+        );
+        assert_eq!(map_tls_error(TlsClientError::Io), TransportError::Io);
+        assert_eq!(
+            map_tls_error(TlsClientError::ChainUntrusted),
+            TransportError::TlsHandshake
+        );
+        assert_eq!(
+            map_tls_error(TlsClientError::PqcDowngrade),
+            TransportError::TlsHandshake
+        );
+    }
+
+    #[test]
+    fn transport_error_mapping_is_lossy_for_retry_class() {
+        // Documents why tls_retry_class exists: a retryable and a
+        // terminal error are indistinguishable after mapping, so
+        // callers must classify before converting.
+        assert_eq!(
+            map_tls_error(TlsClientError::BadHandshake),
+            map_tls_error(TlsClientError::ChainUntrusted)
+        );
+        assert_ne!(
+            tls_retry_class(&TlsClientError::BadHandshake),
+            tls_retry_class(&TlsClientError::ChainUntrusted)
+        );
+    }
+
+    /// `connect_immudb` must never hand the TLS client an unbounded
+    /// deadline: the exporter runs on a single pipeline thread, so a
+    /// silent immudb endpoint would otherwise stop export permanently
+    /// instead of failing into the backoff loop.
+    ///
+    /// Only boundedness is asserted, not any relation to
+    /// `backoff_*_ms` — the backoff paces retries *after* a failure,
+    /// while these bound one attempt, so the two are independent. The
+    /// upper bound just keeps a future edit from setting something
+    /// effectively-infinite.
+    #[test]
+    fn tls_timeouts_are_bounded() {
+        for (name, d) in [
+            ("connect", TLS_TIMEOUTS.connect),
+            ("read", TLS_TIMEOUTS.read),
+            ("write", TLS_TIMEOUTS.write),
+        ] {
+            assert!(!d.is_zero(), "{name} timeout must be bounded, got zero");
+            assert!(
+                d <= Duration::from_secs(120),
+                "{name} timeout {d:?} is long enough to look like a hang"
+            );
+        }
+    }
+
+    #[test]
+    fn connect_immudb_reports_missing_trust_store() {
+        let config = Config {
+            enabled: true,
+            endpoint: "https://127.0.0.1:1".into(),
+            server_pubkey_fingerprint: "a".repeat(64),
+            trust_store_path: "/nonexistent/anchors.pem".into(),
+            ..Config::default()
+        };
+        // Fails on the unreadable anchor bundle, before any socket.
+        assert_eq!(
+            connect_immudb(&config).err().unwrap(),
+            TransportError::ConnectFailed
+        );
+    }
+
+    #[test]
+    fn connect_immudb_rejects_empty_trust_store() {
+        use std::io::Write as _;
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        // Valid PEM framing, zero anchors.
+        writeln!(f, "not a certificate block").unwrap();
+        let config = Config {
+            enabled: true,
+            endpoint: "https://127.0.0.1:1".into(),
+            server_pubkey_fingerprint: "a".repeat(64),
+            trust_store_path: f.path().to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        // An empty store refuses every chain (D5), so we fail here
+        // rather than dialing out and failing at verify time.
+        assert_eq!(
+            connect_immudb(&config).err().unwrap(),
+            TransportError::TlsHandshake
+        );
     }
 
     #[test]

@@ -17,12 +17,18 @@
 // 3. The SHA-256 fingerprint of the server's Ed25519 public key
 //    in `IMMUDB_E2E_PUBKEY_FINGERPRINT`.
 //
+// 4. A PEM bundle of trust anchors for the server's certificate
+//    chain in `IMMUDB_E2E_TRUST_STORE`. Mandatory: an empty trust
+//    store refuses every chain, so `Config::validate` rejects an
+//    enabled exporter without one (see `ConfigError::TrustStoreRequired`).
+//
 // To run locally:
 //
 // ```
 // IMMUDB_E2E_URL=https://localhost:3322 \
 // IMMUDB_E2E_TOKEN=$(cat ./test-token) \
 // IMMUDB_E2E_PUBKEY_FINGERPRINT=$(sha256sum < pubkey | awk '{print $1}') \
+// IMMUDB_E2E_TRUST_STORE=./anchors.pem \
 //   cargo test -p smallaios-audit-export --test e2e_immudb -- --ignored
 // ```
 //
@@ -47,11 +53,14 @@ fn no_env_means_test_is_skipped() {
         return; // proper E2E mode handled below.
     }
     // Without env, just confirm the configuration plumbing
-    // accepts a representative valid config.
+    // accepts a representative valid config. `trust_store_path` is
+    // mandatory once `enabled` is set, so it must be populated here
+    // even though this test never opens a socket.
     let c = Config {
         enabled: true,
         endpoint: "https://localhost:3322".into(),
         server_pubkey_fingerprint: "a".repeat(64),
+        trust_store_path: "/data/audit_export/anchors.pem".into(),
         ..Config::default()
     };
     c.validate().expect("default+enabled validates");
@@ -83,11 +92,14 @@ fn e2e_real_immudb_smoke() {
     let fp = require_env("IMMUDB_E2E_PUBKEY_FINGERPRINT")
         .expect("IMMUDB_E2E_PUBKEY_FINGERPRINT not set");
     assert_eq!(fp.len(), 64, "fingerprint must be 64 hex chars");
+    let trust_store =
+        require_env("IMMUDB_E2E_TRUST_STORE").expect("IMMUDB_E2E_TRUST_STORE not set");
 
     let c = Config {
         enabled: true,
         endpoint: url,
         server_pubkey_fingerprint: fp,
+        trust_store_path: trust_store,
         ..Config::default()
     };
     c.validate().expect("env-driven config validates");

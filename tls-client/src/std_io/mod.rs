@@ -18,6 +18,10 @@
 //! mock socket; [`TcpTlsStream`] is the `TcpStream` specialisation
 //! whose `connect` opens the socket and draws handshake entropy from
 //! the `security` CSPRNG.
+//!
+//! Every socket-blocking stage is bounded by [`TlsTimeouts`] so an
+//! unresponsive or silently-dropping peer cannot stall the caller
+//! indefinitely — see that type for what is and is not covered.
 
 use crate::cert::ServerCertVerifier;
 use crate::handshake::driver::{ClientConfig, ClientEntropy, ClientHandshake, HandshakeStatus};
@@ -29,10 +33,129 @@ use crate::TlsClientError;
 use alloc::format;
 use alloc::vec::Vec;
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::{Duration, Instant};
 
 /// Bytes pulled from the socket per `read` syscall.
 const READ_CHUNK: usize = 8192;
+
+/// Default ceiling on the TCP handshake, across every address the
+/// host name resolves to.
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Default ceiling on a single socket read or write, applied to both
+/// the TLS handshake flights and the data phase.
+const DEFAULT_IO_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Per-stage deadlines for [`TcpTlsStream`].
+///
+/// Without these, a peer that completes the TCP handshake and then
+/// goes silent parks the caller in `read` forever; for the audit
+/// exporter that means the export pipeline stops making progress with
+/// no error to back off from. Each field bounds one stage:
+///
+/// - `connect` — total budget for the TCP handshake. When the host
+///   name resolves to several addresses the budget is shared across
+///   all of them, so the worst case is `connect`, not `connect` per
+///   address.
+/// - `read` — one `read` syscall, via `SO_RCVTIMEO`. Applies to the
+///   handshake flights *and* every post-handshake record read.
+/// - `write` — one `write` or `flush`, via `SO_SNDTIMEO`. Same
+///   coverage.
+///
+/// `Duration::ZERO` disables that stage's timeout (the platform
+/// rejects a zero socket timeout, and `connect_timeout` rejects a
+/// zero duration outright, so zero is read as "unbounded" rather
+/// than passed down).
+///
+/// **Not covered:** name resolution. `ToSocketAddrs` offers no
+/// deadline in `std`, so a wedged resolver still blocks — bounding it
+/// needs a resolver thread, which is out of scope for a `#![no_std]`
+/// crate's thin `std` shim. Pass an IP literal to skip resolution
+/// entirely.
+///
+/// A read or write that trips its deadline surfaces as
+/// [`TlsClientError::Io`] during the handshake, and as an
+/// `io::Error` of kind `WouldBlock`/`TimedOut` in the data phase; a
+/// `connect` that trips surfaces as [`TlsClientError::TcpConnect`].
+/// Both map to the transient class, which is the correct retry
+/// decision for a timeout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TlsTimeouts {
+    /// Total budget for the TCP handshake.
+    pub connect: Duration,
+    /// Per-`read` budget (`SO_RCVTIMEO`).
+    pub read: Duration,
+    /// Per-`write`/`flush` budget (`SO_SNDTIMEO`).
+    pub write: Duration,
+}
+
+impl Default for TlsTimeouts {
+    fn default() -> Self {
+        Self {
+            connect: DEFAULT_CONNECT_TIMEOUT,
+            read: DEFAULT_IO_TIMEOUT,
+            write: DEFAULT_IO_TIMEOUT,
+        }
+    }
+}
+
+impl TlsTimeouts {
+    /// Every stage unbounded. Only for tests and callers that supply
+    /// their own deadline mechanism; production paths should take
+    /// [`Default`].
+    pub const fn unbounded() -> Self {
+        Self {
+            connect: Duration::ZERO,
+            read: Duration::ZERO,
+            write: Duration::ZERO,
+        }
+    }
+}
+
+/// Normalise a caller duration into the `Option` the socket setters
+/// want: `ZERO` means "no deadline".
+fn opt_timeout(d: Duration) -> Option<Duration> {
+    if d.is_zero() {
+        None
+    } else {
+        Some(d)
+    }
+}
+
+/// Open a TCP connection to `host:port`, spending at most
+/// `budget` in total across every resolved address.
+///
+/// `TcpStream::connect` has no deadline, so this resolves first and
+/// then dials each candidate with `connect_timeout`, charging the
+/// elapsed time against a single shared deadline. Without the shared
+/// deadline a name resolving to N addresses would take N × budget in
+/// the worst case.
+fn dial(host: &str, port: u16, budget: Duration) -> crate::Result<TcpStream> {
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| TlsClientError::TcpConnect)?;
+
+    // No budget: fall back to the unbounded connect, which also
+    // re-uses std's own address iteration.
+    if budget.is_zero() {
+        return TcpStream::connect((host, port)).map_err(|_| TlsClientError::TcpConnect);
+    }
+
+    let deadline = Instant::now() + budget;
+    for addr in addrs {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            // Budget exhausted mid-iteration; stop rather than dial
+            // the remaining addresses past the caller's deadline.
+            break;
+        }
+        if let Ok(sock) = TcpStream::connect_timeout(&addr, remaining) {
+            return Ok(sock);
+        }
+    }
+    Err(TlsClientError::TcpConnect)
+}
 
 /// Map a [`TlsClientError`] into a `std::io::Error` for the
 /// `Read`/`Write` surface.
@@ -253,13 +376,46 @@ impl TcpTlsStream {
     /// handshake, validating the server chain through `verifier`.
     /// Handshake entropy is drawn from the hardware-seeded `security`
     /// CSPRNG.
+    ///
+    /// Uses [`TlsTimeouts::default`]; call
+    /// [`connect_with_timeouts`](Self::connect_with_timeouts) to set
+    /// your own deadlines.
     pub fn connect<V: ServerCertVerifier>(
         host: &str,
         port: u16,
         config: ClientConfig<'_>,
         verifier: &V,
     ) -> crate::Result<Self> {
-        let sock = TcpStream::connect((host, port)).map_err(|_| TlsClientError::TcpConnect)?;
+        Self::connect_with_timeouts(host, port, config, verifier, TlsTimeouts::default())
+    }
+
+    /// [`connect`](Self::connect) with explicit per-stage deadlines.
+    ///
+    /// The read/write deadlines are installed on the socket *before*
+    /// the first handshake byte moves, so they bound the handshake as
+    /// well as the data phase that outlives this call.
+    ///
+    /// One consequence worth naming: a `write` deadline can expire
+    /// after a partial write, leaving a half-written TLS record on
+    /// the wire. The record stream is then unusable and the caller
+    /// must drop the connection rather than retry on the same stream
+    /// — which is what the audit exporter does, since a timeout
+    /// surfaces as a transient error that tears the connection down
+    /// and reconnects. Preferable to blocking forever, but it does
+    /// mean a `write` timeout is connection-fatal, not recoverable
+    /// in place.
+    pub fn connect_with_timeouts<V: ServerCertVerifier>(
+        host: &str,
+        port: u16,
+        config: ClientConfig<'_>,
+        verifier: &V,
+        timeouts: TlsTimeouts,
+    ) -> crate::Result<Self> {
+        let sock = dial(host, port, timeouts.connect)?;
+        sock.set_read_timeout(opt_timeout(timeouts.read))
+            .map_err(|_| TlsClientError::TcpConnect)?;
+        sock.set_write_timeout(opt_timeout(timeouts.write))
+            .map_err(|_| TlsClientError::TcpConnect)?;
         let entropy = os_entropy()?;
         Self::connect_over(sock, config, verifier, &entropy)
     }
@@ -478,6 +634,159 @@ mod tests {
         let len_before = s.sock.outbound.len();
         s.close().unwrap();
         assert_eq!(s.sock.outbound.len(), len_before);
+    }
+
+    // ---- TlsTimeouts (CodeRabbit review on the Phase 8 PR: the
+    // connect path was previously unbounded at every stage) ----
+
+    use crate::cert::{LeafPublicKey, ServerCertVerifier};
+    // `no_std` crate: `ToString` is not in the prelude.
+    use alloc::string::ToString;
+    use std::net::{TcpListener, TcpStream as StdTcpStream};
+
+    /// Refuses every chain. The timeout tests never reach chain
+    /// verification — the socket deadline fires first — so the
+    /// verdict only has to be deterministic, not correct.
+    struct RejectAll;
+
+    impl ServerCertVerifier for RejectAll {
+        fn verify_chain(
+            &self,
+            _certs: &[Vec<u8>],
+            _server_name: Option<&str>,
+        ) -> crate::Result<LeafPublicKey> {
+            Err(TlsClientError::ChainUntrusted)
+        }
+    }
+
+    #[test]
+    fn default_timeouts_are_bounded() {
+        let t = TlsTimeouts::default();
+        assert!(!t.connect.is_zero(), "connect must be bounded by default");
+        assert!(!t.read.is_zero(), "read must be bounded by default");
+        assert!(!t.write.is_zero(), "write must be bounded by default");
+    }
+
+    #[test]
+    fn zero_duration_reads_as_unbounded() {
+        assert_eq!(opt_timeout(Duration::ZERO), None);
+        assert_eq!(
+            opt_timeout(Duration::from_millis(250)),
+            Some(Duration::from_millis(250))
+        );
+        let u = TlsTimeouts::unbounded();
+        assert_eq!(opt_timeout(u.read), None);
+        assert_eq!(opt_timeout(u.write), None);
+    }
+
+    /// The regression this fix exists for: a peer that completes the
+    /// TCP handshake and then never sends a byte must fail on the
+    /// read deadline instead of parking the caller forever.
+    #[test]
+    fn silent_peer_trips_the_read_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Accept, then hold the connection open and say nothing. The
+        // guard keeps the accepted socket alive so the client sees
+        // silence rather than EOF (EOF would fail via a different
+        // path and prove nothing about the timeout).
+        let accepted = std::thread::spawn(move || {
+            let (sock, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_secs(5));
+            drop(sock);
+        });
+
+        let timeouts = TlsTimeouts {
+            connect: Duration::from_secs(5),
+            read: Duration::from_millis(300),
+            write: Duration::from_secs(5),
+        };
+        let config = ClientConfig {
+            server_name: None,
+            require_pqc: false,
+        };
+
+        let start = Instant::now();
+        let res = TcpTlsStream::connect_with_timeouts(
+            &addr.ip().to_string(),
+            addr.port(),
+            config,
+            &RejectAll,
+            timeouts,
+        );
+        let elapsed = start.elapsed();
+
+        // A timed-out handshake read is an I/O fault, which
+        // `tls_retry_class` treats as transient.
+        assert_eq!(res.err(), Some(TlsClientError::Io));
+        // Generous ceiling: entropy draw and the ClientHello build
+        // both precede the read, and CI runners are slow. The point
+        // is that it returns at all rather than hanging.
+        assert!(
+            elapsed < Duration::from_secs(4),
+            "read deadline did not bound the handshake: {elapsed:?}"
+        );
+
+        accepted.join().unwrap();
+    }
+
+    /// A refused connection is still a fast `TcpConnect`, not a
+    /// wait-out-the-whole-budget stall.
+    #[test]
+    fn refused_port_fails_fast_as_tcp_connect() {
+        // Bind then drop to get a port nothing is listening on.
+        let addr = {
+            let l = TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        // Confirm the port really is closed before asserting on it;
+        // otherwise a racing bind would make this test lie.
+        if StdTcpStream::connect(addr).is_ok() {
+            return;
+        }
+
+        let config = ClientConfig {
+            server_name: None,
+            require_pqc: false,
+        };
+        let start = Instant::now();
+        let res = TcpTlsStream::connect_with_timeouts(
+            &addr.ip().to_string(),
+            addr.port(),
+            config,
+            &RejectAll,
+            TlsTimeouts {
+                connect: Duration::from_secs(10),
+                ..TlsTimeouts::default()
+            },
+        );
+        assert_eq!(res.err(), Some(TlsClientError::TcpConnect));
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "refusal should not consume the connect budget"
+        );
+    }
+
+    #[test]
+    fn dial_reaches_a_live_listener_within_budget() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sock = dial(&addr.ip().to_string(), addr.port(), Duration::from_secs(5))
+            .expect("dial to a live listener");
+        assert_eq!(sock.peer_addr().unwrap(), addr);
+    }
+
+    #[test]
+    fn dial_with_zero_budget_still_connects() {
+        // ZERO means unbounded, not "fail immediately" — a zero
+        // socket timeout is rejected by the platform, so the code
+        // must route around `connect_timeout` entirely.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sock = dial(&addr.ip().to_string(), addr.port(), Duration::ZERO)
+            .expect("zero budget means unbounded");
+        assert_eq!(sock.peer_addr().unwrap(), addr);
     }
 
     #[test]
