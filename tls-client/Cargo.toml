@@ -25,6 +25,12 @@ std = []
 # Operator-facing knob for the deferred mTLS path.
 mtls = []
 formal-gate = []
+# Exposes the mock TLS 1.3 server (`harness` module) that this
+# crate's own tests drive the client against, so downstream crates
+# can run full-handshake tests through their production seams
+# (`container`'s audit-export transport does). Dev-dependencies
+# only — enabling it in a production build ships dead test code.
+test-harness = []
 
 # Real-endpoint e2e (task 7.6): #[ignore]-gated, needs the std-IO
 # adapter. `cargo test` without `--features std` skips the target.

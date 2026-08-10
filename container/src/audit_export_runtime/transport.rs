@@ -43,13 +43,13 @@ use smallaios_audit_export as audit_export;
 use smallaios_audit_export::config::Config;
 use smallaios_net::http2::{
     frame::{
-        build_data, build_headers, build_settings, build_window_update, flags, FrameHeader,
-        FrameType,
+        build_data, build_goaway, build_headers, build_settings, build_window_update, flags,
+        FrameHeader, FrameType,
     },
     grpc::{DEFAULT_MAX_MESSAGE_LEN, PREFIX_LEN},
     hpack::{decode_block, encode_block, Header as HpackHeader},
     stream::Stream,
-    CONNECTION_PREFACE, DEFAULT_INITIAL_WINDOW_SIZE, MAX_FRAME_PAYLOAD,
+    Http2Error, CONNECTION_PREFACE, DEFAULT_INITIAL_WINDOW_SIZE, MAX_FRAME_PAYLOAD,
 };
 use smallaios_tls_client as tls_client;
 use std::io::{self, Read, Write};
@@ -62,6 +62,9 @@ use tls_client::TlsClientError;
 
 /// immudb's default gRPC port, used when `endpoint` omits one.
 const DEFAULT_IMMUDB_PORT: u16 = 3322;
+
+/// RFC 9113 §7 GOAWAY error code for a protocol violation.
+const PROTOCOL_ERROR: u32 = 0x1;
 
 /// Deadlines for the immudb TLS connection.
 ///
@@ -244,6 +247,40 @@ fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// Trust-store file permissions must be `0640` or stricter —
+/// owner read/write, group read, nothing for world, never
+/// executable (`tls-tcp-client-v1` task 10.4, defense-in-depth).
+///
+/// The anchors are public certificates, so this is not about
+/// secrecy: a bundle the whole host can write to (or that arrived
+/// world-writable from a sloppy provisioning step) is a bundle an
+/// unprivileged process could swap an attacker CA into. Matching
+/// the mgmt loader's mode-stricter-than-declared rule, stricter
+/// modes (e.g. `0600`) pass; any extra bit refuses the store.
+///
+/// Non-Unix hosts have no mode bits to check; the guard is a
+/// no-op there.
+#[cfg(unix)]
+fn trust_store_permissions_ok(mode: u32) -> bool {
+    // Bits outside 0640: world rwx, group wx, owner x.
+    mode & 0o137 == 0
+}
+
+#[cfg(unix)]
+fn check_trust_store_permissions(path: &str) -> Result<(), TransportError> {
+    use std::os::unix::fs::PermissionsExt;
+    let meta = std::fs::metadata(path).map_err(|_| TransportError::ConnectFailed)?;
+    if !trust_store_permissions_ok(meta.permissions().mode()) {
+        return Err(TransportError::TlsHandshake);
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn check_trust_store_permissions(_path: &str) -> Result<(), TransportError> {
+    Ok(())
+}
+
 /// Open a TLS 1.3 connection to the configured immudb endpoint
 /// (`tls-tcp-client-v1` task 8.2).
 ///
@@ -271,6 +308,7 @@ fn now_unix() -> i64 {
 pub fn connect_immudb(config: &Config) -> Result<TcpTlsStream, TransportError> {
     let (host, port) = parse_endpoint(&config.endpoint)?;
 
+    check_trust_store_permissions(&config.trust_store_path)?;
     let pem = std::fs::read_to_string(&config.trust_store_path)
         .map_err(|_| TransportError::ConnectFailed)?;
     let mut trust = TrustStore::from_pem(&pem).map_err(|_| TransportError::TlsHandshake)?;
@@ -338,10 +376,26 @@ impl<S: TlsStreamLike> TlsGrpcTransport<S> {
 
     /// Read exactly one full frame (header + payload) from the
     /// stream into `out`. Returns the parsed header.
+    ///
+    /// A refused frame type — `PUSH_PROMISE` (0x5) or anything
+    /// unknown — is an RFC 9113 §8.4 connection error: answer
+    /// `GOAWAY` with `PROTOCOL_ERROR` and drop the connection
+    /// (spec scenario "HTTP/2 server push refused"). Both writes
+    /// are best-effort; the connection is dead either way.
     fn read_frame(&mut self, out: &mut Vec<u8>) -> Result<FrameHeader, TransportError> {
         let mut header_buf = [0u8; 9];
         read_exact(&mut self.stream, &mut header_buf).map_err(map_io)?;
-        let header = FrameHeader::parse(&header_buf).map_err(|_| TransportError::Http2)?;
+        let header = match FrameHeader::parse(&header_buf) {
+            Ok(h) => h,
+            Err(Http2Error::RefusedFrameType) => {
+                // last_stream_id = 0: we never process a
+                // server-initiated stream.
+                let _ = self.stream.write_all(&build_goaway(0, PROTOCOL_ERROR));
+                let _ = self.stream.close();
+                return Err(TransportError::Http2);
+            }
+            Err(_) => return Err(TransportError::Http2),
+        };
         if header.length as usize > MAX_FRAME_PAYLOAD {
             return Err(TransportError::Http2);
         }
@@ -1126,5 +1180,277 @@ mod tests {
         t.unary_call("/a/d", &[], b"").unwrap();
         // The next stream id we'd allocate would be 7.
         assert_eq!(t.next_stream_id, 7);
+    }
+
+    /// Spec scenario "HTTP/2 server push refused": a PUSH_PROMISE
+    /// frame is answered with `GOAWAY (PROTOCOL_ERROR)` and the
+    /// connection is dropped.
+    #[test]
+    fn push_promise_answered_with_goaway_protocol_error() {
+        let mut response = Vec::new();
+        response.extend(build_settings(false, &[]));
+        // Raw PUSH_PROMISE (type 0x5) header + 4-byte promised
+        // stream id, built by hand — `FrameType` refuses to even
+        // represent the type.
+        response.extend_from_slice(&[0, 0, 4, 0x5, 0x4, 0, 0, 0, 1]);
+        response.extend_from_slice(&2u32.to_be_bytes());
+        let stream = MockStream::new(response);
+        let mut t = TlsGrpcTransport::new(stream, "x:1");
+        let err = t.unary_call("/a/b", &[], b"").unwrap_err();
+        assert_eq!(err, TransportError::Http2);
+        let goaway = build_goaway(0, PROTOCOL_ERROR);
+        assert!(
+            t.stream
+                .write_buf
+                .windows(goaway.len())
+                .any(|w| w == goaway),
+            "GOAWAY(PROTOCOL_ERROR) not written before dropping"
+        );
+        assert!(t.stream.closed, "connection not dropped");
+    }
+
+    // ── Trust-store permission guard (task 10.4) ──────────────
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_store_mode_0640_or_stricter_accepted() {
+        // File-type bits (S_IFREG) never trip the mask.
+        for mode in [0o100640, 0o100600, 0o100400, 0o100000] {
+            assert!(trust_store_permissions_ok(mode), "{mode:o}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn trust_store_loose_or_executable_modes_refused() {
+        for mode in [0o100644, 0o100664, 0o100666, 0o100660, 0o100750, 0o100700] {
+            assert!(!trust_store_permissions_ok(mode), "{mode:o}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn connect_immudb_refuses_world_readable_trust_store() {
+        use std::os::unix::fs::PermissionsExt;
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::set_permissions(f.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        let config = Config {
+            enabled: true,
+            endpoint: "https://127.0.0.1:1".into(),
+            server_pubkey_fingerprint: "a".repeat(64),
+            trust_store_path: f.path().to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        // Refused on the mode bits before the bundle is even read.
+        assert_eq!(
+            connect_immudb(&config).err().unwrap(),
+            TransportError::TlsHandshake
+        );
+    }
+
+    // ── Full handshake against the mock TLS 1.3 server ────────
+    //
+    // tls-tcp-client-v1 tasks 8.3/8.4: the production
+    // `TcpTlsStream` bridge drives a complete handshake and gRPC
+    // round-trip against `tls_client::harness`'s mock server over
+    // a real loopback socket.
+
+    use tls_client::harness;
+    use tls_client::record::ContentType as TlsContentType;
+
+    /// Bounded deadlines so a broken test fails instead of hanging.
+    const TEST_TIMEOUTS: TlsTimeouts = TlsTimeouts {
+        connect: Duration::from_secs(5),
+        read: Duration::from_secs(5),
+        write: Duration::from_secs(5),
+    };
+
+    /// Read one TLS record (5-byte header + payload) off a socket.
+    fn read_tls_record(sock: &mut std::net::TcpStream) -> Vec<u8> {
+        let mut hdr = [0u8; 5];
+        sock.read_exact(&mut hdr).unwrap();
+        let len = u16::from_be_bytes([hdr[3], hdr[4]]) as usize;
+        let mut rec = hdr.to_vec();
+        rec.resize(5 + len, 0);
+        sock.read_exact(&mut rec[5..]).unwrap();
+        rec
+    }
+
+    /// Task 8.3: full TLS 1.3 handshake + gRPC unary round-trip
+    /// through `TcpTlsStream` and `TlsGrpcTransport`, against the
+    /// mock server. Also pins the spec scenario "Handshake
+    /// completes before HTTP/2 preface": the server decrypts the
+    /// preface from *application* records, which cannot exist
+    /// until the handshake finished.
+    #[test]
+    fn full_handshake_and_unary_call_over_tcp() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let ch = read_tls_record(&mut sock);
+            let kp = harness::server_cert_ed25519();
+            let mut flight = harness::server_respond(
+                &ch,
+                tls_client::record::CipherSuite::ChaCha20Poly1305Sha256,
+                &kp,
+                harness::ServerFlightOptions::default(),
+            );
+            sock.write_all(&flight.records).unwrap();
+            let fin = read_tls_record(&mut sock);
+            flight.complete(&fin).unwrap();
+
+            // The client's request arrives as one application
+            // record per transport write: preface, SETTINGS,
+            // HEADERS, DATA.
+            let mut inbound = Vec::new();
+            for _ in 0..4 {
+                let rec = read_tls_record(&mut sock);
+                let (ct, plain) = flight.open_app_record(&rec).unwrap();
+                assert_eq!(ct, TlsContentType::ApplicationData);
+                inbound.extend_from_slice(&plain);
+            }
+            assert!(
+                inbound.starts_with(CONNECTION_PREFACE),
+                "handshake must complete before the HTTP/2 preface"
+            );
+
+            // One canned response in a single application record.
+            let resp = canned_unary_response(1, b"pong", "0");
+            let rec = flight.seal_app_record(&resp).unwrap();
+            sock.write_all(&rec).unwrap();
+
+            // The client ACKs our (non-ACK) SETTINGS and
+            // replenishes the DATA flow-control window; its
+            // `close` then sends close_notify.
+            let mut post = Vec::new();
+            loop {
+                let rec = read_tls_record(&mut sock);
+                let (ct, plain) = flight.open_app_record(&rec).unwrap();
+                match ct {
+                    TlsContentType::ApplicationData => post.extend_from_slice(&plain),
+                    TlsContentType::Alert => {
+                        assert_eq!(plain, [1, 0], "expected close_notify");
+                        break;
+                    }
+                    other => panic!("unexpected content type {other:?}"),
+                }
+            }
+            assert!(
+                post.starts_with(&build_settings(true, &[])),
+                "client did not ACK the server SETTINGS"
+            );
+        });
+
+        let kp = harness::server_cert_ed25519();
+        let verifier = harness::harness_verifier(&kp);
+        let stream = TcpTlsStream::connect_with_timeouts(
+            "127.0.0.1",
+            addr.port(),
+            ClientConfig {
+                server_name: None,
+                require_pqc: false,
+            },
+            &verifier,
+            TEST_TIMEOUTS,
+        )
+        .unwrap();
+        let mut t = TlsGrpcTransport::new(stream, "127.0.0.1:3322");
+        let resp = t
+            .unary_call("/immudb.schema.ImmuService/CurrentState", &[], b"ping")
+            .unwrap();
+        assert_eq!(resp.grpc_status(), 0);
+        assert_eq!(resp.body, b"pong");
+        t.stream.close().unwrap();
+        server.join().unwrap();
+    }
+
+    /// Spec scenario "TLS 1.2 handshake rejected": a server
+    /// selecting TLS 1.2 aborts the handshake before any
+    /// application data moves, and the failure classifies
+    /// `HardFail` (the `audit_export_attempt` record with
+    /// `-EPROTONOSUPPORT` is the pipeline's job, tracked in
+    /// `verifiable-audit-log-v1`).
+    #[test]
+    fn tls12_selection_aborts_before_any_application_data() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let _ch = read_tls_record(&mut sock);
+            sock.write_all(&harness::build_tls12_server_hello_record())
+                .unwrap();
+            // The client must hang up without sending a byte —
+            // EOF (or a reset, which equally carries no data).
+            let mut buf = [0u8; 1];
+            let n = sock.read(&mut buf).unwrap_or(0);
+            assert_eq!(n, 0, "client sent data after a TLS 1.2 ServerHello");
+        });
+
+        let kp = harness::server_cert_ed25519();
+        let verifier = harness::harness_verifier(&kp);
+        let err = match TcpTlsStream::connect_with_timeouts(
+            "127.0.0.1",
+            addr.port(),
+            ClientConfig {
+                server_name: None,
+                require_pqc: false,
+            },
+            &verifier,
+            TEST_TIMEOUTS,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("TLS 1.2 selection must abort the handshake"),
+        };
+        assert_eq!(err, TlsClientError::Version);
+        assert_eq!(tls_retry_class(&err), TlsRetryClass::HardFail);
+        assert_eq!(map_tls_error(err), TransportError::TlsHandshake);
+        server.join().unwrap();
+    }
+
+    /// Spec scenario "PQC hybrid offered first": with
+    /// `require_pqc`, the ClientHello's first key share is
+    /// X25519+ML-KEM-768, and a server that answers with a
+    /// pure-classical share is refused.
+    #[test]
+    fn pqc_hybrid_offered_first_and_classical_fallback_refused() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let ch = read_tls_record(&mut sock);
+            assert!(
+                harness::client_hello_offers_hybrid_first(&ch),
+                "require_pqc ClientHello must offer X25519+ML-KEM-768 first"
+            );
+            sock.write_all(&harness::build_classical_server_hello_record())
+                .unwrap();
+            let mut buf = [0u8; 1];
+            let n = sock.read(&mut buf).unwrap_or(0);
+            assert_eq!(n, 0, "client sent data after a classical downgrade");
+        });
+
+        let kp = harness::server_cert_ed25519();
+        let verifier = harness::harness_verifier(&kp);
+        let err = match TcpTlsStream::connect_with_timeouts(
+            "127.0.0.1",
+            addr.port(),
+            ClientConfig {
+                server_name: None,
+                require_pqc: true,
+            },
+            &verifier,
+            TEST_TIMEOUTS,
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("classical downgrade must be refused under require_pqc"),
+        };
+        assert_eq!(err, TlsClientError::PqcDowngrade);
+        assert_eq!(tls_retry_class(&err), TlsRetryClass::HardFail);
+        assert_eq!(map_tls_error(err), TransportError::TlsHandshake);
+        server.join().unwrap();
     }
 }

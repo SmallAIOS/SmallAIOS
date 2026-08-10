@@ -49,13 +49,37 @@ class and refuses to advance silently.
    ```
    immuadmin user create <username> readwrite smallaios_audit
    ```
-3. The Ed25519 public key the server uses to sign state.
-   Find it under your immudb data directory; compute its
-   SHA-256 fingerprint:
+3. A TLS trust anchor for the server's certificate chain —
+   see "TLS prerequisites" below. The SHA-256 of that anchor's
+   DER goes into `tls.server_pubkey_fingerprint`.
+
+## TLS prerequisites
+
+The exporter's transport is the clean-room TLS 1.3 client
+(`tls-tcp-client-v1`); the connection will not open until its
+requirements are met. **Full guide: `docs/tls-client.md`.** The
+checklist:
+
+1. The immudb endpoint must terminate **TLS 1.3** — the client
+   refuses TLS 1.2 and below by design. Plain-gRPC immudb behind
+   a TLS 1.3 proxy is fine.
+2. A PEM trust-anchor bundle installed at
+   `tls.trust_store_path`, file mode **0640 or stricter** (the
+   transport refuses laxer modes, same as the token loader).
+   There is no baked-in CA list; an empty store refuses every
+   chain.
+3. `tls.server_pubkey_fingerprint` set to the SHA-256 of the
+   chosen anchor's DER:
    ```
-   sha256sum /path/to/immudb/server.pubkey
+   openssl x509 -in anchors.pem -outform DER | sha256sum
    ```
-   The hex digest goes into `tls.server_pubkey_fingerprint`.
+4. The server certificate's SAN must cover the host in
+   `endpoint` (DNS name or IP literal, RFC 6125 rules), and the
+   chain must be Ed25519 / ECDSA-P256 / RSA-PSS signed —
+   PKCS#1 v1.5 and SHA-1 are refused.
+5. Optional: `tls.require_pqc = true` for hybrid
+   X25519+ML-KEM-768 key exchange — only if the endpoint
+   supports it; classical fallback is then refused.
 
 ## Step 1 — Drop the token on the box
 
@@ -81,13 +105,15 @@ database = "smallaios_audit"
 
 [tls]
 require_pqc = false
-server_pubkey_fingerprint = "<64 hex chars of SHA-256(pubkey)>"
+server_pubkey_fingerprint = "<64 hex chars — SHA-256 of anchor DER>"
+trust_store_path = "/data/audit_export/anchors.pem"
 ```
 
 The validator rejects:
 
 - `enabled = true && endpoint = ""`
 - `enabled = true && server_pubkey_fingerprint = ""`
+- `enabled = true && trust_store_path = ""`
 - `endpoint` not starting with `https://`
 - Fingerprint that isn't 64 hex chars
 - `buffer_bytes` outside [1 MiB, 64 MiB]
