@@ -13,7 +13,7 @@
 - [x] 2.2 Add `security/src/crypto/poly1305.rs` with the Poly1305 one-time MAC (RFC 8439 § 2.5)
 - [x] 2.3 Compose into `security/src/crypto/chacha20_poly1305.rs` providing `seal` / `open` (matches the existing `aes_gcm` shape; constant-time tag compare via inline accumulator)
 - [x] 2.4 NIST + RFC 8439 KAT tests (≥4 vectors) including the canonical RFC 8439 § 2.8 example *(11 tests pass: § 2.3.2, § 2.4.2, § 2.5.2, § 2.8.2 + tamper-rejection variants + empty round-trips)*
-- [ ] 2.5 `cargo-fuzz` target on `Aead::open` against arbitrary bytes *(deferred — added with the rest of the tls-client fuzz targets in Phase 10)*
+- [x] 2.5 `cargo-fuzz` target on `Aead::open` against arbitrary bytes *(landed with Phase 10: `fuzz_tls_record_parse` calls `chacha20_poly1305::open` directly on arbitrary ciphertext+tag splits and additionally routes both suites through `record::open`; 1M+ local executions clean)*
 
 ## 2b. `security` hash/KDF primitives (scope discovered during Phase 4 — see design.md D12)
 
@@ -28,7 +28,7 @@
 - [x] 3.3 Refuse `LegacyVersion` outside `{0x0303}` (post-handshake)
 - [x] 3.4 AEAD wrap/unwrap routing on cipher-suite negotiation *(two suites: AES-256-GCM-SHA384 and ChaCha20-Poly1305-SHA256; AES-128-GCM deferred per design.md D2)*
 - [x] 3.5 Unit tests: round-trip for each of the three suites; oversized rejection; legacy-version rejection *(16 tests: header round-trip, header too short, unknown content type, oversized length, legacy-version enforcement, cipher-suite wire round-trip + AES-128 refused, per-record nonce XOR, plaintext record round-trip + oversized, seal/open round-trip for both suites, tampered ciphertext, wrong seq, legacy-version mismatch, ciphertext too short, wrong outer content type)*
-- [ ] 3.6 `cargo-fuzz` target on the inbound record parser *(deferred — added with the other tls-client fuzz targets in Phase 10)*
+- [x] 3.6 `cargo-fuzz` target on the inbound record parser *(landed with Phase 10: `fuzz_tls_record_parse` covers `RecordHeader::parse` and full `record::open` for both suites on arbitrary bytes)*
 
 ## 4. Handshake state machine
 
@@ -53,7 +53,7 @@
 - [x] 5.5 Signature verification on every link (Ed25519, ECDSA-P256, RSA-PSS) *(all three live: `cert/verify.rs` `verify_signature` verifies chain links over `tbs_der`, and `handshake/certificate_msg.rs` `verify_certificate_verify` verifies CertificateVerify — Ed25519, ECDSA-P256/SHA-256, and RSA-PSS SHA-256/384/512 — via the `security-ecdsa-p256-v1` / `security-rsa-pss-v1` primitives. CertificateVerify tested against real openssl ECDSA/RSA-PSS signatures over the §4.4.3 content. RSA-PKCS#1 v1.5 stays refused by policy. Full ECDSA/RSA cert-chain cross-vectors are task 5.8.)*
 - [x] 5.6 Validity-window check with `kernel::clock()`; unsynced-clock sentinel handling; audit `audit_export_unsynced_clock` on bypass *(validity window + 2026 unsynced-clock sentinel with `require_synced_clock` policy in `cert/verify.rs`; `now` is injected by the caller to keep `tls-client` decoupled from the kernel allocator — the `kernel::clock()` read + `audit_export_unsynced_clock` record land in the Phase 8 container integration)*
 - [x] 5.8 Cross-vector tests in `tls-client/tests/corpus/`: ≥10 known-good cert chains + ≥6 known-bad *(51 OpenSSL 3-generated DER files in `tests/corpus/` — regenerable via `gen_corpus.sh` — replayed by `cert/corpus_tests.rs`: 12 good chains (ECDSA-P256, RSA-PSS 2048/3072/4096, Ed25519, mixed ECDSA↔RSA paths, IP SAN, wildcard SAN, positive pin) + 10 bad (tampered ECDSA/RSA sigs, unknown anchor, PKCS#1 v1.5 policy refusal, hostname mismatch, expiry, non-CA intermediate, no-SAN, no-EKU, wrong pin), each asserting the exact `TlsClientError`. The Ed25519 case caught the SHAKE256-for-SHA-512 substitution in `security` — fixed with RFC 8032 KATs in its own PR, which this depends on)*
-- [ ] 5.9 `cargo-fuzz` target on the X.509 parser *(follow-on; the DER decoder landed in this commit is the largest attacker-controlled surface and is fuzz-ready)*
+- [x] 5.9 `cargo-fuzz` target on the X.509 parser *(`fuzz_tls_x509`: raw DER TLV `Reader` walk + full `Certificate::parse` + `TrustStore::from_pem`; 5.7M local executions clean)*
 
 ## 6. Trust store
 
@@ -76,26 +76,26 @@
 
 - [x] 8.1 In `container/src/audit_export_runtime/`, replace the `TlsStreamLike` placeholder docs with a pointer to `tls_client::std_io::TcpTlsStream` *(module docs and the trait doc now name the concrete implementor; `impl TlsStreamLike for TcpTlsStream` lands here too — the bridge deferred from 7.3, since Layer 1 `tls-client` cannot depend on Layer 3 `container`)*
 - [x] 8.2 Add a `connect_immudb(config: &Config) -> Result<TcpTlsStream, TransportError>` helper that bridges `Config::endpoint` + `Config::server_pubkey_fingerprint` + `Config::trust_store_path` into the TLS client *(also bridges `require_pqc`. Endpoint parsing handles `https://host[:port]`, bracketed IPv6 literals, trailing paths, and defaults to immudb's 3322; SNI is omitted for IP literals per RFC 6066 §3. 12 unit tests cover endpoint splitting, port-overflow rejection, fingerprint hex decoding, SNI suppression, and both pre-socket failure paths — unreadable and anchor-less trust store)*
-- [ ] 8.3 Update the `audit_export_runtime::transport` tests: at least one test that drives a full handshake against a `MockServer` exposing canned TLS records *(**blocked on a harness decision.** A full handshake needs a valid TLS 1.3 server flight — ServerHello, EncryptedExtensions, Certificate, CertificateVerify, Finished, with a correct key schedule and AEAD. `tls-client` already has those builders in `handshake/test_util.rs`, but they are `pub(crate)` and `#![cfg(test)]`, so `container` cannot reach them. Options: (a) export a `test-harness`-feature mock-server builder from `tls-client`, (b) move the full-handshake test into `tls-client` where the builders live and keep `container`'s tests on the bridge seam, or (c) reimplement a server flight in `container`'s tests — rejected, it would duplicate the state machine under test. Needs a call before implementing.)*
-- [ ] 8.4 Confirm the existing `audit-export-immudb-client` scenarios ("TLS 1.2 handshake rejected", "PQC hybrid offered first", "HTTP/2 server push refused") now pass end-to-end *(depends on 8.3's harness. Note the third scenario asserts the client responds `GOAWAY` with `PROTOCOL_ERROR`; today `net::http2` refuses `PUSH_PROMISE` at frame-parse time via `Http2Error::RefusedFrameType` and the transport surfaces `TransportError::Http2` without emitting `GOAWAY`, so satisfying the scenario as written needs a transport change too, not just a test.)*
+- [x] 8.3 Update the `audit_export_runtime::transport` tests: at least one test that drives a full handshake against a `MockServer` exposing canned TLS records *(option (a) chosen 2026-08-09: the mock TLS 1.3 server moved out of `driver.rs`'s test module into a new `tls_client::harness` module compiled under `cfg(any(test, feature = "test-harness"))` — one copy, driver tests now import it — and gained data-phase helpers (`complete`, `open_app_record`, `seal_app_record`). `container` enables the feature via dev-dependency and `full_handshake_and_unary_call_over_tcp` drives the production `TcpTlsStream::connect_with_timeouts` + `TlsGrpcTransport::unary_call` path against the harness server over a real loopback socket, asserting the HTTP/2 preface arrives only inside application records — which also pins the spec scenario "Handshake completes before HTTP/2 preface")*
+- [x] 8.4 Confirm the existing `audit-export-immudb-client` scenarios ("TLS 1.2 handshake rejected", "PQC hybrid offered first", "HTTP/2 server push refused") now pass end-to-end *(all three pinned by container transport tests on the 8.3 harness. TLS 1.2: `Version` abort with the server observing EOF — no application data — and `HardFail` classification; the scenario's `audit_export_attempt` record with `-EPROTONOSUPPORT` is pipeline-side emission that belongs to `verifiable-audit-log-v1`'s remaining work, not the transport. PQC: hybrid-first asserted from the received ClientHello key_share, classical reply refused as `PqcDowngrade`. Server push: `read_frame` now answers `Http2Error::RefusedFrameType` with `GOAWAY (PROTOCOL_ERROR)` and closes the stream before surfacing `TransportError::Http2` — the transport change the annotation predicted)*
 
 ## 9. Documentation
 
-- [ ] 9.1 Add `docs/tls-client.md` — operator-facing setup guide: trust-store population, pinning, `require_pqc` flag, `require_synced_clock` flag, troubleshooting `TlsClientError::*` codes
-- [ ] 9.2 Extend `docs/verifiable-audit-log.md` with a "TLS prerequisites" section that points operators at `docs/tls-client.md`
-- [ ] 9.3 Update CLAUDE.md Crate Feature Flags section: `tls-client` (no feature flags in v1; transitive activation via `container::audit-export`)
+- [x] 9.1 Add `docs/tls-client.md` — operator-facing setup guide: trust-store population, pinning, `require_pqc` flag, `require_synced_clock` flag, troubleshooting `TlsClientError::*` codes *(includes the 0640 trust-store mode rule, the anchor-DER pin computation command, the P-384 anchor-at-intermediate workaround, and a full error table with Retry/HardFail classes. `require_synced_clock` documented as-is: an API-level switch on `TrustStoreVerifier`, not yet an `immudb.toml` key — the exporter runs with the D8 sentinel policy)*
+- [x] 9.2 Extend `docs/verifiable-audit-log.md` with a "TLS prerequisites" section that points operators at `docs/tls-client.md` *(also corrected the stale prerequisite claiming `server_pubkey_fingerprint` hashes the immudb state-signing pubkey — as wired via `connect_immudb` → `TrustStore::set_pin` it is the SHA-256 of the trust anchor's DER; `examples/immudb.toml` gained the missing `trust_store_path` key and the same fingerprint correction)*
+- [x] 9.3 Update CLAUDE.md Crate Feature Flags section: `tls-client` *(reality diverged from the task text "no feature flags in v1" — documented the actual set: `std`, `mtls` (v2 stub), `formal-gate`, `test-harness` (dev-dependencies only))*
 
 ## 10. CI plumbing
 
-- [ ] 10.1 `tls-client` added to host-testable list (workspace-wide `cargo test` auto-picks)
-- [ ] 10.2 Fuzz Testing job extended with `fuzz_tls_record_parse`, `fuzz_tls_x509`
-- [ ] 10.3 Coverage gate: ≥85 % line coverage on `tls-client` first pass
-- [ ] 10.4 Pin-check job ensures `tls.trust_store_path` permissions are 0640 (defense-in-depth — operator-readable, world-unreadable)
+- [x] 10.1 `tls-client` added to host-testable list (workspace-wide `cargo test` auto-picks) *(already true via `ci/test-matrix.toml`'s `tls-client` group (floor 150) and the Justfile host list. Additionally: the `audit-export` matrix group now also runs `smallaios-container --features audit-export` so the feature-gated transport suite — including the new full-handshake tests — is not dark in CI; 468 tests observed 2026-08-10, floor raised 120 → 400)*
+- [x] 10.2 Fuzz Testing job extended with `fuzz_tls_record_parse`, `fuzz_tls_x509` *(fuzz/Cargo.toml targets + deps, ci.yml target list)*
+- [x] 10.3 Coverage gate: ≥85 % line coverage on `tls-client` first pass *(93.07 % lines observed 2026-08-10 via `cargo llvm-cov -p smallaios-tls-client --features std`; the crate also sits inside the workspace-wide 93 % Coverage Threshold gate)*
+- [x] 10.4 Pin-check job ensures `tls.trust_store_path` permissions are 0640 (defense-in-depth — operator-readable, world-unreadable) *(implemented as a runtime guard rather than a CI job — CI cannot see operator files: `connect_immudb` stats the bundle and refuses any mode laxer than 0640, including executable bits, mirroring the token loader's mode-stricter-than-declared rule; `cfg(unix)`-gated, unit tests cover the mask plus an end-to-end refusal of an 0644 store)*
 
 ## 11. Verification
 
-- [ ] 11.1 `cargo test -p smallaios-tls-client` — all unit + cross-vector tests pass
-- [ ] 11.2 `cargo clippy -p smallaios-tls-client -- -D warnings` clean
-- [ ] 11.3 `cargo test -p smallaios-container --features audit-export` — 30 existing audit_export_runtime tests still pass plus the new TLS-end-to-end test
-- [ ] 11.4 `openspec validate tls-tcp-client-v1 --strict` passes
-- [ ] 11.5 `cargo build -p smallaios-container` (no feature) still compiles cleanly — D10 Layer 1 zero-overhead-when-off invariant from `verifiable-audit-log-v1` preserved
+- [x] 11.1 `cargo test -p smallaios-tls-client` — all unit + cross-vector tests pass *(179 with `--features std` — corpus replay included — and 165 in the no_std core, 2026-08-10)*
+- [x] 11.2 `cargo clippy -p smallaios-tls-client -- -D warnings` clean *(with `--features std,test-harness --all-targets`)*
+- [x] 11.3 `cargo test -p smallaios-container --features audit-export` — 30 existing audit_export_runtime tests still pass plus the new TLS-end-to-end test *(audit-export matrix group: 468 tests executed across both crates, incl. the full-handshake TCP suite and the GOAWAY/permission-guard tests)*
+- [x] 11.4 `openspec validate tls-tcp-client-v1 --strict` passes
+- [x] 11.5 `cargo build -p smallaios-container` (no feature) still compiles cleanly — D10 Layer 1 zero-overhead-when-off invariant from `verifiable-audit-log-v1` preserved *(dev-dependency on `tls-client/test-harness` is test-profile only; `cargo build` never compiles it)*

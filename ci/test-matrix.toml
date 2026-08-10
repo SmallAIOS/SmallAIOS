@@ -64,10 +64,15 @@ features = ["smallaios-tls-client/std"]
 min_tests = 150
 
 [[group]]
+# smallaios-container appears here a second time (also in "default")
+# because the audit-export transport tests — including the
+# tls-client full-handshake suite — only compile behind its
+# `audit-export` feature and would otherwise be dark in CI.
 name = "audit-export"
-crates = ["smallaios-audit-export"]
-features = ["smallaios-audit-export/bearer"]
-min_tests = 120
+crates = ["smallaios-audit-export", "smallaios-container"]
+features = ["smallaios-audit-export/bearer", "smallaios-container/audit-export"]
+# 468 observed 2026-08-10 (container joined the group)
+min_tests = 400
 
 [[group]]
 name = "tools"

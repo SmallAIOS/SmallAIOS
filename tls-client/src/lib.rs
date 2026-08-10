@@ -50,6 +50,9 @@ pub mod trust;
 #[cfg(feature = "std")]
 pub mod std_io;
 
+#[cfg(any(test, feature = "test-harness"))]
+pub mod harness;
+
 /// Errors surfaced by the TLS client.
 ///
 /// Each variant maps to a deterministic

@@ -1167,7 +1167,7 @@ jobs:
         run: cargo install cargo-fuzz --locked
       - name: Run fuzz targets (60s each)
         run: |
-          targets=(fuzz_onnx_protobuf fuzz_tcp_packet fuzz_udp_packet fuzz_usb_descriptor fuzz_ipc_message fuzz_onnx_tensor fuzz_net_http2_frame fuzz_net_http2_hpack fuzz_net_http2_grpc fuzz_audit_export_immudb_decode)
+          targets=(fuzz_onnx_protobuf fuzz_tcp_packet fuzz_udp_packet fuzz_usb_descriptor fuzz_ipc_message fuzz_onnx_tensor fuzz_net_http2_frame fuzz_net_http2_hpack fuzz_net_http2_grpc fuzz_audit_export_immudb_decode fuzz_tls_record_parse fuzz_tls_x509)
           failed=()
           for target in "${targets[@]}"; do
             echo "=== Fuzzing $target ==="

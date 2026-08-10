@@ -309,5 +309,6 @@ See `docs/can-inference.md` for the CAN bus inference bridge and
 - `container`: `nvidia_gpu`, `formal-gate`, `bus-zenoh`, `bus-dds` (pub/sub dataflow runner placeholders — see `docs/inference-bus.md`)
 - `ipc`: `formal-gate`, `onnx` (opt-in ONNX runtime integration for the dataflow runner)
 - `audit-export`: `bearer` (default v1 auth), `mtls` (v2 stub — refused by config validator), `formal-gate`. Compile-time opt-in to immudb verifiable-audit-log export (`verifiable-audit-log-v1`); when off, zero code is linked.
+- `tls-client`: `std` (std-IO adapter `TcpTlsStream`; activated transitively by `container`'s `audit-export` feature), `mtls` (v2 stub), `formal-gate`, `test-harness` (mock TLS 1.3 server for downstream full-handshake tests — dev-dependencies only, never production). Core stays `#![no_std]` with no features.
 - `arch/nvidia`: `cc_53` through `cc_100` (CUDA compute capabilities)
 - `peripheral`: `i2c`, `spi`, `gpio`, `uart`, `camera-csi`, `audio-i2s`. Bundles: `sensor-io`, `vision`, `audio`, `full-peripheral`. All default OFF.

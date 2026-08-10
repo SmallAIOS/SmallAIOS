@@ -30,10 +30,16 @@ backoff_cap_ms     = 300000                         # 5 min cap
 
 [tls]
 require_pqc        = false                          # offer X25519+ML-KEM-768 first when true
-# 64-char lowercase-hex SHA-256 of the server's Ed25519 public key.
+# 64-char lowercase-hex SHA-256 of the trust anchor's certificate
+# DER: `openssl x509 -in anchors.pem -outform DER | sha256sum`.
 # REQUIRED when `enabled = true`. There is no TOFU — operators must
 # pin this fingerprint after a controlled out-of-band exchange.
+# Chains anchored at any other certificate are refused.
 server_pubkey_fingerprint = ""
+# PEM bundle of CA trust anchors for the server chain. REQUIRED
+# when `enabled = true`; file mode must be 0640 or stricter.
+# See docs/tls-client.md for how to build and pin the bundle.
+trust_store_path = ""
 
 [record_filter]
 # Empty include_actions = "ship every action".

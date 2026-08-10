@@ -16,6 +16,8 @@ smallaios-net = { path = "../net", features = ["http2"] }
 smallaios-usb = { path = "../usb" }
 smallaios-ipc = { path = "../ipc" }
 smallaios-audit-export = { path = "../audit-export" }
+smallaios-tls-client = { path = "../tls-client" }
+smallaios-security = { path = "../security" }
 
 [[bin]]
 name = "fuzz_onnx_protobuf"
@@ -65,4 +67,14 @@ doc = false
 [[bin]]
 name = "fuzz_audit_export_immudb_decode"
 path = "fuzz_targets/fuzz_audit_export_immudb_decode.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_tls_record_parse"
+path = "fuzz_targets/fuzz_tls_record_parse.rs"
+doc = false
+
+[[bin]]
+name = "fuzz_tls_x509"
+path = "fuzz_targets/fuzz_tls_x509.rs"
 doc = false

@@ -646,10 +646,12 @@ impl<'a, V: ServerCertVerifier> ClientHandshake<'a, V> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::handshake::certificate_msg::certificate_verify_content;
-    use crate::handshake::extensions::{ext_type, sig_scheme, TLS_1_3};
-    use smallaios_security::crypto::ed25519::{ed25519_keygen, ed25519_sign, Ed25519KeyPair};
-    use smallaios_security::crypto::ml_kem::ml_kem_768_encaps;
+    use crate::handshake::extensions::{ext_type, TLS_1_3};
+    use crate::harness::{
+        parse_ch_key_share, server_respond, ServerFlightOptions,
+        StaticLeafVerifier as TestVerifier, LEAF_DER,
+    };
+    use smallaios_security::crypto::ed25519::ed25519_keygen;
     use smallaios_security::sha2::sha256;
 
     #[test]
@@ -659,26 +661,14 @@ mod tests {
 
     // ── In-test TLS 1.3 server ────────────────────────────────
     //
-    // A minimal server built from the same primitives, driving
-    // the client end-to-end: SH, EE+Certificate (coalesced in one
-    // record, exercising multi-message records), CertificateVerify,
-    // Finished, then verification of the client Finished.
-
-    struct TestVerifier {
-        expected_leaf: &'static [u8],
-        pubkey: [u8; 32],
-    }
-
-    impl ServerCertVerifier for TestVerifier {
-        fn verify_chain(
-            &self,
-            certs: &[Vec<u8>],
-            _server_name: Option<&str>,
-        ) -> Result<LeafPublicKey> {
-            assert_eq!(certs[0], self.expected_leaf);
-            Ok(LeafPublicKey::Ed25519(self.pubkey))
-        }
-    }
+    // The mock server itself (message builders, server key
+    // schedule, data-phase helpers) lives in `crate::harness` —
+    // one copy shared with the `test-harness` feature that
+    // `container`'s transport tests consume. These tests drive
+    // the client end-to-end against it: SH, EE+Certificate
+    // (coalesced in one record, exercising multi-message
+    // records), CertificateVerify, Finished, then verification
+    // of the client Finished.
 
     struct RejectingVerifier;
     impl ServerCertVerifier for RejectingVerifier {
@@ -687,180 +677,16 @@ mod tests {
         }
     }
 
-    const LEAF_DER: &[u8] = b"synthetic-leaf-der-for-driver-tests";
-
-    /// Extract (cipher_suites, key_share group, key_share pubkey)
-    /// from a raw ClientHello message.
-    fn parse_ch_key_share(ch: &[u8]) -> (u16, Vec<u8>) {
-        let body = &ch[4..];
-        let mut cur = 2 + 32; // legacy_version + random
-        let sid = body[cur] as usize;
-        cur += 1 + sid;
-        let cs_len = u16::from_be_bytes([body[cur], body[cur + 1]]) as usize;
-        cur += 2 + cs_len;
-        cur += 1 + body[cur] as usize; // compression methods
-        let ext_len = u16::from_be_bytes([body[cur], body[cur + 1]]) as usize;
-        cur += 2;
-        let ext_end = cur + ext_len;
-        while cur < ext_end {
-            let t = u16::from_be_bytes([body[cur], body[cur + 1]]);
-            let l = u16::from_be_bytes([body[cur + 2], body[cur + 3]]) as usize;
-            cur += 4;
-            if t == ext_type::KEY_SHARE {
-                // client form: u16 list length, then entries.
-                let mut p = cur + 2;
-                let group = u16::from_be_bytes([body[p], body[p + 1]]);
-                let klen = u16::from_be_bytes([body[p + 2], body[p + 3]]) as usize;
-                p += 4;
-                return (group, body[p..p + klen].to_vec());
-            }
-            cur += l;
-        }
-        panic!("no key_share in ClientHello");
-    }
-
     fn build_server_hello_msg(suite: CipherSuite, group: u16, share: &[u8]) -> Vec<u8> {
         build_server_hello_custom(suite.wire_value(), Some(TLS_1_3), group, share, [0xaa; 32])
     }
 
-    use crate::handshake::test_util::build_certificate as build_certificate_raw;
+    use crate::handshake::test_util::build_encrypted_extensions;
     use crate::handshake::test_util::build_server_hello as build_server_hello_custom;
-    use crate::handshake::test_util::{build_certificate_verify, build_encrypted_extensions};
 
     fn build_ee_msg() -> Vec<u8> {
         // EncryptedExtensions with an SNI ack.
         build_encrypted_extensions(&[(ext_type::SERVER_NAME, &[])])
-    }
-
-    fn build_certificate_msg(leaf: &[u8]) -> Vec<u8> {
-        build_certificate_raw(&[leaf])
-    }
-
-    fn build_cv_msg(kp: &Ed25519KeyPair, transcript_hash: &[u8]) -> Vec<u8> {
-        let content = certificate_verify_content(transcript_hash);
-        let sig = ed25519_sign(&kp.secret_key, &content);
-        build_certificate_verify(sig_scheme::ED25519, sig.as_bytes())
-    }
-
-    /// Everything the server produced for its flight, plus the
-    /// state needed to check the client Finished.
-    struct ServerFlight {
-        records: Vec<u8>,
-        schedule: KeySchedule,
-        transcript: TranscriptHash,
-        suite: CipherSuite,
-    }
-
-    /// Run the server side: consume the ClientHello record, emit
-    /// SH + encrypted {EE+Cert} {CV} {Fin} records.
-    ///
-    /// `junk_after_finished` coalesces trailing bytes into the
-    /// Finished record — they land beyond the RFC 8446 §5.1
-    /// key-change boundary and must abort the client.
-    fn server_respond(
-        ch_record: &[u8],
-        suite: CipherSuite,
-        cert_kp: &Ed25519KeyPair,
-        tamper_finished: bool,
-        junk_after_finished: bool,
-    ) -> ServerFlight {
-        let ch_msg = &ch_record[RECORD_HEADER_LEN..];
-        let (group, client_share) = parse_ch_key_share(ch_msg);
-
-        // Server key exchange.
-        let server_x = x25519_keygen(&[0x55u8; 32]);
-        let (ecdhe, server_share): (Vec<u8>, Vec<u8>) = if group == named_group::X25519_MLKEM768 {
-            let client_mlkem = smallaios_security::crypto::ml_kem::MlKemPublicKey::from_slice(
-                &client_share[..ML_KEM_768_PK_LEN],
-            )
-            .unwrap();
-            let (ct, mlkem_ss) = ml_kem_768_encaps(&client_mlkem, &[0x66u8; 32]).unwrap();
-            let mut client_x = [0u8; 32];
-            client_x.copy_from_slice(&client_share[ML_KEM_768_PK_LEN..]);
-            let x_ss =
-                x25519_dh(&server_x.secret_key, &X25519PublicKey::from_bytes(client_x)).unwrap();
-            let mut ss = Vec::new();
-            ss.extend_from_slice(mlkem_ss.as_bytes());
-            ss.extend_from_slice(&x_ss);
-            let mut share = Vec::new();
-            share.extend_from_slice(ct.as_bytes());
-            share.extend_from_slice(server_x.public_key.as_bytes());
-            (ss, share)
-        } else {
-            let mut client_x = [0u8; 32];
-            client_x.copy_from_slice(&client_share);
-            let ss =
-                x25519_dh(&server_x.secret_key, &X25519PublicKey::from_bytes(client_x)).unwrap();
-            (ss.to_vec(), server_x.public_key.as_bytes().to_vec())
-        };
-
-        let sh_msg = build_server_hello_msg(suite, group, &server_share);
-        let alg = HashAlg::for_suite(suite);
-        let mut transcript = TranscriptHash::new(alg);
-        transcript.update(ch_msg);
-        transcript.update(&sh_msg);
-        let mut schedule = KeySchedule::new(alg);
-        schedule
-            .derive_handshake_secrets(&ecdhe, &transcript.current())
-            .unwrap();
-        let server_keys = schedule
-            .traffic_keys(schedule.server_hs_traffic_secret().unwrap())
-            .unwrap();
-
-        let mut records = build_plaintext_record(ContentType::Handshake, &sh_msg).unwrap();
-        let mut seq = 0u64;
-        let seal_hs = |payload: &[u8], seq: &mut u64| {
-            let rec = record::seal(
-                suite,
-                &server_keys.key,
-                &server_keys.iv,
-                *seq,
-                ContentType::Handshake,
-                payload,
-            )
-            .unwrap();
-            *seq += 1;
-            rec
-        };
-
-        // EE + Certificate coalesced into ONE record.
-        let ee_msg = build_ee_msg();
-        let cert_msg = build_certificate_msg(LEAF_DER);
-        transcript.update(&ee_msg);
-        transcript.update(&cert_msg);
-        let mut coalesced = ee_msg.clone();
-        coalesced.extend_from_slice(&cert_msg);
-        records.extend_from_slice(&seal_hs(&coalesced, &mut seq));
-
-        // CertificateVerify over Transcript-Hash(CH..Certificate).
-        let cv_msg = build_cv_msg(cert_kp, &transcript.current());
-        transcript.update(&cv_msg);
-        records.extend_from_slice(&seal_hs(&cv_msg, &mut seq));
-
-        // Server Finished over Transcript-Hash(CH..CV).
-        let mut vd = schedule
-            .finished_verify_data(
-                schedule.server_hs_traffic_secret().unwrap(),
-                &transcript.current(),
-            )
-            .unwrap();
-        if tamper_finished {
-            vd[0] ^= 0xff;
-        }
-        let fin_msg = build_finished(&vd).unwrap();
-        transcript.update(&fin_msg);
-        let mut fin_payload = fin_msg;
-        if junk_after_finished {
-            fin_payload.extend_from_slice(&[0u8; 7]);
-        }
-        records.extend_from_slice(&seal_hs(&fin_payload, &mut seq));
-
-        ServerFlight {
-            records,
-            schedule,
-            transcript,
-            suite,
-        }
     }
 
     fn entropy() -> ClientEntropy {
@@ -887,7 +713,7 @@ mod tests {
         )
         .unwrap();
 
-        let mut server = server_respond(&flight, suite, &cert_kp, false, false);
+        let mut server = server_respond(&flight, suite, &cert_kp, ServerFlightOptions::default());
 
         // Feed the server flight to the client — all at once, or
         // byte-by-byte to exercise the reassembly paths.
@@ -1066,8 +892,10 @@ mod tests {
             &flight,
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
-            true, // tamper the Finished verify_data
-            false,
+            ServerFlightOptions {
+                tamper_finished: true,
+                ..Default::default()
+            },
         );
         assert_eq!(
             client.push(&server.records).unwrap_err(),
@@ -1092,8 +920,7 @@ mod tests {
             &flight,
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
-            false,
-            false,
+            ServerFlightOptions::default(),
         );
         assert_eq!(
             client.push(&server.records).unwrap_err(),
@@ -1124,8 +951,7 @@ mod tests {
             &flight,
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
-            false,
-            false,
+            ServerFlightOptions::default(),
         );
         assert_eq!(
             client.push(&server.records).unwrap_err(),
@@ -1219,8 +1045,7 @@ mod tests {
             &flight,
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
-            false,
-            false,
+            ServerFlightOptions::default(),
         );
         // Inject a middlebox-compat CCS record between the
         // ServerHello and the encrypted flight.
@@ -1287,8 +1112,10 @@ mod tests {
             &flight,
             CipherSuite::ChaCha20Poly1305Sha256,
             &cert_kp,
-            false,
-            true, // coalesce junk bytes after Finished
+            ServerFlightOptions {
+                junk_after_finished: true,
+                ..Default::default()
+            },
         );
         assert_eq!(
             client.push(&server.records).unwrap_err(),
