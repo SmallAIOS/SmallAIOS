@@ -18,10 +18,8 @@ fuzz_target!(|data: &[u8]| {
     if data.len() < 44 {
         return;
     }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&data[..32]);
-    let mut iv = [0u8; 12];
-    iv.copy_from_slice(&data[32..44]);
+    let key: [u8; 32] = data[..32].try_into().unwrap();
+    let iv: [u8; 12] = data[32..44].try_into().unwrap();
     let rec = &data[44..];
 
     for suite in [
