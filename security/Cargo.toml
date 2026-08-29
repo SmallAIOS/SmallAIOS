@@ -23,7 +23,7 @@ smallaios-net = { path = "../net", features = ["quic"] }
 # Validation oracles for clean-room crypto. These crates MUST NOT enter the
 # production dep graph — they are only used in #[cfg(test)] KAT comparison
 # tests for Blake2b (RFC 7693) and Argon2id (RFC 9106).
-blake2 = "0.10"
+blake2 = "0.11"
 argon2 = "0.5"
 
 [dependencies]
