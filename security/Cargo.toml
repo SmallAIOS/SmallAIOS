@@ -24,6 +24,6 @@ smallaios-net = { path = "../net", features = ["quic"] }
 # production dep graph — they are only used in #[cfg(test)] KAT comparison
 # tests for Blake2b (RFC 7693) and Argon2id (RFC 9106).
 blake2 = "0.10"
-argon2 = "0.5"
+argon2 = "0.6"
 
 [dependencies]
