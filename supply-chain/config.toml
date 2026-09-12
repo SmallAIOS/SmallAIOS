@@ -31,6 +31,10 @@ criteria = "safe-to-run"
 version = "0.5.3"
 criteria = "safe-to-run"
 
+[[exemptions.argon2]]
+version = "0.6.0"
+criteria = "safe-to-run"
+
 [[exemptions.autocfg]]
 version = "1.5.0"
 criteria = "safe-to-run"
@@ -47,12 +51,20 @@ criteria = "safe-to-deploy"
 version = "0.10.6"
 criteria = "safe-to-run"
 
+[[exemptions.blake2]]
+version = "0.11.0"
+criteria = "safe-to-run"
+
 [[exemptions.block]]
 version = "0.1.6"
 criteria = "safe-to-deploy"
 
 [[exemptions.block-buffer]]
 version = "0.10.4"
+criteria = "safe-to-run"
+
+[[exemptions.block-buffer]]
+version = "0.12.1"
 criteria = "safe-to-run"
 
 [[exemptions.bumpalo]]
@@ -95,6 +107,10 @@ criteria = "safe-to-run"
 version = "1.1.0"
 criteria = "safe-to-run"
 
+[[exemptions.cmov]]
+version = "0.5.4"
+criteria = "safe-to-run"
+
 [[exemptions.core-foundation]]
 version = "0.10.1"
 criteria = "safe-to-deploy"
@@ -109,6 +125,10 @@ criteria = "safe-to-deploy"
 
 [[exemptions.cpufeatures]]
 version = "0.2.17"
+criteria = "safe-to-run"
+
+[[exemptions.cpufeatures]]
+version = "0.3.1"
 criteria = "safe-to-run"
 
 [[exemptions.criterion]]
@@ -139,8 +159,20 @@ criteria = "safe-to-run"
 version = "0.1.7"
 criteria = "safe-to-run"
 
+[[exemptions.crypto-common]]
+version = "0.2.2"
+criteria = "safe-to-run"
+
+[[exemptions.ctutils]]
+version = "0.4.2"
+criteria = "safe-to-run"
+
 [[exemptions.digest]]
 version = "0.10.7"
+criteria = "safe-to-run"
+
+[[exemptions.digest]]
+version = "0.11.3"
 criteria = "safe-to-run"
 
 [[exemptions.either]]
@@ -201,6 +233,10 @@ criteria = "safe-to-run"
 
 [[exemptions.heck]]
 version = "0.5.0"
+criteria = "safe-to-run"
+
+[[exemptions.hybrid-array]]
+version = "0.4.15"
 criteria = "safe-to-run"
 
 [[exemptions.id-arena]]
@@ -275,9 +311,17 @@ criteria = "safe-to-run"
 version = "0.5.0"
 criteria = "safe-to-run"
 
+[[exemptions.password-hash]]
+version = "0.6.1"
+criteria = "safe-to-run"
+
 [[exemptions.paste]]
 version = "1.0.15"
 criteria = "safe-to-deploy"
+
+[[exemptions.phc]]
+version = "0.6.1"
+criteria = "safe-to-run"
 
 [[exemptions.plotters]]
 version = "0.3.7"
@@ -411,12 +455,20 @@ criteria = "safe-to-run"
 version = "1.1.3+spec-1.1.0"
 criteria = "safe-to-run"
 
+[[exemptions.toml]]
+version = "1.1.5+spec-1.1.0"
+criteria = "safe-to-run"
+
 [[exemptions.toml_datetime]]
 version = "1.1.1+spec-1.1.0"
 criteria = "safe-to-run"
 
 [[exemptions.toml_parser]]
 version = "1.1.2+spec-1.1.0"
+criteria = "safe-to-run"
+
+[[exemptions.toml_parser]]
+version = "1.1.3+spec-1.1.0"
 criteria = "safe-to-run"
 
 [[exemptions.typenum]]

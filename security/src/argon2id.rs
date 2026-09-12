@@ -1088,7 +1088,7 @@ mod tests {
     /// `argon2` crate so the on-disk format is interoperable.
     #[test]
     fn phc_interoperates_with_oracle() {
-        use argon2::password_hash::{PasswordHash, PasswordVerifier};
+        use argon2::password_hash::{phc::PasswordHash, PasswordVerifier};
         use argon2::Argon2;
 
         // PHC interop fixtures — see `argon2id_test_vectors.rs`.
