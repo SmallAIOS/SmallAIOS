@@ -440,7 +440,7 @@ modgraph crate="":
 arch-check:
     @echo "Checking module-level acyclicity..."
     @command -v cargo-modules >/dev/null 2>&1 || { \
-        echo "ERROR: cargo-modules not installed (cargo install cargo-modules --locked)"; \
+        echo "ERROR: cargo-modules not installed (cargo install cargo-modules --version 0.26.0 --locked)"; \
         exit 1; \
     }
     @fail=0; \

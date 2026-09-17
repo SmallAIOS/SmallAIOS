@@ -1228,7 +1228,8 @@ jobs:
       - name: Install analysis tools
         run: |
           cargo install cargo-depgraph --locked
-          cargo install cargo-modules --locked
+          # 0.27.0 pulls ra_ap_syntax-bridge 0.0.345 (if-let guards, E0658) that nightly-2026-02-01 rejects; bump with the toolchain
+          cargo install cargo-modules --version 0.26.0 --locked
           sudo apt-get update && sudo apt-get install -y graphviz
       - name: Generate crate-level dependency graph
         run: just depgraph

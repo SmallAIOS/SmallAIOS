@@ -77,7 +77,8 @@ cargo install cargo-careful --locked                 # extra UB detection
 cargo install cargo-llvm-cov --locked                # coverage threshold gate
 
 # Optional analysis tools
-cargo install cargo-depgraph cargo-modules --locked  # dependency visualization
+cargo install cargo-depgraph --locked                # crate-level dependency graphs
+cargo install cargo-modules --version 0.26.0 --locked  # module graphs (0.27.0 needs a newer nightly than rust-toolchain.toml)
 sudo apt install graphviz                            # SVG graph rendering
 ```
 
