@@ -560,18 +560,34 @@ mod tests {
     /// compare against it for a sweep of message lengths and output sizes.
     #[test]
     fn blake2_oracle_matches_unkeyed() {
-        use blake2::digest::{Update, VariableOutput};
-        use blake2::Blake2bVar;
+        use blake2::digest::array::ArraySize;
+        use blake2::digest::consts::{U16, U32, U48, U64};
+        use blake2::digest::typenum::{IsLessOrEqual, True};
+        use blake2::{Blake2b, Digest};
+
+        // blake2 0.11 dropped the runtime-sized `Blake2bVar`; the output
+        // length is now a type-level constant on `Blake2b<OutSize>`.
+        fn oracle<OutSize>(msg: &[u8]) -> Vec<u8>
+        where
+            OutSize: ArraySize + IsLessOrEqual<U64, Output = True>,
+        {
+            let mut h = Blake2b::<OutSize>::new();
+            Digest::update(&mut h, msg);
+            h.finalize().to_vec()
+        }
 
         let buf: Vec<u8> = (0..1024u32).map(|i| (i & 0xFF) as u8).collect();
         for n in [0usize, 1, 17, 64, 127, 128, 129, 256, 511, 512, 700, 1024] {
-            for out_len in [16usize, 32, 48, 64] {
-                let mut oracle = Blake2bVar::new(out_len).unwrap();
-                Update::update(&mut oracle, &buf[..n]);
-                let mut oracle_out = vec![0u8; out_len];
-                oracle.finalize_variable(&mut oracle_out).unwrap();
+            let msg = &buf[..n];
+            for (out_len, oracle_out) in [
+                (16usize, oracle::<U16>(msg)),
+                (32, oracle::<U32>(msg)),
+                (48, oracle::<U48>(msg)),
+                (64, oracle::<U64>(msg)),
+            ] {
+                assert_eq!(oracle_out.len(), out_len);
 
-                let mine = blake2b(&buf[..n], out_len);
+                let mine = blake2b(msg, out_len);
                 assert_eq!(
                     &mine[..out_len],
                     oracle_out.as_slice(),
